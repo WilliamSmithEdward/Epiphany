@@ -311,10 +311,7 @@ impl Cube {
         let dimensions: Vec<DimDoc> = self.dimensions().iter().map(dim_doc).collect();
 
         // Cells, sorted by coordinate (element-index tuple) for canonical output.
-        let mut sorted: Vec<(Vec<u32>, Fixed)> = self
-            .cell_entries()
-            .map(|(coord, value)| (coord.to_vec(), value))
-            .collect();
+        let mut sorted: Vec<(Vec<u32>, Fixed)> = self.cell_entries().collect();
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
         let cells: Vec<CellDoc> = sorted
             .into_iter()
