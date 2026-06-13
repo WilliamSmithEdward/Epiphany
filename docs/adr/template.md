@@ -12,8 +12,8 @@ The problem, constraints, and forces at play.
 The choice we are making (or recommending, while Proposed).
 
 ## Alternatives considered
-- **Option A** — pros / cons
-- **Option B** — pros / cons
+- **Option A:** pros and cons.
+- **Option B:** pros and cons.
 
 ## Consequences
-Positive, negative, and follow-ups — including how the decision will be validated.
+Positive effects, negative effects, and follow-ups, including how the decision will be validated.
