@@ -287,6 +287,30 @@ async fn cell_endpoints_require_auth() {
 }
 
 #[tokio::test]
+async fn openapi_is_public_and_documents_the_routes() {
+    let app = build_router(state("openapi"));
+    // No auth required for the spec.
+    let resp = app
+        .oneshot(
+            Request::get("/api/v1/openapi.json")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let doc = body_json(resp).await;
+    assert_eq!(doc["openapi"], "3.1.0");
+    let paths = doc["paths"].as_object().unwrap();
+    assert!(paths.contains_key("/api/v1/cubes/{cube}/cell"));
+    assert!(paths.contains_key("/api/v1/cubes/{cube}/cells/batch"));
+    assert!(paths.contains_key("/api/v1/auth/login"));
+    assert!(
+        doc["paths"]["/api/v1/cubes/{cube}/cells/batch"]["post"]["responses"]["422"].is_object()
+    );
+}
+
+#[tokio::test]
 async fn write_broadcasts_a_change_event() {
     let app_state = state("ws-event");
     let mut rx = app_state.events.subscribe();

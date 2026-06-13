@@ -21,6 +21,7 @@ use tokio::sync::broadcast;
 mod auth;
 mod dto;
 mod error;
+mod openapi;
 mod resolve;
 mod routes;
 mod session;
@@ -76,6 +77,7 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/api/v1/openapi.json", get(openapi::openapi_json))
         .route("/api/v1/auth/login", post(auth::login))
         .merge(protected)
         .fallback(not_found)
