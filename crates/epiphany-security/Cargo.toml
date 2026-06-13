@@ -1,0 +1,13 @@
+[package]
+name = "epiphany-security"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Epiphany — users/groups and object & element authorization."
+
+[lints]
+workspace = true
+
+[dependencies]
+epiphany-core = { path = "../epiphany-core" }

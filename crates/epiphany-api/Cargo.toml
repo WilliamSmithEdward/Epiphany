@@ -1,0 +1,18 @@
+[package]
+name = "epiphany-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Epiphany — REST + WebSocket API surface (Axum, Phase 2)."
+
+[lints]
+workspace = true
+
+[dependencies]
+epiphany-core = { path = "../epiphany-core" }
+epiphany-calc = { path = "../epiphany-calc" }
+epiphany-mdx = { path = "../epiphany-mdx" }
+epiphany-flow = { path = "../epiphany-flow" }
+epiphany-security = { path = "../epiphany-security" }
+epiphany-persist = { path = "../epiphany-persist" }

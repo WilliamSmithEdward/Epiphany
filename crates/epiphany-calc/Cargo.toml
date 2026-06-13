@@ -1,0 +1,13 @@
+[package]
+name = "epiphany-calc"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Epiphany — rules + sparse-feeds calculation engine (auto-feeder inference, provenance)."
+
+[lints]
+workspace = true
+
+[dependencies]
+epiphany-core = { path = "../epiphany-core" }

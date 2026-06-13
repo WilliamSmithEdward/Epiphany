@@ -1,0 +1,10 @@
+[package]
+name = "epiphany-determinism"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Epiphany — deterministic primitives (clock, RNG, ids): the determinism harness."
+
+[lints]
+workspace = true

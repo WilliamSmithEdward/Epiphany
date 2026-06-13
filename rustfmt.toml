@@ -1,0 +1,3 @@
+edition = "2021"
+# Force LF so formatting is identical on Windows and CI (determinism + clean diffs).
+newline_style = "Unix"
