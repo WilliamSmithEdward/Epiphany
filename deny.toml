@@ -9,7 +9,7 @@ yanked = "deny"
 version = 2
 # Our own crates are unpublished (publish = false); don't license-check them.
 private = { ignore = true }
-# Allowed licenses for third-party dependencies (none yet in Phase 0).
+# Allowed licenses for third-party dependencies (all permissive; current deps are MIT OR Apache-2.0).
 allow = [
   "MIT",
   "Apache-2.0",

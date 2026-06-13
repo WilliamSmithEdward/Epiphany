@@ -31,4 +31,4 @@ npm run dev
 - Engineering practices: [docs/agentic_ai_programming_best_practices.md](docs/agentic_ai_programming_best_practices.md)
 
 ## License
-To be decided. See [docs/ROADMAP.md](docs/ROADMAP.md), section 12.
+Licensed under the [MIT License](LICENSE). Third-party dependencies are restricted to permissive licenses (MIT, Apache-2.0, BSD, ISC, Unicode-3.0, Zlib), enforced by `cargo deny` in CI.

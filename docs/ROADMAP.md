@@ -428,7 +428,7 @@ graph LR
 - **Team size and velocity:** needed to convert S/M/L/XL sizing into a calendar. Not assumed here on purpose.
 - **Deployment target:** single-binary self-host? Docker or Kubernetes? Affects config and persistence (Phases 0 and 8).
 - **Multi-tenancy:** one model per server, or multiple models and tenants per process? Affects core isolation design.
-- **Licensing and open-source posture:** affects dependency policy and distribution.
+- **Licensing and open-source posture (resolved):** MIT licensed (see [LICENSE](../LICENSE)); third-party dependencies are restricted to permissive licenses via the cargo-deny allow list (RG-10).
 - **Primary end-user persona to optimize hardest:** assumed to be the non-technical business and data-entry user (the largest, least-technical audience), without compromising modeler power. Confirm or adjust.
 - **Project and product name:** "Epiphany" is the working codename from the directory; confirm or replace.
 
