@@ -16,6 +16,7 @@ use crate::dto::{
     ElementDto, ReadCellsRequest, ReadCellsResponse, WriteCellRequest,
 };
 use crate::resolve::{kind_str, resolve, Resolved};
+use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
 
 /// `GET /api/v1/cubes/{cube}` -> the cube with its dimensions and elements.
@@ -96,10 +97,15 @@ pub(crate) async fn write_cell(
             .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
         build_write(snap.cube(), &req.coord, &req.value)?
     };
-    state
+    let outcome = state
         .engine
         .apply_batch(&cube, None, &[write])
         .map_err(map_batch_error)?;
+    let _ = state.events.send(ChangeEvent::CellsChanged {
+        cube: cube.clone(),
+        version: outcome.version,
+        coords: vec![req.coord.clone()],
+    });
     // Re-read on a fresh snapshot so the caller sees the committed value.
     let snap = state
         .engine
@@ -131,6 +137,12 @@ pub(crate) async fn batch_write(
         .engine
         .apply_batch(&cube, req.base_version, &writes)
         .map_err(map_batch_error)?;
+    let coords = req.writes.iter().map(|w| w.coord.clone()).collect();
+    let _ = state.events.send(ChangeEvent::CellsChanged {
+        cube: cube.clone(),
+        version: outcome.version,
+        coords,
+    });
     Ok(Json(BatchWriteResponse {
         applied: writes.len(),
         version: outcome.version,

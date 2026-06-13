@@ -43,11 +43,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    let (events, _) = tokio::sync::broadcast::channel(256);
     let state = AppState {
         engine,
         clock: Arc::new(SystemClock),
         security: Arc::new(Mutex::new(security)),
         sessions: Arc::new(Mutex::new(SessionStore::new(config.session_ttl_millis))),
+        events,
     };
     let app = build_router(state).layer(tower_http::trace::TraceLayer::new_for_http());
 

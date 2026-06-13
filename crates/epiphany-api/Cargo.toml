@@ -16,14 +16,14 @@ epiphany-engine = { path = "../epiphany-engine" }
 epiphany-persist = { path = "../epiphany-persist" }
 epiphany-security = { path = "../epiphany-security" }
 epiphany-determinism = { path = "../epiphany-determinism" }
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = "0.22"
+tokio = { version = "1", features = ["sync", "macros", "rt"] }
 
 [dev-dependencies]
-tokio = { version = "1", features = ["rt", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

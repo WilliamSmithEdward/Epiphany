@@ -17,7 +17,7 @@ epiphany-engine = { path = "../epiphany-engine" }
 epiphany-persist = { path = "../epiphany-persist" }
 epiphany-security = { path = "../epiphany-security" }
 epiphany-determinism = { path = "../epiphany-determinism" }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros", "sync"] }
 axum = "0.8"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"

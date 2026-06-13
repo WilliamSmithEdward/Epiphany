@@ -15,6 +15,7 @@ use epiphany_persist::Store;
 use epiphany_security::SecurityStore;
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use tokio::sync::broadcast;
 use tower::ServiceExt;
 
 const TTL: u64 = 60_000;
@@ -47,6 +48,7 @@ fn state(name: &str) -> AppState {
         clock: Arc::new(ManualClock::new(1_000)),
         security: Arc::new(Mutex::new(SecurityStore::with_admin("admin", "pw", true))),
         sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
+        events: broadcast::channel(16).0,
     }
 }
 
@@ -282,4 +284,30 @@ async fn cell_endpoints_require_auth() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn write_broadcasts_a_change_event() {
+    let app_state = state("ws-event");
+    let mut rx = app_state.events.subscribe();
+    let app = build_router(app_state);
+    let t = token(&app).await;
+
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/cell",
+        &t,
+        Some(json!({ "coord": { "Region": "North", "Measure": "Actual" }, "value": "42" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // The committed write broadcast one cells_changed event with the leaf coord.
+    let event = rx.recv().await.unwrap();
+    let json = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["type"], "cells_changed");
+    assert_eq!(json["cube"], "Sales");
+    assert_eq!(json["coords"][0]["Region"], "North");
+    assert_eq!(json["coords"][0]["Measure"], "Actual");
 }

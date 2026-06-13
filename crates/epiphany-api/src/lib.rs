@@ -16,6 +16,7 @@ use serde::Serialize;
 use epiphany_determinism::Clock;
 use epiphany_engine::Engine;
 use epiphany_security::SecurityStore;
+use tokio::sync::broadcast;
 
 mod auth;
 mod dto;
@@ -23,9 +24,11 @@ mod error;
 mod resolve;
 mod routes;
 mod session;
+mod ws;
 
 pub use error::ApiError;
 pub use session::SessionStore;
+pub use ws::ChangeEvent;
 
 /// Stable crate identifier.
 pub const CRATE: &str = "epiphany-api";
@@ -41,6 +44,8 @@ pub struct AppState {
     pub security: Arc<Mutex<SecurityStore>>,
     /// Live session tokens (in memory; lost on restart, by design).
     pub sessions: Arc<Mutex<SessionStore>>,
+    /// Broadcaster of change events to WebSocket clients.
+    pub events: broadcast::Sender<ChangeEvent>,
 }
 
 impl std::fmt::Debug for AppState {
@@ -64,6 +69,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/cubes/{cube}/cells/batch",
             post(routes::batch_write),
         )
+        .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/password", post(auth::change_password));
@@ -166,6 +172,7 @@ mod tests {
             clock,
             security: Arc::new(Mutex::new(SecurityStore::with_admin("admin", "pw", true))),
             sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
+            events: broadcast::channel(16).0,
         }
     }
 
