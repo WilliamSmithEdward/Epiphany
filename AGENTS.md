@@ -40,6 +40,12 @@ CI (`.github/workflows/ci.yml`) runs all of the above and gates merges.
 
 ## Local toolchain (Windows dev machine)
 - **Rust:** rustup, default toolchain `stable-x86_64-pc-windows-gnu`. The GNU toolchain avoids needing the Visual Studio C++ Build Tools. `cargo` lives at `%USERPROFILE%\.cargo\bin`.
+- **mingw-w64 binutils (needed from Phase 2 on):** the rustup GNU toolchain's bundled mingw ships `dlltool` and `ld` but not `as`, so crates that link Windows APIs via raw-dylib (`windows-sys` through `mio`/`tokio`, hence `axum`) fail to compile with a `dlltool ... CreateProcess` error. Phase 1 crates are pure Rust and unaffected. Fix: a portable mingw-w64 (WinLibs) extracted to `C:\Development\tools\mingw64`, used on the build PATH only, with the linker forced to Rust's own self-contained MSVCRT gcc (WinLibs is UCRT; letting its gcc become the linker mixes C runtimes and breaks linking):
+  ```bash
+  export PATH="/c/Development/tools/mingw64/bin:$PATH"
+  export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$HOME/.rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/self-contained/x86_64-w64-mingw32-gcc.exe"
+  ```
+  CI builds on Linux, so this is a local-Windows-only requirement.
 - **Node:** managed by fnm, with the version pinned in `.node-version`. In a fresh PowerShell, expose `node` and `npm` with:
   ```powershell
   fnm env --shell powershell | Out-String | Invoke-Expression; fnm use
@@ -56,4 +62,4 @@ CI (`.github/workflows/ci.yml`) runs all of the above and gates merges.
 - Each phase closes with a green, non-flaky deterministic acceptance suite that proves its definition of done.
 
 ## Status
-Phase 0 (foundations) is complete: workspace, web app, CI, ADRs, and the determinism harness. Phase 1 (core model) is in progress: the multidimensional model, deterministic consolidation, model-as-code serialization, and file persistence have landed. See the [roadmap](docs/ROADMAP.md).
+Phase 0 (foundations) is complete: workspace, web app, CI, ADRs, and the determinism harness. Phase 1 (core model) is complete and tagged as milestone **M1**: the multidimensional model with N/C/S elements, deterministic weighted consolidation with alternate rollups, attributes and aliases, string cells, model-as-code serialization, and runtime persistence (WAL + snapshots + crash recovery) have landed, within the per-cell memory and aggregation budgets. Phase 2 (REST API and minimal web UI, milestone **M2**) is in progress. See the [roadmap](docs/ROADMAP.md).
