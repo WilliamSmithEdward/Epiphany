@@ -139,9 +139,11 @@ The committed feature set. Each item maps to a phase in section 6 and is tracked
 - Users, **groups**, and admin versus non-admin (admins bypass security).
 - **Object security** (cube, dimension, rule, flow, job) and **element security**.
 - Native authentication.
+- **Audit / user-action logging**: an append-only record of security-relevant and model-changing actions (who, what, when, target object), queryable by admins. Distinct from the durability transaction log; no secrets or PII in the record (ADR-0010, RG-13).
 
 **G. Persistence and operation**
 - An in-memory store with durable runtime persistence: transaction log plus snapshots, **crash recovery**, and an explicit full-persist command.
+- **Atomic multi-cell write**: a transactional batch cell-write that applies a set of writes all-or-nothing under one MVCC snapshot (snapshot isolation), built on the ADR-0001 copy-on-write model.
 - **Scheduled jobs**: ordered sequences of flows run on a schedule.
 - Baseline structured tracing and metrics (cross-cutting).
 
@@ -198,7 +200,7 @@ A Cargo workspace of focused crates behind a single server binary, plus a separa
 - **`epiphany-calc`:** rules parser and compiler, dependency graph, sparse feeds, **automatic feeder inference and validation**, **calculation provenance**, and on-demand evaluation with in-query memoization.
 - **`epiphany-mdx`:** MDX lexer, parser, and evaluator for dynamic subsets and cellsets.
 - **`epiphany-flow`:** the **TypeScript flow** interpreter (embedded JS engine), host-function API, data-source connectors (CSV/SQL/view), the model testing runner, and the job scheduler.
-- **`epiphany-security`:** native authentication, users and groups, and object and element authorization.
+- **`epiphany-security`:** native authentication, users and groups, object and element authorization, and the **audit / user-action log** (append-only, distinct from the durability WAL; ADR-0010).
 - **`epiphany-persist`:** transaction log, snapshots, recovery, and startup load (a runtime cache over the text model).
 - **`epiphany-api`:** Axum REST and WebSocket, the OpenAPI schema, request validation, and session and token handling.
 - **`epiphany-server`:** the daemon (config, startup load, scheduler, tracing and metrics wiring).
@@ -206,7 +208,7 @@ A Cargo workspace of focused crates behind a single server binary, plus a separa
 
 **Key architectural questions to resolve via ADR:**
 
-1. **ADR-0001, Concurrency model.** Per-cube locks versus sharded locks versus **MVCC and copy-on-write snapshots** so reads never block writes. Sandboxes map naturally to copy-on-write overlays, which likely drives the whole design. *(Phase 0.)*
+1. **ADR-0001, Concurrency model.** Per-cube locks versus sharded locks versus **MVCC and copy-on-write snapshots** so reads never block writes. Sandboxes map naturally to copy-on-write overlays, which likely drives the whole design. The same version-publish model gives **atomic multi-cell writes** for free: stage a batch against a snapshot and publish one new version all-or-nothing (Phase 2). *(Phase 0.)*
 2. **ADR-0002, Runtime persistence format.** Write-ahead-log fsync policy, snapshot cadence, and recovery semantics. *(Phase 0.)*
 3. **ADR-0003, Model-as-code serialization format.** The canonical text representation (format, file layout, round-trip guarantees, merge-friendliness) for every object type. *(Phase 0, implemented Phase 1 onward.)*
 4. **ADR-0004, Embedded TypeScript engine.** QuickJS versus V8 (`deno_core`) versus WASM (`wasmtime`); the transpile pipeline (swc); the sandbox and resource-limit model. Decided with a performance spike. *(Phase 5.)*
@@ -215,6 +217,7 @@ A Cargo workspace of focused crates behind a single server binary, plus a separa
 7. **ADR-0007, Rule evaluation strategy.** Compile rules to bytecode or closures (no per-cell re-parsing); the evaluation plan, memoization, and invalidation; an optional JIT later. *(Phase 4.)*
 8. **ADR-0008, Numeric model and precision.** Exact decimal or scaled-integer versus float for stored, consolidated, and rule-derived values; rounding rules; a tolerance policy for analytics. Drives both finance correctness and determinism. *(Phase 1.)*
 9. **ADR-0009, Determinism strategy.** Clock, RNG, and ID injection; a fixed hash seed; deterministic aggregation and iteration order; deterministic parallel reduction; and the test-time deterministic mode. *(Phase 0.)*
+10. **ADR-0010, Audit / user-action logging.** What actions are audited, the append-only audit stream and its relationship to (and separation from) the durability WAL, the no-secrets and no-PII rule, retention and rotation, and the admin query surface. *(Phase 7, retention and rotation in Phase 8.)*
 
 ---
 
@@ -254,11 +257,12 @@ Phases are ordered by dependency. Effort is sized **S / M / L / XL** (relative),
 ### Phase 2: REST API and minimal web UI (first end-to-end slice) (size L)
 **Goal:** the whole stack runs; a user can browse and edit a cube in a browser.
 - Axum REST: CRUD for dimensions, hierarchies, elements, and cubes; cell read and write. OpenAPI published.
+- **Atomic multi-cell write**: a transactional batch cell-write endpoint that applies a set of writes all-or-nothing under one MVCC snapshot (snapshot isolation), with defined conflict handling on a stale base. The engine primitive builds on the ADR-0001 copy-on-write versioning shipped in Phase 1; single-cell write is the one-write case.
 - Native auth (session or token) plus users and groups; HTTPS; WebSocket change notifications.
 - A React app: login, object browser, dimension and element editor, and a **basic pivot grid** (read and write-back).
 - **Dead-simple onboarding:** zero-config startup (single binary, open the browser) with a bundled demo model; the pivot grid and data-entry flow is treated as the most-polished surface in the product.
 - **Proves:** the architecture works front-to-back; the first demoable milestone.
-- **DoD:** from a clean start, a user logs in, opens a cube, edits a cell, sees consolidations update, and the change survives a server restart.
+- **DoD:** from a clean start, a user logs in, opens a cube, edits a cell, sees consolidations update, and the change survives a server restart; a batch cell-write applies all writes or none (a forced mid-batch failure leaves base data unchanged), and concurrent readers see either the full batch or none of it.
 
 ### Phase 3: Subsets, views, and MDX (size L)
 **Goal:** real slicing and dicing, and dynamic membership.
@@ -304,13 +308,15 @@ Phases are ordered by dependency. Effort is sized **S / M / L / XL** (relative),
 **Goal:** multi-user, least-privilege access over the core objects.
 - **Object security** (cube, dimension, rule, flow, job) and **element security**; admin versus non-admin.
 - Groups; security stored in internal control objects (and serialized as model-as-code).
-- Web: a security administration UI.
-- **DoD:** a non-admin user sees and edits only permitted cubes and elements; an admin manages it from the UI.
+- **Audit / user-action logging (ADR-0010):** an append-only audit stream records security-relevant and model-changing actions (login, permission grant and denial, object create/update/delete, cell write outside ordinary data entry) with actor, action, target, and injected timestamp. It is a separate stream from the durability WAL (ADR-0002), carries no secrets or PII (RG-13), and is queryable and filterable by admins over REST. Retention and rotation are operationalized in Phase 8.
+- Web: a security administration UI, including an audit-log viewer (filter by actor, action, target, and time range).
+- **DoD:** a non-admin user sees and edits only permitted cubes and elements; an admin manages it from the UI; audited actions produce correct, append-only, deterministic-timestamp audit records that survive a restart, contain no secrets or PII, and are queryable by an admin from the UI and REST; the Phase 7 acceptance suite proves it under deterministic mode.
 
 ### Phase 8: Scheduling and hardening (size M)
 **Goal:** production-usable operation.
 - **Scheduled jobs** (ordered flow sequences) on the server scheduler.
 - Persistence and ops hardening: recovery testing, graceful shutdown and restart, and a config surface.
+- **Audit-log retention and rotation (ADR-0010):** a configurable retention window and size-bounded rotation for the Phase 7 audit stream, with recovery testing of the audit log alongside the WAL.
 - Performance and scale benchmarks versus target model sizes and the section 8 budgets; profiling; memory-footprint validation at scale.
 - Promote parallel aggregation or a persistent view cache *if and only if* benchmarks demand it (the architecture already allows them, see section 13).
 - **DoD:** a job runs on schedule; a server recovers cleanly from a kill; benchmarks meet targets on representative models.
@@ -330,6 +336,7 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Model-as-code (canonical text, Git round-trip) | 1+ | [~] |
 | Runtime persistence, crash recovery, full-persist | 1, 8 | [~] |
 | REST API (CRUD, cells, OpenAPI) | 2 | [ ] |
+| Atomic multi-cell write (transactional batch) | 2 | [ ] |
 | Native auth, users and groups | 2, 7 | [ ] |
 | Web pivot grid with write-back | 2 | [ ] |
 | Subsets (static and dynamic/MDX) | 3 | [ ] |
@@ -345,6 +352,7 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Model testing framework (rule and flow unit tests) | 4, 5 | [ ] |
 | Sandboxes (what-if) | 6 | [ ] |
 | Object and element security | 7 | [ ] |
+| Audit / user-action logging | 7, 8 | [ ] |
 | Scheduled jobs | 8 | [ ] |
 | Web editors (rules, flows, subsets, views) | 3 to 5 | [ ] |
 
@@ -454,7 +462,7 @@ Consciously cut from the core to keep the program deep, not wide. Recorded here 
 
 **Ops and scale**
 - **Server-to-server replication or synchronization.** *Likely a permanent cut; centralized and cloud deployments rarely use it.*
-- **Audit or user-action logging.** The durability transaction log is in scope; compliance-grade audit is not.
+- **Compliance-grade external audit export and tamper-evidence** (signed or hash-chained off-box log shipping). *Basic audit / user-action logging is now in scope (Phase 7, ADR-0010): an append-only record of security and model changes, distinct from the durability transaction log. Regulator-grade tamper-evidence and SIEM export remain deferred.*
 - **Backup and restore tooling.** A snapshot copy plus the Git text model cover most of this; formal tooling is deferred.
 - **An operations console.** Baseline metrics and tracing is cross-cutting and in scope; a full ops app is deferred.
 

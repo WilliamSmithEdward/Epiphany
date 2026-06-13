@@ -21,4 +21,5 @@ Epiphany is an in-memory store serving many concurrent readers *and* writers (pl
 
 ## Consequences
 - Enables the determinism and "reads never block" goals, and underpins sandboxes.
+- **Atomic multi-cell write follows directly:** stage a batch of writes against a snapshot and publish one new version all-or-nothing; readers see the full batch or none of it (snapshot isolation), and a batch staged on a stale base is rejected or retried. Surfaced as a transactional batch cell-write in Phase 2.
 - Requires care on memory (version retention and garbage collection) and a deterministic version ordering. Validate with concurrency stress tests and the determinism suite.
