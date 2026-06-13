@@ -38,6 +38,8 @@ pub enum LoadError {
     },
     /// Building the model failed a structural rule.
     Model(ModelError),
+    /// The model file could not be read.
+    Io(std::io::Error),
 }
 
 impl fmt::Display for LoadError {
@@ -65,6 +67,7 @@ impl fmt::Display for LoadError {
                 "cell in cube '{cube}' has {got} coordinates but the cube has {expected} dimensions"
             ),
             LoadError::Model(e) => write!(f, "{e}"),
+            LoadError::Io(e) => write!(f, "could not read model file: {e}"),
         }
     }
 }
@@ -82,12 +85,15 @@ impl From<ModelError> for LoadError {
 pub enum SaveError {
     /// TOML serialization failed.
     Toml(toml::ser::Error),
+    /// The model file could not be written.
+    Io(std::io::Error),
 }
 
 impl fmt::Display for SaveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SaveError::Toml(e) => write!(f, "failed to serialize model: {e}"),
+            SaveError::Io(e) => write!(f, "failed to write model file: {e}"),
         }
     }
 }
@@ -293,6 +299,18 @@ impl Cube {
 
         Ok(cube)
     }
+
+    /// Save this cube to a model-as-code file (canonical TOML).
+    pub fn save_to_path(&self, path: impl AsRef<std::path::Path>) -> Result<(), SaveError> {
+        let text = self.to_model_text()?;
+        std::fs::write(path, text).map_err(SaveError::Io)
+    }
+
+    /// Load a cube from a model-as-code file.
+    pub fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Cube, LoadError> {
+        let text = std::fs::read_to_string(path).map_err(LoadError::Io)?;
+        Cube::from_model_text(&text)
+    }
 }
 
 #[cfg(test)]
@@ -368,5 +386,20 @@ mod tests {
             Cube::from_model_text(text).unwrap_err(),
             LoadError::UnknownFormat(_)
         ));
+    }
+
+    #[test]
+    fn saves_and_loads_through_a_file() {
+        let cube = sample_cube();
+        let path =
+            std::env::temp_dir().join(format!("epiphany-model-test-{}.toml", std::process::id()));
+        cube.save_to_path(&path).unwrap();
+        let loaded = Cube::load_from_path(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        // Identical canonical text after a full disk round-trip ("restart and recover").
+        assert_eq!(
+            loaded.to_model_text().unwrap(),
+            cube.to_model_text().unwrap()
+        );
     }
 }
