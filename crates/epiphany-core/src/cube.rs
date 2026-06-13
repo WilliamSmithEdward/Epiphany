@@ -9,6 +9,7 @@ use crate::{Dimension, ElementKind, Fixed, ModelError};
 pub type Coord = Box<[u32]>;
 
 /// Number of bits needed to represent element indices `0..len` (at least 1).
+/// Element counts are `u32`, so this never exceeds 32.
 fn bits_for(len: u32) -> u32 {
     if len <= 1 {
         1
@@ -17,23 +18,16 @@ fn bits_for(len: u32) -> u32 {
     }
 }
 
-/// A packed cell key.
+/// Per-dimension bit packing for narrow coordinates (ADR-0006).
 ///
-/// When a cube's coordinate space fits in 128 bits, a coordinate is bit-packed
-/// into a single `u128` (8..16 bytes of key instead of a heap allocation per
-/// cell). Very wide cubes fall back to a boxed slice. See ADR-0006.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum CellKey {
-    Packed(u128),
-    Wide(Box<[u32]>),
-}
-
-/// Per-dimension bit packing for cell coordinates.
+/// Each dimension occupies a bit field, sized to its element count, at a fixed
+/// offset. When the total width fits in 64 bits the cube packs each coordinate
+/// into a single `u64` key; otherwise it falls back to a boxed slice.
 #[derive(Clone, Debug)]
 struct Layout {
     offsets: Vec<u32>,
-    masks: Vec<u128>,
-    packed: bool,
+    masks: Vec<u64>,
+    narrow: bool,
 }
 
 impl Layout {
@@ -42,39 +36,62 @@ impl Layout {
         let mut masks = Vec::with_capacity(dimensions.len());
         let mut offset: u32 = 0;
         for dim in dimensions {
-            let width = bits_for(dim.len());
+            let width = bits_for(dim.len()); // width <= 32
             offsets.push(offset);
-            masks.push((1u128 << width) - 1);
+            masks.push((1u64 << width) - 1);
             offset = offset.saturating_add(width);
         }
         Layout {
             offsets,
             masks,
-            packed: offset <= 128,
+            narrow: offset <= 64,
         }
     }
 
-    fn key(&self, coord: &[u32]) -> CellKey {
-        if self.packed {
-            let mut packed: u128 = 0;
-            for (d, &idx) in coord.iter().enumerate() {
-                packed |= u128::from(idx) << self.offsets[d];
-            }
-            CellKey::Packed(packed)
-        } else {
-            CellKey::Wide(coord.into())
+    fn pack(&self, coord: &[u32]) -> u64 {
+        let mut key: u64 = 0;
+        for (d, &idx) in coord.iter().enumerate() {
+            key |= u64::from(idx) << self.offsets[d];
         }
+        key
     }
 
-    fn component(&self, key: &CellKey, d: usize) -> u32 {
-        match key {
-            CellKey::Packed(packed) => ((packed >> self.offsets[d]) & self.masks[d]) as u32,
-            CellKey::Wide(coord) => coord[d],
-        }
+    fn component(&self, key: u64, d: usize) -> u32 {
+        ((key >> self.offsets[d]) & self.masks[d]) as u32
     }
 
-    fn unpack(&self, key: &CellKey, rank: usize) -> Vec<u32> {
+    fn unpack(&self, key: u64, rank: usize) -> Vec<u32> {
         (0..rank).map(|d| self.component(key, d)).collect()
+    }
+}
+
+/// The sparse cell store, keyed for memory efficiency (ADR-0006).
+///
+/// Splitting the key type at the map level (rather than a per-key enum) keeps a
+/// narrow entry a bare `(u64, Fixed)` with no discriminant or alignment padding:
+/// 16 bytes plus about one control byte of table overhead, comfortably within
+/// the per-cell budget (ROADMAP section 8). Very wide cubes use a boxed-slice
+/// key, paying a heap allocation per cell.
+#[derive(Clone, Debug)]
+enum CellStore {
+    Narrow(HashMap<u64, Fixed, FxBuildHasher>),
+    Wide(HashMap<Box<[u32]>, Fixed, FxBuildHasher>),
+}
+
+impl CellStore {
+    fn new(narrow: bool) -> Self {
+        if narrow {
+            CellStore::Narrow(HashMap::default())
+        } else {
+            CellStore::Wide(HashMap::default())
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            CellStore::Narrow(m) => m.len(),
+            CellStore::Wide(m) => m.len(),
+        }
     }
 }
 
@@ -130,7 +147,42 @@ pub struct Cube {
     name: String,
     dimensions: Vec<Dimension>,
     layout: Layout,
-    cells: HashMap<CellKey, Fixed, FxBuildHasher>,
+    cells: CellStore,
+}
+
+/// Iterator over populated cells as `(coordinate, value)`, hiding which key
+/// representation the cube uses.
+enum EntryIter<'a> {
+    Narrow {
+        iter: std::collections::hash_map::Iter<'a, u64, Fixed>,
+        layout: &'a Layout,
+        rank: usize,
+    },
+    Wide(std::collections::hash_map::Iter<'a, Box<[u32]>, Fixed>),
+}
+
+impl Iterator for EntryIter<'_> {
+    type Item = (Vec<u32>, Fixed);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            EntryIter::Narrow { iter, layout, rank } => iter
+                .next()
+                .map(|(&key, &value)| (layout.unpack(key, *rank), value)),
+            EntryIter::Wide(iter) => iter.next().map(|(key, &value)| (key.to_vec(), value)),
+        }
+    }
+}
+
+/// Combined consolidation weight for a cell, or `None` if the cell does not
+/// contribute to the query (some component is not a leaf-descendant of the
+/// queried element). `component(d)` returns the cell's element index in dim `d`.
+fn cell_weight(per_dim: &[HashMap<u32, i64>], component: impl Fn(usize) -> u32) -> Option<i128> {
+    let mut weight: i128 = 1;
+    for (d, weights) in per_dim.iter().enumerate() {
+        weight *= i128::from(*weights.get(&component(d))?);
+    }
+    Some(weight)
 }
 
 impl Cube {
@@ -140,11 +192,12 @@ impl Cube {
             return Err(ModelError::EmptyCube);
         }
         let layout = Layout::new(&dimensions);
+        let cells = CellStore::new(layout.narrow);
         Ok(Self {
             name: name.into(),
             dimensions,
             layout,
-            cells: HashMap::default(),
+            cells,
         })
     }
 
@@ -176,9 +229,14 @@ impl Cube {
     /// Iterate populated leaf cells as `(coordinate, value)`.
     pub fn cell_entries(&self) -> impl Iterator<Item = (Vec<u32>, Fixed)> + '_ {
         let rank = self.rank();
-        self.cells
-            .iter()
-            .map(move |(key, &value)| (self.layout.unpack(key, rank), value))
+        match &self.cells {
+            CellStore::Narrow(m) => EntryIter::Narrow {
+                iter: m.iter(),
+                layout: &self.layout,
+                rank,
+            },
+            CellStore::Wide(m) => EntryIter::Wide(m.iter()),
+        }
     }
 
     fn check_coord(&self, coord: &[u32]) -> Result<(), ModelError> {
@@ -207,11 +265,23 @@ impl Cube {
                 });
             }
         }
-        let key = self.layout.key(coord);
-        if value.is_zero() {
-            self.cells.remove(&key);
-        } else {
-            self.cells.insert(key, value);
+        let clear = value.is_zero();
+        match &mut self.cells {
+            CellStore::Narrow(m) => {
+                let key = self.layout.pack(coord);
+                if clear {
+                    m.remove(&key);
+                } else {
+                    m.insert(key, value);
+                }
+            }
+            CellStore::Wide(m) => {
+                if clear {
+                    m.remove(coord);
+                } else {
+                    m.insert(coord.into(), value);
+                }
+            }
         }
         Ok(())
     }
@@ -219,11 +289,16 @@ impl Cube {
     /// Read a leaf cell directly (zero if unpopulated).
     pub fn get_leaf(&self, coord: &[u32]) -> Result<Fixed, ModelError> {
         self.check_coord(coord)?;
-        Ok(self
-            .cells
-            .get(&self.layout.key(coord))
-            .copied()
-            .unwrap_or(Fixed::ZERO))
+        Ok(self.leaf_value(coord))
+    }
+
+    /// Direct cell lookup, assuming `coord` is already validated and all-leaf.
+    fn leaf_value(&self, coord: &[u32]) -> Fixed {
+        match &self.cells {
+            CellStore::Narrow(m) => m.get(&self.layout.pack(coord)).copied(),
+            CellStore::Wide(m) => m.get(coord).copied(),
+        }
+        .unwrap_or(Fixed::ZERO)
     }
 
     /// Read a value at any coordinate, consolidating across consolidated elements.
@@ -244,32 +319,27 @@ impl Cube {
 
         // Fast path: a pure leaf cell is a direct lookup.
         if all_leaf {
-            return Ok(self
-                .cells
-                .get(&self.layout.key(coord))
-                .copied()
-                .unwrap_or(Fixed::ZERO));
+            return Ok(self.leaf_value(coord));
         }
 
         // Sparse consolidation: include each populated cell whose every component
-        // is a leaf-descendant of the corresponding query element.
-        let mut acc: i128 = 0;
-        for (key, value) in &self.cells {
-            let mut weight: i128 = 1;
-            let mut included = true;
-            for (d, weights) in per_dim.iter().enumerate() {
-                match weights.get(&self.layout.component(key, d)) {
-                    Some(&w) => weight *= i128::from(w),
-                    None => {
-                        included = false;
-                        break;
-                    }
-                }
-            }
-            if included {
-                acc += weight * i128::from(value.to_scaled());
-            }
-        }
+        // is a leaf-descendant of the corresponding query element. Summation is
+        // exact and order-independent.
+        let acc: i128 = match &self.cells {
+            CellStore::Narrow(m) => m
+                .iter()
+                .filter_map(|(&key, value)| {
+                    cell_weight(&per_dim, |d| self.layout.component(key, d))
+                        .map(|w| w * i128::from(value.to_scaled()))
+                })
+                .sum(),
+            CellStore::Wide(m) => m
+                .iter()
+                .filter_map(|(key, value)| {
+                    cell_weight(&per_dim, |d| key[d]).map(|w| w * i128::from(value.to_scaled()))
+                })
+                .sum(),
+        };
         i64::try_from(acc)
             .map(Fixed::from_scaled)
             .map_err(|_| ModelError::Overflow)
@@ -445,39 +515,48 @@ mod tests {
     }
 
     #[test]
-    fn small_cube_uses_packed_keys() {
+    fn small_cube_uses_a_narrow_key() {
         let (region, _t, _r) = sum_dim("Region", 5);
         let (period, _t2, _p) = sum_dim("Period", 12);
         let cube = Cube::new("C", vec![region, period]).unwrap();
-        assert!(
-            cube.layout.packed,
-            "small cubes should pack coordinates into a u128 key"
-        );
+        assert!(cube.layout.narrow, "small cubes should pack into a u64 key");
+        assert!(matches!(cube.cells, CellStore::Narrow(_)));
     }
 
     #[test]
-    fn layout_round_trips_packed_and_wide() {
+    fn wide_cube_falls_back_to_boxed_keys() {
+        // 65 single-leaf dimensions need 65 bits, past the 64-bit narrow ceiling.
+        let dims: Vec<Dimension> = (0..65)
+            .map(|i| {
+                let mut d = Dimension::new(format!("D{i}"));
+                d.add_leaf("only");
+                d
+            })
+            .collect();
+        let mut cube = Cube::new("Wide", dims).unwrap();
+        assert!(!cube.layout.narrow);
+        assert!(matches!(cube.cells, CellStore::Wide(_)));
+
+        let coord = vec![0u32; 65];
+        cube.set_leaf(&coord, fix(7)).unwrap();
+        assert_eq!(cube.get_leaf(&coord).unwrap(), fix(7));
+        assert_eq!(cube.cell_count(), 1);
+        // Round-trips through the entry iterator too.
+        let entries: Vec<_> = cube.cell_entries().collect();
+        assert_eq!(entries, vec![(coord, fix(7))]);
+    }
+
+    #[test]
+    fn layout_packs_and_unpacks() {
         let coord = [3u32, 9u32];
-
-        let packed = Layout {
+        let layout = Layout {
             offsets: vec![0, 4],
             masks: vec![0xF, 0xF],
-            packed: true,
+            narrow: true,
         };
-        let pk = packed.key(&coord);
-        assert!(matches!(pk, CellKey::Packed(_)));
-        assert_eq!(packed.unpack(&pk, 2), vec![3, 9]);
-        assert_eq!(packed.component(&pk, 0), 3);
-        assert_eq!(packed.component(&pk, 1), 9);
-
-        let wide = Layout {
-            offsets: vec![0, 4],
-            masks: vec![0xF, 0xF],
-            packed: false,
-        };
-        let wk = wide.key(&coord);
-        assert!(matches!(wk, CellKey::Wide(_)));
-        assert_eq!(wide.unpack(&wk, 2), vec![3, 9]);
-        assert_eq!(wide.component(&wk, 1), 9);
+        let key = layout.pack(&coord);
+        assert_eq!(layout.component(key, 0), 3);
+        assert_eq!(layout.component(key, 1), 9);
+        assert_eq!(layout.unpack(key, 2), vec![3, 9]);
     }
 }

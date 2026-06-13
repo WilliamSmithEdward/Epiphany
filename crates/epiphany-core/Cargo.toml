@@ -13,3 +13,10 @@ workspace = true
 epiphany-determinism = { path = "../epiphany-determinism" }
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "1.1.2"
+
+# A self-contained benchmark binary (no external bench framework, so it builds on
+# the GNU toolchain and keeps the dependency surface minimal, RG-10). Run with
+# `cargo bench -p epiphany-core`.
+[[bench]]
+name = "cube_ops"
+harness = false
