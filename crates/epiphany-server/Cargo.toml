@@ -12,4 +12,12 @@ workspace = true
 
 [dependencies]
 epiphany-api = { path = "../epiphany-api" }
+epiphany-core = { path = "../epiphany-core" }
+epiphany-engine = { path = "../epiphany-engine" }
+epiphany-persist = { path = "../epiphany-persist" }
 epiphany-determinism = { path = "../epiphany-determinism" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
+axum = "0.8"
+tower-http = { version = "0.6", features = ["trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }

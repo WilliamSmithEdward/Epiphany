@@ -1,44 +1,43 @@
-//! Epiphany server: the daemon and composition root.
+//! Epiphany server: the daemon and composition root (Phase 2).
 //!
-//! Phase 0: a placeholder entry point that proves the workspace links and the
-//! deterministic harness works. The HTTP/REST layer arrives in Phase 2.
-//! See `docs/ROADMAP.md`.
+//! Zero-config startup: read `EPIPHANY_*` config over sane defaults, initialize
+//! tracing, load the durable model (or materialize the bundled demo on first
+//! run), build the API router, and serve on loopback until Ctrl-C.
 
-use epiphany_determinism::DeterministicRng;
+mod boot;
+mod config;
+mod demo;
+mod observability;
+mod shutdown;
 
-fn main() {
-    println!(
-        "Epiphany server v{} (Phase 0 skeleton)",
-        env!("CARGO_PKG_VERSION")
+use config::Config;
+use epiphany_api::{build_router, AppState};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let config = Config::from_env();
+    observability::init(&config.log_filter);
+    tracing::info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "starting Epiphany server"
     );
 
-    println!("wired subsystems:");
-    println!("  - {}", epiphany_api::CRATE);
-    for subsystem in epiphany_api::wired_subsystems() {
-        println!("    - {subsystem}");
+    let engine = boot::load_or_init(&config.data_dir)?;
+    tracing::info!("model loaded: {:?}", engine.cube_names());
+
+    let app =
+        build_router(AppState { engine }).layer(tower_http::trace::TraceLayer::new_for_http());
+
+    let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
+    let addr = listener.local_addr()?;
+    tracing::info!("listening on http://{addr}/");
+    if config.open_browser {
+        tracing::info!("open http://{addr}/ in your browser");
     }
 
-    // Determinism self-check: prints the same values on every run, every machine.
-    let mut rng = DeterministicRng::new(20_200_101);
-    let sample: Vec<u64> = (0..3).map(|_| rng.next_u64()).collect();
-    println!("deterministic self-check (seed=20200101): {sample:?}");
-}
-
-#[cfg(test)]
-mod tests {
-    use epiphany_determinism::DeterministicRng;
-
-    #[test]
-    fn self_check_is_reproducible() {
-        let mut a = DeterministicRng::new(20_200_101);
-        let mut b = DeterministicRng::new(20_200_101);
-        let xs: Vec<u64> = (0..3).map(|_| a.next_u64()).collect();
-        let ys: Vec<u64> = (0..3).map(|_| b.next_u64()).collect();
-        assert_eq!(xs, ys);
-    }
-
-    #[test]
-    fn server_sees_all_engine_subsystems() {
-        assert_eq!(epiphany_api::wired_subsystems().len(), 6);
-    }
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown::signal())
+        .await?;
+    tracing::info!("shut down cleanly");
+    Ok(())
 }
