@@ -113,8 +113,10 @@ impl Store {
             let bytes = fs::read(&wal_path)?;
             let replay = wal::replay(&bytes).map_err(|e| PersistError::Corrupt(e.to_string()))?;
             for record in &replay.records {
-                let Record::SetLeaf { coord, value } = record;
-                cube.set_leaf(coord, *value)?;
+                match record {
+                    Record::SetLeaf { coord, value } => cube.set_leaf(coord, *value)?,
+                    Record::SetString { coord, value } => cube.set_string(coord, value)?,
+                }
             }
             // Drop any torn tail, then position at the end for new appends.
             let mut file = OpenOptions::new().write(true).open(&wal_path)?;
@@ -176,6 +178,26 @@ impl Store {
         let framed = wal::encode(&Record::SetLeaf {
             coord: coord.to_vec(),
             value,
+        });
+        self.wal.write_all(&framed)?;
+        if self.sync_on_write {
+            self.wal.sync_data()?;
+        }
+        self.uncheckpointed += 1;
+        if self.checkpoint_after != 0 && self.uncheckpointed >= self.checkpoint_after {
+            self.checkpoint()?;
+        }
+        Ok(())
+    }
+
+    /// Write a string cell: apply it to the in-memory cube and append it to the
+    /// WAL. Like [`set_leaf`](Self::set_leaf), the model validates first and may
+    /// trigger an automatic checkpoint.
+    pub fn set_string(&mut self, coord: &[u32], value: &str) -> Result<(), PersistError> {
+        self.cube.set_string(coord, value)?;
+        let framed = wal::encode(&Record::SetString {
+            coord: coord.to_vec(),
+            value: value.to_string(),
         });
         self.wal.write_all(&framed)?;
         if self.sync_on_write {
@@ -375,6 +397,25 @@ mod tests {
         );
         // Recovery truncated the torn tail back to the last intact write.
         assert_eq!(fs::metadata(&wal_path).unwrap().len() as usize, intact);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn recovers_string_writes_via_wal() {
+        let dir = scratch("string-wal");
+        let mut measure = Dimension::new("Measure");
+        let sales = measure.add_leaf("Sales");
+        let note = measure.add_string("Note");
+        let cube = Cube::new("M", vec![measure]).unwrap();
+        {
+            let mut store = Store::create(&dir, cube).unwrap();
+            store.set_leaf(&[sales], Fixed::from(5)).unwrap();
+            store.set_string(&[note], "checked").unwrap();
+            // Drop without checkpoint: both writes must replay from the WAL.
+        }
+        let store = Store::open(&dir).unwrap();
+        assert_eq!(store.cube().get_leaf(&[sales]).unwrap(), Fixed::from(5));
+        assert_eq!(store.cube().get_string(&[note]).unwrap(), Some("checked"));
         fs::remove_dir_all(&dir).ok();
     }
 

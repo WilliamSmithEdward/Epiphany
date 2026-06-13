@@ -1,4 +1,4 @@
-//! The write-ahead log: a binary, append-only record of leaf writes.
+//! The write-ahead log: a binary, append-only record of cell writes (numeric and string).
 //!
 //! Each record is framed as `[len u32][payload][crc u32]` (little-endian), so a
 //! write torn by a crash is detected on recovery (the length runs past the file
@@ -15,12 +15,15 @@ pub(crate) const WAL_VERSION: u16 = 1;
 pub(crate) const WAL_HEADER_LEN: u64 = 8;
 
 const OP_SET_LEAF: u8 = 1;
+const OP_SET_STRING: u8 = 2;
 
-/// A decoded WAL record. Phase 1 logs leaf writes only; structural changes are
-/// captured by a checkpoint (a fresh snapshot), not the log.
+/// A decoded WAL record. Phase 1 logs cell writes (numeric and string);
+/// structural changes are captured by a checkpoint (a fresh snapshot), not the
+/// log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Record {
     SetLeaf { coord: Vec<u32>, value: Fixed },
+    SetString { coord: Vec<u32>, value: String },
 }
 
 /// Why a WAL file could not be read.
@@ -61,11 +64,15 @@ pub(crate) fn encode(record: &Record) -> Vec<u8> {
     match record {
         Record::SetLeaf { coord, value } => {
             payload.push(OP_SET_LEAF);
-            payload.extend_from_slice(&(coord.len() as u16).to_le_bytes());
-            for &idx in coord {
-                payload.extend_from_slice(&idx.to_le_bytes());
-            }
+            write_coord(&mut payload, coord);
             payload.extend_from_slice(&value.to_scaled().to_le_bytes());
+        }
+        Record::SetString { coord, value } => {
+            payload.push(OP_SET_STRING);
+            write_coord(&mut payload, coord);
+            let bytes = value.as_bytes();
+            payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            payload.extend_from_slice(bytes);
         }
     }
     let mut framed = Vec::with_capacity(payload.len() + 8);
@@ -113,24 +120,46 @@ pub(crate) fn replay(bytes: &[u8]) -> Result<Replay, WalError> {
     })
 }
 
+/// Append a coordinate as `[rank u16][rank x u32]` (little-endian).
+fn write_coord(payload: &mut Vec<u8>, coord: &[u32]) {
+    payload.extend_from_slice(&(coord.len() as u16).to_le_bytes());
+    for &idx in coord {
+        payload.extend_from_slice(&idx.to_le_bytes());
+    }
+}
+
+/// Read a coordinate from the front of `rest`, returning it and the bytes consumed.
+fn read_coord(rest: &[u8]) -> Option<(Vec<u32>, usize)> {
+    let rank = u16::from_le_bytes([*rest.first()?, *rest.get(1)?]) as usize;
+    let mut pos = 2;
+    let mut coord = Vec::with_capacity(rank);
+    for _ in 0..rank {
+        let end = pos + 4;
+        coord.push(u32::from_le_bytes(rest.get(pos..end)?.try_into().unwrap()));
+        pos = end;
+    }
+    Some((coord, pos))
+}
+
 fn decode(payload: &[u8]) -> Option<Record> {
     let (&op, rest) = payload.split_first()?;
     match op {
         OP_SET_LEAF => {
-            let rank = u16::from_le_bytes([*rest.first()?, *rest.get(1)?]) as usize;
-            let mut pos = 2;
-            let mut coord = Vec::with_capacity(rank);
-            for _ in 0..rank {
-                let end = pos + 4;
-                let bytes = rest.get(pos..end)?;
-                coord.push(u32::from_le_bytes(bytes.try_into().unwrap()));
-                pos = end;
-            }
+            let (coord, pos) = read_coord(rest)?;
             let scaled = i64::from_le_bytes(rest.get(pos..pos + 8)?.try_into().unwrap());
             Some(Record::SetLeaf {
                 coord,
                 value: Fixed::from_scaled(scaled),
             })
+        }
+        OP_SET_STRING => {
+            let (coord, mut pos) = read_coord(rest)?;
+            let len = u32::from_le_bytes(rest.get(pos..pos + 4)?.try_into().unwrap()) as usize;
+            pos += 4;
+            let value = std::str::from_utf8(rest.get(pos..pos + len)?)
+                .ok()?
+                .to_string();
+            Some(Record::SetString { coord, value })
         }
         _ => None,
     }
@@ -179,6 +208,10 @@ mod tests {
             Record::SetLeaf {
                 coord: vec![0, 3, 7],
                 value: Fixed::from(42),
+            },
+            Record::SetString {
+                coord: vec![1, 0, 2],
+                value: "hello".to_string(),
             },
             Record::SetLeaf {
                 coord: vec![1, 0, 2],

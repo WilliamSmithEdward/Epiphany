@@ -65,20 +65,22 @@ impl Layout {
     }
 }
 
-/// The sparse cell store, keyed for memory efficiency (ADR-0006).
+/// The sparse cell store, keyed for memory efficiency (ADR-0006), generic over
+/// the value type so numeric (`Fixed`) and string (interned id) cells share one
+/// keying scheme.
 ///
 /// Splitting the key type at the map level (rather than a per-key enum) keeps a
-/// narrow entry a bare `(u64, Fixed)` with no discriminant or alignment padding:
-/// 16 bytes plus about one control byte of table overhead, comfortably within
-/// the per-cell budget (ROADMAP section 8). Very wide cubes use a boxed-slice
-/// key, paying a heap allocation per cell.
+/// narrow numeric entry a bare `(u64, Fixed)` with no discriminant or alignment
+/// padding: 16 bytes plus about one control byte of table overhead, comfortably
+/// within the per-cell budget (ROADMAP section 8). Very wide cubes use a boxed-
+/// slice key, paying a heap allocation per cell.
 #[derive(Clone, Debug)]
-enum CellStore {
-    Narrow(HashMap<u64, Fixed, FxBuildHasher>),
-    Wide(HashMap<Box<[u32]>, Fixed, FxBuildHasher>),
+enum CellStore<V> {
+    Narrow(HashMap<u64, V, FxBuildHasher>),
+    Wide(HashMap<Box<[u32]>, V, FxBuildHasher>),
 }
 
-impl CellStore {
+impl<V> CellStore<V> {
     fn new(narrow: bool) -> Self {
         if narrow {
             CellStore::Narrow(HashMap::default())
@@ -92,6 +94,99 @@ impl CellStore {
             CellStore::Narrow(m) => m.len(),
             CellStore::Wide(m) => m.len(),
         }
+    }
+
+    fn get(&self, layout: &Layout, coord: &[u32]) -> Option<&V> {
+        match self {
+            CellStore::Narrow(m) => m.get(&layout.pack(coord)),
+            CellStore::Wide(m) => m.get(coord),
+        }
+    }
+
+    fn put(&mut self, layout: &Layout, coord: &[u32], value: V) {
+        match self {
+            CellStore::Narrow(m) => {
+                m.insert(layout.pack(coord), value);
+            }
+            CellStore::Wide(m) => {
+                m.insert(coord.into(), value);
+            }
+        }
+    }
+
+    fn clear(&mut self, layout: &Layout, coord: &[u32]) {
+        match self {
+            CellStore::Narrow(m) => {
+                m.remove(&layout.pack(coord));
+            }
+            CellStore::Wide(m) => {
+                m.remove(coord);
+            }
+        }
+    }
+
+    fn entries<'a>(&'a self, layout: &'a Layout, rank: usize) -> Entries<'a, V> {
+        match self {
+            CellStore::Narrow(m) => Entries::Narrow {
+                iter: m.iter(),
+                layout,
+                rank,
+            },
+            CellStore::Wide(m) => Entries::Wide(m.iter()),
+        }
+    }
+}
+
+/// Iterator over populated cells as `(coordinate, &value)`, hiding which key
+/// representation the store uses.
+enum Entries<'a, V> {
+    Narrow {
+        iter: std::collections::hash_map::Iter<'a, u64, V>,
+        layout: &'a Layout,
+        rank: usize,
+    },
+    Wide(std::collections::hash_map::Iter<'a, Box<[u32]>, V>),
+}
+
+impl<'a, V> Iterator for Entries<'a, V> {
+    type Item = (Vec<u32>, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Entries::Narrow { iter, layout, rank } => iter
+                .next()
+                .map(|(&key, value)| (layout.unpack(key, *rank), value)),
+            Entries::Wide(iter) => iter.next().map(|(key, value)| (key.to_vec(), value)),
+        }
+    }
+}
+
+/// An interning pool for string cell values (ADR-0006).
+///
+/// Each distinct string is stored once and referenced by a compact id, so a cell
+/// costs one `u32` id, not a heap allocation per cell, and repeated text (status
+/// codes, labels) is shared. The pool grows monotonically; ids are assigned in
+/// insertion order, which is deterministic.
+#[derive(Clone, Debug, Default)]
+struct StringPool {
+    by_id: Vec<Box<str>>,
+    ids: HashMap<Box<str>, u32, FxBuildHasher>,
+}
+
+impl StringPool {
+    fn intern(&mut self, value: &str) -> u32 {
+        if let Some(&id) = self.ids.get(value) {
+            return id;
+        }
+        let id = self.by_id.len() as u32;
+        let boxed: Box<str> = value.into();
+        self.by_id.push(boxed.clone());
+        self.ids.insert(boxed, id);
+        id
+    }
+
+    fn get(&self, id: u32) -> &str {
+        &self.by_id[id as usize]
     }
 }
 
@@ -137,8 +232,10 @@ type FxBuildHasher = BuildHasherDefault<FxHasher>;
 ///
 /// Only populated leaf cells are stored (writing zero clears a cell), so memory
 /// scales with the data, not with the dense cartesian space. Coordinates are
-/// packed into compact integer keys (ADR-0006). Consolidated values are computed
-/// on demand by the sparse consolidation algorithm.
+/// packed into compact integer keys (ADR-0006). Numeric and string cells live in
+/// separate stores with disjoint coordinate spaces (a string cell must address a
+/// string element; a numeric cell is all numeric leaves). Consolidated values are
+/// computed on demand by the sparse consolidation algorithm over numeric cells.
 ///
 /// Note (later increments): consolidated reads currently scan populated cells,
 /// which is correct; an index and a calculation cache come later.
@@ -147,31 +244,9 @@ pub struct Cube {
     name: String,
     dimensions: Vec<Dimension>,
     layout: Layout,
-    cells: CellStore,
-}
-
-/// Iterator over populated cells as `(coordinate, value)`, hiding which key
-/// representation the cube uses.
-enum EntryIter<'a> {
-    Narrow {
-        iter: std::collections::hash_map::Iter<'a, u64, Fixed>,
-        layout: &'a Layout,
-        rank: usize,
-    },
-    Wide(std::collections::hash_map::Iter<'a, Box<[u32]>, Fixed>),
-}
-
-impl Iterator for EntryIter<'_> {
-    type Item = (Vec<u32>, Fixed);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self {
-            EntryIter::Narrow { iter, layout, rank } => iter
-                .next()
-                .map(|(&key, &value)| (layout.unpack(key, *rank), value)),
-            EntryIter::Wide(iter) => iter.next().map(|(key, &value)| (key.to_vec(), value)),
-        }
-    }
+    cells: CellStore<Fixed>,
+    string_cells: CellStore<u32>,
+    string_pool: StringPool,
 }
 
 /// Combined consolidation weight for a cell, or `None` if the cell does not
@@ -193,11 +268,14 @@ impl Cube {
         }
         let layout = Layout::new(&dimensions);
         let cells = CellStore::new(layout.narrow);
+        let string_cells = CellStore::new(layout.narrow);
         Ok(Self {
             name: name.into(),
             dimensions,
             layout,
             cells,
+            string_cells,
+            string_pool: StringPool::default(),
         })
     }
 
@@ -221,22 +299,29 @@ impl Cube {
         &self.dimensions
     }
 
-    /// Number of populated leaf cells.
+    /// Number of populated numeric leaf cells.
     pub fn cell_count(&self) -> usize {
         self.cells.len()
     }
 
-    /// Iterate populated leaf cells as `(coordinate, value)`.
+    /// Number of populated string cells.
+    pub fn string_cell_count(&self) -> usize {
+        self.string_cells.len()
+    }
+
+    /// Iterate populated numeric leaf cells as `(coordinate, value)`.
     pub fn cell_entries(&self) -> impl Iterator<Item = (Vec<u32>, Fixed)> + '_ {
-        let rank = self.rank();
-        match &self.cells {
-            CellStore::Narrow(m) => EntryIter::Narrow {
-                iter: m.iter(),
-                layout: &self.layout,
-                rank,
-            },
-            CellStore::Wide(m) => EntryIter::Wide(m.iter()),
-        }
+        self.cells
+            .entries(&self.layout, self.rank())
+            .map(|(coord, &value)| (coord, value))
+    }
+
+    /// Iterate populated string cells as `(coordinate, value)`.
+    pub fn string_cell_entries(&self) -> impl Iterator<Item = (Vec<u32>, &str)> + '_ {
+        let pool = &self.string_pool;
+        self.string_cells
+            .entries(&self.layout, self.rank())
+            .map(move |(coord, &id)| (coord, pool.get(id)))
     }
 
     fn check_coord(&self, coord: &[u32]) -> Result<(), ModelError> {
@@ -252,59 +337,98 @@ impl Cube {
         Ok(())
     }
 
-    /// Write a value to a leaf cell. Every coordinate element must be a leaf.
-    /// Writing [`Fixed::ZERO`] clears the cell, keeping the store sparse.
+    /// Write a numeric value to a leaf cell. Every coordinate element must be a
+    /// numeric leaf. Writing [`Fixed::ZERO`] clears the cell, keeping the store
+    /// sparse.
     pub fn set_leaf(&mut self, coord: &[u32], value: Fixed) -> Result<(), ModelError> {
         self.check_coord(coord)?;
         for (d, &idx) in coord.iter().enumerate() {
             let element = self.dimensions[d].element(idx)?;
-            if element.kind != ElementKind::Leaf {
-                return Err(ModelError::WriteToNonLeaf {
-                    dimension: self.dimensions[d].name().to_string(),
-                    element: element.name.clone(),
-                });
+            match element.kind {
+                ElementKind::Leaf => {}
+                ElementKind::String => {
+                    return Err(ModelError::CellTypeMismatch {
+                        dimension: self.dimensions[d].name().to_string(),
+                        element: element.name.clone(),
+                    })
+                }
+                ElementKind::Consolidated => {
+                    return Err(ModelError::WriteToNonLeaf {
+                        dimension: self.dimensions[d].name().to_string(),
+                        element: element.name.clone(),
+                    })
+                }
             }
         }
-        let clear = value.is_zero();
-        match &mut self.cells {
-            CellStore::Narrow(m) => {
-                let key = self.layout.pack(coord);
-                if clear {
-                    m.remove(&key);
-                } else {
-                    m.insert(key, value);
-                }
-            }
-            CellStore::Wide(m) => {
-                if clear {
-                    m.remove(coord);
-                } else {
-                    m.insert(coord.into(), value);
-                }
-            }
+        if value.is_zero() {
+            self.cells.clear(&self.layout, coord);
+        } else {
+            self.cells.put(&self.layout, coord, value);
         }
         Ok(())
     }
 
-    /// Read a leaf cell directly (zero if unpopulated).
+    /// Read a numeric leaf cell directly (zero if unpopulated).
     pub fn get_leaf(&self, coord: &[u32]) -> Result<Fixed, ModelError> {
         self.check_coord(coord)?;
         Ok(self.leaf_value(coord))
     }
 
-    /// Direct cell lookup, assuming `coord` is already validated and all-leaf.
+    /// Direct numeric cell lookup, assuming `coord` is already validated.
     fn leaf_value(&self, coord: &[u32]) -> Fixed {
-        match &self.cells {
-            CellStore::Narrow(m) => m.get(&self.layout.pack(coord)).copied(),
-            CellStore::Wide(m) => m.get(coord).copied(),
+        self.cells
+            .get(&self.layout, coord)
+            .copied()
+            .unwrap_or(Fixed::ZERO)
+    }
+
+    /// Write a string value to a string cell. Every coordinate element must be a
+    /// leaf, and at least one must be a string element. Writing an empty string
+    /// clears the cell.
+    pub fn set_string(&mut self, coord: &[u32], value: &str) -> Result<(), ModelError> {
+        self.check_coord(coord)?;
+        let mut addresses_string = false;
+        for (d, &idx) in coord.iter().enumerate() {
+            let element = self.dimensions[d].element(idx)?;
+            match element.kind {
+                ElementKind::String => addresses_string = true,
+                ElementKind::Leaf => {}
+                ElementKind::Consolidated => {
+                    return Err(ModelError::WriteToNonLeaf {
+                        dimension: self.dimensions[d].name().to_string(),
+                        element: element.name.clone(),
+                    })
+                }
+            }
         }
-        .unwrap_or(Fixed::ZERO)
+        if !addresses_string {
+            return Err(ModelError::StringCellRequiresStringElement {
+                cube: self.name.clone(),
+            });
+        }
+        if value.is_empty() {
+            self.string_cells.clear(&self.layout, coord);
+        } else {
+            let id = self.string_pool.intern(value);
+            self.string_cells.put(&self.layout, coord, id);
+        }
+        Ok(())
+    }
+
+    /// Read a string cell, if populated.
+    pub fn get_string(&self, coord: &[u32]) -> Result<Option<&str>, ModelError> {
+        self.check_coord(coord)?;
+        Ok(self
+            .string_cells
+            .get(&self.layout, coord)
+            .map(|&id| self.string_pool.get(id)))
     }
 
     /// Read a value at any coordinate, consolidating across consolidated elements.
     ///
     /// Exact and deterministic: contributions are summed in a 128-bit accumulator
     /// over exact integer values, so the result is independent of iteration order.
+    /// Only numeric cells contribute; string cells never aggregate.
     pub fn get(&self, coord: &[u32]) -> Result<Fixed, ModelError> {
         self.check_coord(coord)?;
 
@@ -317,7 +441,7 @@ impl Cube {
             per_dim.push(self.dimensions[d].leaf_weights(idx)?.into_iter().collect());
         }
 
-        // Fast path: a pure leaf cell is a direct lookup.
+        // Fast path: a pure numeric-leaf cell is a direct lookup.
         if all_leaf {
             return Ok(self.leaf_value(coord));
         }
@@ -558,5 +682,76 @@ mod tests {
         assert_eq!(layout.component(key, 0), 3);
         assert_eq!(layout.component(key, 1), 9);
         assert_eq!(layout.unpack(key, 2), vec![3, 9]);
+    }
+
+    /// A Region x Measure cube where Measure has a numeric leaf, a string leaf,
+    /// and a numeric Total over the numerics.
+    fn string_cube() -> (Cube, u32, u32, u32, u32) {
+        let mut region = Dimension::new("Region");
+        let north = region.add_leaf("North");
+        let south = region.add_leaf("South");
+        region.add_consolidated("Total");
+        region.add_child(2, north, 1).unwrap();
+        region.add_child(2, south, 1).unwrap();
+
+        let mut measure = Dimension::new("Measure");
+        let sales = measure.add_leaf("Sales");
+        let comment = measure.add_string("Comment");
+
+        let cube = Cube::new("Sales", vec![region, measure]).unwrap();
+        (cube, north, south, sales, comment)
+    }
+
+    #[test]
+    fn string_cells_write_read_and_intern() {
+        let (mut cube, north, south, _sales, comment) = string_cube();
+        cube.set_string(&[north, comment], "ok").unwrap();
+        cube.set_string(&[south, comment], "ok").unwrap(); // same text -> interned once
+
+        assert_eq!(cube.get_string(&[north, comment]).unwrap(), Some("ok"));
+        assert_eq!(cube.get_string(&[south, comment]).unwrap(), Some("ok"));
+        assert_eq!(cube.string_cell_count(), 2);
+        assert_eq!(
+            cube.string_pool.by_id.len(),
+            1,
+            "equal strings share one id"
+        );
+
+        // An empty write clears the string cell.
+        cube.set_string(&[north, comment], "").unwrap();
+        assert_eq!(cube.get_string(&[north, comment]).unwrap(), None);
+        assert_eq!(cube.string_cell_count(), 1);
+    }
+
+    #[test]
+    fn numeric_write_to_string_leaf_is_rejected() {
+        let (mut cube, north, _south, _sales, comment) = string_cube();
+        assert!(matches!(
+            cube.set_leaf(&[north, comment], fix(1)).unwrap_err(),
+            ModelError::CellTypeMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn string_write_to_numeric_coordinate_is_rejected() {
+        let (mut cube, north, _south, sales, _comment) = string_cube();
+        assert!(matches!(
+            cube.set_string(&[north, sales], "x").unwrap_err(),
+            ModelError::StringCellRequiresStringElement { .. }
+        ));
+    }
+
+    #[test]
+    fn string_cells_do_not_affect_consolidation() {
+        let (mut cube, north, south, sales, comment) = string_cube();
+        cube.set_leaf(&[north, sales], fix(100)).unwrap();
+        cube.set_leaf(&[south, sales], fix(50)).unwrap();
+        cube.set_string(&[north, comment], "note").unwrap();
+
+        let region_total = cube.dimension(0).index_of("Total").unwrap();
+        // Total Sales = 150; the string cell contributes nothing.
+        assert_eq!(cube.get(&[region_total, sales]).unwrap(), fix(150));
+        // A numeric read over the string measure is zero (no numeric cells there).
+        assert_eq!(cube.get(&[region_total, comment]).unwrap(), Fixed::ZERO);
     }
 }

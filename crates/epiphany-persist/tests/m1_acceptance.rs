@@ -57,6 +57,7 @@ elements = [
     { name = "Actual", kind = "leaf" },
     { name = "Budget", kind = "leaf" },
     { name = "Variance", kind = "consolidated" },
+    { name = "Note", kind = "string" },
 ]
 edges = [
     { parent = "Variance", child = "Actual", weight = 1 },
@@ -78,6 +79,10 @@ value = "50"
 [[cell]]
 coord = ["East", "Actual"]
 value = "30"
+
+[[string_cell]]
+coord = ["North", "Note"]
+value = "reviewed"
 "#;
 
 /// A unique scratch directory for one test (cleaned up at the end).
@@ -115,6 +120,11 @@ fn loads_multidim_cube_and_reads_consolidations() {
     assert_eq!(cube.get(&[north, variance]).unwrap(), Fixed::from(20)); // 100-80
     assert_eq!(cube.get(&[total, variance]).unwrap(), Fixed::from(100)); // 180-80
     assert_eq!(cube.get(&[coastal, variance]).unwrap(), Fixed::from(50)); // 130-80
+
+    // String cell loaded from text; it does not perturb numeric consolidation.
+    let note = idx(&cube, 1, "Note");
+    assert_eq!(cube.get_string(&[north, note]).unwrap(), Some("reviewed"));
+    assert_eq!(cube.get(&[total, actual]).unwrap(), Fixed::from(180));
 }
 
 #[test]
@@ -147,14 +157,17 @@ fn recovers_identical_state_after_restart() {
     let total = idx(&cube, 0, "Total");
     let budget = idx(&cube, 1, "Budget");
     let variance = idx(&cube, 1, "Variance");
+    let note = idx(&cube, 1, "Note");
+    let north = idx(&cube, 0, "North");
     let south = idx(&cube, 0, "South");
     let east = idx(&cube, 0, "East");
 
     let before = {
         let mut store = Store::create(&dir, cube).unwrap();
-        // Write additional leaves (fsync on by default -> crash-durable).
+        // Write additional numeric and string cells (fsync on -> crash-durable).
         store.set_leaf(&[south, budget], Fixed::from(40)).unwrap();
         store.set_leaf(&[east, budget], Fixed::from(10)).unwrap();
+        store.set_string(&[south, note], "late").unwrap();
         let text = store.cube().to_model_text().unwrap();
         // Drop without an explicit checkpoint: recovery must replay the WAL.
         text
@@ -176,6 +189,15 @@ fn recovers_identical_state_after_restart() {
     assert_eq!(
         store.cube().get(&[total, variance]).unwrap(),
         Fixed::from(50)
+    );
+    // String cells survive too: one loaded from text, one written via the WAL.
+    assert_eq!(
+        store.cube().get_string(&[north, note]).unwrap(),
+        Some("reviewed")
+    );
+    assert_eq!(
+        store.cube().get_string(&[south, note]).unwrap(),
+        Some("late")
     );
 
     fs::remove_dir_all(&dir).ok();

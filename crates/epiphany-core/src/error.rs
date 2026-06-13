@@ -43,6 +43,10 @@ pub enum ModelError {
     },
     /// Two elements were given the same alias within one dimension.
     AliasConflict { dimension: String, alias: String },
+    /// Attempted to write a numeric value to a string-typed leaf.
+    CellTypeMismatch { dimension: String, element: String },
+    /// Attempted to write a string value to a coordinate with no string element.
+    StringCellRequiresStringElement { cube: String },
 }
 
 impl fmt::Display for ModelError {
@@ -99,6 +103,14 @@ impl fmt::Display for ModelError {
             ModelError::AliasConflict { dimension, alias } => write!(
                 f,
                 "alias '{alias}' is assigned to more than one element in dimension '{dimension}'"
+            ),
+            ModelError::CellTypeMismatch { dimension, element } => write!(
+                f,
+                "cannot write a numeric value to string-typed element '{element}' in dimension '{dimension}'"
+            ),
+            ModelError::StringCellRequiresStringElement { cube } => write!(
+                f,
+                "a string cell in cube '{cube}' must address a string element"
             ),
         }
     }

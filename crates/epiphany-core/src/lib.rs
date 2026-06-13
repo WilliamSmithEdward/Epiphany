@@ -1,13 +1,15 @@
 //! Epiphany core: the in-memory multidimensional model.
 //!
-//! Phase 1 (in progress). This crate owns the model: dimensions, elements, the
-//! consolidation hierarchy (with alternate rollups), cubes, and the sparse cell
-//! store with on-demand consolidation. Cell values are exact fixed-point
-//! ([`Fixed`], ADR-0008) for deterministic, finance-correct arithmetic.
+//! Phase 1 complete. This crate owns the model: dimensions, elements (numeric,
+//! string, and consolidated), the consolidation hierarchy (alternate rollups and
+//! weighted edges), attributes and aliases, cubes, the sparse cell store with the
+//! packed-key memory layout (ADR-0006) and on-demand consolidation, and the
+//! canonical model-as-code text serialization (ADR-0003). Numeric cell values are
+//! exact fixed-point ([`Fixed`], ADR-0008) for deterministic, finance-correct
+//! arithmetic; string cells hold interned text.
 //!
-//! Still to come this phase: element attributes & aliases, string cells, the
-//! packed-key memory layout (ADR-0006) and a calculation cache, model-as-code
-//! text serialization (ADR-0003), and runtime persistence. See `docs/ROADMAP.md`.
+//! Still to come (later phases): a calculation cache, rules, and views. See
+//! `docs/ROADMAP.md`.
 
 mod cube;
 mod dimension;

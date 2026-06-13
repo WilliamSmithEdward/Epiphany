@@ -110,6 +110,8 @@ struct ModelDoc {
     dimensions: Vec<DimDoc>,
     #[serde(default, rename = "cell")]
     cells: Vec<CellDoc>,
+    #[serde(default, rename = "string_cell", skip_serializing_if = "Vec::is_empty")]
+    string_cells: Vec<StringCellDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -140,6 +142,7 @@ struct ElDoc {
 #[serde(rename_all = "lowercase")]
 enum KindDoc {
     Leaf,
+    String,
     Consolidated,
 }
 
@@ -177,10 +180,17 @@ struct CellDoc {
     value: String,
 }
 
+#[derive(Serialize, Deserialize)]
+struct StringCellDoc {
+    coord: Vec<String>,
+    value: String,
+}
+
 impl From<ElementKind> for KindDoc {
     fn from(kind: ElementKind) -> Self {
         match kind {
             ElementKind::Leaf => KindDoc::Leaf,
+            ElementKind::String => KindDoc::String,
             ElementKind::Consolidated => KindDoc::Consolidated,
         }
     }
@@ -261,6 +271,7 @@ fn build_dimension(dim_doc: &DimDoc) -> Result<Dimension, LoadError> {
     for el in &dim_doc.elements {
         match el.kind {
             KindDoc::Leaf => dim.add_leaf(&el.name),
+            KindDoc::String => dim.add_string(&el.name),
             KindDoc::Consolidated => dim.add_consolidated(&el.name),
         };
     }
@@ -305,6 +316,29 @@ fn build_dimension(dim_doc: &DimDoc) -> Result<Dimension, LoadError> {
     Ok(dim)
 }
 
+/// Resolve a coordinate's element names to indices for `cube`, validating rank.
+fn resolve_coord(cube: &Cube, cube_name: &str, names: &[String]) -> Result<Vec<u32>, LoadError> {
+    if names.len() != cube.rank() {
+        return Err(LoadError::CoordRank {
+            cube: cube_name.to_string(),
+            expected: cube.rank(),
+            got: names.len(),
+        });
+    }
+    let mut coord = Vec::with_capacity(names.len());
+    for (d, name) in names.iter().enumerate() {
+        let idx = cube
+            .dimension(d)
+            .index_of(name)
+            .ok_or_else(|| LoadError::UnknownElement {
+                dimension: cube.dimension(d).name().to_string(),
+                element: name.clone(),
+            })?;
+        coord.push(idx);
+    }
+    Ok(coord)
+}
+
 impl Cube {
     /// Serialize this cube and its dimensions to canonical model-as-code TOML.
     pub fn to_model_text(&self) -> Result<String, SaveError> {
@@ -313,21 +347,39 @@ impl Cube {
         // Cells, sorted by coordinate (element-index tuple) for canonical output.
         let mut sorted: Vec<(Vec<u32>, Fixed)> = self.cell_entries().collect();
         sorted.sort_by(|a, b| a.0.cmp(&b.0));
+        let coord_names = |coord: &[u32]| -> Vec<String> {
+            coord
+                .iter()
+                .enumerate()
+                .map(|(d, &idx)| {
+                    self.dimension(d)
+                        .element(idx)
+                        .expect("valid index")
+                        .name
+                        .clone()
+                })
+                .collect()
+        };
+
         let cells: Vec<CellDoc> = sorted
             .into_iter()
             .map(|(coord, value)| CellDoc {
-                coord: coord
-                    .iter()
-                    .enumerate()
-                    .map(|(d, &idx)| {
-                        self.dimension(d)
-                            .element(idx)
-                            .expect("valid index")
-                            .name
-                            .clone()
-                    })
-                    .collect(),
+                coord: coord_names(&coord),
                 value: value.to_string(),
+            })
+            .collect();
+
+        // String cells, sorted by coordinate for canonical output.
+        let mut sorted_strings: Vec<(Vec<u32>, String)> = self
+            .string_cell_entries()
+            .map(|(coord, value)| (coord, value.to_string()))
+            .collect();
+        sorted_strings.sort_by(|a, b| a.0.cmp(&b.0));
+        let string_cells: Vec<StringCellDoc> = sorted_strings
+            .into_iter()
+            .map(|(coord, value)| StringCellDoc {
+                coord: coord_names(&coord),
+                value,
             })
             .collect();
 
@@ -343,6 +395,7 @@ impl Cube {
             },
             dimensions,
             cells,
+            string_cells,
         };
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
@@ -370,28 +423,14 @@ impl Cube {
         }
         let mut cube = Cube::new(&doc.cube.name, cube_dims)?;
 
-        // Populate cells.
+        // Populate numeric cells, then string cells.
         for cell in &doc.cells {
-            if cell.coord.len() != cube.rank() {
-                return Err(LoadError::CoordRank {
-                    cube: doc.cube.name.clone(),
-                    expected: cube.rank(),
-                    got: cell.coord.len(),
-                });
-            }
-            let mut coord = Vec::with_capacity(cell.coord.len());
-            for (d, name) in cell.coord.iter().enumerate() {
-                let idx =
-                    cube.dimension(d)
-                        .index_of(name)
-                        .ok_or_else(|| LoadError::UnknownElement {
-                            dimension: cube.dimension(d).name().to_string(),
-                            element: name.clone(),
-                        })?;
-                coord.push(idx);
-            }
-            let value = Fixed::from_str(&cell.value)?;
-            cube.set_leaf(&coord, value)?;
+            let coord = resolve_coord(&cube, &doc.cube.name, &cell.coord)?;
+            cube.set_leaf(&coord, Fixed::from_str(&cell.value)?)?;
+        }
+        for cell in &doc.string_cells {
+            let coord = resolve_coord(&cube, &doc.cube.name, &cell.coord)?;
+            cube.set_string(&coord, &cell.value)?;
         }
 
         Ok(cube)
@@ -520,5 +559,36 @@ mod tests {
             loaded.to_model_text().unwrap(),
             cube.to_model_text().unwrap()
         );
+    }
+
+    #[test]
+    fn round_trips_string_cells() {
+        let mut region = Dimension::new("Region");
+        let north = region.add_leaf("North");
+        let mut measure = Dimension::new("Measure");
+        let sales = measure.add_leaf("Sales");
+        let comment = measure.add_string("Comment");
+        let mut cube = Cube::new("Sales", vec![region, measure]).unwrap();
+        cube.set_leaf(&[north, sales], Fixed::from(42)).unwrap();
+        cube.set_string(&[north, comment], "high").unwrap();
+
+        let text = cube.to_model_text().unwrap();
+        let cube2 = Cube::from_model_text(&text).unwrap();
+        // Canonical fixed point, including the string cell and string element.
+        assert_eq!(text, cube2.to_model_text().unwrap());
+
+        let region2 = cube2.dimension(0).index_of("North").unwrap();
+        let measure2 = cube2.dimension(1);
+        let comment2 = measure2.index_of("Comment").unwrap();
+        let sales2 = measure2.index_of("Sales").unwrap();
+        assert_eq!(
+            measure2.element(comment2).unwrap().kind,
+            ElementKind::String
+        );
+        assert_eq!(
+            cube2.get_string(&[region2, comment2]).unwrap(),
+            Some("high")
+        );
+        assert_eq!(cube2.get_leaf(&[region2, sales2]).unwrap(), Fixed::from(42));
     }
 }

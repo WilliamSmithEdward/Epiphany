@@ -4,13 +4,23 @@ use std::collections::HashMap;
 
 use crate::{Fixed, ModelError};
 
-/// The kind of an element.
+/// The kind of an element (the N/C/S typing).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ElementKind {
-    /// A leaf element that can hold data.
+    /// A numeric leaf (N): holds a numeric cell value and rolls up.
     Leaf,
-    /// A consolidated element computed by rolling up children.
+    /// A string leaf (S): holds a text cell value and never aggregates.
+    String,
+    /// A consolidated element (C): computed by rolling up children.
     Consolidated,
+}
+
+impl ElementKind {
+    /// Whether this element is a leaf (numeric or string), as opposed to a
+    /// consolidated rollup.
+    pub fn is_leaf(self) -> bool {
+        matches!(self, ElementKind::Leaf | ElementKind::String)
+    }
 }
 
 /// An element of a dimension.
@@ -247,9 +257,14 @@ impl Dimension {
         index
     }
 
-    /// Add a leaf element (or return the existing index for that name).
+    /// Add a numeric leaf element (or return the existing index for that name).
     pub fn add_leaf(&mut self, name: impl Into<String>) -> u32 {
         self.add_element(name, ElementKind::Leaf)
+    }
+
+    /// Add a string leaf element (or return the existing index for that name).
+    pub fn add_string(&mut self, name: impl Into<String>) -> u32 {
+        self.add_element(name, ElementKind::String)
     }
 
     /// Add a consolidated element (or return the existing index for that name).
@@ -318,6 +333,9 @@ impl Dimension {
             ElementKind::Leaf => {
                 *acc.entry(element).or_insert(0) += weight;
             }
+            // String leaves hold text, not numbers, so they never contribute to
+            // a numeric rollup.
+            ElementKind::String => {}
             ElementKind::Consolidated => {
                 for edge in &self.children[element as usize] {
                     let path_weight = weight.saturating_mul(edge.weight);
@@ -439,5 +457,19 @@ mod tests {
             d.set_attribute(b, "Alias", AttributeValue::Text("X".into())),
             Err(ModelError::AliasConflict { .. })
         ));
+    }
+
+    #[test]
+    fn string_leaf_is_a_leaf_but_does_not_aggregate() {
+        let mut d = Dimension::new("Measure");
+        let sales = d.add_leaf("Sales");
+        let comment = d.add_string("Comment");
+        let total = d.add_consolidated("Total");
+        d.add_child(total, sales, 1).unwrap();
+        d.add_child(total, comment, 1).unwrap(); // allowed; contributes nothing
+        assert_eq!(d.element(comment).unwrap().kind, ElementKind::String);
+        assert!(d.element(comment).unwrap().kind.is_leaf());
+        // Total expands only to the numeric leaf.
+        assert_eq!(d.leaf_weights(total).unwrap(), vec![(sales, 1)]);
     }
 }
