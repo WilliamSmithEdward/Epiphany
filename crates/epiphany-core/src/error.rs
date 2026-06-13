@@ -1,0 +1,74 @@
+//! Error types for the core model.
+
+use std::fmt;
+
+/// Errors from building or querying the multidimensional model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelError {
+    /// An element name was not found in the dimension.
+    ElementNotFound { dimension: String, element: String },
+    /// An element index was out of range for the dimension.
+    ElementIndexOutOfRange {
+        dimension: String,
+        index: u32,
+        len: u32,
+    },
+    /// A coordinate had the wrong number of components for the cube.
+    RankMismatch { expected: usize, got: usize },
+    /// Attempted to write a cell whose coordinate includes a non-leaf element.
+    WriteToNonLeaf { dimension: String, element: String },
+    /// Adding a consolidation edge would create a cycle.
+    CycleDetected {
+        dimension: String,
+        parent: String,
+        child: String,
+    },
+    /// A consolidation edge referenced a parent that is not a consolidated element.
+    ParentNotConsolidated { dimension: String, element: String },
+    /// Fixed-point arithmetic overflowed the representable range.
+    Overflow,
+    /// A cube must have at least one dimension.
+    EmptyCube,
+}
+
+impl fmt::Display for ModelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ModelError::ElementNotFound { dimension, element } => {
+                write!(f, "element '{element}' not found in dimension '{dimension}'")
+            }
+            ModelError::ElementIndexOutOfRange {
+                dimension,
+                index,
+                len,
+            } => write!(
+                f,
+                "element index {index} out of range for dimension '{dimension}' (len {len})"
+            ),
+            ModelError::RankMismatch { expected, got } => write!(
+                f,
+                "coordinate has {got} components but the cube has {expected} dimensions"
+            ),
+            ModelError::WriteToNonLeaf { dimension, element } => write!(
+                f,
+                "cannot write to non-leaf element '{element}' in dimension '{dimension}'"
+            ),
+            ModelError::CycleDetected {
+                dimension,
+                parent,
+                child,
+            } => write!(
+                f,
+                "adding '{child}' under '{parent}' would create a cycle in dimension '{dimension}'"
+            ),
+            ModelError::ParentNotConsolidated { dimension, element } => write!(
+                f,
+                "element '{element}' in dimension '{dimension}' is not consolidated and cannot have children"
+            ),
+            ModelError::Overflow => write!(f, "fixed-point arithmetic overflow"),
+            ModelError::EmptyCube => write!(f, "a cube must have at least one dimension"),
+        }
+    }
+}
+
+impl std::error::Error for ModelError {}
