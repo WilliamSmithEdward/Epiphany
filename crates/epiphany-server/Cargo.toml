@@ -15,6 +15,7 @@ epiphany-api = { path = "../epiphany-api" }
 epiphany-core = { path = "../epiphany-core" }
 epiphany-engine = { path = "../epiphany-engine" }
 epiphany-persist = { path = "../epiphany-persist" }
+epiphany-security = { path = "../epiphany-security" }
 epiphany-determinism = { path = "../epiphany-determinism" }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "signal", "macros"] }
 axum = "0.8"

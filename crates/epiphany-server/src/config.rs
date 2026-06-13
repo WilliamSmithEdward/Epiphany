@@ -15,6 +15,8 @@ pub struct Config {
     pub log_filter: String,
     /// Whether to hint at opening a browser after binding. Default off.
     pub open_browser: bool,
+    /// Session lifetime in milliseconds. Default 8 hours.
+    pub session_ttl_millis: u64,
 }
 
 impl Default for Config {
@@ -24,6 +26,7 @@ impl Default for Config {
             data_dir: PathBuf::from("data"),
             log_filter: "info".to_string(),
             open_browser: false,
+            session_ttl_millis: 8 * 60 * 60 * 1000,
         }
     }
 }
@@ -52,6 +55,12 @@ impl Config {
         }
         if let Some(flag) = vars.get("EPIPHANY_OPEN_BROWSER") {
             config.open_browser = matches!(flag.as_str(), "1" | "true" | "yes");
+        }
+        if let Some(secs) = vars
+            .get("EPIPHANY_SESSION_TTL_SECS")
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            config.session_ttl_millis = secs.saturating_mul(1000);
         }
         config
     }

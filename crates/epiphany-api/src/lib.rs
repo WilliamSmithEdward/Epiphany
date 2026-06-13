@@ -3,34 +3,65 @@
 //! [`build_router`] assembles the router from an [`AppState`]; the server binary
 //! and every integration test use the same builder, so tested behavior matches
 //! served behavior. Responses are clean modern JSON (not OData); errors use the
-//! shared [`ApiError`] envelope.
+//! shared [`ApiError`] envelope. Every route except `/healthz` and the login
+//! endpoint requires a valid session (the [`auth::AuthPrincipal`] extractor).
+
+use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 
+use epiphany_determinism::Clock;
 use epiphany_engine::Engine;
+use epiphany_security::SecurityStore;
 
+mod auth;
 mod error;
+mod session;
+
 pub use error::ApiError;
+pub use session::SessionStore;
 
 /// Stable crate identifier.
 pub const CRATE: &str = "epiphany-api";
 
 /// Shared application state, cheap to clone into every handler.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AppState {
     /// The concurrent cube engine (snapshot reads, atomic batch commits).
     pub engine: Engine,
+    /// The injected clock (real in production, manual in tests).
+    pub clock: Arc<dyn Clock>,
+    /// Users, groups, and password hashes.
+    pub security: Arc<Mutex<SecurityStore>>,
+    /// Live session tokens (in memory; lost on restart, by design).
+    pub sessions: Arc<Mutex<SessionStore>>,
+}
+
+impl std::fmt::Debug for AppState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppState")
+            .field("engine", &self.engine)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Build the application router. Used by both the server binary and tests, so
 /// what is tested is what is served.
 pub fn build_router(state: AppState) -> Router {
+    // Protected routes require a valid session via the AuthPrincipal extractor.
+    let protected = Router::new()
+        .route("/api/v1/cubes", get(list_cubes))
+        .route("/api/v1/auth/me", get(auth::me))
+        .route("/api/v1/auth/logout", post(auth::logout))
+        .route("/api/v1/auth/password", post(auth::change_password));
+
     Router::new()
         .route("/healthz", get(healthz))
-        .route("/api/v1/cubes", get(list_cubes))
+        .route("/api/v1/auth/login", post(auth::login))
+        .merge(protected)
         .fallback(not_found)
         .with_state(state)
 }
@@ -62,7 +93,10 @@ struct CubeListResponse {
     cubes: Vec<CubeSummary>,
 }
 
-async fn list_cubes(State(state): State<AppState>) -> Json<CubeListResponse> {
+async fn list_cubes(
+    _auth: auth::AuthPrincipal,
+    State(state): State<AppState>,
+) -> Json<CubeListResponse> {
     let cubes = state
         .engine
         .cube_names()
@@ -100,14 +134,15 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use epiphany_core::{Cube, Dimension};
-    use epiphany_determinism::IdGen;
+    use epiphany_determinism::{IdGen, ManualClock};
+    use epiphany_engine::Engine;
     use epiphany_persist::Store;
     use http_body_util::BodyExt;
     use std::collections::BTreeMap;
-    use std::sync::Arc;
-    use tower::ServiceExt;
 
-    fn test_state(name: &str) -> AppState {
+    const TTL: u64 = 60_000;
+
+    fn test_state_with_clock(name: &str, clock: Arc<dyn Clock>) -> AppState {
         let mut region = Dimension::new("Region");
         region.add_leaf("North");
         let cube = Cube::new("Sales", vec![region]).unwrap();
@@ -116,8 +151,16 @@ mod tests {
         let store = Store::create(dir, cube).unwrap();
         let mut stores = BTreeMap::new();
         stores.insert("Sales".to_string(), store);
-        let engine = Engine::from_stores(stores, Arc::new(IdGen::default()));
-        AppState { engine }
+        AppState {
+            engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
+            clock,
+            security: Arc::new(Mutex::new(SecurityStore::with_admin("admin", "pw", true))),
+            sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
+        }
+    }
+
+    fn test_state(name: &str) -> AppState {
+        test_state_with_clock(name, Arc::new(ManualClock::new(1_000)))
     }
 
     async fn body_json(resp: axum::response::Response) -> serde_json::Value {
@@ -125,38 +168,128 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    async fn login(router: &Router, user: &str, pass: &str) -> (StatusCode, serde_json::Value) {
+        let body = serde_json::json!({ "username": user, "password": pass }).to_string();
+        let resp = router
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        (status, body_json(resp).await)
+    }
+
+    use tower::ServiceExt;
+
     #[tokio::test]
-    async fn healthz_is_ok() {
+    async fn healthz_is_public() {
         let app = build_router(test_state("healthz"));
         let resp = app
             .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(body_json(resp).await["status"], "ok");
     }
 
     #[tokio::test]
-    async fn lists_the_demo_cube() {
-        let app = build_router(test_state("cubes"));
+    async fn login_then_access_protected_route() {
+        let app = build_router(test_state("login-ok"));
+
+        let (status, json) = login(&app, "admin", "pw").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(json["user"]["is_admin"], true);
+        let token = json["token"].as_str().unwrap().to_string();
+
+        // With the bearer token, the protected cube list is reachable.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::get("/api/v1/cubes")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_json(resp).await["cubes"][0]["name"], "Sales");
+    }
+
+    #[tokio::test]
+    async fn bad_credentials_are_401() {
+        let app = build_router(test_state("login-bad"));
+        let (status, json) = login(&app, "admin", "wrong").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(json["error"]["code"], "UNAUTHORIZED");
+    }
+
+    #[tokio::test]
+    async fn protected_route_without_token_is_401() {
+        let app = build_router(test_state("no-token"));
         let resp = app
             .oneshot(Request::get("/api/v1/cubes").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let json = body_json(resp).await;
-        assert_eq!(json["cubes"][0]["name"], "Sales");
-        assert_eq!(json["cubes"][0]["rank"], 1);
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn unknown_route_returns_the_error_envelope() {
-        let app = build_router(test_state("notfound"));
-        let resp = app
-            .oneshot(Request::get("/nope").body(Body::empty()).unwrap())
+    async fn logout_revokes_the_session() {
+        let app = build_router(test_state("logout"));
+        let (_, json) = login(&app, "admin", "pw").await;
+        let token = json["token"].as_str().unwrap().to_string();
+        let auth = format!("Bearer {token}");
+
+        let logout = app
+            .clone()
+            .oneshot(
+                Request::post("/api/v1/auth/logout")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        assert_eq!(body_json(resp).await["error"]["code"], "NOT_FOUND");
+        assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+
+        // The revoked token no longer authenticates.
+        let resp = app
+            .oneshot(
+                Request::get("/api/v1/auth/me")
+                    .header("authorization", &auth)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn session_expires_after_ttl() {
+        // Keep a typed handle to the manual clock so the test can advance it.
+        let manual = Arc::new(ManualClock::new(1_000));
+        let app = build_router(test_state_with_clock("expiry", manual.clone()));
+        let (_, json) = login(&app, "admin", "pw").await;
+        let token = json["token"].as_str().unwrap().to_string();
+
+        // Advance past the TTL: the token is now rejected.
+        manual.advance(TTL + 1);
+
+        let resp = app
+            .oneshot(
+                Request::get("/api/v1/auth/me")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 }

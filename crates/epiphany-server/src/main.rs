@@ -2,7 +2,8 @@
 //!
 //! Zero-config startup: read `EPIPHANY_*` config over sane defaults, initialize
 //! tracing, load the durable model (or materialize the bundled demo on first
-//! run), build the API router, and serve on loopback until Ctrl-C.
+//! run), bootstrap the user store, build the API router, and serve on loopback
+//! until Ctrl-C.
 
 mod boot;
 mod config;
@@ -10,8 +11,12 @@ mod demo;
 mod observability;
 mod shutdown;
 
+use std::sync::{Arc, Mutex};
+
 use config::Config;
-use epiphany_api::{build_router, AppState};
+use epiphany_api::{build_router, AppState, SessionStore};
+use epiphany_determinism::SystemClock;
+use epiphany_security::SecurityStore;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -25,8 +30,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let engine = boot::load_or_init(&config.data_dir)?;
     tracing::info!("model loaded: {:?}", engine.cube_names());
 
-    let app =
-        build_router(AppState { engine }).layer(tower_http::trace::TraceLayer::new_for_http());
+    // Users and password hashes, persisted separately from the cube model.
+    let security_path = config.data_dir.join("server").join("security.model");
+    let admin_override = std::env::var("EPIPHANY_ADMIN_PASSWORD").ok();
+    let (security, generated) =
+        SecurityStore::open_or_bootstrap(security_path, false, admin_override.as_deref())?;
+    if let Some(password) = &generated {
+        // Shown once on the operator console (not the structured log).
+        println!(
+            "\nFirst run: created admin user 'admin' with password:\n    {}\nChange it after you log in.\n",
+            password.0
+        );
+    }
+
+    let state = AppState {
+        engine,
+        clock: Arc::new(SystemClock),
+        security: Arc::new(Mutex::new(security)),
+        sessions: Arc::new(Mutex::new(SessionStore::new(config.session_ttl_millis))),
+    };
+    let app = build_router(state).layer(tower_http::trace::TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     let addr = listener.local_addr()?;

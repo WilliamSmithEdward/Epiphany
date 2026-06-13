@@ -173,11 +173,14 @@ name = "epiphany-api"
 version = "0.0.0"
 dependencies = [
  "axum",
+ "base64",
  "epiphany-core",
  "epiphany-determinism",
  "epiphany-engine",
  "epiphany-persist",
+ "epiphany-security",
  "http-body-util",
+ "rand_core",
  "serde",
  "serde_json",
  "thiserror",
@@ -259,6 +262,7 @@ dependencies = [
  "epiphany-determinism",
  "epiphany-engine",
  "epiphany-persist",
+ "epiphany-security",
  "tokio",
  "tower-http",
  "tracing",
