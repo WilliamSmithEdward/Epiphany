@@ -323,12 +323,12 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 
 | Capability | Phase | Status |
 |---|---|---|
-| Cubes (high dim ceiling), sparse cell store | 1 | [ ] |
-| Dimensions, elements (N/C/S) | 1 | [ ] |
-| Single hierarchy with alternate rollups, weighted consolidations | 1 | [ ] |
-| Element attributes and aliases | 1 | [ ] |
-| Model-as-code (canonical text, Git round-trip) | 1+ | [ ] |
-| Runtime persistence, crash recovery, full-persist | 1, 8 | [ ] |
+| Cubes (high dim ceiling), sparse cell store | 1 | [x] |
+| Dimensions, elements (N/C/S) | 1 | [x] |
+| Single hierarchy with alternate rollups, weighted consolidations | 1 | [x] |
+| Element attributes and aliases | 1 | [x] |
+| Model-as-code (canonical text, Git round-trip) | 1+ | [~] |
+| Runtime persistence, crash recovery, full-persist | 1, 8 | [~] |
 | REST API (CRUD, cells, OpenAPI) | 2 | [ ] |
 | Native auth, users and groups | 2, 7 | [ ] |
 | Web pivot grid with write-back | 2 | [ ] |
@@ -396,7 +396,7 @@ graph LR
 
 ## 10. Suggested runnable milestones
 
-1. **M1, "It stores and aggregates"** (end of Phase 1): load a cube from text, write leaves, read correct consolidations, round-trip to text, recover after restart.
+1. **M1, "It stores and aggregates"** (end of Phase 1) - **achieved**: load a cube from text, write leaves, read correct consolidations, round-trip to text, recover after restart. Gated by `epiphany-persist/tests/m1_acceptance.rs`.
 2. **M2, "It's a product"** (end of Phase 2): browser login, open a cube, edit a cell, see consolidations update, and survive a restart. The first demo.
 3. **M3, "It slices"** (end of Phase 3): MDX subsets plus nested views in the grid.
 4. **M4, "It calculates"** (end of Phase 4): rules plus auto-inferred feeds produce correct results on a cross-cube model, with working "explain". The defining milestone.
