@@ -1,4 +1,4 @@
-//! Epiphany api — the REST + WebSocket surface.
+//! Epiphany api: the REST + WebSocket surface.
 //!
 //! Phase 0 skeleton. Phase 2 fills this in: a clean JSON REST API (CRUD, cell
 //! read/write), OpenAPI, native auth, and WebSocket change notifications, on

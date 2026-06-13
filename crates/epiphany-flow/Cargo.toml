@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "Epiphany — Flows: TypeScript ETL/automation engine, data sources, scheduler."
+description = "Epiphany, Flows: TypeScript ETL/automation engine, data sources, scheduler."
 
 [lints]
 workspace = true

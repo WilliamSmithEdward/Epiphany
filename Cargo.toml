@@ -16,7 +16,7 @@ missing_debug_implementations = "warn"
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 
-# Modest release tuning; the performance mandate (ROADMAP §1/§8) is pursued
+# Modest release tuning; the performance mandate (ROADMAP section 1/section 8) is pursued
 # with benchmarks, not premature flags. Revisit in Phase 8.
 [profile.release]
 lto = "thin"

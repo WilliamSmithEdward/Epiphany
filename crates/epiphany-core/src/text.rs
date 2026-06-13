@@ -1,8 +1,8 @@
 //! Model-as-code: canonical TOML (de)serialization (ADR-0003).
 //!
 //! A cube and its dimensions round-trip losslessly through a human-readable,
-//! Git-friendly TOML document. Serialization is canonical — elements in
-//! definition order, edges and cells sorted — so re-serializing a parsed model
+//! Git-friendly TOML document. Serialization is canonical: elements in
+//! definition order, edges and cells sorted, so re-serializing a parsed model
 //! reproduces byte-identical text (verified by a round-trip test).
 //!
 //! The format is model-shaped: top-level `[[dimension]]` blocks plus a `[cube]`

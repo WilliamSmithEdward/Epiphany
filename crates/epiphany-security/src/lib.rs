@@ -1,4 +1,4 @@
-//! Epiphany security — users/groups and object & element authorization.
+//! Epiphany security: users/groups and object & element authorization.
 //!
 //! Phase 0 skeleton. Phase 7 fills this in: native authentication, groups,
 //! admin vs non-admin, and object + element security. See `docs/ROADMAP.md`.

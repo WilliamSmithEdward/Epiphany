@@ -1,4 +1,4 @@
-//! Epiphany persist — runtime durability (a fast-restart cache over the model).
+//! Epiphany persist: runtime durability (a fast-restart cache over the model).
 //!
 //! Phase 0 skeleton. Phase 1/8 fills this in: an append-only transaction log,
 //! periodic binary snapshots, crash recovery, and startup load. The canonical

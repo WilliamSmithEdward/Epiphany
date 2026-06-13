@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   rust:
-    name: Rust (fmt · clippy · test)
+    name: Rust (fmt, clippy, test)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -43,7 +43,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   web:
-    name: Web (lint · typecheck · build)
+    name: Web (lint, typecheck, build)
     runs-on: ubuntu-latest
     defaults:
       run:

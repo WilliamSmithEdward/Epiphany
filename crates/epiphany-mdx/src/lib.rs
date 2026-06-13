@@ -1,4 +1,4 @@
-//! Epiphany mdx — MDX parser/evaluator for dynamic subsets and cellsets.
+//! Epiphany mdx: MDX parser/evaluator for dynamic subsets and cellsets.
 //!
 //! Phase 0 skeleton. Phase 3 fills this in (the commonly-used MDX subset:
 //! membership, level/attribute filtering, sorting). See `docs/ROADMAP.md`.

@@ -2,7 +2,7 @@
 /target/
 **/*.rs.bk
 *.pdb
-# Note: Cargo.lock IS committed (workspace ships binaries) — do not ignore it.
+# Note: Cargo.lock IS committed (workspace ships binaries). Do not ignore it.
 
 # ---- Node / web ----
 node_modules/
@@ -14,9 +14,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
-# Note: package-lock.json IS committed for reproducible installs — do not ignore it.
+# Note: package-lock.json IS committed for reproducible installs. Do not ignore it.
 
-# ---- Local config & secrets (never commit real secrets — RG-11) ----
+# ---- Local config & secrets (never commit real secrets, RG-11) ----
 .env
 .env.*
 !.env.example

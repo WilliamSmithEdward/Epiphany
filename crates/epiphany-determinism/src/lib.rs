@@ -1,6 +1,6 @@
 //! Deterministic primitives for Epiphany.
 //!
-//! Determinism is a hard project requirement (see `docs/ROADMAP.md` §1,
+//! Determinism is a hard project requirement (see `docs/ROADMAP.md` section 1,
 //! "Testability & determinism mandate"). Logic must never read the wall clock,
 //! a random source, or unordered iteration directly. Instead it takes these
 //! primitives, so tests can pin them and get byte-identical results every run.

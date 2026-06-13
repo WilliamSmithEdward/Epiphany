@@ -1,4 +1,4 @@
-//! Epiphany flow — Flows: TypeScript ETL/automation on an embedded JS engine.
+//! Epiphany flow: Flows: TypeScript ETL/automation on an embedded JS engine.
 //!
 //! Phase 0 skeleton. Phase 5 fills this in: a TypeScript flow interpreter
 //! (Init/Schema/Rows/Finalize), data-source connectors (CSV/SQL/view),

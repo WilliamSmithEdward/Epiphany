@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "Epiphany — MDX parser/evaluator for dynamic subsets and cellsets."
+description = "Epiphany: MDX parser/evaluator for dynamic subsets and cellsets."
 
 [lints]
 workspace = true

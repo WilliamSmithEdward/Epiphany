@@ -10,7 +10,7 @@ export default function App() {
       }}
     >
       <h1>Epiphany</h1>
-      <p>Multidimensional OLAP server — web client.</p>
+      <p>Multidimensional OLAP server: web client.</p>
       <p style={{ color: '#666' }}>
         Phase 0 skeleton. The cube viewer, pivot grid, and editors arrive in
         Phase 2 and beyond.

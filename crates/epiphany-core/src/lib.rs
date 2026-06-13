@@ -1,4 +1,4 @@
-//! Epiphany core — the in-memory multidimensional model.
+//! Epiphany core: the in-memory multidimensional model.
 //!
 //! Phase 1 (in progress). This crate owns the model: dimensions, elements, the
 //! consolidation hierarchy (with alternate rollups), cubes, and the sparse cell

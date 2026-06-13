@@ -1,4 +1,4 @@
-//! Epiphany server — the daemon and composition root.
+//! Epiphany server: the daemon and composition root.
 //!
 //! Phase 0: a placeholder entry point that proves the workspace links and the
 //! deterministic harness works. The HTTP/REST layer arrives in Phase 2.
@@ -8,7 +8,7 @@ use epiphany_determinism::DeterministicRng;
 
 fn main() {
     println!(
-        "Epiphany server v{} — Phase 0 skeleton",
+        "Epiphany server v{} (Phase 0 skeleton)",
         env!("CARGO_PKG_VERSION")
     );
 

@@ -1,4 +1,4 @@
-//! Epiphany calc — the rules + sparse-feeds calculation engine.
+//! Epiphany calc: the rules + sparse-feeds calculation engine.
 //!
 //! Phase 0 skeleton. Phase 4 fills this in: the rules language, dependency
 //! graph, sparse feeds with automatic feeder inference + validation,

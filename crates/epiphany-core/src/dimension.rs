@@ -20,7 +20,7 @@ pub struct Element {
     pub kind: ElementKind,
 }
 
-/// A weighted parent→child consolidation edge.
+/// A weighted parent->child consolidation edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Edge {
     child: u32,
@@ -29,7 +29,7 @@ struct Edge {
 
 /// A dimension: an ordered list of elements and their consolidation edges.
 ///
-/// Supports alternate rollups — a child may roll up into more than one parent,
+/// Supports alternate rollups: a child may roll up into more than one parent,
 /// and a query element's leaf contributions accumulate (with weights) across
 /// every path that reaches a given leaf.
 #[derive(Clone, Debug)]
@@ -221,7 +221,7 @@ mod tests {
 
     #[test]
     fn alternate_paths_accumulate_weight() {
-        // Total = A + B ; Big = Total + A  →  A contributes weight 2.
+        // Total = A + B ; Big = Total + A  ->  A contributes weight 2.
         let mut d = Dimension::new("D");
         let a = d.add_leaf("A");
         let b = d.add_leaf("B");

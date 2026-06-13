@@ -1,5 +1,5 @@
 [toolchain]
-# Pinned for reproducible builds (determinism mandate, ROADMAP §1).
+# Pinned for reproducible builds (determinism mandate, ROADMAP section 1).
 # "stable" resolves to the installed stable toolchain; CI installs the same.
 channel = "stable"
 components = ["rustfmt", "clippy"]

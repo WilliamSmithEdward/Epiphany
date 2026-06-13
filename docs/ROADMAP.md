@@ -161,31 +161,31 @@ The committed feature set. Each item maps to a phase in section 6 and is tracked
 A Cargo workspace of focused crates behind a single server binary, plus a separate React app.
 
 ```
-                          ┌─────────────────────────────┐
-                          │   epiphany-web (React+TS)    │
-                          │  pivot grid , editors        │
-                          └───────────────┬─────────────┘
-                                          │ HTTPS (JSON REST) + WebSocket
-                          ┌───────────────▼─────────────┐
-                          │      epiphany-api (Axum)     │  auth, routing, OpenAPI,
-                          │  REST handlers , WS , authz  │  request validation
-                          └───────────────┬─────────────┘
-                                          │ in-process calls
-   ┌──────────────┬─────────────┬─────────┴──────┬───────────────┬───────────────┐
-   │ epiphany-    │ epiphany-   │  epiphany-mdx   │ epiphany-flow │ epiphany-     │
-   │ core         │ calc        │  parse+eval     │ TS flows on   │ security      │
-   │ dims, cubes, │ rules,feeds,│  subsets &      │ embedded JS + │ users/groups, │
-   │ cells, attrs,│ inference,  │  cellsets       │ data sources  │ object/elem   │
-   │ subsets,views│ provenance, │                 │ + scheduler   │ authz         │
-   │ sandboxes,   │ dependency  │                 │ + flow tests  │               │
-   │ text model   │ graph       │                 │               │               │
-   └──────┬───────┴──────┬──────┴────────┬────────┴───────┬───────┴───────────────┘
-          └──────────────┴───────────────┴────────────────┘
-                                  │
-                     ┌────────────▼─────────────┐
-                     │     epiphany-persist      │  txn log + snapshots
-                     │  runtime durability cache │  (derived from the text model)
-                     └───────────────────────────┘
+                          +-----------------------------+
+                          |   epiphany-web (React+TS)    |
+                          |  pivot grid , editors        |
+                          +---------------+-------------+
+                                          | HTTPS (JSON REST) + WebSocket
+                          +---------------v-------------+
+                          |      epiphany-api (Axum)     |  auth, routing, OpenAPI,
+                          |  REST handlers , WS , authz  |  request validation
+                          +---------------+-------------+
+                                          | in-process calls
+   +--------------+-------------+---------+------+---------------+---------------+
+   | epiphany-    | epiphany-   |  epiphany-mdx   | epiphany-flow | epiphany-     |
+   | core         | calc        |  parse+eval     | TS flows on   | security      |
+   | dims, cubes, | rules,feeds,|  subsets &      | embedded JS + | users/groups, |
+   | cells, attrs,| inference,  |  cellsets       | data sources  | object/elem   |
+   | subsets,views| provenance, |                 | + scheduler   | authz         |
+   | sandboxes,   | dependency  |                 | + flow tests  |               |
+   | text model   | graph       |                 |               |               |
+   +------+-------+------+------+--------+--------+-------+-------+---------------+
+          +--------------+---------------+----------------+
+                                  |
+                     +------------v-------------+
+                     |     epiphany-persist      |  txn log + snapshots
+                     |  runtime durability cache |  (derived from the text model)
+                     +---------------------------+
 
   epiphany-server: binary wiring all crates + config + scheduler + observability
 ```
@@ -319,34 +319,34 @@ Phases are ordered by dependency. Effort is sized **S / M / L / XL** (relative),
 
 ## 7. Coverage matrix (in scope)
 
-Status legend: ☐ Planned, ◐ In progress, ☑ Done. All ☐ at kickoff. (Deferred items are in section 13, not here.)
+Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Deferred items are in section 13, not here.)
 
 | Capability | Phase | Status |
 |---|---|---|
-| Cubes (high dim ceiling), sparse cell store | 1 | ☐ |
-| Dimensions, elements (N/C/S) | 1 | ☐ |
-| Single hierarchy with alternate rollups, weighted consolidations | 1 | ☐ |
-| Element attributes and aliases | 1 | ☐ |
-| Model-as-code (canonical text, Git round-trip) | 1+ | ☐ |
-| Runtime persistence, crash recovery, full-persist | 1, 8 | ☐ |
-| REST API (CRUD, cells, OpenAPI) | 2 | ☐ |
-| Native auth, users and groups | 2, 7 | ☐ |
-| Web pivot grid with write-back | 2 | ☐ |
-| Subsets (static and dynamic/MDX) | 3 | ☐ |
-| Views (native and MDX cellsets), zero suppression | 3 | ☐ |
-| MDX engine (commonly-used subset) | 3 | ☐ |
-| Rules language with cross-cube references | 4 | ☐ |
-| Sparse feeds and sparse-skip optimization | 4 | ☐ |
-| Automatic feeder inference and validation | 4 | ☐ |
-| Calculation provenance / explain | 4 | ☐ |
-| On-demand calc with in-query memoization | 4 | ☐ |
-| TypeScript flows (Init/Schema/Rows/Finalize) | 5 | ☐ |
-| Flow data sources (CSV/SQL/view) | 5 | ☐ |
-| Model testing framework (rule and flow unit tests) | 4, 5 | ☐ |
-| Sandboxes (what-if) | 6 | ☐ |
-| Object and element security | 7 | ☐ |
-| Scheduled jobs | 8 | ☐ |
-| Web editors (rules, flows, subsets, views) | 3 to 5 | ☐ |
+| Cubes (high dim ceiling), sparse cell store | 1 | [ ] |
+| Dimensions, elements (N/C/S) | 1 | [ ] |
+| Single hierarchy with alternate rollups, weighted consolidations | 1 | [ ] |
+| Element attributes and aliases | 1 | [ ] |
+| Model-as-code (canonical text, Git round-trip) | 1+ | [ ] |
+| Runtime persistence, crash recovery, full-persist | 1, 8 | [ ] |
+| REST API (CRUD, cells, OpenAPI) | 2 | [ ] |
+| Native auth, users and groups | 2, 7 | [ ] |
+| Web pivot grid with write-back | 2 | [ ] |
+| Subsets (static and dynamic/MDX) | 3 | [ ] |
+| Views (native and MDX cellsets), zero suppression | 3 | [ ] |
+| MDX engine (commonly-used subset) | 3 | [ ] |
+| Rules language with cross-cube references | 4 | [ ] |
+| Sparse feeds and sparse-skip optimization | 4 | [ ] |
+| Automatic feeder inference and validation | 4 | [ ] |
+| Calculation provenance / explain | 4 | [ ] |
+| On-demand calc with in-query memoization | 4 | [ ] |
+| TypeScript flows (Init/Schema/Rows/Finalize) | 5 | [ ] |
+| Flow data sources (CSV/SQL/view) | 5 | [ ] |
+| Model testing framework (rule and flow unit tests) | 4, 5 | [ ] |
+| Sandboxes (what-if) | 6 | [ ] |
+| Object and element security | 7 | [ ] |
+| Scheduled jobs | 8 | [ ] |
+| Web editors (rules, flows, subsets, views) | 3 to 5 | [ ] |
 
 ---
 

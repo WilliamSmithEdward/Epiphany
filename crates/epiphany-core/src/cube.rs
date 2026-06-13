@@ -15,7 +15,7 @@ pub type Coord = Box<[u32]>;
 ///
 /// Note (Phase 1 follow-ups): the coordinate key is a boxed slice for now; the
 /// packed-integer memory layout (ADR-0006) and a calculation cache are later
-/// increments. Consolidated reads currently scan populated cells — correct, and
+/// increments. Consolidated reads currently scan populated cells: correct, and
 /// indexed/cached later.
 #[derive(Clone, Debug)]
 pub struct Cube {
@@ -276,7 +276,7 @@ mod tests {
         let leaf = d.add_leaf("L");
         d.add_child(a, b, 1).unwrap();
         d.add_child(b, leaf, 1).unwrap();
-        // a → b → L; adding b → a would close a cycle.
+        // a -> b -> L; adding b -> a would close a cycle.
         assert!(matches!(
             d.add_child(b, a, 1).unwrap_err(),
             ModelError::CycleDetected { .. }

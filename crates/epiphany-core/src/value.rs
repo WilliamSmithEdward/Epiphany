@@ -1,8 +1,8 @@
 //! Exact fixed-point numeric values (ADR-0008).
 //!
 //! Cell values use a scaled 64-bit integer instead of floating point, so
-//! arithmetic is exact and deterministic — no float rounding and no
-//! summation-order effects — while a value stays 8 bytes. The scale is `10^4`,
+//! arithmetic is exact and deterministic (no float rounding and no
+//! summation-order effects) while a value stays 8 bytes. The scale is `10^4`,
 //! i.e. four decimal places.
 
 use std::fmt;
@@ -14,7 +14,7 @@ pub const SCALE_DECIMALS: u32 = 4;
 /// Scale factor: a stored value equals the real value multiplied by `SCALE`.
 pub const SCALE: i64 = 10_000;
 
-/// An exact fixed-point number, stored as `value × 10^4` in an `i64`.
+/// An exact fixed-point number, stored as `value * 10^4` in an `i64`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct Fixed(i64);
 
@@ -45,7 +45,7 @@ impl Fixed {
 
 impl From<i32> for Fixed {
     fn from(n: i32) -> Self {
-        // i32 × 10_000 always fits in i64, so this is infallible.
+        // i32 * 10_000 always fits in i64, so this is infallible.
         Fixed(n as i64 * SCALE)
     }
 }
