@@ -29,6 +29,8 @@ pub enum ModelError {
     Overflow,
     /// A cube must have at least one dimension.
     EmptyCube,
+    /// A numeric value could not be parsed from text.
+    InvalidNumber { text: String },
 }
 
 impl fmt::Display for ModelError {
@@ -67,6 +69,7 @@ impl fmt::Display for ModelError {
             ),
             ModelError::Overflow => write!(f, "fixed-point arithmetic overflow"),
             ModelError::EmptyCube => write!(f, "a cube must have at least one dimension"),
+            ModelError::InvalidNumber { text } => write!(f, "invalid number: '{text}'"),
         }
     }
 }

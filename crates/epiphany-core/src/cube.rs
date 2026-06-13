@@ -62,6 +62,13 @@ impl Cube {
         self.cells.len()
     }
 
+    /// Iterate populated leaf cells as `(coordinate, value)`.
+    pub fn cell_entries(&self) -> impl Iterator<Item = (&[u32], Fixed)> + '_ {
+        self.cells
+            .iter()
+            .map(|(coord, &value)| (coord.as_ref(), value))
+    }
+
     fn check_coord(&self, coord: &[u32]) -> Result<(), ModelError> {
         if coord.len() != self.rank() {
             return Err(ModelError::RankMismatch {

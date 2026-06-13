@@ -12,11 +12,13 @@
 mod cube;
 mod dimension;
 mod error;
+mod text;
 mod value;
 
 pub use cube::{Coord, Cube};
 pub use dimension::{Dimension, Element, ElementKind};
 pub use error::ModelError;
+pub use text::{LoadError, SaveError};
 pub use value::{Fixed, SCALE, SCALE_DECIMALS};
 
 /// Stable crate identifier, reported by the server's wiring banner.

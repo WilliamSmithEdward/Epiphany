@@ -75,6 +75,49 @@ impl fmt::Debug for Fixed {
     }
 }
 
+impl std::str::FromStr for Fixed {
+    type Err = ModelError;
+
+    /// Parse a canonical decimal string (the inverse of [`Display`]). Rejects
+    /// more than [`SCALE_DECIMALS`] fractional digits (it would lose precision).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let invalid = || ModelError::InvalidNumber {
+            text: s.to_string(),
+        };
+        let trimmed = s.trim();
+        let (negative, body) = match trimmed.strip_prefix('-') {
+            Some(rest) => (true, rest),
+            None => (false, trimmed.strip_prefix('+').unwrap_or(trimmed)),
+        };
+        if body.is_empty() {
+            return Err(invalid());
+        }
+        let (int_part, frac_part) = body.split_once('.').unwrap_or((body, ""));
+        if frac_part.len() > SCALE_DECIMALS as usize {
+            return Err(invalid());
+        }
+        let digits = |part: &str| -> Result<i64, ModelError> {
+            if part.is_empty() {
+                return Ok(0);
+            }
+            if !part.bytes().all(|b| b.is_ascii_digit()) {
+                return Err(invalid());
+            }
+            part.parse::<i64>().map_err(|_| invalid())
+        };
+        let int_val = digits(int_part)?;
+        let frac_val = digits(frac_part)?;
+        let frac_scaled = frac_val
+            .checked_mul(10_i64.pow(SCALE_DECIMALS - frac_part.len() as u32))
+            .ok_or(ModelError::Overflow)?;
+        let magnitude = int_val
+            .checked_mul(SCALE)
+            .and_then(|v| v.checked_add(frac_scaled))
+            .ok_or(ModelError::Overflow)?;
+        Ok(Fixed(if negative { -magnitude } else { magnitude }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,5 +149,21 @@ mod tests {
     #[test]
     fn from_int_overflows_cleanly() {
         assert_eq!(Fixed::from_int(i64::MAX), Err(ModelError::Overflow));
+    }
+
+    #[test]
+    fn parse_round_trips_with_display() {
+        use std::str::FromStr;
+        for s in ["0", "5", "-5", "1.2345", "1.05", "0.1", "-2.25", "0.0001"] {
+            assert_eq!(Fixed::from_str(s).unwrap().to_string(), s);
+        }
+    }
+
+    #[test]
+    fn parse_rejects_bad_input() {
+        use std::str::FromStr;
+        assert!(Fixed::from_str("1.23456").is_err()); // more precision than 4 dp
+        assert!(Fixed::from_str("abc").is_err());
+        assert!(Fixed::from_str("").is_err());
     }
 }

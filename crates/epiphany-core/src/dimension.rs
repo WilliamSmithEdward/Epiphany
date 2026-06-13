@@ -83,6 +83,24 @@ impl Dimension {
         self.index_by_name.get(name).copied()
     }
 
+    /// Iterate the dimension's elements in definition order.
+    pub fn iter_elements(&self) -> impl Iterator<Item = &Element> + '_ {
+        self.elements.iter()
+    }
+
+    /// All consolidation edges as `(parent, child, weight)`, sorted canonically
+    /// by `(parent, child)` for deterministic, diff-friendly output.
+    pub fn edges(&self) -> Vec<(u32, u32, i64)> {
+        let mut out = Vec::new();
+        for (parent, edges) in self.children.iter().enumerate() {
+            for edge in edges {
+                out.push((parent as u32, edge.child, edge.weight));
+            }
+        }
+        out.sort_by_key(|&(parent, child, _)| (parent, child));
+        out
+    }
+
     fn add_element(&mut self, name: impl Into<String>, kind: ElementKind) -> u32 {
         let name = name.into();
         if let Some(&existing) = self.index_by_name.get(&name) {
