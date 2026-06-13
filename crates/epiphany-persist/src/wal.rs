@@ -16,14 +16,20 @@ pub(crate) const WAL_HEADER_LEN: u64 = 8;
 
 const OP_SET_LEAF: u8 = 1;
 const OP_SET_STRING: u8 = 2;
+const OP_BATCH_BEGIN: u8 = 3;
+const OP_BATCH_END: u8 = 4;
 
-/// A decoded WAL record. Phase 1 logs cell writes (numeric and string);
-/// structural changes are captured by a checkpoint (a fresh snapshot), not the
-/// log.
+/// A decoded WAL record. Cell writes (numeric and string) are logged
+/// individually; a transactional batch wraps its writes between `BatchBegin` and
+/// `BatchEnd` markers so recovery applies the batch all-or-nothing (a batch torn
+/// before its end marker is discarded whole). Structural changes are captured by
+/// a checkpoint (a fresh snapshot), not the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Record {
     SetLeaf { coord: Vec<u32>, value: Fixed },
     SetString { coord: Vec<u32>, value: String },
+    BatchBegin { count: u32 },
+    BatchEnd,
 }
 
 /// Why a WAL file could not be read.
@@ -74,6 +80,13 @@ pub(crate) fn encode(record: &Record) -> Vec<u8> {
             payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
             payload.extend_from_slice(bytes);
         }
+        Record::BatchBegin { count } => {
+            payload.push(OP_BATCH_BEGIN);
+            payload.extend_from_slice(&count.to_le_bytes());
+        }
+        Record::BatchEnd => {
+            payload.push(OP_BATCH_END);
+        }
     }
     let mut framed = Vec::with_capacity(payload.len() + 8);
     framed.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -96,6 +109,10 @@ pub(crate) fn replay(bytes: &[u8]) -> Result<Replay, WalError> {
     let mut records = Vec::new();
     let mut pos = WAL_HEADER_LEN as usize;
     let mut good = WAL_HEADER_LEN;
+    // Records buffered inside an open BatchBegin..BatchEnd frame. They are only
+    // committed (and `good` advanced past them) once BatchEnd is read intact, so
+    // a batch torn by a crash before its end marker is discarded whole.
+    let mut batch: Option<Vec<Record>> = None;
     while pos + 4 <= bytes.len() {
         let len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
         let frame_end = pos + 4 + len + 4;
@@ -107,13 +124,31 @@ pub(crate) fn replay(bytes: &[u8]) -> Result<Replay, WalError> {
         if crc32(payload) != crc {
             break; // torn or corrupt trailing record
         }
-        match decode(payload) {
-            Some(record) => records.push(record),
+        let record = match decode(payload) {
+            Some(record) => record,
             None => break, // unknown op: treat as a corrupt tail
+        };
+        match record {
+            Record::BatchBegin { .. } => batch = Some(Vec::new()),
+            Record::BatchEnd => match batch.take() {
+                Some(buffered) => {
+                    records.extend(buffered);
+                    good = frame_end as u64; // the whole batch is now durable
+                }
+                None => break, // an end marker with no begin: corrupt
+            },
+            cell => match &mut batch {
+                Some(buffered) => buffered.push(cell),
+                None => {
+                    records.push(cell);
+                    good = frame_end as u64;
+                }
+            },
         }
         pos = frame_end;
-        good = frame_end as u64;
     }
+    // An unterminated batch (torn before BatchEnd) is dropped: its buffered
+    // records are never committed and `good` stays before its BatchBegin.
     Ok(Replay {
         records,
         good_len: good,
@@ -161,6 +196,11 @@ fn decode(payload: &[u8]) -> Option<Record> {
                 .to_string();
             Some(Record::SetString { coord, value })
         }
+        OP_BATCH_BEGIN => {
+            let count = u32::from_le_bytes(rest.get(0..4)?.try_into().unwrap());
+            Some(Record::BatchBegin { count })
+        }
+        OP_BATCH_END => Some(Record::BatchEnd),
         _ => None,
     }
 }
@@ -261,5 +301,72 @@ mod tests {
     #[test]
     fn bad_header_is_rejected() {
         assert!(matches!(replay(b"nope").unwrap_err(), WalError::BadHeader));
+    }
+
+    #[test]
+    fn batch_commits_atomically_on_end_marker() {
+        let mut bytes = header().to_vec();
+        bytes.extend_from_slice(&encode(&Record::SetLeaf {
+            coord: vec![0],
+            value: Fixed::from(1),
+        }));
+        bytes.extend_from_slice(&encode(&Record::BatchBegin { count: 2 }));
+        bytes.extend_from_slice(&encode(&Record::SetLeaf {
+            coord: vec![1],
+            value: Fixed::from(2),
+        }));
+        bytes.extend_from_slice(&encode(&Record::SetLeaf {
+            coord: vec![2],
+            value: Fixed::from(3),
+        }));
+        bytes.extend_from_slice(&encode(&Record::BatchEnd));
+
+        let replay = replay(&bytes).unwrap();
+        // The batch markers are consumed; the caller sees a flat record list.
+        assert_eq!(
+            replay.records,
+            vec![
+                Record::SetLeaf {
+                    coord: vec![0],
+                    value: Fixed::from(1)
+                },
+                Record::SetLeaf {
+                    coord: vec![1],
+                    value: Fixed::from(2)
+                },
+                Record::SetLeaf {
+                    coord: vec![2],
+                    value: Fixed::from(3)
+                },
+            ]
+        );
+        assert_eq!(replay.good_len as usize, bytes.len());
+    }
+
+    #[test]
+    fn torn_batch_without_end_is_discarded() {
+        let mut bytes = header().to_vec();
+        bytes.extend_from_slice(&encode(&Record::SetLeaf {
+            coord: vec![0],
+            value: Fixed::from(9),
+        }));
+        let committed_len = bytes.len();
+        // An open batch that never reaches BatchEnd (a crash mid-batch).
+        bytes.extend_from_slice(&encode(&Record::BatchBegin { count: 2 }));
+        bytes.extend_from_slice(&encode(&Record::SetLeaf {
+            coord: vec![1],
+            value: Fixed::from(2),
+        }));
+
+        let replay = replay(&bytes).unwrap();
+        // Only the standalone pre-batch record survives; the open batch is dropped.
+        assert_eq!(
+            replay.records,
+            vec![Record::SetLeaf {
+                coord: vec![0],
+                value: Fixed::from(9)
+            }]
+        );
+        assert_eq!(replay.good_len as usize, committed_len);
     }
 }

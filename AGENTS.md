@@ -16,6 +16,7 @@ Epiphany is an in-memory, multidimensional **OLAP server** (Rust) with a **REST 
   - `epiphany-flow`: Flows, the TypeScript ETL and automation engine, with data sources and a scheduler (Phase 5).
   - `epiphany-security`: users, groups, and object and element authorization (Phase 7).
   - `epiphany-persist`: durability (transaction log, snapshots, recovery) (Phase 1 and 8).
+  - `epiphany-engine`: the concurrent layer over durable stores: MVCC copy-on-write snapshot reads and atomic, all-or-nothing batch commits (ADR-0001) (Phase 2).
   - `epiphany-api`: REST and WebSocket surface on Axum (Phase 2).
   - `epiphany-server`: the daemon and composition root.
 - `web/`: React + TypeScript client (Vite).

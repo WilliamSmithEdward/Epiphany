@@ -14,7 +14,7 @@
 mod store;
 mod wal;
 
-pub use store::{PersistError, Store};
+pub use store::{CellWrite, PersistError, Store};
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-persist";

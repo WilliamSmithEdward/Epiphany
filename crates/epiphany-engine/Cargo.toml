@@ -1,0 +1,17 @@
+[package]
+name = "epiphany-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Epiphany: the concurrent engine over durable cube stores (MVCC snapshot reads + atomic batch commits, ADR-0001)."
+
+[lints]
+workspace = true
+
+[dependencies]
+epiphany-core = { path = "../epiphany-core" }
+epiphany-persist = { path = "../epiphany-persist" }
+epiphany-determinism = { path = "../epiphany-determinism" }
+arc-swap = "1.7"

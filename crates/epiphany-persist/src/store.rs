@@ -22,6 +22,14 @@ const SNAPSHOT_FILE: &str = "snapshot.model";
 const SNAPSHOT_TMP: &str = "snapshot.model.tmp";
 const WAL_FILE: &str = "wal.log";
 
+/// A single write in a batch: a numeric leaf value or a string cell value at a
+/// coordinate (element indices, in dimension order).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CellWrite {
+    Leaf { coord: Vec<u32>, value: Fixed },
+    Str { coord: Vec<u32>, value: String },
+}
+
 /// An error from the durability layer.
 #[derive(Debug)]
 pub enum PersistError {
@@ -35,6 +43,8 @@ pub enum PersistError {
     Save(SaveError),
     /// The WAL header was missing or unrecognized.
     Corrupt(String),
+    /// A write in a batch was rejected by the model; the batch was not applied.
+    BatchRejected { index: usize, source: ModelError },
 }
 
 impl std::fmt::Display for PersistError {
@@ -45,6 +55,9 @@ impl std::fmt::Display for PersistError {
             PersistError::Load(e) => write!(f, "could not load snapshot: {e}"),
             PersistError::Save(e) => write!(f, "could not write snapshot: {e}"),
             PersistError::Corrupt(m) => write!(f, "corrupt persistence: {m}"),
+            PersistError::BatchRejected { index, source } => {
+                write!(f, "batch write {index} rejected: {source}")
+            }
         }
     }
 }
@@ -116,6 +129,8 @@ impl Store {
                 match record {
                     Record::SetLeaf { coord, value } => cube.set_leaf(coord, *value)?,
                     Record::SetString { coord, value } => cube.set_string(coord, value)?,
+                    // Batch markers are consumed by wal::replay and never surface here.
+                    Record::BatchBegin { .. } | Record::BatchEnd => {}
                 }
             }
             // Drop any torn tail, then position at the end for new appends.
@@ -203,6 +218,54 @@ impl Store {
         if self.sync_on_write {
             self.wal.sync_data()?;
         }
+        self.uncheckpointed += 1;
+        if self.checkpoint_after != 0 && self.uncheckpointed >= self.checkpoint_after {
+            self.checkpoint()?;
+        }
+        Ok(())
+    }
+
+    /// Apply a batch of writes atomically (all-or-nothing). Validates and applies
+    /// every write to a throwaway clone first: any rejected write returns
+    /// [`PersistError::BatchRejected`] with its index and leaves the live cube
+    /// untouched. On success the framed batch (begin .. records .. end) is
+    /// appended as one WAL unit with a single fsync, then the trial is adopted; a
+    /// batch torn by a crash before its end marker is discarded whole on recovery.
+    /// Counts as one auto-checkpoint step.
+    pub fn set_batch(&mut self, writes: &[CellWrite]) -> Result<(), PersistError> {
+        // 1. Validate + apply to a throwaway clone; abort the whole batch on error.
+        let mut trial = self.cube.clone();
+        for (index, write) in writes.iter().enumerate() {
+            let applied = match write {
+                CellWrite::Leaf { coord, value } => trial.set_leaf(coord, *value),
+                CellWrite::Str { coord, value } => trial.set_string(coord, value),
+            };
+            applied.map_err(|source| PersistError::BatchRejected { index, source })?;
+        }
+        // 2. Durably append the framed batch as one unit, a single fsync.
+        let mut framed = wal::encode(&Record::BatchBegin {
+            count: writes.len() as u32,
+        });
+        for write in writes {
+            let record = match write {
+                CellWrite::Leaf { coord, value } => Record::SetLeaf {
+                    coord: coord.clone(),
+                    value: *value,
+                },
+                CellWrite::Str { coord, value } => Record::SetString {
+                    coord: coord.clone(),
+                    value: value.clone(),
+                },
+            };
+            framed.extend_from_slice(&wal::encode(&record));
+        }
+        framed.extend_from_slice(&wal::encode(&Record::BatchEnd));
+        self.wal.write_all(&framed)?;
+        if self.sync_on_write {
+            self.wal.sync_data()?;
+        }
+        // 3. Adopt the validated trial; the WAL already reflects it durably.
+        self.cube = trial;
         self.uncheckpointed += 1;
         if self.checkpoint_after != 0 && self.uncheckpointed >= self.checkpoint_after {
             self.checkpoint()?;
@@ -416,6 +479,58 @@ mod tests {
         let store = Store::open(&dir).unwrap();
         assert_eq!(store.cube().get_leaf(&[sales]).unwrap(), Fixed::from(5));
         assert_eq!(store.cube().get_string(&[note]).unwrap(), Some("checked"));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn batch_is_atomic_and_recovers() {
+        let dir = scratch("batch");
+        let f = fixture();
+        let (r, p, region_total) = (f.r, f.p, f.region_total);
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            // A valid batch applies fully.
+            store
+                .set_batch(&[
+                    CellWrite::Leaf {
+                        coord: vec![r[0], p[0]],
+                        value: Fixed::from(10),
+                    },
+                    CellWrite::Leaf {
+                        coord: vec![r[1], p[0]],
+                        value: Fixed::from(20),
+                    },
+                ])
+                .unwrap();
+            // A batch whose second write targets a consolidated element is
+            // rejected wholesale, leaving the prior state untouched.
+            let err = store
+                .set_batch(&[
+                    CellWrite::Leaf {
+                        coord: vec![r[2], p[0]],
+                        value: Fixed::from(99),
+                    },
+                    CellWrite::Leaf {
+                        coord: vec![region_total, p[0]],
+                        value: Fixed::from(1),
+                    },
+                ])
+                .unwrap_err();
+            assert!(matches!(err, PersistError::BatchRejected { index: 1, .. }));
+            assert_eq!(
+                store.cube().get_leaf(&[r[2], p[0]]).unwrap(),
+                Fixed::ZERO,
+                "a rejected batch leaves no partial writes"
+            );
+            assert_eq!(store.cube().cell_count(), 2);
+            // Drop without checkpoint: WAL replay must recover only the committed batch.
+        }
+        let store = Store::open(&dir).unwrap();
+        assert_eq!(store.cube().cell_count(), 2);
+        assert_eq!(
+            store.cube().get(&[region_total, p[0]]).unwrap(),
+            Fixed::from(30)
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

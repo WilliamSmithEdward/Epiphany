@@ -202,6 +202,7 @@ A Cargo workspace of focused crates behind a single server binary, plus a separa
 - **`epiphany-flow`:** the **TypeScript flow** interpreter (embedded JS engine), host-function API, data-source connectors (CSV/SQL/view), the model testing runner, and the job scheduler.
 - **`epiphany-security`:** native authentication, users and groups, object and element authorization, and the **audit / user-action log** (append-only, distinct from the durability WAL; ADR-0010).
 - **`epiphany-persist`:** transaction log, snapshots, recovery, and startup load (a runtime cache over the text model).
+- **`epiphany-engine`:** the concurrent layer over the durable stores: MVCC copy-on-write snapshots (lock-free reads that never block writes) and atomic, all-or-nothing batch commits (ADR-0001).
 - **`epiphany-api`:** Axum REST and WebSocket, the OpenAPI schema, request validation, and session and token handling.
 - **`epiphany-server`:** the daemon (config, startup load, scheduler, tracing and metrics wiring).
 - **`epiphany-web`:** the React + TypeScript client.
