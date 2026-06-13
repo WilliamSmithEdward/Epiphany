@@ -31,6 +31,18 @@ pub enum ModelError {
     EmptyCube,
     /// A numeric value could not be parsed from text.
     InvalidNumber { text: String },
+    /// An attribute name was not defined on the dimension.
+    AttributeNotFound {
+        dimension: String,
+        attribute: String,
+    },
+    /// An attribute value did not match the attribute's declared kind.
+    AttributeTypeMismatch {
+        dimension: String,
+        attribute: String,
+    },
+    /// Two elements were given the same alias within one dimension.
+    AliasConflict { dimension: String, alias: String },
 }
 
 impl fmt::Display for ModelError {
@@ -70,6 +82,24 @@ impl fmt::Display for ModelError {
             ModelError::Overflow => write!(f, "fixed-point arithmetic overflow"),
             ModelError::EmptyCube => write!(f, "a cube must have at least one dimension"),
             ModelError::InvalidNumber { text } => write!(f, "invalid number: '{text}'"),
+            ModelError::AttributeNotFound {
+                dimension,
+                attribute,
+            } => write!(
+                f,
+                "attribute '{attribute}' is not defined on dimension '{dimension}'"
+            ),
+            ModelError::AttributeTypeMismatch {
+                dimension,
+                attribute,
+            } => write!(
+                f,
+                "value for attribute '{attribute}' on dimension '{dimension}' does not match its kind"
+            ),
+            ModelError::AliasConflict { dimension, alias } => write!(
+                f,
+                "alias '{alias}' is assigned to more than one element in dimension '{dimension}'"
+            ),
         }
     }
 }

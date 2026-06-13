@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use crate::ModelError;
+use crate::{Fixed, ModelError};
 
 /// The kind of an element.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,6 +18,31 @@ pub enum ElementKind {
 pub struct Element {
     pub name: String,
     pub kind: ElementKind,
+}
+
+/// The kind of a dimension attribute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttributeKind {
+    /// Free text.
+    Text,
+    /// An exact numeric value.
+    Numeric,
+    /// An alternate display name that also resolves to its element.
+    Alias,
+}
+
+/// A value attached to an element via an attribute.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AttributeValue {
+    Text(String),
+    Numeric(Fixed),
+}
+
+/// An attribute definition: a named, typed column over a dimension's elements.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttributeDef {
+    pub name: String,
+    pub kind: AttributeKind,
 }
 
 /// A weighted parent->child consolidation edge.
@@ -39,6 +64,13 @@ pub struct Dimension {
     index_by_name: HashMap<String, u32>,
     /// `children[parent]` = the parent's weighted child edges.
     children: Vec<Vec<Edge>>,
+    /// Attribute definitions, in declaration order.
+    attributes: Vec<AttributeDef>,
+    attr_index_by_name: HashMap<String, u32>,
+    /// `attr_values[element]` maps an attribute index to that element's value.
+    attr_values: Vec<HashMap<u32, AttributeValue>>,
+    /// Reverse lookup from an alias value to its element index.
+    alias_to_element: HashMap<String, u32>,
 }
 
 impl Dimension {
@@ -49,6 +81,10 @@ impl Dimension {
             elements: Vec::new(),
             index_by_name: HashMap::new(),
             children: Vec::new(),
+            attributes: Vec::new(),
+            attr_index_by_name: HashMap::new(),
+            attr_values: Vec::new(),
+            alias_to_element: HashMap::new(),
         }
     }
 
@@ -101,6 +137,103 @@ impl Dimension {
         out
     }
 
+    /// Define an attribute (idempotent by name; returns its index).
+    pub fn add_attribute(&mut self, name: impl Into<String>, kind: AttributeKind) -> u32 {
+        let name = name.into();
+        if let Some(&existing) = self.attr_index_by_name.get(&name) {
+            return existing;
+        }
+        let index = self.attributes.len() as u32;
+        self.attr_index_by_name.insert(name.clone(), index);
+        self.attributes.push(AttributeDef { name, kind });
+        index
+    }
+
+    /// The attribute definitions, in declaration order.
+    pub fn attribute_defs(&self) -> &[AttributeDef] {
+        &self.attributes
+    }
+
+    /// Find an attribute's index by name.
+    pub fn attribute_index(&self, name: &str) -> Option<u32> {
+        self.attr_index_by_name.get(name).copied()
+    }
+
+    /// Set an element's value for a defined attribute.
+    ///
+    /// The value type must match the attribute kind (Numeric takes a numeric
+    /// value; Text and Alias take text). An Alias value also becomes resolvable
+    /// via `resolve`, and must be unique within the dimension.
+    pub fn set_attribute(
+        &mut self,
+        element: u32,
+        attribute: &str,
+        value: AttributeValue,
+    ) -> Result<(), ModelError> {
+        self.element(element)?;
+        let attr_index =
+            self.attribute_index(attribute)
+                .ok_or_else(|| ModelError::AttributeNotFound {
+                    dimension: self.name.clone(),
+                    attribute: attribute.to_string(),
+                })?;
+        let kind = self.attributes[attr_index as usize].kind;
+        let type_ok = matches!(
+            (kind, &value),
+            (AttributeKind::Numeric, AttributeValue::Numeric(_))
+                | (AttributeKind::Text, AttributeValue::Text(_))
+                | (AttributeKind::Alias, AttributeValue::Text(_))
+        );
+        if !type_ok {
+            return Err(ModelError::AttributeTypeMismatch {
+                dimension: self.name.clone(),
+                attribute: attribute.to_string(),
+            });
+        }
+        if kind == AttributeKind::Alias {
+            if let AttributeValue::Text(alias) = &value {
+                if let Some(&owner) = self.alias_to_element.get(alias) {
+                    if owner != element {
+                        return Err(ModelError::AliasConflict {
+                            dimension: self.name.clone(),
+                            alias: alias.clone(),
+                        });
+                    }
+                }
+                self.alias_to_element.insert(alias.clone(), element);
+            }
+        }
+        self.attr_values[element as usize].insert(attr_index, value);
+        Ok(())
+    }
+
+    /// Read an element's value for an attribute, if set.
+    pub fn attribute(&self, element: u32, attribute: &str) -> Option<&AttributeValue> {
+        let attr_index = self.attribute_index(attribute)?;
+        self.attr_values
+            .get(element as usize)
+            .and_then(|values| values.get(&attr_index))
+    }
+
+    /// All set attribute values as `(element, attribute, value)`, sorted
+    /// canonically by `(element, attribute)` for deterministic output.
+    pub fn attribute_values(&self) -> Vec<(u32, u32, AttributeValue)> {
+        let mut out = Vec::new();
+        for (element, values) in self.attr_values.iter().enumerate() {
+            for (&attr_index, value) in values {
+                out.push((element as u32, attr_index, value.clone()));
+            }
+        }
+        out.sort_by_key(|&(element, attr_index, _)| (element, attr_index));
+        out
+    }
+
+    /// Resolve a name to an element index, by element name first, then by alias.
+    pub fn resolve(&self, name: &str) -> Option<u32> {
+        self.index_of(name)
+            .or_else(|| self.alias_to_element.get(name).copied())
+    }
+
     fn add_element(&mut self, name: impl Into<String>, kind: ElementKind) -> u32 {
         let name = name.into();
         if let Some(&existing) = self.index_by_name.get(&name) {
@@ -110,6 +243,7 @@ impl Dimension {
         self.index_by_name.insert(name.clone(), index);
         self.elements.push(Element { name, kind });
         self.children.push(Vec::new());
+        self.attr_values.push(HashMap::new());
         index
     }
 
@@ -242,6 +376,68 @@ mod tests {
         assert!(matches!(
             d.add_child(a, b, 1).unwrap_err(),
             ModelError::ParentNotConsolidated { .. }
+        ));
+    }
+
+    #[test]
+    fn attributes_store_and_read() {
+        let mut d = Dimension::new("Region");
+        let north = d.add_leaf("North");
+        d.add_attribute("Code", AttributeKind::Text);
+        d.add_attribute("Population", AttributeKind::Numeric);
+        d.set_attribute(north, "Code", AttributeValue::Text("N".into()))
+            .unwrap();
+        d.set_attribute(
+            north,
+            "Population",
+            AttributeValue::Numeric(Fixed::from(1000)),
+        )
+        .unwrap();
+        assert_eq!(
+            d.attribute(north, "Code"),
+            Some(&AttributeValue::Text("N".into()))
+        );
+        assert_eq!(
+            d.attribute(north, "Population"),
+            Some(&AttributeValue::Numeric(Fixed::from(1000)))
+        );
+        assert_eq!(d.attribute(north, "Missing"), None);
+    }
+
+    #[test]
+    fn alias_resolves_to_element() {
+        let mut d = Dimension::new("Region");
+        let na = d.add_leaf("NA");
+        d.add_attribute("Alias", AttributeKind::Alias);
+        d.set_attribute(na, "Alias", AttributeValue::Text("North America".into()))
+            .unwrap();
+        assert_eq!(d.resolve("NA"), Some(na));
+        assert_eq!(d.resolve("North America"), Some(na));
+        assert_eq!(d.resolve("Nowhere"), None);
+    }
+
+    #[test]
+    fn attribute_type_mismatch_is_rejected() {
+        let mut d = Dimension::new("D");
+        let a = d.add_leaf("A");
+        d.add_attribute("Population", AttributeKind::Numeric);
+        assert!(matches!(
+            d.set_attribute(a, "Population", AttributeValue::Text("x".into())),
+            Err(ModelError::AttributeTypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn duplicate_alias_is_rejected() {
+        let mut d = Dimension::new("D");
+        let a = d.add_leaf("A");
+        let b = d.add_leaf("B");
+        d.add_attribute("Alias", AttributeKind::Alias);
+        d.set_attribute(a, "Alias", AttributeValue::Text("X".into()))
+            .unwrap();
+        assert!(matches!(
+            d.set_attribute(b, "Alias", AttributeValue::Text("X".into())),
+            Err(ModelError::AliasConflict { .. })
         ));
     }
 }

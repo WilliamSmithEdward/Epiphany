@@ -2,8 +2,8 @@
 //!
 //! A cube and its dimensions round-trip losslessly through a human-readable,
 //! Git-friendly TOML document. Serialization is canonical: elements in
-//! definition order, edges and cells sorted, so re-serializing a parsed model
-//! reproduces byte-identical text (verified by a round-trip test).
+//! definition order, edges, attributes, and cells sorted, so re-serializing a
+//! parsed model reproduces byte-identical text (verified by a round-trip test).
 //!
 //! The format is model-shaped: top-level `[[dimension]]` blocks plus a `[cube]`
 //! that references them by name, so it stays forward-compatible with a future
@@ -15,7 +15,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{Cube, Dimension, ElementKind, Fixed, ModelError};
+use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
 const FORMAT_TAG: &str = "epiphany-model/v0";
 
@@ -124,6 +124,10 @@ struct DimDoc {
     elements: Vec<ElDoc>,
     #[serde(default)]
     edges: Vec<EdgeDoc>,
+    #[serde(default)]
+    attributes: Vec<AttrDefDoc>,
+    #[serde(default)]
+    attribute_values: Vec<AttrValDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -147,6 +151,27 @@ struct EdgeDoc {
 }
 
 #[derive(Serialize, Deserialize)]
+struct AttrDefDoc {
+    name: String,
+    kind: AttrKindDoc,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum AttrKindDoc {
+    Text,
+    Numeric,
+    Alias,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AttrValDoc {
+    element: String,
+    attribute: String,
+    value: String,
+}
+
+#[derive(Serialize, Deserialize)]
 struct CellDoc {
     coord: Vec<String>,
     value: String,
@@ -161,32 +186,129 @@ impl From<ElementKind> for KindDoc {
     }
 }
 
+impl From<AttributeKind> for AttrKindDoc {
+    fn from(kind: AttributeKind) -> Self {
+        match kind {
+            AttributeKind::Text => AttrKindDoc::Text,
+            AttributeKind::Numeric => AttrKindDoc::Numeric,
+            AttributeKind::Alias => AttrKindDoc::Alias,
+        }
+    }
+}
+
+impl From<AttrKindDoc> for AttributeKind {
+    fn from(kind: AttrKindDoc) -> Self {
+        match kind {
+            AttrKindDoc::Text => AttributeKind::Text,
+            AttrKindDoc::Numeric => AttributeKind::Numeric,
+            AttrKindDoc::Alias => AttributeKind::Alias,
+        }
+    }
+}
+
+fn dim_doc(dim: &Dimension) -> DimDoc {
+    let elements = dim
+        .iter_elements()
+        .map(|el| ElDoc {
+            name: el.name.clone(),
+            kind: el.kind.into(),
+        })
+        .collect();
+
+    let edges = dim
+        .edges()
+        .into_iter()
+        .map(|(parent, child, weight)| EdgeDoc {
+            parent: dim.element(parent).expect("valid index").name.clone(),
+            child: dim.element(child).expect("valid index").name.clone(),
+            weight,
+        })
+        .collect();
+
+    let attributes = dim
+        .attribute_defs()
+        .iter()
+        .map(|a| AttrDefDoc {
+            name: a.name.clone(),
+            kind: a.kind.into(),
+        })
+        .collect();
+
+    let attribute_values = dim
+        .attribute_values()
+        .into_iter()
+        .map(|(element, attr_index, value)| AttrValDoc {
+            element: dim.element(element).expect("valid index").name.clone(),
+            attribute: dim.attribute_defs()[attr_index as usize].name.clone(),
+            value: match value {
+                AttributeValue::Text(text) => text,
+                AttributeValue::Numeric(number) => number.to_string(),
+            },
+        })
+        .collect();
+
+    DimDoc {
+        name: dim.name().to_string(),
+        elements,
+        edges,
+        attributes,
+        attribute_values,
+    }
+}
+
+fn build_dimension(dim_doc: &DimDoc) -> Result<Dimension, LoadError> {
+    let mut dim = Dimension::new(&dim_doc.name);
+    for el in &dim_doc.elements {
+        match el.kind {
+            KindDoc::Leaf => dim.add_leaf(&el.name),
+            KindDoc::Consolidated => dim.add_consolidated(&el.name),
+        };
+    }
+    for edge in &dim_doc.edges {
+        let parent = dim
+            .index_of(&edge.parent)
+            .ok_or_else(|| LoadError::UnknownElement {
+                dimension: dim_doc.name.clone(),
+                element: edge.parent.clone(),
+            })?;
+        let child = dim
+            .index_of(&edge.child)
+            .ok_or_else(|| LoadError::UnknownElement {
+                dimension: dim_doc.name.clone(),
+                element: edge.child.clone(),
+            })?;
+        dim.add_child(parent, child, edge.weight)?;
+    }
+    for attr in &dim_doc.attributes {
+        dim.add_attribute(&attr.name, attr.kind.into());
+    }
+    for av in &dim_doc.attribute_values {
+        let element = dim
+            .index_of(&av.element)
+            .ok_or_else(|| LoadError::UnknownElement {
+                dimension: dim_doc.name.clone(),
+                element: av.element.clone(),
+            })?;
+        let kind = dim
+            .attribute_index(&av.attribute)
+            .and_then(|i| dim.attribute_defs().get(i as usize).map(|d| d.kind))
+            .ok_or_else(|| ModelError::AttributeNotFound {
+                dimension: dim_doc.name.clone(),
+                attribute: av.attribute.clone(),
+            })?;
+        let value = match kind {
+            AttributeKind::Numeric => AttributeValue::Numeric(Fixed::from_str(&av.value)?),
+            AttributeKind::Text | AttributeKind::Alias => AttributeValue::Text(av.value.clone()),
+        };
+        dim.set_attribute(element, &av.attribute, value)?;
+    }
+    Ok(dim)
+}
+
 impl Cube {
     /// Serialize this cube and its dimensions to canonical model-as-code TOML.
     pub fn to_model_text(&self) -> Result<String, SaveError> {
-        let dimensions: Vec<DimDoc> = self
-            .dimensions()
-            .iter()
-            .map(|dim| DimDoc {
-                name: dim.name().to_string(),
-                elements: dim
-                    .iter_elements()
-                    .map(|el| ElDoc {
-                        name: el.name.clone(),
-                        kind: el.kind.into(),
-                    })
-                    .collect(),
-                edges: dim
-                    .edges()
-                    .into_iter()
-                    .map(|(parent, child, weight)| EdgeDoc {
-                        parent: dim.element(parent).expect("valid index").name.clone(),
-                        child: dim.element(child).expect("valid index").name.clone(),
-                        weight,
-                    })
-                    .collect(),
-            })
-            .collect();
+        let dimensions: Vec<DimDoc> = self.dimensions().iter().map(dim_doc).collect();
 
         // Cells, sorted by coordinate (element-index tuple) for canonical output.
         let mut sorted: Vec<(Vec<u32>, Fixed)> = self
@@ -238,29 +360,7 @@ impl Cube {
         // Build each dimension, keyed by name.
         let mut dims_by_name: HashMap<String, Dimension> = HashMap::new();
         for dim_doc in &doc.dimensions {
-            let mut dim = Dimension::new(&dim_doc.name);
-            for el in &dim_doc.elements {
-                match el.kind {
-                    KindDoc::Leaf => dim.add_leaf(&el.name),
-                    KindDoc::Consolidated => dim.add_consolidated(&el.name),
-                };
-            }
-            for edge in &dim_doc.edges {
-                let parent =
-                    dim.index_of(&edge.parent)
-                        .ok_or_else(|| LoadError::UnknownElement {
-                            dimension: dim_doc.name.clone(),
-                            element: edge.parent.clone(),
-                        })?;
-                let child = dim
-                    .index_of(&edge.child)
-                    .ok_or_else(|| LoadError::UnknownElement {
-                        dimension: dim_doc.name.clone(),
-                        element: edge.child.clone(),
-                    })?;
-                dim.add_child(parent, child, edge.weight)?;
-            }
-            dims_by_name.insert(dim_doc.name.clone(), dim);
+            dims_by_name.insert(dim_doc.name.clone(), build_dimension(dim_doc)?);
         }
 
         // Assemble the cube's dimensions in referenced order.
@@ -330,6 +430,14 @@ mod tests {
         }
         region.add_child(coastal, north, 1).unwrap();
         region.add_child(coastal, east, 1).unwrap();
+        region.add_attribute("Code", AttributeKind::Text);
+        region.add_attribute("FullName", AttributeKind::Alias);
+        region
+            .set_attribute(north, "Code", AttributeValue::Text("N".into()))
+            .unwrap();
+        region
+            .set_attribute(north, "FullName", AttributeValue::Text("Northern".into()))
+            .unwrap();
 
         let mut version = Dimension::new("Version");
         let actual = version.add_leaf("Actual");
@@ -377,6 +485,20 @@ mod tests {
             cube2.get(&[total, variance]).unwrap(),
             Fixed::from_str("32.5").unwrap()
         );
+    }
+
+    #[test]
+    fn round_trip_preserves_attributes_and_aliases() {
+        let cube = sample_cube();
+        let text = cube.to_model_text().unwrap();
+        let cube2 = Cube::from_model_text(&text).unwrap();
+        let region = cube2.dimension(0);
+        let north = region.index_of("North").unwrap();
+        assert_eq!(
+            region.attribute(north, "Code"),
+            Some(&AttributeValue::Text("N".into()))
+        );
+        assert_eq!(region.resolve("Northern"), Some(north));
     }
 
     #[test]
