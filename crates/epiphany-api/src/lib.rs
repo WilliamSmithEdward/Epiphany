@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 
@@ -18,7 +18,10 @@ use epiphany_engine::Engine;
 use epiphany_security::SecurityStore;
 
 mod auth;
+mod dto;
 mod error;
+mod resolve;
+mod routes;
 mod session;
 
 pub use error::ApiError;
@@ -54,6 +57,13 @@ pub fn build_router(state: AppState) -> Router {
     // Protected routes require a valid session via the AuthPrincipal extractor.
     let protected = Router::new()
         .route("/api/v1/cubes", get(list_cubes))
+        .route("/api/v1/cubes/{cube}", get(routes::get_cube))
+        .route("/api/v1/cubes/{cube}/cells/read", post(routes::read_cells))
+        .route("/api/v1/cubes/{cube}/cell", put(routes::write_cell))
+        .route(
+            "/api/v1/cubes/{cube}/cells/batch",
+            post(routes::batch_write),
+        )
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/logout", post(auth::logout))
         .route("/api/v1/auth/password", post(auth::change_password));
