@@ -22,7 +22,7 @@ Treat this as an operating policy for software changes.
 
 Priority order:
 
-1. The user’s explicit task.
+1. The user's explicit task.
 2. Repository-specific instructions such as `AGENTS.md`, `CLAUDE.md`, `.github/copilot-instructions.md`, `CONTRIBUTING.md`, or local docs.
 3. Existing project architecture and style.
 4. This guide.
@@ -107,7 +107,7 @@ In the final response or commit/PR description, include:
 
 **Bad smells:**
 
-- “While I was here” edits.
+- "While I was here" edits.
 - Broad rewrites for a narrow bug.
 - Large formatting churn mixed with logic changes.
 - Multiple unrelated bug fixes in one patch.
@@ -163,7 +163,7 @@ In the final response or commit/PR description, include:
 
 **Bad smells:**
 
-- “Looks good” without running checks.
+- "Looks good" without running checks.
 - Only testing unrelated paths.
 - Ignoring flaky or failing tests without explanation.
 - Relying on manual inspection for behavior that can be tested.
@@ -220,7 +220,7 @@ In the final response or commit/PR description, include:
 **Bad smells:**
 
 - Factories, strategies, adapters, or plugins with one implementation and no current need.
-- Parameters added only because “maybe later.”
+- Parameters added only because "maybe later."
 - Code paths that cannot be reached.
 - Complex generic code replacing simple direct logic.
 
@@ -331,7 +331,7 @@ In the final response or commit/PR description, include:
 
 **Bad smells:**
 
-- “misc fixes” commits.
+- "misc fixes" commits.
 - Formatting changes mixed with behavior changes.
 - Large unrelated snapshots.
 - Commit messages that only repeat file names.
@@ -340,7 +340,7 @@ In the final response or commit/PR description, include:
 
 ## RG-10: Manage dependencies and supply-chain risk
 
-**Core rule:** Dependencies are part of the system’s attack surface and maintenance burden.
+**Core rule:** Dependencies are part of the system's attack surface and maintenance burden.
 
 **Agent behavior:**
 
@@ -356,7 +356,7 @@ In the final response or commit/PR description, include:
 - Each dependency has a clear purpose.
 - Known vulnerabilities are addressed or explicitly accepted with rationale.
 - Dependency changes are isolated and reviewable.
-- Builds are reproducible enough for the project’s risk level.
+- Builds are reproducible enough for the project's risk level.
 
 **Bad smells:**
 
@@ -446,7 +446,7 @@ In the final response or commit/PR description, include:
 **Bad smells:**
 
 - Silent failure paths.
-- Logs that say only “failed.”
+- Logs that say only "failed."
 - High-volume debug noise in normal operation.
 - Secrets, tokens, or raw credentials in logs.
 
@@ -473,7 +473,7 @@ In the final response or commit/PR description, include:
 
 **Bad smells:**
 
-- “Cleanup” that changes behavior accidentally.
+- "Cleanup" that changes behavior accidentally.
 - Large rewrites without tests.
 - New abstractions that make the code harder to follow.
 - Mixing unrelated refactors with feature changes.
@@ -635,7 +635,7 @@ These rules were requested directly and do not require the three-source research
 
 - Prefer intentional migrations over hidden compatibility shims.
 - Time-box compatibility layers and document removal plans.
-- Avoid special-case branches that bypass the system’s normal model.
+- Avoid special-case branches that bypass the system's normal model.
 - Fix the underlying abstraction when several one-offs point to the same design gap.
 
 **Good outcome:** Compatibility is deliberate, documented, and temporary where possible.
@@ -654,6 +654,22 @@ These rules were requested directly and do not require the three-source research
 - Avoid creating parallel systems that do almost the same thing.
 
 **Good outcome:** New cases can use the standard path instead of adding another bespoke branch.
+
+---
+
+## UM-07: Avoid AI tells and unnecessary non-ASCII
+
+**Core rule:** Written output (code, comments, docs, commit messages) should read as if a careful human wrote it. Avoid obvious "AI tells," and do not use non-ASCII characters unless there is a clear, explicit, agreed-upon need.
+
+**Agent behavior:**
+
+- Do not use em dashes or en dashes. Use a comma, colon, period, or parentheses, or restructure the sentence.
+- Default to plain ASCII: straight quotes (not curly), `-` (not a Unicode minus), `...` (not an ellipsis glyph), `->` (not an arrow glyph), and spelled-out references like "section 8" (not a section sign).
+- Avoid filler and marketing cadence: forced rule-of-three triads and words like "seamless", "robust", "comprehensive", "leverage", "delve", and "boasts".
+- Do not over-bold prose or add emoji.
+- Non-ASCII is fine when it is genuinely required and agreed upon: identifiers or data in another natural language, math or scientific notation that ASCII would make ambiguous, fixtures that deliberately exercise Unicode, or a documented domain need.
+
+**Good outcome:** A reader cannot tell the text was machine-generated from its punctuation or phrasing, and files stay diff-friendly and portable across editors and platforms.
 
 ---
 
@@ -706,6 +722,7 @@ Score each area as **pass**, **needs work**, or **not applicable**.
 | Documentation | Did relevant docs, examples, or ADRs change with the code? |
 | Maintainability | Will a future maintainer understand this quickly? |
 | Agent fit | Would another agent have enough context to continue safely? |
+| Style and encoding | Is the writing plain ASCII, free of AI tells and gratuitous Unicode (UM-07)? |
 
 ---
 
@@ -759,6 +776,7 @@ Make the smallest correct change that satisfies the task. Preserve existing arch
 - Prefer unified project-wide solutions over one-off patches.
 - Avoid speculative abstractions.
 - Update docs when behavior, setup, API, or architecture changes.
+- Write plain ASCII and avoid AI tells (no em dashes, no gratuitous Unicode).
 
 ## Validation
 Run targeted tests first, then broader checks when practical.
@@ -790,6 +808,7 @@ Use these defaults when the repository does not specify otherwise.
 - Preserve backwards compatibility only when it is a real supported contract, not accidental legacy behavior.
 - If compatibility is required, isolate it, document it, and define the removal path when possible.
 - Prefer project-wide mechanisms over local hacks.
+- Write in plain ASCII and avoid obvious AI tells (UM-07); introduce non-ASCII only when there is a clear, explicit, agreed-upon need.
 
 ---
 
@@ -806,3 +825,4 @@ A good agentic code change is:
 - **Documented:** behavior and decisions are not trapped in chat history.
 - **Unified:** avoids one-off hacks when a shared solution is warranted.
 - **Balanced:** avoids both giant monolithic files and excessive file fragmentation.
+- **Plain:** reads as human-written ASCII, free of AI tells and gratuitous Unicode.
