@@ -15,5 +15,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0009](0009-determinism-strategy.md) | Determinism strategy | Accepted | 0 |
 | [0010](0010-audit-logging.md) | Audit / user-action logging | Proposed | 7/8 |
 | [0011](0011-mdx-seam-and-execution.md) | MDX evaluator seam, execute-time resolution, and zero-suppression | Accepted | 3 |
+| [0012](0012-data-source-connectors.md) | Data-source connectors (HTTP, ODBC) and the fetch/transform split | Proposed | 5+ |
 
-> All reserved ADR numbers are now allocated.
+> All originally-reserved ADR numbers are allocated; later decisions continue from 0012.
