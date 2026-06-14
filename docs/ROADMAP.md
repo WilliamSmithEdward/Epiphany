@@ -311,7 +311,7 @@ Phases are ordered by dependency. Effort is sized **S / M / L / XL** (relative),
 
 ### Phase 7: Security, object and element (size M)
 **Goal:** multi-user, least-privilege access over the core objects.
-- **Object security** (cube, dimension, rule, flow, job) and **element security**; admin versus non-admin.
+- **Object security** (cube, dimension, rule, flow, job) and **element security**; admin versus non-admin (ADR-0015).
 - Groups; security stored in internal control objects (and serialized as model-as-code).
 - **Audit / user-action logging (ADR-0010):** an append-only audit stream records security-relevant and model-changing actions (login, permission grant and denial, object create/update/delete, cell write outside ordinary data entry) with actor, action, target, and injected timestamp. It is a separate stream from the durability WAL (ADR-0002), carries no secrets or PII (RG-13), and is queryable and filterable by admins over REST. Retention and rotation are operationalized in Phase 8.
 - Web: a security administration UI, including an audit-log viewer (filter by actor, action, target, and time range).

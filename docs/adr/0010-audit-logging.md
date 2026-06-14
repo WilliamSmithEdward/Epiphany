@@ -1,7 +1,7 @@
 # ADR-0010: Audit / user-action logging
 
-- **Status:** Proposed
-- **Date:** 2026-06-13
+- **Status:** Accepted
+- **Date:** 2026-06-13 (proposed), 2026-06-14 (accepted for Phase 7)
 - **Deciders:** Epiphany maintainers
 - **Phase:** 7 (recording and query) / 8 (retention and rotation)
 
@@ -13,7 +13,7 @@ Three forces shape the decision:
 - **It is coupled to identity and authorization.** An audit entry names an actor and a target object, so it only has meaning once users, groups, and object and element security exist (auth in Phase 2, object and element security in Phase 7). Phase 7 is therefore the home, and the record lives in `epiphany-security`.
 - **Determinism and no-secrets.** Observability is first-class but carries a hard rule: no secrets in logs (RG-13). Audit records are observable output, so they must be deterministic in tests (injected clock, [ADR-0009](0009-determinism-strategy.md)) and must never contain credentials, tokens, or PII.
 
-## Decision (recommended)
+## Decision
 A dedicated, **append-only audit stream** in `epiphany-security`, separate from the durability WAL.
 
 1. **What is audited.** Security-relevant and model-changing actions: login and logout, permission grant and denial (including access-denied events), user and group changes, object create, update, and delete (cube, dimension, rule, flow, job, view, subset, security control object), flow and job execution, sandbox commit and discard, and the explicit full-persist command. Ordinary high-frequency reads and routine cell data entry are **not** audited, to keep the stream bounded and meaningful; cell writes are audited at the granularity of the operation, not per cell.
