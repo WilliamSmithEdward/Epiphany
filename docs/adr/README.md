@@ -7,6 +7,7 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0001](0001-concurrency-model.md) | Concurrency model | Proposed | 0/1 |
 | [0002](0002-runtime-persistence-format.md) | Runtime persistence format | Proposed | 0/1 |
 | [0003](0003-model-as-code-serialization.md) | Model-as-code serialization format | Proposed | 1 |
+| [0004](0004-embedded-javascript-engine.md) | Embedded JavaScript engine and TypeScript flows | Accepted | 5 |
 | [0005](0005-automatic-feeder-inference.md) | Automatic feeder inference, validation, and under/over-feed detection | Accepted | 4 |
 | [0006](0006-cell-storage-and-memory-layout.md) | Cell storage and memory layout | Accepted | 1 |
 | [0007](0007-rule-evaluation-strategy.md) | Rule evaluation strategy (compiled rules, on-demand eval, memoization) | Accepted | 4 |
@@ -15,4 +16,4 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0010](0010-audit-logging.md) | Audit / user-action logging | Proposed | 7/8 |
 | [0011](0011-mdx-seam-and-execution.md) | MDX evaluator seam, execute-time resolution, and zero-suppression | Accepted | 3 |
 
-> ADR number 0004 is reserved for the embedded TypeScript engine decision due in Phase 5. See `docs/ROADMAP.md` section 5.
+> All reserved ADR numbers are now allocated.
