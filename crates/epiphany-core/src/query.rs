@@ -711,6 +711,8 @@ pub struct Flow {
 pub struct FlowTest {
     /// The test name (unique within the cube).
     pub name: String,
+    /// The name of the flow this test runs.
+    pub flow: String,
     /// The data-source content the flow reads (e.g. inline CSV text).
     pub input: String,
     /// Flow parameters (name -> value), available to the flow as `ctx.param(...)`.

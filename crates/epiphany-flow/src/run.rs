@@ -176,6 +176,19 @@ pub fn run_flow(
     }
 }
 
+/// Validate a flow without running it: strip its TypeScript and parse the
+/// resulting JavaScript. Catches unsupported constructs and syntax errors (the
+/// preview path), with no side effects and no stage execution.
+pub fn validate_flow(source: &str) -> Result<(), FlowError> {
+    let js = strip_types(source)?;
+    let mut ctx = Context::default();
+    boa_engine::Script::parse(Source::from_bytes(&js), None, &mut ctx)
+        .map(|_| ())
+        .map_err(|e| FlowError::Runtime {
+            message: js_err(&mut ctx, e),
+        })
+}
+
 fn run_inner(js: &str) -> Result<(), String> {
     let mut ctx = Context::default();
     ctx.runtime_limits_mut()

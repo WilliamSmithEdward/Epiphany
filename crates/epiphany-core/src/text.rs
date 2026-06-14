@@ -487,6 +487,8 @@ struct ParamEntryDoc {
 #[derive(Serialize, Deserialize)]
 struct FlowTestDoc {
     name: String,
+    #[serde(default)]
+    flow: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     input: String,
     #[serde(default, rename = "param", skip_serializing_if = "Vec::is_empty")]
@@ -512,6 +514,7 @@ fn build_flow(doc: &FlowDoc) -> Flow {
 fn flow_test_doc(test: &FlowTest) -> FlowTestDoc {
     FlowTestDoc {
         name: test.name.clone(),
+        flow: test.flow.clone(),
         input: test.input.clone(),
         // Params sorted by name (the BTreeMap iterates sorted) for canonical output.
         params: test
@@ -529,6 +532,7 @@ fn flow_test_doc(test: &FlowTest) -> FlowTestDoc {
 fn build_flow_test(doc: &FlowTestDoc) -> FlowTest {
     FlowTest {
         name: doc.name.clone(),
+        flow: doc.flow.clone(),
         input: doc.input.clone(),
         params: doc
             .params
@@ -1210,6 +1214,7 @@ mod tests {
             "load_test".to_string(),
             FlowTest {
                 name: "load_test".to_string(),
+                flow: "load".to_string(),
                 input: "Region,Value\nNorth,100\n".to_string(),
                 params,
                 assertions: vec![TestCell {
@@ -1230,6 +1235,7 @@ mod tests {
         assert!(model2.flows["load"].source.contains("writeCells"));
         assert_eq!(model2.flow_tests.len(), 1);
         let ft = &model2.flow_tests["load_test"];
+        assert_eq!(ft.flow, "load");
         assert_eq!(ft.input, "Region,Value\nNorth,100\n");
         assert_eq!(ft.params["version"], "Actual");
         assert_eq!(ft.assertions[0].value, "100");
