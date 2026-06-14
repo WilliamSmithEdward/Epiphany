@@ -10,6 +10,8 @@ mod config;
 mod demo;
 mod observability;
 mod shutdown;
+#[cfg(feature = "embed-ui")]
+mod ui;
 
 use std::sync::{Arc, Mutex};
 
@@ -51,7 +53,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         sessions: Arc::new(Mutex::new(SessionStore::new(config.session_ttl_millis))),
         events,
     };
-    let app = build_router(state).layer(tower_http::trace::TraceLayer::new_for_http());
+    let router = build_router(state);
+    #[cfg(feature = "embed-ui")]
+    let router = router.fallback(ui::fallback);
+    let app = router.layer(tower_http::trace::TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     let addr = listener.local_addr()?;

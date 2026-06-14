@@ -10,6 +10,12 @@ description = "Epiphany: the server daemon (composition root)."
 [lints]
 workspace = true
 
+[features]
+# Embed the built web UI (web/dist) for single-binary serving. Off by default
+# and in CI (the Rust job builds without web/dist); enable for release packaging
+# after `npm run build`.
+embed-ui = ["dep:rust-embed"]
+
 [dependencies]
 epiphany-api = { path = "../epiphany-api" }
 epiphany-core = { path = "../epiphany-core" }
@@ -22,3 +28,4 @@ axum = "0.8"
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+rust-embed = { version = "8", optional = true }
