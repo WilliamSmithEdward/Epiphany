@@ -1,9 +1,9 @@
 # ADR-0001: Concurrency model
 
-- **Status:** Proposed
-- **Date:** 2026-06-12
+- **Status:** Accepted
+- **Date:** 2026-06-12 (decision), 2026-06-13 (realized in M2)
 - **Deciders:** Epiphany maintainers
-- **Phase:** 0 (decision) / 1 (implementation)
+- **Phase:** 0 (decision) / 2 (realization)
 
 ## Context
 Epiphany is an in-memory store serving many concurrent readers *and* writers (planning is write-back heavy). Three constraints shape the choice:
@@ -23,3 +23,4 @@ Epiphany is an in-memory store serving many concurrent readers *and* writers (pl
 - Enables the determinism and "reads never block" goals, and underpins sandboxes.
 - **Atomic multi-cell write follows directly:** stage a batch of writes against a snapshot and publish one new version all-or-nothing; readers see the full batch or none of it (snapshot isolation), and a batch staged on a stale base is rejected or retried. Surfaced as a transactional batch cell-write in Phase 2.
 - Requires care on memory (version retention and garbage collection) and a deterministic version ordering. Validate with concurrency stress tests and the determinism suite.
+- **Realized in M2** as `epiphany-engine`: each cube is published as an immutable `Arc` behind `arc_swap::ArcSwap` (lock-free snapshot reads that never block writes); a write clones the cube, applies the validated batch, durably logs it, then atomically publishes the new version under a per-cube writer lock. Whole-cube clone-on-commit is the M2 cut (cheap at demo scale); a structural-sharing store is a benchmark-gated optimization behind the same handle (section 13).

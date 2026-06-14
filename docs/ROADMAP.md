@@ -336,10 +336,10 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Element attributes and aliases | 1 | [x] |
 | Model-as-code (canonical text, Git round-trip) | 1+ | [~] |
 | Runtime persistence, crash recovery, full-persist | 1, 8 | [~] |
-| REST API (CRUD, cells, OpenAPI) | 2 | [ ] |
-| Atomic multi-cell write (transactional batch) | 2 | [ ] |
-| Native auth, users and groups | 2, 7 | [ ] |
-| Web pivot grid with write-back | 2 | [ ] |
+| REST API (CRUD, cells, OpenAPI) | 2 | [~] |
+| Atomic multi-cell write (transactional batch) | 2 | [x] |
+| Native auth, users and groups | 2, 7 | [~] |
+| Web pivot grid with write-back | 2 | [x] |
 | Subsets (static and dynamic/MDX) | 3 | [ ] |
 | Views (native and MDX cellsets), zero suppression | 3 | [ ] |
 | MDX engine (commonly-used subset) | 3 | [ ] |
@@ -406,7 +406,7 @@ graph LR
 ## 10. Suggested runnable milestones
 
 1. **M1, "It stores and aggregates"** (end of Phase 1) - **achieved**: load a cube from text, write leaves, read correct consolidations, round-trip to text, recover after restart. Gated by `epiphany-persist/tests/m1_acceptance.rs`.
-2. **M2, "It's a product"** (end of Phase 2): browser login, open a cube, edit a cell, see consolidations update, and survive a restart. The first demo.
+2. **M2, "It's a product"** (end of Phase 2) - **achieved**: browser login, open a cube, edit a cell, see consolidations update, and survive a restart. The first demo. Gated by `epiphany-api/tests/m2_acceptance.rs`; the single binary serves the web UI with `--features embed-ui`.
 3. **M3, "It slices"** (end of Phase 3): MDX subsets plus nested views in the grid.
 4. **M4, "It calculates"** (end of Phase 4): rules plus auto-inferred feeds produce correct results on a cross-cube model, with working "explain". The defining milestone.
 5. **M5, "It plans"** (end of Phase 6): sandboxed what-if recalculating over rules.
