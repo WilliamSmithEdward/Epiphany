@@ -19,7 +19,9 @@ pub use compiled::{
     DimPredicate, RuleId,
 };
 pub use eval::{CalcEngine, CalcError, CalcView, EvalRegistry};
-pub use feeders::{infer_feeders, FeederIndex, FeederInference, OpaqueRule};
+pub use feeders::{
+    infer_feeders, validate_feeders, FeederDiagnostics, FeederIndex, FeederInference, OpaqueRule,
+};
 pub use registry::{CubeRegistry, SingleCube, VecRegistry};
 
 /// Stable crate identifier, reported by the server's wiring banner.

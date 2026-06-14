@@ -12,9 +12,16 @@
 
 use std::collections::BTreeSet;
 
-use epiphany_core::Cube;
+use epiphany_core::{Cube, Fixed};
 
-use crate::compiled::{AddrSlot, CCell, CExpr, CompiledModel, CompiledRule, DimPredicate, RuleId};
+use crate::compiled::{
+    AddrSlot, CCell, CExpr, CompiledArea, CompiledModel, CompiledRule, DimPredicate, RuleId,
+};
+use crate::eval::{CalcEngine, CalcError, EvalRegistry};
+
+/// Approximate bytes a fed cell costs (index slot plus the rule evaluation it
+/// enables), used to estimate the waste of over-feeding (ROADMAP section 8).
+const FED_CELL_BYTES: usize = 20;
 
 /// A sparse set of fed (rule-derived) leaf coordinates, sorted for determinism.
 #[derive(Debug, Clone, Default)]
@@ -96,6 +103,114 @@ pub fn infer_feeders(cube: &Cube, model: &CompiledModel, target_ordinal: u32) ->
         }
     }
     result
+}
+
+/// Feeder validation diagnostics (Phase 4F).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FeederDiagnostics {
+    /// Rule-target leaves with a non-zero rule value that are NOT fed: a silent
+    /// wrong-zero in rollups. This is the hard error condition.
+    pub under_fed: Vec<Vec<u32>>,
+    /// Fed coordinates whose rule value is zero: wasted scan/RAM (a warning).
+    pub over_fed: Vec<Vec<u32>>,
+    /// The number of fed coordinates.
+    pub fed_cell_count: usize,
+    /// An estimate of the RAM/scan cost of the over-fed cells.
+    pub estimated_over_fed_bytes: usize,
+}
+
+impl FeederDiagnostics {
+    /// Whether the model is correctly fed (no under-feed). Over-feed is a warning,
+    /// not a correctness failure.
+    pub fn is_clean(&self) -> bool {
+        self.under_fed.is_empty()
+    }
+}
+
+/// Validate a feeder index against the true (densely-evaluated) rule values for a
+/// cube, reporting under-feed (an error) and over-feed (a warning). This is an
+/// explicit on-demand operation, never on the read path.
+///
+/// Determinism: candidate target leaves and fed coordinates are checked in sorted
+/// order, so the lists are byte-identical run to run.
+pub fn validate_feeders(
+    registry: &dyn EvalRegistry,
+    ordinal: u32,
+    index: &FeederIndex,
+) -> Result<FeederDiagnostics, CalcError> {
+    let cube = registry
+        .cube(ordinal)
+        .ok_or(CalcError::UnknownCube(ordinal))?;
+    let model = match registry.compiled(ordinal) {
+        Some(m) => m,
+        None => return Ok(FeederDiagnostics::default()),
+    };
+    let engine = CalcEngine::new(registry);
+
+    // Under-feed: every leaf a rule targets with a non-zero value must be fed.
+    let mut under = BTreeSet::new();
+    for rule in &model.rules {
+        if targets_consolidated(cube, rule) {
+            continue; // overrides target consolidated cells, not leaves
+        }
+        for target in area_leaf_coords(cube, &rule.area) {
+            if engine.value(ordinal, &target)? != Fixed::ZERO && !index.contains(&target) {
+                under.insert(target);
+            }
+        }
+    }
+
+    // Over-feed: a fed coordinate whose rule value is zero is wasted.
+    let mut over = BTreeSet::new();
+    for fed in index.coords() {
+        if engine.value(ordinal, &fed)? == Fixed::ZERO {
+            over.insert(fed.to_vec());
+        }
+    }
+
+    Ok(FeederDiagnostics {
+        under_fed: under.into_iter().collect(),
+        estimated_over_fed_bytes: over.len() * FED_CELL_BYTES,
+        over_fed: over.into_iter().collect(),
+        fed_cell_count: index.len(),
+    })
+}
+
+/// Dense enumeration of the LEAF coordinates a rule's area selects (the cartesian
+/// product of each dimension's admitted leaf members). Bounded by the area size.
+fn area_leaf_coords(cube: &Cube, area: &CompiledArea) -> Vec<Vec<u32>> {
+    let mut per_dim: Vec<Vec<u32>> = Vec::with_capacity(cube.rank());
+    for d in 0..cube.rank() {
+        let is_leaf = |i: u32| {
+            cube.dimension(d)
+                .element(i)
+                .map(|e| e.kind.is_leaf())
+                .unwrap_or(false)
+        };
+        let leaves: Vec<u32> = match &area.per_dim[d] {
+            DimPredicate::Any => (0..cube.dimension(d).len())
+                .filter(|&i| is_leaf(i))
+                .collect(),
+            DimPredicate::OneOf(set) => set.iter().copied().filter(|&i| is_leaf(i)).collect(),
+        };
+        per_dim.push(leaves);
+    }
+    let total: usize = per_dim.iter().map(|v| v.len()).product();
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(total);
+    for n in 0..total {
+        let mut rem = n;
+        let mut coord = vec![0u32; cube.rank()];
+        for d in 0..cube.rank() {
+            let len = per_dim[d].len();
+            coord[d] = per_dim[d][rem % len];
+            rem /= len;
+        }
+        out.push(coord);
+    }
+    out
 }
 
 /// Whether any pinned dimension of the area names a consolidated element (making
@@ -355,6 +470,68 @@ mod tests {
         let inf = infer_feeders(&cube, &model, 0);
         assert_eq!(inf.opaque.len(), 1);
         assert!(inf.index.is_empty());
+    }
+
+    /// Build the Margin model populated for the given regions, returning the
+    /// registry and inferred feeders.
+    fn margin_model(populate_south: bool) -> (OneCube, FeederInference) {
+        let mut cube = sales_cube();
+        let (n, s) = (
+            cube.dimension(0).resolve("North").unwrap(),
+            cube.dimension(0).resolve("South").unwrap(),
+        );
+        let (sales, cost) = (
+            cube.dimension(1).resolve("Sales").unwrap(),
+            cube.dimension(1).resolve("Cost").unwrap(),
+        );
+        cube.set_leaf(&[n, sales], Fixed::from(100)).unwrap();
+        cube.set_leaf(&[n, cost], Fixed::from(60)).unwrap();
+        if populate_south {
+            cube.set_leaf(&[s, sales], Fixed::from(200)).unwrap();
+            cube.set_leaf(&[s, cost], Fixed::from(150)).unwrap();
+        }
+        let model = compile(
+            &cube,
+            &SingleCube::new(&cube),
+            &parse("['Measure':'Margin'] = value['Measure':'Sales'] - value['Measure':'Cost'];")
+                .unwrap(),
+            1,
+        )
+        .unwrap();
+        let inf = infer_feeders(&cube, &model, 0);
+        (OneCube { cube, model }, inf)
+    }
+
+    #[test]
+    fn validate_clean_model_has_no_under_or_over_feed() {
+        let (reg, inf) = margin_model(true);
+        let diag = validate_feeders(&reg, 0, &inf.index).unwrap();
+        assert!(diag.is_clean(), "no under-feed");
+        assert!(diag.over_fed.is_empty(), "no over-feed");
+        assert_eq!(diag.fed_cell_count, 2);
+    }
+
+    #[test]
+    fn missing_feeders_are_reported_under_fed() {
+        let (reg, _inf) = margin_model(true);
+        // An empty index under-feeds both non-zero Margin leaves.
+        let diag = validate_feeders(&reg, 0, &FeederIndex::new()).unwrap();
+        assert!(!diag.is_clean());
+        assert_eq!(diag.under_fed.len(), 2);
+    }
+
+    #[test]
+    fn fed_but_zero_is_reported_over_fed() {
+        // South unpopulated: its Margin is zero, so feeding it is over-feed.
+        let (reg, inf) = margin_model(false);
+        let s = reg.cube.dimension(0).resolve("South").unwrap();
+        let margin = reg.cube.dimension(1).resolve("Margin").unwrap();
+        let mut idx = inf.index.clone();
+        idx.insert(&[s, margin]);
+        let diag = validate_feeders(&reg, 0, &idx).unwrap();
+        assert_eq!(diag.over_fed, vec![vec![s, margin]]);
+        assert!(diag.estimated_over_fed_bytes > 0);
+        assert!(diag.is_clean(), "over-feed is not an under-feed");
     }
 
     #[test]
