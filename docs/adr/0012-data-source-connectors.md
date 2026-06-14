@@ -1,6 +1,6 @@
-# ADR-0012: Data-source connectors (HTTP, ODBC, command) and the fetch/transform split
+# ADR-0012: Data-source connectors (command, HTTP) and the fetch/transform split
 
-- **Status:** Accepted (command connector realized; HTTP and ODBC follow on the same foundation)
+- **Status:** Accepted (command connector realized; an HTTP connector is the planned follow-on; a built-in ODBC connector is explicitly out, see decision 7)
 - **Date:** 2026-06-14
 - **Deciders:** Epiphany maintainers
 - **Phase:** 5 (flows), connector follow-on
@@ -37,11 +37,6 @@ only. `epiphany-connect` resolves a `DataSource` to rows. The API layer fetches
 cargo features so the default build stays lean and pure:
 - `http-connector` (reqwest): GET/POST a URL, parse a JSON response (a configured
   record path) or a CSV response into rows.
-- `odbc` (odbc-api): connect via the system ODBC driver manager and run a SQL
-  query, mapping result rows to `Row`s. This is generic across any ODBC database
-  at the cost of a system driver dependency and FFI (the unsafe is internal to
-  `odbc-api`; our usage is its safe API). It is off by default and documented as
-  *not* part of the pure single-binary profile.
 - `command` (std only, no extra dependency): run an external program and read
   its stdout, parsed as CSV or JSON. This is the single connector behind
   "ingest from a Python script", "from a PowerShell script", and "from an exe":
@@ -93,16 +88,29 @@ Parameterized command arguments (a flow passing, say, a date range into a fixed
 slot) are deliberately deferred until the controls above are proven; the first
 cut runs fully-fixed commands.
 
+**7. No built-in database/ODBC connector; databases are reached through a command
+connection.** A generic ODBC connector would need the system ODBC driver manager
+plus FFI, and bundling native DB drivers adds large dependencies; both break the
+"single pure-Rust binary" goal. Instead, a user who needs a database points a
+command connection at their own client script (for example `python query.py`
+that runs a SQL query over `pyodbc`/`sqlalchemy` and prints CSV or JSON, or a
+PowerShell/`sqlcmd`/`.exe` equivalent). The database driver, connection string,
+and credentials then live in the user's script and environment, not in the
+server, and the server stays a single self-contained binary. This is the
+deliberate trade: maximum reach (any database the user can script against) and a
+clean binary, in exchange for the user managing the DB client themselves.
+
 ## Alternatives considered
 
 - **`ctx.fetch` / DB access inside the flow's JS:** rejected. It breaks the
   sandbox, determinism, and offline unit-testing in one move.
-- **Native Rust DB drivers (Postgres/MySQL/SQLite) instead of generic ODBC:**
-  considered; cleaner for the single-binary goal (mostly pure Rust, no system
-  driver manager). The maintainers chose **generic ODBC** so one connector reaches
-  any ODBC-capable database, accepting the system-driver and FFI dependency
-  behind an off-by-default feature. Native drivers remain a possible additional
-  feature later.
+- **A built-in database connector (generic ODBC via `odbc-api`, or native Rust
+  Postgres/MySQL/SQLite drivers):** rejected. Generic ODBC needs the system
+  driver manager plus FFI; native drivers add heavy dependencies. Both work
+  against the single pure-Rust binary, and neither is necessary: a command
+  connection running the user's own DB client script reaches any database while
+  keeping the binary clean and the driver/credentials in the user's hands
+  (decision 7).
 - **Secrets in model-as-code:** rejected (no-secrets rule); connections carry
   secret references only.
 - **Always-compiled connectors:** rejected; feature-gating keeps the default
@@ -118,22 +126,26 @@ cut runs fully-fixed commands.
 - The flow engine, sandbox, and determinism model are unchanged; connectors are
   additive. The flows web workspace gains a source picker; flow tests stay
   offline.
-- New dependencies are feature-gated: `reqwest` (with rustls) under
-  `http-connector`, `odbc-api` under `odbc`. `cargo-deny` must be re-checked for
-  each; the `odbc` profile is documented as requiring a system ODBC driver
-  manager and is not part of the pure single-binary build. The `command`
-  connector adds no dependency (std `process`), but its capability is gated at
-  runtime (decision 6) rather than only at compile time.
+- The `command` connector adds no dependency (std `process`) and keeps the
+  server a single pure-Rust binary; its capability is gated at runtime
+  (decision 6) rather than at compile time. The planned HTTP connector adds
+  `reqwest` (with rustls) under an `http-connector` feature, which stays
+  single-binary-friendly (no system dependency); `cargo-deny` is re-checked when
+  it lands. There is deliberately no database/ODBC dependency (decision 7).
 - The command connector is implemented first (it answers the immediate
-  "ingest from a script/exe" need and needs no third-party crate); HTTP then
-  ODBC follow on the same foundation.
-- A small connections + secret-reference subsystem is added (admin CRUD, an
-  env-backed secret store, an endpoint/DSN allowlist). Scheduled refresh of
-  connector-backed flows pairs naturally with the Phase 8 job scheduler.
+  "ingest from a script/exe" need and needs no third-party crate); an HTTP
+  connector follows on the same foundation; databases are reached via a command
+  connection running a user script.
+- A small connections + secret-reference subsystem (admin CRUD, an env-backed
+  secret store, an endpoint allowlist) is added with the HTTP connector, for its
+  credentials. Scheduled refresh of connector-backed flows pairs naturally with
+  the Phase 8 job scheduler.
 - Realized so far as `epiphany-connect` (the command connector), the durable
   `Connection` model, admin-gated connection CRUD with the runtime enable gate,
   and the flow-run `connection` source; gated by
   `epiphany-api/tests/connectors.rs` (a flow ingests from a command connection
-  end to end, plus both security gates and a connector-failure path). HTTP
-  (reqwest) and ODBC (odbc-api) connectors, and the secret store for their
-  credentials, are the remaining follow-ons on this same foundation.
+  end to end, plus both security gates and a connector-failure path). An HTTP
+  (reqwest) connector and a secret store for its credentials are the remaining
+  follow-ons; database/ODBC ingestion is served by the command connector running
+  a user's client script, so the server keeps no DB driver and stays a single
+  pure-Rust binary.

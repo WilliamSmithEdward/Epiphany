@@ -752,8 +752,10 @@ pub struct CommandSpec {
     pub timeout_ms: u64,
 }
 
-/// What a connection does. One variant for now (a command); HTTP and ODBC
-/// variants are the planned follow-ons (ADR-0012).
+/// What a connection does. One variant for now (a command); an HTTP variant is
+/// the planned follow-on (ADR-0012). Database/ODBC ingestion is served by a
+/// command connection running the user's own client script, so the server stays
+/// a single pure-Rust binary with no database-driver dependency.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectionSpec {
     /// Run an external program and read its stdout (ADR-0012 decision 6).
