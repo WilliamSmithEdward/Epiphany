@@ -691,12 +691,41 @@ pub struct RuleTest {
     pub assertions: Vec<TestCell>,
 }
 
-/// A complete durable model: a cube plus its named subsets, views, rules, and
-/// rule tests.
+/// A flow definition: a TypeScript ETL/automation script, stored as model-as-code
+/// source text. Core keeps it opaque (the way a cube's rules carry opaque rule
+/// source); `epiphany-flow` strips its types, runs it on the embedded engine, and
+/// turns its staged outputs into element and cell changes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Flow {
+    /// The flow name (unique within the cube).
+    pub name: String,
+    /// The TypeScript source text.
+    pub source: String,
+}
+
+/// A flow unit test: run the flow over a fixed `input` and `params`, then assert
+/// the resulting cell values. The input is the data-source content (for the CSV
+/// source, the inline CSV text); empty for a source-less flow. Reproducible
+/// because the input and parameters are pinned and the runtime is deterministic.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FlowTest {
+    /// The test name (unique within the cube).
+    pub name: String,
+    /// The data-source content the flow reads (e.g. inline CSV text).
+    pub input: String,
+    /// Flow parameters (name -> value), available to the flow as `ctx.param(...)`.
+    pub params: BTreeMap<String, String>,
+    /// Cells whose value is asserted after the flow runs.
+    pub assertions: Vec<TestCell>,
+}
+
+/// A complete durable model: a cube plus its named subsets, views, rules, rule
+/// tests, flows, and flow tests.
 ///
 /// Subsets are keyed by `(dimension, name)` (a subset name is unique within its
-/// dimension); views and tests are keyed by name (unique within the cube). This
-/// is the unit the store owns and persists and the snapshot serializes.
+/// dimension); views, tests, flows, and flow tests are keyed by name (unique
+/// within the cube). This is the unit the store owns and persists and the
+/// snapshot serializes.
 #[derive(Clone, Debug)]
 pub struct Model {
     /// The cube and its dimensions.
@@ -709,10 +738,14 @@ pub struct Model {
     pub rules: RuleSet,
     /// Rule unit tests, keyed by name.
     pub tests: BTreeMap<String, RuleTest>,
+    /// Named flows (TypeScript ETL/automation), keyed by name.
+    pub flows: BTreeMap<String, Flow>,
+    /// Flow unit tests, keyed by name.
+    pub flow_tests: BTreeMap<String, FlowTest>,
 }
 
 impl Model {
-    /// A model wrapping `cube` with no subsets, views, rules, or tests.
+    /// A model wrapping `cube` with no subsets, views, rules, tests, or flows.
     pub fn new(cube: Cube) -> Self {
         Self {
             cube,
@@ -720,6 +753,8 @@ impl Model {
             views: BTreeMap::new(),
             rules: RuleSet::default(),
             tests: BTreeMap::new(),
+            flows: BTreeMap::new(),
+            flow_tests: BTreeMap::new(),
         }
     }
 

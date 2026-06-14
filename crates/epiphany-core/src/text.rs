@@ -16,7 +16,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::query::{
-    AxisSpec, Model, RuleSet, RuleTest, Subset, SubsetKind, TestCell, View, Visibility,
+    AxisSpec, Flow, FlowTest, Model, RuleSet, RuleTest, Subset, SubsetKind, TestCell, View,
+    Visibility,
 };
 use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
@@ -127,6 +128,12 @@ struct ModelDoc {
     rules: Option<RuleSetDoc>,
     #[serde(default, rename = "rule_test", skip_serializing_if = "Vec::is_empty")]
     rule_tests: Vec<RuleTestDoc>,
+    // Flows and flow tests are optional and skipped when empty, so a model
+    // without them serializes byte-identically to the pre-5A format.
+    #[serde(default, rename = "flow", skip_serializing_if = "Vec::is_empty")]
+    flows: Vec<FlowDoc>,
+    #[serde(default, rename = "flow_test", skip_serializing_if = "Vec::is_empty")]
+    flow_tests: Vec<FlowTestDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -465,6 +472,73 @@ fn build_rule_test(doc: &RuleTestDoc) -> RuleTest {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct FlowDoc {
+    name: String,
+    source: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ParamEntryDoc {
+    name: String,
+    value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct FlowTestDoc {
+    name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    input: String,
+    #[serde(default, rename = "param", skip_serializing_if = "Vec::is_empty")]
+    params: Vec<ParamEntryDoc>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    assertions: Vec<TestCellDoc>,
+}
+
+fn flow_doc(flow: &Flow) -> FlowDoc {
+    FlowDoc {
+        name: flow.name.clone(),
+        source: flow.source.clone(),
+    }
+}
+
+fn build_flow(doc: &FlowDoc) -> Flow {
+    Flow {
+        name: doc.name.clone(),
+        source: doc.source.clone(),
+    }
+}
+
+fn flow_test_doc(test: &FlowTest) -> FlowTestDoc {
+    FlowTestDoc {
+        name: test.name.clone(),
+        input: test.input.clone(),
+        // Params sorted by name (the BTreeMap iterates sorted) for canonical output.
+        params: test
+            .params
+            .iter()
+            .map(|(name, value)| ParamEntryDoc {
+                name: name.clone(),
+                value: value.clone(),
+            })
+            .collect(),
+        assertions: test.assertions.iter().map(test_cell_doc).collect(),
+    }
+}
+
+fn build_flow_test(doc: &FlowTestDoc) -> FlowTest {
+    FlowTest {
+        name: doc.name.clone(),
+        input: doc.input.clone(),
+        params: doc
+            .params
+            .iter()
+            .map(|p| (p.name.clone(), p.value.clone()))
+            .collect(),
+        assertions: doc.assertions.iter().map(build_test_cell).collect(),
+    }
+}
+
 impl From<ElementKind> for KindDoc {
     fn from(kind: ElementKind) -> Self {
         match kind {
@@ -627,6 +701,8 @@ fn build_model_doc(
     views: Vec<ViewDoc>,
     rules: Option<RuleSetDoc>,
     rule_tests: Vec<RuleTestDoc>,
+    flows: Vec<FlowDoc>,
+    flow_tests: Vec<FlowTestDoc>,
 ) -> ModelDoc {
     let dimensions: Vec<DimDoc> = cube.dimensions().iter().map(dim_doc).collect();
 
@@ -686,6 +762,8 @@ fn build_model_doc(
         views,
         rules,
         rule_tests,
+        flows,
+        flow_tests,
     }
 }
 
@@ -734,7 +812,11 @@ impl Model {
             })
         };
         let rule_tests: Vec<RuleTestDoc> = self.tests.values().map(rule_test_doc).collect();
-        let doc = build_model_doc(&self.cube, subsets, views, rules, rule_tests);
+        let flows: Vec<FlowDoc> = self.flows.values().map(flow_doc).collect();
+        let flow_tests: Vec<FlowTestDoc> = self.flow_tests.values().map(flow_test_doc).collect();
+        let doc = build_model_doc(
+            &self.cube, subsets, views, rules, rule_tests, flows, flow_tests,
+        );
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
 
@@ -767,12 +849,22 @@ impl Model {
         for td in &doc.rule_tests {
             tests.insert(td.name.clone(), build_rule_test(td));
         }
+        let mut flows = BTreeMap::new();
+        for fd in &doc.flows {
+            flows.insert(fd.name.clone(), build_flow(fd));
+        }
+        let mut flow_tests = BTreeMap::new();
+        for ftd in &doc.flow_tests {
+            flow_tests.insert(ftd.name.clone(), build_flow_test(ftd));
+        }
         Ok(Model {
             cube,
             subsets,
             views,
             rules,
             tests,
+            flows,
+            flow_tests,
         })
     }
 
@@ -792,7 +884,15 @@ impl Model {
 impl Cube {
     /// Serialize this cube and its dimensions to canonical model-as-code TOML.
     pub fn to_model_text(&self) -> Result<String, SaveError> {
-        let doc = build_model_doc(self, Vec::new(), Vec::new(), None, Vec::new());
+        let doc = build_model_doc(
+            self,
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
 
@@ -1087,5 +1187,51 @@ mod tests {
         let t = &model2.tests["variance_test"];
         assert_eq!(t.fixtures.len(), 2);
         assert_eq!(t.assertions[0].value, "20");
+    }
+
+    #[test]
+    fn model_round_trips_flows_and_flow_tests() {
+        use crate::{Flow, FlowTest, TestCell};
+
+        let mut model = Model::new(sample_cube());
+        model.flows.insert(
+            "load".to_string(),
+            Flow {
+                name: "load".to_string(),
+                source: "export function rows(ctx: FlowContext): void {\n  for (const r of ctx.input()) ctx.writeCells([]);\n}".to_string(),
+            },
+        );
+        let mut params = std::collections::BTreeMap::new();
+        params.insert("version".to_string(), "Actual".to_string());
+        let mut coord = std::collections::BTreeMap::new();
+        coord.insert("Region".to_string(), "North".to_string());
+        coord.insert("Version".to_string(), "Actual".to_string());
+        model.flow_tests.insert(
+            "load_test".to_string(),
+            FlowTest {
+                name: "load_test".to_string(),
+                input: "Region,Value\nNorth,100\n".to_string(),
+                params,
+                assertions: vec![TestCell {
+                    coord,
+                    value: "100".to_string(),
+                }],
+            },
+        );
+
+        let text1 = model.to_model_text().unwrap();
+        let model2 = Model::from_model_text(&text1).unwrap();
+        let text2 = model2.to_model_text().unwrap();
+        assert_eq!(
+            text1, text2,
+            "flows and flow tests must round-trip byte-identically"
+        );
+        assert_eq!(model2.flows.len(), 1);
+        assert!(model2.flows["load"].source.contains("writeCells"));
+        assert_eq!(model2.flow_tests.len(), 1);
+        let ft = &model2.flow_tests["load_test"];
+        assert_eq!(ft.input, "Region,Value\nNorth,100\n");
+        assert_eq!(ft.params["version"], "Actual");
+        assert_eq!(ft.assertions[0].value, "100");
     }
 }
