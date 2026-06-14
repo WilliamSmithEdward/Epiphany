@@ -271,6 +271,7 @@ Phases are ordered by dependency. Effort is sized **S / M / L / XL** (relative),
 - Native views (rows, columns, titles, context, **zero suppression**) and MDX cellsets; public and private; persistence.
 - Web: a point-and-click subset editor, view builder, nested rows and columns, and a zero-suppression toggle. **Point-and-click is the default path; MDX is an opt-in advanced escape hatch, never required for everyday use.**
 - **DoD:** define an MDX subset, build a nested view on it, execute it to a cellset over REST, and render it in the grid.
+- **Delivered (M3).** Supported MDX set grammar (the contract the corpus and the implementation share): member refs `[Dim].[Member]` and bare; set literals `{ .. }`; `.Members`, `.Children`, `.Descendants` / `Descendants(x)`; `Filter(set, predicate)` over attribute `Properties("Attr")` comparisons with `AND`/`OR`/`NOT` and `= <> < <= > >=`; `Order(set, attr, ASC|DESC|BASC|BDESC)`; `Crossjoin(a, b)` and infix `a * b` (tuple sets, reserved for cellset MDX; rejected inside a single-dimension subset). Reserved words are bracket-escapable as member names. **Deferred tail** (forward-compatible, not in M3): cell-value `Filter`/`Order`-by-measure (the value-driven need is served by the view-layer zero-suppression toggle); level/generation navigation (`.Level`/`Ancestors`/`Lag`, which cannot be faithful under alternate rollups - needs a core ADR); `Union`/`Except`/`Intersect` (covered by `{}` + `Filter` for M3); `SELECT ... ON ROWS` text parsing (replaced by the typed axis/slicer builder; the AST is structured so a `Query` node can be added later). **Implementation notes:** views cover numeric measures only for M3 (string cells read as zero through consolidation, so string-cell rendering in views is deferred); MDX parse/eval errors surface as `MDX_ERROR` (422) with the message - precise editor span underlining is deferred. The MDX corpus is tested with hand-written deterministic assertions and `DeterministicRng`-seeded property loops rather than adopting `insta`/`proptest` this phase, keeping the workspace dependency-free and `cargo-deny` green; adopting those tools is a separately-scoped follow-up. See [docs/adr/0011-mdx-seam-and-execution.md](adr/0011-mdx-seam-and-execution.md).
 
 ### Phase 4: Rules, feeds, and calculation engine (size XL)
 **Goal:** the defining capability, rule-derived cells that consolidate correctly at scale, with the feeder pain solved.
@@ -340,9 +341,9 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Atomic multi-cell write (transactional batch) | 2 | [x] |
 | Native auth, users and groups | 2, 7 | [~] |
 | Web pivot grid with write-back | 2 | [x] |
-| Subsets (static and dynamic/MDX) | 3 | [ ] |
-| Views (native and MDX cellsets), zero suppression | 3 | [ ] |
-| MDX engine (commonly-used subset) | 3 | [ ] |
+| Subsets (static and dynamic/MDX) | 3 | [x] |
+| Views (native and MDX cellsets), zero suppression | 3 | [x] |
+| MDX engine (commonly-used subset) | 3 | [x] |
 | Rules language with cross-cube references | 4 | [ ] |
 | Sparse feeds and sparse-skip optimization | 4 | [ ] |
 | Automatic feeder inference and validation | 4 | [ ] |
@@ -355,7 +356,7 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Object and element security | 7 | [ ] |
 | Audit / user-action logging | 7, 8 | [ ] |
 | Scheduled jobs | 8 | [ ] |
-| Web editors (rules, flows, subsets, views) | 3 to 5 | [ ] |
+| Web editors (rules, flows, subsets, views) | 3 to 5 | [~] |
 
 ---
 
@@ -407,7 +408,7 @@ graph LR
 
 1. **M1, "It stores and aggregates"** (end of Phase 1) - **achieved**: load a cube from text, write leaves, read correct consolidations, round-trip to text, recover after restart. Gated by `epiphany-persist/tests/m1_acceptance.rs`.
 2. **M2, "It's a product"** (end of Phase 2) - **achieved**: browser login, open a cube, edit a cell, see consolidations update, and survive a restart. The first demo. Gated by `epiphany-api/tests/m2_acceptance.rs`; the single binary serves the web UI with `--features embed-ui`.
-3. **M3, "It slices"** (end of Phase 3): MDX subsets plus nested views in the grid.
+3. **M3, "It slices"** (end of Phase 3) - **achieved**: define an MDX-backed dynamic subset, build a nested view (two dimensions on rows) with zero-suppression, execute it to a cellset over REST, and render it in the grid with write-back; the subset and view persist across a restart. Gated by `epiphany-api/tests/m3_acceptance.rs`.
 4. **M4, "It calculates"** (end of Phase 4): rules plus auto-inferred feeds produce correct results on a cross-cube model, with working "explain". The defining milestone.
 5. **M5, "It plans"** (end of Phase 6): sandboxed what-if recalculating over rules.
 

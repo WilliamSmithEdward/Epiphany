@@ -11,5 +11,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0008](0008-numeric-model-and-precision.md) | Numeric model and precision | Proposed | 1 |
 | [0009](0009-determinism-strategy.md) | Determinism strategy | Accepted | 0 |
 | [0010](0010-audit-logging.md) | Audit / user-action logging | Proposed | 7/8 |
+| [0011](0011-mdx-seam-and-execution.md) | MDX evaluator seam, execute-time resolution, and zero-suppression | Accepted | 3 |
 
 > ADR numbers 0004, 0005, and 0007 are reserved for decisions due in later phases: 0004 embedded TypeScript engine, 0005 automatic feeder inference, 0007 rule evaluation. See `docs/ROADMAP.md` section 5.
