@@ -11,6 +11,7 @@ mod compile;
 mod compiled;
 mod eval;
 mod feeders;
+mod provenance;
 mod registry;
 
 pub use compile::compile;
@@ -22,6 +23,7 @@ pub use eval::{CalcEngine, CalcError, CalcView, EvalRegistry};
 pub use feeders::{
     infer_feeders, validate_feeders, FeederDiagnostics, FeederIndex, FeederInference, OpaqueRule,
 };
+pub use provenance::explain;
 pub use registry::{CubeRegistry, SingleCube, VecRegistry};
 
 /// Stable crate identifier, reported by the server's wiring banner.

@@ -302,6 +302,53 @@ impl AxisSpec {
 /// An ordered list of axis specs; their member lists crossjoin into tuples.
 pub type Axis = Vec<AxisSpec>;
 
+/// How deep a provenance trace should recurse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExplainDepth {
+    /// The cell and one level of inputs (their inputs are omitted).
+    Immediate,
+    /// Recurse fully (bounded by a safety cap and the per-query cycle guard).
+    Full,
+    /// Recurse a fixed number of levels.
+    Levels(u32),
+}
+
+/// What produced a cell's value, in a [`CellTrace`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TraceKind {
+    /// A stored leaf value.
+    Stored,
+    /// A rule-derived value (the firing rule and its source span).
+    Rule {
+        /// The rule's id (its index in the cube's rule set).
+        rule: usize,
+        /// The rule statement's source byte span (the API maps it to line/col).
+        span: (usize, usize),
+    },
+    /// A consolidation of contributing leaves.
+    Consolidation {
+        /// How many contributing inputs were included.
+        contributions: usize,
+    },
+}
+
+/// A provenance ("explain") node: the value at a cell, what produced it, and its
+/// inputs (recursively, depth-bounded). Coordinates are member names; the value
+/// is exact [`Fixed`] (the API stringifies it).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CellTrace {
+    /// The cube the cell belongs to.
+    pub cube: String,
+    /// The cell coordinate as member names (dimension order).
+    pub coord: Vec<String>,
+    /// The cell's value.
+    pub value: Fixed,
+    /// What produced the value.
+    pub kind: TraceKind,
+    /// The input cells consulted (empty at the depth limit or for a stored leaf).
+    pub inputs: Vec<CellTrace>,
+}
+
 /// A saved query: rows, columns, a context (slicer), and a zero-suppression
 /// flag, over one cube. Every cube dimension must appear on exactly one of
 /// rows / columns / context.

@@ -226,7 +226,7 @@ fn targets_consolidated(cube: &Cube, rule: &CompiledRule) -> bool {
     })
 }
 
-fn collect_cells<'a>(expr: &'a CExpr, out: &mut Vec<&'a CCell>) {
+pub(crate) fn collect_cells<'a>(expr: &'a CExpr, out: &mut Vec<&'a CCell>) {
     match expr {
         CExpr::Cell(c) => out.push(c),
         CExpr::Neg(e) => collect_cells(e, out),
