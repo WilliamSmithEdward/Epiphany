@@ -11,6 +11,8 @@ use base64::Engine as _;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
+use crate::acl::{AccessLevel, AccessList, ObjectKind, ObjectRef, Subject};
+
 const FORMAT_TAG: &str = "epiphany-security/v0";
 const ADMIN_USERNAME: &str = "admin";
 const ADMINS_GROUP: &str = "admins";
@@ -90,11 +92,17 @@ impl std::fmt::Debug for User {
     }
 }
 
-/// In-memory users and groups with durable, hash-only persistence.
+/// The key for an element grant: (cube, dimension, element name).
+type ElementKey = (String, String, String);
+
+/// In-memory users, groups, and access grants with durable, hash-only
+/// persistence. Object and element ACLs (ADR-0015) live in the same artifact.
 #[derive(Debug)]
 pub struct SecurityStore {
     users: BTreeMap<String, User>,
     groups: BTreeSet<String>,
+    object_acls: BTreeMap<ObjectRef, AccessList>,
+    element_acls: BTreeMap<ElementKey, AccessList>,
     path: Option<PathBuf>,
     fast_kdf: bool,
 }
@@ -118,6 +126,8 @@ impl SecurityStore {
         let mut store = SecurityStore {
             users: BTreeMap::new(),
             groups: BTreeSet::new(),
+            object_acls: BTreeMap::new(),
+            element_acls: BTreeMap::new(),
             path: Some(path),
             fast_kdf,
         };
@@ -138,6 +148,8 @@ impl SecurityStore {
         let mut store = SecurityStore {
             users: BTreeMap::new(),
             groups: BTreeSet::new(),
+            object_acls: BTreeMap::new(),
+            element_acls: BTreeMap::new(),
             path: None,
             fast_kdf: true,
         };
@@ -225,8 +237,170 @@ impl SecurityStore {
         self.users.len()
     }
 
+    // ---- access resolution (ADR-0015) ----
+
+    /// The grant-based access a principal has to an object: `Admin` if the
+    /// principal is an admin (bypass), else the most-permissive of the object's
+    /// user and group grants (`None` if none). The owner and public fallbacks
+    /// are composed at the API boundary, which knows the object's owner and
+    /// visibility from the model snapshot.
+    pub fn object_access(&self, principal: &Principal, obj: &ObjectRef) -> AccessLevel {
+        if principal.is_admin {
+            return AccessLevel::Admin;
+        }
+        self.object_acls
+            .get(obj)
+            .map(|list| list.level_for(&principal.username, &principal.groups))
+            .unwrap_or(AccessLevel::None)
+    }
+
+    /// The element restriction for a `(cube, dimension, element)`: `None` means no
+    /// element ACL applies, so the member is unrestricted (an admin is always
+    /// unrestricted); `Some(level)` means the member is restricted to `level`.
+    pub fn element_access(
+        &self,
+        principal: &Principal,
+        cube: &str,
+        dim: &str,
+        element: &str,
+    ) -> Option<AccessLevel> {
+        if principal.is_admin {
+            return None;
+        }
+        self.element_acls
+            .get(&(cube.to_string(), dim.to_string(), element.to_string()))
+            .map(|list| list.level_for(&principal.username, &principal.groups))
+    }
+
+    /// Whether a principal may read an element (unrestricted, or restricted at
+    /// least to Read).
+    pub fn element_readable(
+        &self,
+        principal: &Principal,
+        cube: &str,
+        dim: &str,
+        element: &str,
+    ) -> bool {
+        self.element_access(principal, cube, dim, element)
+            .map(|l| l >= AccessLevel::Read)
+            .unwrap_or(true)
+    }
+
+    /// Whether a principal may write an element.
+    pub fn element_writable(
+        &self,
+        principal: &Principal,
+        cube: &str,
+        dim: &str,
+        element: &str,
+    ) -> bool {
+        self.element_access(principal, cube, dim, element)
+            .map(|l| l >= AccessLevel::Write)
+            .unwrap_or(true)
+    }
+
+    /// Whether any element ACL exists for a `(cube, dimension)` - lets the hot
+    /// path skip building a mask when there are none.
+    pub fn has_element_acls(&self, cube: &str, dim: &str) -> bool {
+        self.element_acls
+            .keys()
+            .any(|(c, d, _)| c == cube && d == dim)
+    }
+
+    /// Set (or, with `AccessLevel::None`, remove) an object grant for a subject,
+    /// persisting the change.
+    pub fn set_object_access(
+        &mut self,
+        obj: ObjectRef,
+        subject: &Subject,
+        level: AccessLevel,
+    ) -> Result<(), SecurityError> {
+        let list = self.object_acls.entry(obj.clone()).or_default();
+        list.set(subject, level);
+        if list.is_empty() {
+            self.object_acls.remove(&obj);
+        }
+        self.save()
+    }
+
+    /// Set (or remove) an element grant for a subject, persisting the change.
+    pub fn set_element_access(
+        &mut self,
+        cube: &str,
+        dim: &str,
+        element: &str,
+        subject: &Subject,
+        level: AccessLevel,
+    ) -> Result<(), SecurityError> {
+        let key = (cube.to_string(), dim.to_string(), element.to_string());
+        let list = self.element_acls.entry(key.clone()).or_default();
+        list.set(subject, level);
+        if list.is_empty() {
+            self.element_acls.remove(&key);
+        }
+        self.save()
+    }
+
+    /// All object grants, for the admin listing surface.
+    pub fn object_acls(&self) -> &BTreeMap<ObjectRef, AccessList> {
+        &self.object_acls
+    }
+
+    /// All element grants, for the admin listing surface.
+    pub fn element_acls(&self) -> &BTreeMap<(String, String, String), AccessList> {
+        &self.element_acls
+    }
+
     /// Serialize to the canonical security model-as-code text (hashes only).
+    /// Grants are flattened to one sorted row per (object/element, subject), so
+    /// the output is byte-stable.
     pub fn to_model_text(&self) -> String {
+        let mut object_acls = Vec::new();
+        for (obj, list) in &self.object_acls {
+            for (user, level) in &list.users {
+                object_acls.push(ObjectAclDoc {
+                    kind: obj.kind.as_str().to_string(),
+                    cube: obj.cube.clone(),
+                    name: obj.name.clone(),
+                    subject_kind: "user".to_string(),
+                    subject: user.clone(),
+                    level: level.as_str().to_string(),
+                });
+            }
+            for (group, level) in &list.groups {
+                object_acls.push(ObjectAclDoc {
+                    kind: obj.kind.as_str().to_string(),
+                    cube: obj.cube.clone(),
+                    name: obj.name.clone(),
+                    subject_kind: "group".to_string(),
+                    subject: group.clone(),
+                    level: level.as_str().to_string(),
+                });
+            }
+        }
+        let mut element_acls = Vec::new();
+        for ((cube, dim, element), list) in &self.element_acls {
+            for (user, level) in &list.users {
+                element_acls.push(ElementAclDoc {
+                    cube: cube.clone(),
+                    dimension: dim.clone(),
+                    element: element.clone(),
+                    subject_kind: "user".to_string(),
+                    subject: user.clone(),
+                    level: level.as_str().to_string(),
+                });
+            }
+            for (group, level) in &list.groups {
+                element_acls.push(ElementAclDoc {
+                    cube: cube.clone(),
+                    dimension: dim.clone(),
+                    element: element.clone(),
+                    subject_kind: "group".to_string(),
+                    subject: group.clone(),
+                    level: level.as_str().to_string(),
+                });
+            }
+        }
         let doc = SecurityDoc {
             format: FORMAT_TAG.to_string(),
             users: self
@@ -241,6 +415,8 @@ impl SecurityStore {
                 })
                 .collect(),
             groups: self.groups.iter().cloned().collect(),
+            object_acls,
+            element_acls,
         };
         toml::to_string(&doc).expect("security document serializes")
     }
@@ -269,9 +445,43 @@ impl SecurityStore {
                 )
             })
             .collect();
+        // Rebuild the grant maps. Tolerate unknown kinds/levels/subjects rather
+        // than failing the load (ADR-0015: load is total; dangling/odd rows are
+        // simply never consulted).
+        let mut object_acls: BTreeMap<ObjectRef, AccessList> = BTreeMap::new();
+        for row in doc.object_acls {
+            if let (Some(kind), Some(level), Some(subject)) = (
+                ObjectKind::parse(&row.kind),
+                AccessLevel::parse(&row.level),
+                subject_from(&row.subject_kind, &row.subject),
+            ) {
+                object_acls
+                    .entry(ObjectRef {
+                        kind,
+                        cube: row.cube,
+                        name: row.name,
+                    })
+                    .or_default()
+                    .set(&subject, level);
+            }
+        }
+        let mut element_acls: BTreeMap<ElementKey, AccessList> = BTreeMap::new();
+        for row in doc.element_acls {
+            if let (Some(level), Some(subject)) = (
+                AccessLevel::parse(&row.level),
+                subject_from(&row.subject_kind, &row.subject),
+            ) {
+                element_acls
+                    .entry((row.cube, row.dimension, row.element))
+                    .or_default()
+                    .set(&subject, level);
+            }
+        }
         Ok(SecurityStore {
             users,
             groups: doc.groups.into_iter().collect(),
+            object_acls,
+            element_acls,
             path: None,
             fast_kdf,
         })
@@ -338,6 +548,43 @@ struct SecurityDoc {
     users: Vec<UserDoc>,
     #[serde(default)]
     groups: Vec<String>,
+    // ACLs are additive and skipped when empty, so pre-Phase-7 (v0) files load
+    // and re-serialize byte-identically (ADR-0015); the format tag is unchanged.
+    #[serde(default, rename = "object_acl", skip_serializing_if = "Vec::is_empty")]
+    object_acls: Vec<ObjectAclDoc>,
+    #[serde(default, rename = "element_acl", skip_serializing_if = "Vec::is_empty")]
+    element_acls: Vec<ElementAclDoc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ObjectAclDoc {
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cube: Option<String>,
+    name: String,
+    subject_kind: String,
+    subject: String,
+    level: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ElementAclDoc {
+    cube: String,
+    dimension: String,
+    element: String,
+    subject_kind: String,
+    subject: String,
+    level: String,
+}
+
+/// Build a `Subject` from a serialized `(subject_kind, subject)`; `None` for an
+/// unrecognized kind (tolerated on load).
+fn subject_from(kind: &str, name: &str) -> Option<Subject> {
+    match kind {
+        "user" => Some(Subject::User(name.to_string())),
+        "group" => Some(Subject::Group(name.to_string())),
+        _ => None,
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -418,5 +665,145 @@ mod tests {
     fn unknown_format_is_rejected() {
         let err = SecurityStore::from_model_text("format = \"nope\"\n", true).unwrap_err();
         assert!(matches!(err, SecurityError::Format(_)));
+    }
+
+    // ---- ACLs (Phase 7, ADR-0015) ----
+
+    fn principal(name: &str, admin: bool, groups: &[&str]) -> Principal {
+        Principal {
+            username: name.to_string(),
+            is_admin: admin,
+            groups: groups.iter().map(|g| g.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn object_access_resolves_grants_with_admin_bypass() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        let cube = ObjectRef::cube("Sales");
+        let admin = principal("admin", true, &[]);
+        let ann = principal("ann", false, &["editors"]);
+        let bob = principal("bob", false, &[]);
+
+        // No grants: admin bypasses to Admin; others get None.
+        assert_eq!(store.object_access(&admin, &cube), AccessLevel::Admin);
+        assert_eq!(store.object_access(&ann, &cube), AccessLevel::None);
+
+        // Direct Read for ann, Write for her group: most-permissive (Write) wins.
+        store
+            .set_object_access(
+                cube.clone(),
+                &Subject::User("ann".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        store
+            .set_object_access(
+                cube.clone(),
+                &Subject::Group("editors".into()),
+                AccessLevel::Write,
+            )
+            .unwrap();
+        assert_eq!(store.object_access(&ann, &cube), AccessLevel::Write);
+        assert_eq!(store.object_access(&bob, &cube), AccessLevel::None);
+        assert_eq!(store.object_access(&admin, &cube), AccessLevel::Admin);
+
+        // Revoke the group grant: ann falls back to her direct Read.
+        store
+            .set_object_access(
+                cube.clone(),
+                &Subject::Group("editors".into()),
+                AccessLevel::None,
+            )
+            .unwrap();
+        assert_eq!(store.object_access(&ann, &cube), AccessLevel::Read);
+    }
+
+    #[test]
+    fn element_acl_restricts_a_member_to_granted_subjects() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        let ann = principal("ann", false, &[]);
+        let admin = principal("admin", true, &[]);
+        let mgr = principal("mary", false, &["managers"]);
+
+        // No element ACLs: every member readable.
+        assert!(store.element_readable(&ann, "Sales", "Region", "North"));
+        assert!(!store.has_element_acls("Sales", "Region"));
+
+        // Restrict North to the managers group (Read): ann is now denied, a
+        // manager may read but not write, and South (no ACL) stays open.
+        store
+            .set_element_access(
+                "Sales",
+                "Region",
+                "North",
+                &Subject::Group("managers".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        assert!(store.has_element_acls("Sales", "Region"));
+        assert!(!store.element_readable(&ann, "Sales", "Region", "North"));
+        assert!(store.element_readable(&mgr, "Sales", "Region", "North"));
+        assert!(!store.element_writable(&mgr, "Sales", "Region", "North"));
+        assert!(store.element_readable(&ann, "Sales", "Region", "South"));
+        // Admin bypasses element security entirely.
+        assert!(store.element_readable(&admin, "Sales", "Region", "North"));
+        assert!(store.element_writable(&admin, "Sales", "Region", "North"));
+    }
+
+    #[test]
+    fn acls_round_trip_byte_identical() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store
+            .set_object_access(
+                ObjectRef::cube("Sales"),
+                &Subject::User("ann".into()),
+                AccessLevel::Write,
+            )
+            .unwrap();
+        store
+            .set_object_access(
+                ObjectRef::in_cube(ObjectKind::Rule, "Sales", "margin"),
+                &Subject::Group("editors".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        store
+            .set_element_access(
+                "Sales",
+                "Region",
+                "North",
+                &Subject::Group("managers".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+
+        let text1 = store.to_model_text();
+        let store2 = SecurityStore::from_model_text(&text1, true).unwrap();
+        let text2 = store2.to_model_text();
+        assert_eq!(text1, text2, "ACLs must round-trip byte-identically");
+
+        // The grants survived the round-trip.
+        let ann = principal("ann", false, &[]);
+        assert_eq!(
+            store2.object_access(&ann, &ObjectRef::cube("Sales")),
+            AccessLevel::Write
+        );
+        let mgr = principal("m", false, &["managers"]);
+        assert!(store2.element_readable(&mgr, "Sales", "Region", "North"));
+        assert!(!store2.element_readable(&ann, "Sales", "Region", "North"));
+    }
+
+    #[test]
+    fn pre_phase7_file_without_acls_loads() {
+        // A v0 artifact (users only, no acl sections) loads under the unchanged
+        // format tag, with empty grant maps.
+        let text = format!(
+            "format = \"{FORMAT_TAG}\"\n\n[[user]]\nusername = \"admin\"\nis_admin = true\nmust_change_password = false\npassword_hash = \"x\"\n"
+        );
+        let store = SecurityStore::from_model_text(&text, true).unwrap();
+        assert_eq!(store.user_count(), 1);
+        assert!(store.object_acls().is_empty());
+        assert!(store.element_acls().is_empty());
     }
 }

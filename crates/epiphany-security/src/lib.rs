@@ -6,8 +6,10 @@
 //! plus a generated first-run admin. Authorization in M2 is authenticated plus
 //! admin-or-not; per-object and per-element authorization arrives in Phase 7.
 
+mod acl;
 mod store;
 
+pub use acl::{AccessLevel, AccessList, ObjectKind, ObjectRef, Subject};
 pub use store::{GeneratedAdminPassword, Principal, SecurityError, SecurityStore};
 
 /// Stable crate identifier, reported by the server's wiring banner.
