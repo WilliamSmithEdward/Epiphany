@@ -653,11 +653,50 @@ fn resolve_axis<'a>(
     Ok((dimensions, crossjoin(&per_spec)))
 }
 
-/// A complete durable model: a cube plus its named subsets and views.
+/// A cube's calculation rules, stored as model-as-code source text. Core keeps it
+/// opaque (the way a dynamic subset carries opaque MDX); `epiphany-calc` parses
+/// and compiles it. An empty source means the cube has no rules.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RuleSet {
+    /// The rules-language source text.
+    pub source: String,
+}
+
+impl RuleSet {
+    /// Whether there are no rules.
+    pub fn is_empty(&self) -> bool {
+        self.source.trim().is_empty()
+    }
+}
+
+/// One cell of a rule unit test: a coordinate (dimension -> member) and a value
+/// (a decimal string to set, for a fixture, or the expected value, for an
+/// assertion).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestCell {
+    /// The coordinate as dimension -> member names.
+    pub coord: BTreeMap<String, String>,
+    /// The decimal-string value (fixture input or expected output).
+    pub value: String,
+}
+
+/// A rule unit test: set the `fixtures`, then assert the derived `assertions`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RuleTest {
+    /// The test name (unique within the cube).
+    pub name: String,
+    /// Leaf cells to set before evaluating.
+    pub fixtures: Vec<TestCell>,
+    /// Cells whose derived value is asserted.
+    pub assertions: Vec<TestCell>,
+}
+
+/// A complete durable model: a cube plus its named subsets, views, rules, and
+/// rule tests.
 ///
 /// Subsets are keyed by `(dimension, name)` (a subset name is unique within its
-/// dimension); views are keyed by name (unique within the cube). This is the
-/// unit the store owns and persists (Phase 3F) and the snapshot serializes.
+/// dimension); views and tests are keyed by name (unique within the cube). This
+/// is the unit the store owns and persists and the snapshot serializes.
 #[derive(Clone, Debug)]
 pub struct Model {
     /// The cube and its dimensions.
@@ -666,15 +705,21 @@ pub struct Model {
     pub subsets: BTreeMap<(String, String), Subset>,
     /// Named views, keyed by name.
     pub views: BTreeMap<String, View>,
+    /// The cube's calculation rules (opaque source text).
+    pub rules: RuleSet,
+    /// Rule unit tests, keyed by name.
+    pub tests: BTreeMap<String, RuleTest>,
 }
 
 impl Model {
-    /// A model wrapping `cube` with no subsets or views.
+    /// A model wrapping `cube` with no subsets, views, rules, or tests.
     pub fn new(cube: Cube) -> Self {
         Self {
             cube,
             subsets: BTreeMap::new(),
             views: BTreeMap::new(),
+            rules: RuleSet::default(),
+            tests: BTreeMap::new(),
         }
     }
 

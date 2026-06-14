@@ -15,7 +15,9 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-use crate::query::{AxisSpec, Model, Subset, SubsetKind, View, Visibility};
+use crate::query::{
+    AxisSpec, Model, RuleSet, RuleTest, Subset, SubsetKind, TestCell, View, Visibility,
+};
 use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
 const FORMAT_TAG: &str = "epiphany-model/v0";
@@ -119,6 +121,12 @@ struct ModelDoc {
     subsets: Vec<SubsetDoc>,
     #[serde(default, rename = "view", skip_serializing_if = "Vec::is_empty")]
     views: Vec<ViewDoc>,
+    // Rules and rule tests are optional and skipped when empty, so a model
+    // without them serializes byte-identically to the pre-4H format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rules: Option<RuleSetDoc>,
+    #[serde(default, rename = "rule_test", skip_serializing_if = "Vec::is_empty")]
+    rule_tests: Vec<RuleTestDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -388,6 +396,75 @@ fn build_view(doc: &ViewDoc) -> View {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct RuleSetDoc {
+    source: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct CoordEntryDoc {
+    dimension: String,
+    member: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct TestCellDoc {
+    coord: Vec<CoordEntryDoc>,
+    value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct RuleTestDoc {
+    name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fixtures: Vec<TestCellDoc>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    assertions: Vec<TestCellDoc>,
+}
+
+fn test_cell_doc(cell: &TestCell) -> TestCellDoc {
+    // Coordinate entries sorted by dimension (the BTreeMap iterates sorted) for
+    // canonical output.
+    TestCellDoc {
+        coord: cell
+            .coord
+            .iter()
+            .map(|(dimension, member)| CoordEntryDoc {
+                dimension: dimension.clone(),
+                member: member.clone(),
+            })
+            .collect(),
+        value: cell.value.clone(),
+    }
+}
+
+fn build_test_cell(doc: &TestCellDoc) -> TestCell {
+    TestCell {
+        coord: doc
+            .coord
+            .iter()
+            .map(|c| (c.dimension.clone(), c.member.clone()))
+            .collect(),
+        value: doc.value.clone(),
+    }
+}
+
+fn rule_test_doc(test: &RuleTest) -> RuleTestDoc {
+    RuleTestDoc {
+        name: test.name.clone(),
+        fixtures: test.fixtures.iter().map(test_cell_doc).collect(),
+        assertions: test.assertions.iter().map(test_cell_doc).collect(),
+    }
+}
+
+fn build_rule_test(doc: &RuleTestDoc) -> RuleTest {
+    RuleTest {
+        name: doc.name.clone(),
+        fixtures: doc.fixtures.iter().map(build_test_cell).collect(),
+        assertions: doc.assertions.iter().map(build_test_cell).collect(),
+    }
+}
+
 impl From<ElementKind> for KindDoc {
     fn from(kind: ElementKind) -> Self {
         match kind {
@@ -544,7 +621,13 @@ fn resolve_coord(cube: &Cube, cube_name: &str, names: &[String]) -> Result<Vec<u
 /// Build the canonical serialized document for a cube plus already-built subset
 /// and view docs. Shared by [`Cube::to_model_text`] (empty subsets/views) and
 /// [`Model::to_model_text`].
-fn build_model_doc(cube: &Cube, subsets: Vec<SubsetDoc>, views: Vec<ViewDoc>) -> ModelDoc {
+fn build_model_doc(
+    cube: &Cube,
+    subsets: Vec<SubsetDoc>,
+    views: Vec<ViewDoc>,
+    rules: Option<RuleSetDoc>,
+    rule_tests: Vec<RuleTestDoc>,
+) -> ModelDoc {
     let dimensions: Vec<DimDoc> = cube.dimensions().iter().map(dim_doc).collect();
 
     let coord_names = |coord: &[u32]| -> Vec<String> {
@@ -601,6 +684,8 @@ fn build_model_doc(cube: &Cube, subsets: Vec<SubsetDoc>, views: Vec<ViewDoc>) ->
         string_cells,
         subsets,
         views,
+        rules,
+        rule_tests,
     }
 }
 
@@ -641,11 +726,21 @@ impl Model {
     pub fn to_model_text(&self) -> Result<String, SaveError> {
         let subsets: Vec<SubsetDoc> = self.subsets.values().map(subset_doc).collect();
         let views: Vec<ViewDoc> = self.views.values().map(view_doc).collect();
-        let doc = build_model_doc(&self.cube, subsets, views);
+        let rules = if self.rules.is_empty() {
+            None
+        } else {
+            Some(RuleSetDoc {
+                source: self.rules.source.clone(),
+            })
+        };
+        let rule_tests: Vec<RuleTestDoc> = self.tests.values().map(rule_test_doc).collect();
+        let doc = build_model_doc(&self.cube, subsets, views, rules, rule_tests);
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
 
-    /// Parse a model (cube, subsets, views) from model-as-code TOML.
+    /// Parse a model (cube, subsets, views, rules, tests) from model-as-code TOML.
+    /// Rule source is stored verbatim (opaque to core); its validity is checked
+    /// when `epiphany-calc` compiles it.
     pub fn from_model_text(text: &str) -> Result<Model, LoadError> {
         let doc: ModelDoc = toml::from_str(text).map_err(LoadError::Toml)?;
         if doc.format != FORMAT_TAG {
@@ -665,10 +760,19 @@ impl Model {
         for vd in &doc.views {
             views.insert(vd.name.clone(), build_view(vd));
         }
+        let rules = RuleSet {
+            source: doc.rules.map(|r| r.source).unwrap_or_default(),
+        };
+        let mut tests = BTreeMap::new();
+        for td in &doc.rule_tests {
+            tests.insert(td.name.clone(), build_rule_test(td));
+        }
         Ok(Model {
             cube,
             subsets,
             views,
+            rules,
+            tests,
         })
     }
 
@@ -688,7 +792,7 @@ impl Model {
 impl Cube {
     /// Serialize this cube and its dimensions to canonical model-as-code TOML.
     pub fn to_model_text(&self) -> Result<String, SaveError> {
-        let doc = build_model_doc(self, Vec::new(), Vec::new());
+        let doc = build_model_doc(self, Vec::new(), Vec::new(), None, Vec::new());
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
 
@@ -938,5 +1042,50 @@ mod tests {
             }
         );
         assert!(model2.view("Grid").unwrap().suppress_zeros);
+    }
+
+    #[test]
+    fn model_round_trips_rules_and_tests() {
+        use crate::{RuleSet, RuleTest, TestCell};
+
+        let mut model = Model::new(sample_cube());
+        model.rules = RuleSet {
+            source:
+                "['Version':'Variance'] = value['Version':'Actual'] - value['Version':'Budget'];"
+                    .into(),
+        };
+        let cell = |region: &str, version: &str, value: &str| {
+            let mut coord = std::collections::BTreeMap::new();
+            coord.insert("Region".to_string(), region.to_string());
+            coord.insert("Version".to_string(), version.to_string());
+            TestCell {
+                coord,
+                value: value.to_string(),
+            }
+        };
+        model.tests.insert(
+            "variance_test".to_string(),
+            RuleTest {
+                name: "variance_test".to_string(),
+                fixtures: vec![
+                    cell("North", "Actual", "100"),
+                    cell("North", "Budget", "80"),
+                ],
+                assertions: vec![cell("North", "Variance", "20")],
+            },
+        );
+
+        let text1 = model.to_model_text().unwrap();
+        let model2 = Model::from_model_text(&text1).unwrap();
+        let text2 = model2.to_model_text().unwrap();
+        assert_eq!(
+            text1, text2,
+            "rules and tests must round-trip byte-identically"
+        );
+        assert!(model2.rules.source.contains("Variance"));
+        assert_eq!(model2.tests.len(), 1);
+        let t = &model2.tests["variance_test"];
+        assert_eq!(t.fixtures.len(), 2);
+        assert_eq!(t.assertions[0].value, "20");
     }
 }
