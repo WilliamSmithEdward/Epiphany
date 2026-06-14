@@ -8,11 +8,13 @@
 
 mod ast;
 mod error;
+mod eval;
 mod lexer;
 mod parser;
 
 pub use ast::{CmpOp, MemberRef, Operand, OrderDir, Predicate, SetExpr};
 pub use error::{MdxParseError, ParseErrorKind};
+pub use eval::{evaluate, MdxEvalError};
 pub use lexer::Span;
 pub use parser::parse;
 
