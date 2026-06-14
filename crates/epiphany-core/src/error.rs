@@ -51,6 +51,12 @@ pub enum ModelError {
     UnknownDimension { cube: String, dimension: String },
     /// A schema change re-declared an existing element with a different kind.
     ElementKindConflict { dimension: String, element: String },
+    /// A schema change re-declared an existing edge with a different weight.
+    EdgeWeightConflict {
+        dimension: String,
+        parent: String,
+        child: String,
+    },
 }
 
 impl fmt::Display for ModelError {
@@ -123,6 +129,14 @@ impl fmt::Display for ModelError {
             ModelError::ElementKindConflict { dimension, element } => write!(
                 f,
                 "element '{element}' already exists in dimension '{dimension}' with a different kind"
+            ),
+            ModelError::EdgeWeightConflict {
+                dimension,
+                parent,
+                child,
+            } => write!(
+                f,
+                "edge '{parent}' -> '{child}' already exists in dimension '{dimension}' with a different weight"
             ),
         }
     }

@@ -487,7 +487,8 @@ struct ParamEntryDoc {
 #[derive(Serialize, Deserialize)]
 struct FlowTestDoc {
     name: String,
-    #[serde(default)]
+    // Required: a flow test must name the flow it runs (always serialized, so a
+    // model that omits it is rejected at load rather than silently defaulting).
     flow: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     input: String,
@@ -1207,6 +1208,7 @@ mod tests {
         );
         let mut params = std::collections::BTreeMap::new();
         params.insert("version".to_string(), "Actual".to_string());
+        params.insert("scale".to_string(), "1000".to_string());
         let mut coord = std::collections::BTreeMap::new();
         coord.insert("Region".to_string(), "North".to_string());
         coord.insert("Version".to_string(), "Actual".to_string());
@@ -1238,6 +1240,8 @@ mod tests {
         assert_eq!(ft.flow, "load");
         assert_eq!(ft.input, "Region,Value\nNorth,100\n");
         assert_eq!(ft.params["version"], "Actual");
+        assert_eq!(ft.params["scale"], "1000");
+        assert_eq!(ft.params.len(), 2);
         assert_eq!(ft.assertions[0].value, "100");
     }
 }

@@ -54,12 +54,31 @@ fn map_flow_error(err: FlowError) -> ApiError {
 }
 
 /// Apply a flow's staged outcome through the engine: add elements/edges, then
-/// resolve and write the cells. Returns `(elements_added, cells_written)`.
+/// write the cells. Returns `(elements_added, cells_written)`.
+///
+/// Everything is pre-validated against a clone of the cube (with the new
+/// elements applied) before anything is committed, so an unresolvable cell or a
+/// rejected schema change commits nothing. On success the elements are committed
+/// first (so the new members exist) and then the cells as one batch.
 fn apply_outcome(
     state: &AppState,
     cube: &str,
     outcome: &FlowOutcome,
 ) -> Result<(usize, usize), ApiError> {
+    let snap = snapshot(state, cube)?;
+    // Stage the schema growth on a clone and resolve every cell against it, so a
+    // resolution failure surfaces before any commit.
+    let mut preview = snap.cube().clone();
+    preview
+        .extend_schema(&outcome.elements, &outcome.edges)
+        .map_err(|e| ApiError::unprocessable("FLOW_SCHEMA_ERROR", e.to_string()))?;
+    let writes: Vec<CellWrite> = outcome
+        .cells
+        .iter()
+        .map(|cell| build_write(&preview, &cell.coord, &cell.value))
+        .collect::<Result<_, _>>()?;
+
+    // All valid: commit elements first, then the cell batch.
     let mut elements_added = 0;
     if !outcome.elements.is_empty() || !outcome.edges.is_empty() {
         let (_, added) = state
@@ -67,12 +86,6 @@ fn apply_outcome(
             .define_elements(cube, None, &outcome.elements, &outcome.edges)
             .map_err(map_batch_error)?;
         elements_added = added;
-    }
-    // Resolve cells against a snapshot taken after the new elements exist.
-    let snap = snapshot(state, cube)?;
-    let mut writes: Vec<CellWrite> = Vec::with_capacity(outcome.cells.len());
-    for cell in &outcome.cells {
-        writes.push(build_write(snap.cube(), &cell.coord, &cell.value)?);
     }
     let cells_written = writes.len();
     if !writes.is_empty() {
@@ -143,6 +156,12 @@ pub(crate) async fn put_flow(
     Json(body): Json<FlowDto>,
 ) -> Result<Json<FlowDto>, ApiError> {
     // Validate (strip + parse) before persisting; a bad flow is never stored.
+    if body.source.trim().is_empty() {
+        return Err(ApiError::unprocessable(
+            "FLOW_EMPTY",
+            "flow source is empty",
+        ));
+    }
     validate_flow(&body.source).map_err(map_flow_error)?;
     let flow = Flow {
         name: name.clone(),
@@ -318,10 +337,14 @@ fn plan_import(rows: &[epiphany_flow::Row], body: &ImportBody) -> Result<FlowOut
                 format!("CSV row missing value column '{}'", body.value_column),
             )
         })?;
-        cells.push(PlannedCell {
-            coord,
-            value: value.to_string(),
-        });
+        // A blank value is "no data" for that cell: build the member but skip the
+        // write (so a CSV with some empty values loads cleanly, sparse).
+        if !value.trim().is_empty() {
+            cells.push(PlannedCell {
+                coord,
+                value: value.to_string(),
+            });
+        }
     }
     // Dedup element specs (idempotent anyway).
     let mut seen = std::collections::HashSet::new();

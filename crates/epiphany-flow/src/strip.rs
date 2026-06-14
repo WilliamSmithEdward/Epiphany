@@ -28,9 +28,9 @@
 //!   functions that the runtime calls by name).
 //!
 //! ## Rejected (errors)
-//! `enum`, `namespace`, `declare`, decorators (`@`), and `import` statements:
-//! these need real compilation or a module loader the flow sandbox does not
-//! provide.
+//! `enum`, `namespace`, `declare`, `class`, decorators (`@`), and `import`
+//! statements: these need real compilation or a module loader the flow sandbox
+//! does not provide.
 
 use std::fmt;
 
@@ -305,18 +305,33 @@ impl Stripper {
     }
 
     fn skip_ws_and_comments(&mut self) {
+        self.i = self.skip_trivia(self.i);
+    }
+
+    /// Skip whitespace and comments starting at `k`, returning the next
+    /// significant offset. Pure (does not move `self.i`).
+    fn skip_trivia(&self, mut k: usize) -> usize {
         loop {
-            while self.i < self.src.len() && self.src[self.i].is_whitespace() {
-                self.i += 1;
+            while k < self.src.len() && self.src[k].is_whitespace() {
+                k += 1;
             }
-            if self.peek(0) == Some('/') && self.peek(1) == Some('/') {
-                self.skip_line_comment();
-            } else if self.peek(0) == Some('/') && self.peek(1) == Some('*') {
-                self.skip_block_comment();
+            if self.src.get(k) == Some(&'/') && self.src.get(k + 1) == Some(&'/') {
+                while k < self.src.len() && self.src[k] != '\n' {
+                    k += 1;
+                }
+            } else if self.src.get(k) == Some(&'/') && self.src.get(k + 1) == Some(&'*') {
+                k += 2;
+                while k < self.src.len()
+                    && !(self.src[k] == '*' && self.src.get(k + 1) == Some(&'/'))
+                {
+                    k += 1;
+                }
+                k = (k + 2).min(self.src.len());
             } else {
                 break;
             }
         }
+        k
     }
 
     /// Whether the token before position `at` (skipping spaces backward) is a `.`,
@@ -341,7 +356,7 @@ impl Stripper {
 
         if !after_dot {
             match word.as_str() {
-                "enum" | "namespace" | "declare" => {
+                "enum" | "namespace" | "declare" | "class" => {
                     return Err(
                         self.error_at(start, &format!("'{word}' is not supported in flows"))
                     );
@@ -577,10 +592,7 @@ impl Stripper {
     /// token that legitimately ends an annotation: `, ) ; = { => end`, or the
     /// `of`/`in` of a typed `for` binding.
     fn is_annotation_terminator(&self, end: usize) -> bool {
-        let mut k = end;
-        while k < self.src.len() && self.src[k].is_whitespace() {
-            k += 1;
-        }
+        let k = self.skip_trivia(end);
         match self.src.get(k) {
             None | Some(',') | Some(')') | Some(';') | Some('=') | Some('{') => true,
             Some(c) if c.is_ascii_alphabetic() => {
@@ -882,6 +894,23 @@ mod tests {
         assert!(strip_types("namespace N {}").is_err());
         assert!(strip_types("import { x } from 'y';").is_err());
         assert!(strip_types("@dec class C {}").is_err());
+        assert!(strip_types("class C { x: number }").is_err());
+        assert!(strip_types("export class C {}").is_err());
+    }
+
+    #[test]
+    fn strips_annotation_with_comment_before_terminator() {
+        // A comment between the type and its terminator must not block stripping;
+        // the type goes, the comment stays.
+        let out = strip_types("const x: number // tag\n = 5;").unwrap();
+        assert!(!out.contains("number"), "annotation stripped: {out:?}");
+        assert!(out.contains("// tag"), "comment preserved: {out:?}");
+        assert!(out.contains("= 5"));
+
+        let out = strip_types("function f(a: string /* c */) { return a; }").unwrap();
+        assert!(!out.contains("string"), "annotation stripped: {out:?}");
+        assert!(out.contains("/* c */"), "comment preserved: {out:?}");
+        assert!(out.contains("return a"));
     }
 
     #[test]

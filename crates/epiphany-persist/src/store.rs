@@ -436,11 +436,10 @@ impl Store {
         elements: &[ElementSpec],
         edges: &[EdgeSpec],
     ) -> Result<usize, PersistError> {
-        // Apply to a clone first so a rejected change leaves the live model
-        // untouched (the same all-or-nothing contract as batch cell writes).
-        let mut next = self.model.cube.clone();
-        let added = next.extend_schema(elements, edges)?;
-        self.model.cube = next;
+        // Cube::extend_schema is transactional (it stages on a clone and only
+        // commits on full success), so a rejected change leaves the model
+        // untouched and we only checkpoint when something actually changed.
+        let added = self.model.cube.extend_schema(elements, edges)?;
         self.checkpoint()?;
         Ok(added)
     }

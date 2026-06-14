@@ -335,7 +335,24 @@ impl Cube {
     /// coordinate packing is rebuilt only if a dimension's bit-width grew. This is
     /// the runtime "build dimension elements" capability flows use; it never
     /// removes or reorders elements (which would invalidate stored coordinates).
+    ///
+    /// Transactional: the change is staged on a clone and only swapped in if every
+    /// element and edge applies cleanly, so a rejected change (unknown dimension,
+    /// element-kind or edge-weight conflict, a cycle) leaves the cube untouched.
     pub fn extend_schema(
+        &mut self,
+        elements: &[ElementSpec],
+        edges: &[EdgeSpec],
+    ) -> Result<usize, ModelError> {
+        let mut next = self.clone();
+        let added = next.apply_growth(elements, edges)?;
+        *self = next;
+        Ok(added)
+    }
+
+    /// Apply element/edge additions in place (not transactional; callers go
+    /// through [`extend_schema`](Self::extend_schema), which stages on a clone).
+    fn apply_growth(
         &mut self,
         elements: &[ElementSpec],
         edges: &[EdgeSpec],
@@ -378,13 +395,21 @@ impl Cube {
                     dimension: edge.dimension.clone(),
                     element: edge.child.clone(),
                 })?;
-            // Idempotent: skip an edge that already exists (re-adding would
-            // double-count in consolidation).
-            if dim
+            // Idempotent: an edge that already exists is a no-op, but re-declaring
+            // it with a different weight is a conflict (silently keeping the old
+            // weight would corrupt rollups).
+            if let Some(&(_, _, w)) = dim
                 .edges()
                 .iter()
-                .any(|&(p, c, _)| p == parent && c == child)
+                .find(|&&(p, c, _)| p == parent && c == child)
             {
+                if w != edge.weight {
+                    return Err(ModelError::EdgeWeightConflict {
+                        dimension: edge.dimension.clone(),
+                        parent: edge.parent.clone(),
+                        child: edge.child.clone(),
+                    });
+                }
                 continue;
             }
             dim.add_child(parent, child, edge.weight)?;
@@ -902,6 +927,59 @@ mod tests {
             &[],
         );
         assert!(matches!(bad, Err(ModelError::UnknownDimension { .. })));
+    }
+
+    #[test]
+    fn extend_schema_rejects_edge_weight_conflict() {
+        let mut region = Dimension::new("Region");
+        region.add_leaf("North");
+        region.add_consolidated("Total");
+        let mut cube = Cube::new("Sales", vec![region]).unwrap();
+        let edge = |w: i64| EdgeSpec {
+            dimension: "Region".into(),
+            parent: "Total".into(),
+            child: "North".into(),
+            weight: w,
+        };
+        cube.extend_schema(&[], &[edge(1)]).unwrap();
+        // Re-adding with the same weight is idempotent.
+        cube.extend_schema(&[], &[edge(1)]).unwrap();
+        // A different weight is a conflict, not a silent discard.
+        assert!(matches!(
+            cube.extend_schema(&[], &[edge(-1)]),
+            Err(ModelError::EdgeWeightConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn extend_schema_is_transactional_on_rejection() {
+        let mut region = Dimension::new("Region");
+        region.add_leaf("North");
+        let mut cube = Cube::new("Sales", vec![region]).unwrap();
+        let before = cube.dimension(0).len();
+        // A batch whose first element is valid but second conflicts (North exists
+        // as a leaf) must leave the dimension entirely unchanged.
+        let err = cube.extend_schema(
+            &[
+                ElementSpec {
+                    dimension: "Region".into(),
+                    name: "South".into(),
+                    kind: ElementKind::Leaf,
+                },
+                ElementSpec {
+                    dimension: "Region".into(),
+                    name: "North".into(),
+                    kind: ElementKind::Consolidated,
+                },
+            ],
+            &[],
+        );
+        assert!(matches!(err, Err(ModelError::ElementKindConflict { .. })));
+        assert_eq!(cube.dimension(0).len(), before, "no partial mutation");
+        assert!(
+            cube.dimension(0).resolve("South").is_none(),
+            "South not added"
+        );
     }
 
     #[test]

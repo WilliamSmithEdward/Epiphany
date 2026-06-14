@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 
 use boa_engine::object::ObjectInitializer;
 use boa_engine::property::Attribute;
-use boa_engine::{js_string, Context, JsResult, JsValue, NativeFunction, Source};
+use boa_engine::{js_string, Context, JsNativeError, JsResult, JsValue, NativeFunction, Source};
 use epiphany_core::{EdgeSpec, ElementKind, ElementSpec};
 
 use crate::csv::Row;
@@ -41,6 +41,20 @@ use crate::strip::{strip_types, StripError};
 const LOOP_LIMIT: u64 = 50_000_000;
 /// Recursion-depth budget.
 const RECURSION_LIMIT: usize = 800;
+/// Cap on the total staged changes (elements + edges + cells) a single run may
+/// accumulate, so a flow cannot exhaust memory by staging unboundedly (which
+/// would make the outcome depend on available RAM). Exceeding it throws.
+const MAX_STAGED: usize = 5_000_000;
+
+fn over_budget(s: &FlowState) -> bool {
+    s.elements.len() + s.edges.len() + s.cells.len() > MAX_STAGED
+}
+
+fn budget_error() -> boa_engine::JsError {
+    JsNativeError::error()
+        .with_message("flow exceeded the staged-change budget")
+        .into()
+}
 
 /// A cell write a flow staged, addressed by member names (resolved to indices by
 /// the caller once any new elements exist).
@@ -323,7 +337,7 @@ fn host_ensure_elements(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> Js
     let json = arg_string(args, 0, ctx)?;
     let arr: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
     if let Some(items) = arr.as_array() {
-        with_flow(|s| {
+        let over = with_flow(|s| {
             for item in items {
                 let dimension = str_field(item, "dimension");
                 let name = str_field(item, "name");
@@ -340,7 +354,11 @@ fn host_ensure_elements(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> Js
                     });
                 }
             }
+            over_budget(s)
         });
+        if over {
+            return Err(budget_error());
+        }
     }
     Ok(JsValue::undefined())
 }
@@ -349,7 +367,7 @@ fn host_add_child(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult
     let json = arg_string(args, 0, ctx)?;
     let arr: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
     if let Some(items) = arr.as_array() {
-        with_flow(|s| {
+        let over = with_flow(|s| {
             for item in items {
                 let dimension = str_field(item, "dimension");
                 let parent = str_field(item, "parent");
@@ -364,7 +382,11 @@ fn host_add_child(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult
                     });
                 }
             }
+            over_budget(s)
         });
+        if over {
+            return Err(budget_error());
+        }
     }
     Ok(JsValue::undefined())
 }
@@ -373,7 +395,7 @@ fn host_write_cells(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResu
     let json = arg_string(args, 0, ctx)?;
     let arr: serde_json::Value = serde_json::from_str(&json).unwrap_or(serde_json::Value::Null);
     if let Some(items) = arr.as_array() {
-        with_flow(|s| {
+        let over = with_flow(|s| {
             for item in items {
                 let value = str_field(item, "value");
                 let mut coord = BTreeMap::new();
@@ -388,7 +410,11 @@ fn host_write_cells(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResu
                     s.cells.push(PlannedCell { coord, value });
                 }
             }
+            over_budget(s)
         });
+        if over {
+            return Err(budget_error());
+        }
     }
     Ok(JsValue::undefined())
 }
@@ -425,6 +451,11 @@ fn params_to_json(params: &BTreeMap<String, String>) -> String {
 
 /// Drop duplicate element and edge specs (the cube layer is idempotent anyway,
 /// but a deterministic, deduplicated outcome is cleaner to apply and report).
+///
+/// `Vec::retain` visits elements front-to-back and keeps the first occurrence of
+/// each key, so the output order is the flow's staging order; the `HashSet` only
+/// tracks membership, and its (randomized) iteration order never affects the
+/// retained sequence. The result is therefore deterministic.
 fn dedup_specs(outcome: &mut FlowOutcome) {
     let mut seen_el = std::collections::HashSet::new();
     outcome
