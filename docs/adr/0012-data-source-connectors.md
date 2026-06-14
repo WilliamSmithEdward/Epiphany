@@ -1,6 +1,6 @@
 # ADR-0012: Data-source connectors (HTTP, ODBC, command) and the fetch/transform split
 
-- **Status:** Proposed
+- **Status:** Accepted (command connector realized; HTTP and ODBC follow on the same foundation)
 - **Date:** 2026-06-14
 - **Deciders:** Epiphany maintainers
 - **Phase:** 5 (flows), connector follow-on
@@ -130,6 +130,10 @@ cut runs fully-fixed commands.
 - A small connections + secret-reference subsystem is added (admin CRUD, an
   env-backed secret store, an endpoint/DSN allowlist). Scheduled refresh of
   connector-backed flows pairs naturally with the Phase 8 job scheduler.
-- To be realized as `epiphany-connect` plus the connection/secret model and the
-  flow-run source wiring; this ADR moves to Accepted when that lands, gated by a
-  connector acceptance test (a mock HTTP source end to end).
+- Realized so far as `epiphany-connect` (the command connector), the durable
+  `Connection` model, admin-gated connection CRUD with the runtime enable gate,
+  and the flow-run `connection` source; gated by
+  `epiphany-api/tests/connectors.rs` (a flow ingests from a command connection
+  end to end, plus both security gates and a connector-failure path). HTTP
+  (reqwest) and ODBC (odbc-api) connectors, and the secret store for their
+  credentials, are the remaining follow-ons on this same foundation.
