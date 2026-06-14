@@ -132,7 +132,7 @@ pub struct AuditFilter {
 /// audit writes do not serialize behind the security mutex.
 #[derive(Debug)]
 pub struct AuditLog {
-    file: File,
+    file: Option<File>,
     records: Vec<AuditRecord>,
     next_seq: u64,
 }
@@ -174,10 +174,20 @@ impl AuditLog {
             }
         };
         Ok(AuditLog {
-            file,
+            file: Some(file),
             records,
             next_seq,
         })
+    }
+
+    /// An in-memory audit log with no backing file: records are queryable but not
+    /// persisted. A hermetic test seam, mirroring `SecurityStore::with_admin`.
+    pub fn in_memory() -> Self {
+        AuditLog {
+            file: None,
+            records: Vec::new(),
+            next_seq: 0,
+        }
     }
 
     /// Append one record (assigning the next sequence number) and fsync it.
@@ -201,8 +211,10 @@ impl AuditLog {
             target: target.into(),
             allowed,
         };
-        self.file.write_all(&encode(&record))?;
-        self.file.sync_data()?;
+        if let Some(file) = &mut self.file {
+            file.write_all(&encode(&record))?;
+            file.sync_data()?;
+        }
         let seq = record.seq;
         self.records.push(record);
         self.next_seq += 1;

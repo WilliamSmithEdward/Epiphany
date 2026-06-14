@@ -12,8 +12,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use epiphany_security::{Principal, SecurityError};
+use epiphany_security::{AuditAction, Principal, SecurityError};
 
+use crate::authz::audit;
 use crate::{ApiError, AppState};
 
 const SESSION_COOKIE: &str = "epiphany_session";
@@ -87,12 +88,19 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
-    let principal = state
+    let authenticated = state
         .security
         .lock()
         .expect("security mutex")
-        .authenticate(&req.username, &req.password)
-        .ok_or_else(|| ApiError::unauthorized("invalid credentials"))?;
+        .authenticate(&req.username, &req.password);
+    let principal = match authenticated {
+        Some(principal) => principal,
+        None => {
+            // Audit the failed attempt (no password in the record, RG-13).
+            audit(&state, &req.username, AuditAction::Login, None, false);
+            return Err(ApiError::unauthorized("invalid credentials"));
+        }
+    };
     let must_change_password = state
         .security
         .lock()
@@ -104,6 +112,7 @@ pub async fn login(
         .lock()
         .expect("session store mutex")
         .create(principal.clone(), now);
+    audit(&state, &principal.username, AuditAction::Login, None, true);
 
     let body = LoginResponse {
         token: token.clone(),
@@ -128,6 +137,13 @@ pub async fn logout(State(state): State<AppState>, auth: AuthPrincipal) -> Statu
         .lock()
         .expect("session store mutex")
         .revoke(&auth.token);
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::Logout,
+        None,
+        true,
+    );
     StatusCode::NO_CONTENT
 }
 
@@ -174,5 +190,12 @@ pub async fn change_password(
             }
             _ => ApiError::internal(),
         })?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::UserChange,
+        None,
+        true,
+    );
     Ok(StatusCode::NO_CONTENT)
 }

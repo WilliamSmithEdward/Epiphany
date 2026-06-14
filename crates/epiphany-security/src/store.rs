@@ -254,6 +254,47 @@ impl SecurityStore {
             .unwrap_or(AccessLevel::None)
     }
 
+    /// The current principal for a username (admin flag + groups) from the live
+    /// store, for per-request re-resolution. `None` if the user no longer exists.
+    pub fn principal(&self, username: &str) -> Option<Principal> {
+        self.users.get(username).map(|u| Principal {
+            username: username.to_string(),
+            is_admin: u.is_admin,
+            groups: u.groups.iter().cloned().collect(),
+        })
+    }
+
+    /// The effective access a `username` has to an object, re-resolved against the
+    /// live store and composed with the owner (-> Write) and public (-> Read)
+    /// fallbacks the API supplies from the model snapshot (ADR-0015). An unknown
+    /// user gets `None`. This is the single entry point the API gates on.
+    pub fn resolve_access(
+        &self,
+        username: &str,
+        obj: &ObjectRef,
+        owner: Option<&str>,
+        public: bool,
+    ) -> AccessLevel {
+        let Some(p) = self.principal(username) else {
+            return AccessLevel::None;
+        };
+        if p.is_admin {
+            return AccessLevel::Admin;
+        }
+        let mut level = self
+            .object_acls
+            .get(obj)
+            .map(|list| list.level_for(&p.username, &p.groups))
+            .unwrap_or(AccessLevel::None);
+        if owner == Some(username) {
+            level = level.max(AccessLevel::Write);
+        }
+        if public && level < AccessLevel::Read {
+            level = AccessLevel::Read;
+        }
+        level
+    }
+
     /// The element restriction for a `(cube, dimension, element)`: `None` means no
     /// element ACL applies, so the member is unrestricted (an admin is always
     /// unrestricted); `Some(level)` means the member is restricted to `level`.
@@ -717,6 +758,49 @@ mod tests {
             )
             .unwrap();
         assert_eq!(store.object_access(&ann, &cube), AccessLevel::Read);
+    }
+
+    #[test]
+    fn resolve_access_composes_grants_owner_and_public() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        let view = ObjectRef::in_cube(ObjectKind::View, "Sales", "Grid");
+
+        // A non-owner non-grantee on a private object: no access.
+        assert_eq!(
+            store.resolve_access("ann", &view, None, false),
+            AccessLevel::None
+        );
+        // Public objects are readable by anyone.
+        assert_eq!(
+            store.resolve_access("ann", &view, None, true),
+            AccessLevel::Read
+        );
+        // The owner gets Write even on a private object.
+        assert_eq!(
+            store.resolve_access("ann", &view, Some("ann"), false),
+            AccessLevel::Write
+        );
+        // A grant raises a non-owner above the public floor.
+        store
+            .set_object_access(
+                view.clone(),
+                &Subject::User("ann".into()),
+                AccessLevel::Admin,
+            )
+            .unwrap();
+        assert_eq!(
+            store.resolve_access("ann", &view, None, false),
+            AccessLevel::Admin
+        );
+        // Admin bypasses regardless; an unknown user gets nothing even if public.
+        assert_eq!(
+            store.resolve_access("admin", &view, None, false),
+            AccessLevel::Admin
+        );
+        assert_eq!(
+            store.resolve_access("ghost", &view, None, true),
+            AccessLevel::None
+        );
     }
 
     #[test]

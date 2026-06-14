@@ -15,7 +15,7 @@ use epiphany_determinism::{IdGen, ManualClock};
 use epiphany_engine::{CellWrite, Engine};
 use epiphany_mdx::MdxEvaluator;
 use epiphany_persist::Store;
-use epiphany_security::SecurityStore;
+use epiphany_security::{AuditLog, SecurityStore};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -53,6 +53,7 @@ fn router(dir: &Path) -> Router {
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
         command_connectors_enabled: false,
+        audit: Arc::new(Mutex::new(AuditLog::in_memory())),
     };
     build_router(state)
 }
@@ -172,6 +173,7 @@ fn router_calc(dir: &Path) -> (Router, Engine) {
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(CalcFactory::new(engine.clone())),
         command_connectors_enabled: false,
+        audit: Arc::new(Mutex::new(AuditLog::in_memory())),
     };
     (build_router(state), engine)
 }
@@ -557,6 +559,7 @@ async fn sandbox_rejects_string_what_if_but_allows_numeric() {
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(CalcFactory::new(engine)),
         command_connectors_enabled: false,
+        audit: Arc::new(Mutex::new(AuditLog::in_memory())),
     };
     let app = build_router(state);
     let ann = login(&app, "ann").await;

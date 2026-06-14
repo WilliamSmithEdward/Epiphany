@@ -12,7 +12,7 @@ use epiphany_core::{Cube, Dimension};
 use epiphany_determinism::{IdGen, ManualClock};
 use epiphany_engine::Engine;
 use epiphany_persist::Store;
-use epiphany_security::SecurityStore;
+use epiphany_security::{AuditLog, SecurityStore};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
@@ -52,6 +52,7 @@ fn state(name: &str) -> AppState {
         mdx: Arc::new(epiphany_core::NoSetEvaluator),
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
         command_connectors_enabled: false,
+        audit: Arc::new(Mutex::new(AuditLog::in_memory())),
     }
 }
 

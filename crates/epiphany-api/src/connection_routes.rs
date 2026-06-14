@@ -10,11 +10,18 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use epiphany_core::{CommandSpec, Connection, ConnectionSpec, SourceFormat};
+use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
+use crate::authz::{audit, require_access};
 use crate::routes::map_batch_error;
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
+
+/// The securable reference for a cube's connection.
+fn connection_ref(cube: &str, name: &str) -> ObjectRef {
+    ObjectRef::in_cube(ObjectKind::Connection, cube, name)
+}
 
 /// A connection in JSON form (flat; the command fields apply when `kind` is
 /// `"command"`, the only kind today).
@@ -72,16 +79,6 @@ fn to_dto(conn: &Connection, is_admin: bool) -> ConnectionDto {
     }
 }
 
-fn require_admin(auth: &AuthPrincipal) -> Result<(), ApiError> {
-    if auth.principal.is_admin {
-        Ok(())
-    } else {
-        Err(ApiError::forbidden(
-            "defining connections requires an administrator",
-        ))
-    }
-}
-
 fn snapshot(state: &AppState, cube: &str) -> Result<epiphany_engine::ReadSnapshot, ApiError> {
     state
         .engine
@@ -131,7 +128,8 @@ pub(crate) async fn put_connection(
     Path((cube, name)): Path<(String, String)>,
     Json(body): Json<ConnectionDto>,
 ) -> Result<Json<ConnectionDto>, ApiError> {
-    require_admin(&auth)?;
+    let obj = connection_ref(&cube, &name);
+    require_access(&state, &auth, &obj, AccessLevel::Admin, None, false)?;
     if body.kind != "command" {
         return Err(ApiError::bad_request(format!(
             "unsupported connection kind '{}'",
@@ -180,6 +178,13 @@ pub(crate) async fn put_connection(
         .engine
         .define_connection(&cube, None, connection)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&obj),
+        true,
+    );
     let _ = state.events.send(ChangeEvent::ObjectsChanged {
         cube: cube.clone(),
         version: outcome.version,
@@ -193,11 +198,19 @@ pub(crate) async fn delete_connection(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_admin(&auth)?;
+    let obj = connection_ref(&cube, &name);
+    require_access(&state, &auth, &obj, AccessLevel::Admin, None, false)?;
     let outcome = state
         .engine
         .delete_connection(&cube, None, &name)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectDelete,
+        Some(&obj),
+        true,
+    );
     let _ = state.events.send(ChangeEvent::ObjectsChanged {
         cube: cube.clone(),
         version: outcome.version,

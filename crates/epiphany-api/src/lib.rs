@@ -20,10 +20,11 @@ use serde::Serialize;
 use epiphany_core::SetEvaluator;
 use epiphany_determinism::Clock;
 use epiphany_engine::{CellResolverFactory, Engine};
-use epiphany_security::SecurityStore;
+use epiphany_security::{AuditLog, SecurityStore};
 use tokio::sync::broadcast;
 
 mod auth;
+mod authz;
 mod calc_factory;
 mod connection_routes;
 mod dto;
@@ -70,6 +71,9 @@ pub struct AppState {
     /// Off unless the operator opts in (ADR-0012 decision 6); the second gate,
     /// after admin-only definition.
     pub command_connectors_enabled: bool,
+    /// The append-only audit stream (ADR-0010), behind its own lock so audit
+    /// writes do not serialize behind the security mutex.
+    pub audit: Arc<Mutex<AuditLog>>,
 }
 
 impl AppState {
@@ -342,6 +346,7 @@ mod tests {
             mdx: Arc::new(epiphany_core::NoSetEvaluator),
             cells: Arc::new(epiphany_engine::StoredCellsFactory),
             command_connectors_enabled: false,
+            audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         }
     }
 

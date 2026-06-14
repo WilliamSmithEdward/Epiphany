@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use config::Config;
 use epiphany_api::{build_router, AppState, SessionStore};
 use epiphany_determinism::SystemClock;
-use epiphany_security::SecurityStore;
+use epiphany_security::{AuditLog, SecurityStore};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -45,6 +45,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
+    // The audit stream (ADR-0010), a sibling of the security artifact. Recovery
+    // is non-gating, so a damaged audit file never blocks startup.
+    let audit_path = config.data_dir.join("server").join("audit.log");
+    let audit = AuditLog::open(audit_path)?;
+
     let (events, _) = tokio::sync::broadcast::channel(256);
     // Inject the real MDX evaluator (dynamic subsets) and the rule-aware cell
     // resolver factory (calc); these are the composition-root injections.
@@ -68,6 +73,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         mdx: Arc::new(epiphany_mdx::MdxEvaluator::new()),
         cells,
         command_connectors_enabled,
+        audit: Arc::new(Mutex::new(audit)),
     };
     let router = build_router(state);
     #[cfg(feature = "embed-ui")]

@@ -21,7 +21,7 @@ use epiphany_determinism::{IdGen, ManualClock};
 use epiphany_engine::Engine;
 use epiphany_mdx::MdxEvaluator;
 use epiphany_persist::Store;
-use epiphany_security::SecurityStore;
+use epiphany_security::{AuditLog, SecurityStore};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -62,6 +62,7 @@ fn router_for(dir: &Path, is_admin: bool, commands: bool) -> Router {
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
         command_connectors_enabled: commands,
+        audit: Arc::new(Mutex::new(AuditLog::in_memory())),
     };
     build_router(state)
 }
