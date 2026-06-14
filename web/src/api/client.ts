@@ -549,16 +549,43 @@ export async function previewFlow(cube: string, source: string): Promise<FlowPre
   }
 }
 
+/** Run a flow over inline CSV (`input`) or a named `connection`. */
 export async function runFlow(
   cube: string,
   name: string,
-  input: string,
-  params: Record<string, string> = {},
+  body: { input?: string; connection?: string; params?: Record<string, string> },
 ): Promise<RunReport> {
-  return request<RunReport>('POST', `${flowBase(cube)}/${encodeURIComponent(name)}/run`, {
-    input,
-    params,
-  })
+  return request<RunReport>('POST', `${flowBase(cube)}/${encodeURIComponent(name)}/run`, body)
+}
+
+// ---- connections (ADR-0012) ----
+
+/** A data-source connection (command kind for now). */
+export interface ConnectionDto {
+  name: string
+  kind: string
+  program: string
+  args: string[]
+  format: string
+  json_path?: string | null
+  timeout_ms: number
+}
+
+function connBase(cube: string): string {
+  return `/api/v1/cubes/${encodeURIComponent(cube)}/connections`
+}
+
+export async function listConnections(cube: string): Promise<ConnectionDto[]> {
+  const result = await request<{ connections: ConnectionDto[] }>('GET', connBase(cube))
+  return result.connections
+}
+
+export async function putConnection(cube: string, conn: ConnectionDto): Promise<ConnectionDto> {
+  return request<ConnectionDto>('PUT', `${connBase(cube)}/${encodeURIComponent(conn.name)}`, conn)
+}
+
+export async function deleteConnection(cube: string, name: string): Promise<void> {
+  return request<void>('DELETE', `${connBase(cube)}/${encodeURIComponent(name)}`)
 }
 
 export interface ImportRequest {

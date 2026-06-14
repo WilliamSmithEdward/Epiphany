@@ -651,3 +651,23 @@ table.pivot th.rowhead {
 .import-row input {
   flex: 0 0 9rem;
 }
+
+.connections-panel {
+  grid-column: 2 / 4;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.8rem;
+}
+
+.conn-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-width: 28rem;
+}
+
+.conn-form textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+}

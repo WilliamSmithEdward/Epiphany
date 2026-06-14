@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
+  deleteConnection,
   deleteFlow,
   getCube,
   importCsv,
+  listConnections,
   listFlows,
   listFlowTests,
   previewFlow,
+  putConnection,
   putFlow,
   runFlow,
   runFlowTests,
+  type ConnectionDto,
   type CubeDetail,
   type FlowDto,
   type FlowPreview,
@@ -169,26 +173,45 @@ export default function FlowsWorkspace({
         </div>
       </section>
 
-      {selected ? <RunPanel cube={cube} flow={selected} /> : null}
+      {selected ? <RunPanel cube={cube} flow={selected} reloadSignal={reloadSignal} /> : null}
       {detail ? <ImportPanel cube={cube} detail={detail} /> : null}
       <FlowTestPanel cube={cube} reloadSignal={reloadSignal} />
+      <ConnectionsPanel cube={cube} reloadSignal={reloadSignal} />
     </div>
   )
 }
 
 // ---- run a flow ----
 
-function RunPanel({ cube, flow }: { cube: string; flow: string }) {
+function RunPanel({
+  cube,
+  flow,
+  reloadSignal,
+}: {
+  cube: string
+  flow: string
+  reloadSignal: number
+}) {
   const [csv, setCsv] = useState('')
+  // The data source: '' = inline CSV, otherwise a connection name.
+  const [source, setSource] = useState('')
+  const [connections, setConnections] = useState<ConnectionDto[]>([])
   const [report, setReport] = useState<RunReport | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+
+  useEffect(() => {
+    listConnections(cube)
+      .then(setConnections)
+      .catch(() => undefined)
+  }, [cube, reloadSignal])
 
   async function run() {
     setRunning(true)
     setError(null)
     try {
-      setReport(await runFlow(cube, flow, csv))
+      const body = source === '' ? { input: csv } : { connection: source }
+      setReport(await runFlow(cube, flow, body))
     } catch (e) {
       setReport(null)
       setError(e instanceof Error ? e.message : 'Run failed')
@@ -207,16 +230,130 @@ function RunPanel({ cube, flow }: { cube: string; flow: string }) {
           {running ? 'Running...' : 'Run'}
         </button>
       </div>
-      <textarea
-        className="rules-source"
-        value={csv}
-        spellCheck={false}
-        placeholder={'Paste CSV input (leave empty for a source-less flow)\nRegion,Value\nNorth,100'}
-        onChange={(e) => setCsv(e.target.value)}
-        rows={5}
-      />
+      <label className="muted">
+        Source{' '}
+        <select value={source} onChange={(e) => setSource(e.target.value)}>
+          <option value="">Inline CSV</option>
+          {connections.map((c) => (
+            <option key={c.name} value={c.name}>
+              {c.name} ({c.kind})
+            </option>
+          ))}
+        </select>
+      </label>
+      {source === '' ? (
+        <textarea
+          className="rules-source"
+          value={csv}
+          spellCheck={false}
+          placeholder={'Paste CSV input (leave empty for a source-less flow)\nRegion,Value\nNorth,100'}
+          onChange={(e) => setCsv(e.target.value)}
+          rows={5}
+        />
+      ) : (
+        <p className="muted">Rows are fetched from the &quot;{source}&quot; connection.</p>
+      )}
       {error ? <p className="error">{error}</p> : null}
       {report ? <RunReportView report={report} /> : null}
+    </section>
+  )
+}
+
+// ---- connection admin (command connectors) ----
+
+function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: number }) {
+  const [connections, setConnections] = useState<ConnectionDto[]>([])
+  const [name, setName] = useState('')
+  const [program, setProgram] = useState('')
+  const [args, setArgs] = useState('')
+  const [format, setFormat] = useState('csv')
+  const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+
+  const load = useCallback(() => {
+    listConnections(cube)
+      .then(setConnections)
+      .catch(() => undefined)
+  }, [cube])
+
+  useEffect(() => {
+    load()
+  }, [load, reloadSignal])
+
+  async function add() {
+    if (name.trim() === '' || program.trim() === '') {
+      setError('A connection needs a name and a program.')
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      await putConnection(cube, {
+        name: name.trim(),
+        kind: 'command',
+        program: program.trim(),
+        // One argument per line.
+        args: args.split('\n').map((a) => a.trim()).filter((a) => a !== ''),
+        format,
+        timeout_ms: 30000,
+      })
+      setName('')
+      setProgram('')
+      setArgs('')
+      load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the connection')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function remove(connName: string) {
+    try {
+      await deleteConnection(cube, connName)
+      load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not delete the connection')
+    }
+  }
+
+  return (
+    <section className="connections-panel">
+      <div className="rules-editor-head">
+        <h3>Connections</h3>
+      </div>
+      <ul className="coord-list">
+        {connections.map((c) => (
+          <li key={c.name}>
+            <strong>{c.name}</strong> [{c.kind}] {c.program} {c.args.join(' ')}{' '}
+            <button className="link" onClick={() => void remove(c.name)} title="Delete">
+              x
+            </button>
+          </li>
+        ))}
+        {connections.length === 0 ? <li className="muted">No connections</li> : null}
+      </ul>
+      <p className="muted">
+        Add a command connection (admin only; the server must enable command connectors):
+      </p>
+      <div className="conn-form">
+        <input value={name} placeholder="name" onChange={(e) => setName(e.target.value)} />
+        <input value={program} placeholder="program (e.g. python)" onChange={(e) => setProgram(e.target.value)} />
+        <textarea
+          value={args}
+          placeholder={'one argument per line\nscripts/extract.py\n--region=North'}
+          onChange={(e) => setArgs(e.target.value)}
+          rows={3}
+        />
+        <select value={format} onChange={(e) => setFormat(e.target.value)}>
+          <option value="csv">csv</option>
+          <option value="json">json</option>
+        </select>
+        <button className="primary" disabled={saving} onClick={() => void add()}>
+          {saving ? 'Saving...' : 'Add connection'}
+        </button>
+      </div>
+      {error ? <p className="error">{error}</p> : null}
     </section>
   )
 }
