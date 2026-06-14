@@ -1,6 +1,6 @@
 //! Cubes: the sparse multidimensional cell store and consolidation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
 use crate::{Dimension, ElementKind, Fixed, ModelError};
@@ -531,6 +531,75 @@ impl Cube {
         let scaled = i64::try_from(acc).map_err(|_| E::from(ModelError::Overflow))?;
         Ok(Fixed::from_scaled(scaled))
     }
+
+    /// Consolidate a coordinate over a SPARSE union of the stored populated cells
+    /// and the supplied `fed` leaf coordinates, sourcing each value through
+    /// `leaf_value`. This is the feeder-driven sparse-skip path (ADR-0005): the
+    /// `fed` set names rule-derived leaves that are not in the stored cell store,
+    /// so a rollup includes them without enumerating the dense leaf space.
+    ///
+    /// Each contributing coordinate is counted exactly once (a coordinate that is
+    /// both stored and fed is summed a single time, with its `leaf_value`), so a
+    /// rule that overrides a stored leaf is not double counted. The result equals
+    /// the dense [`consolidate_with`](Self::consolidate_with) exactly when `fed`
+    /// covers every non-zero rule-derived leaf; with an incomplete `fed` set it
+    /// under-counts (which feeder validation flags), and the dense path is always
+    /// the correct fallback. The sum is order-independent (i128), so the result
+    /// is deterministic regardless of iteration order.
+    pub fn consolidate_fed<E, F>(
+        &self,
+        coord: &[u32],
+        fed: &[Box<[u32]>],
+        leaf_value: F,
+    ) -> Result<Fixed, E>
+    where
+        E: From<ModelError>,
+        F: Fn(&[u32]) -> Result<Fixed, E>,
+    {
+        self.check_coord(coord).map_err(E::from)?;
+
+        let mut per_dim: Vec<HashMap<u32, i64>> = Vec::with_capacity(self.rank());
+        let mut all_leaf = true;
+        for (d, &idx) in coord.iter().enumerate() {
+            if self.dimensions[d].element(idx).map_err(E::from)?.kind != ElementKind::Leaf {
+                all_leaf = false;
+            }
+            per_dim.push(
+                self.dimensions[d]
+                    .leaf_weights(idx)
+                    .map_err(E::from)?
+                    .into_iter()
+                    .collect(),
+            );
+        }
+        if all_leaf {
+            return leaf_value(coord);
+        }
+
+        let mut seen: HashSet<Box<[u32]>> = HashSet::new();
+        let mut acc: i128 = 0;
+        // Stored populated cells whose every component is a leaf-descendant of the
+        // query element. The value comes through `leaf_value` (so a rule override
+        // of a stored leaf uses the rule value, not the stored one).
+        for (cell_coord, _) in self.cell_entries() {
+            if let Some(weight) = cell_weight(&per_dim, |d| cell_coord[d]) {
+                let key: Box<[u32]> = cell_coord.clone().into_boxed_slice();
+                if seen.insert(key) {
+                    acc += weight * i128::from(leaf_value(&cell_coord)?.to_scaled());
+                }
+            }
+        }
+        // Fed (rule-derived) leaves in the region, not already counted.
+        for fc in fed {
+            if let Some(weight) = cell_weight(&per_dim, |d| fc[d]) {
+                if seen.insert(fc.clone()) {
+                    acc += weight * i128::from(leaf_value(fc)?.to_scaled());
+                }
+            }
+        }
+        let scaled = i64::try_from(acc).map_err(|_| E::from(ModelError::Overflow))?;
+        Ok(Fixed::from_scaled(scaled))
+    }
 }
 
 #[cfg(test)]
@@ -861,6 +930,47 @@ mod tests {
         })
         .unwrap();
         assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn consolidate_fed_unions_stored_and_fed_leaves() {
+        let (region, region_total, r) = sum_dim("Region", 2);
+        let mut cube = Cube::new("Sales", vec![region]).unwrap();
+        cube.set_leaf(&[r[0]], fix(10)).unwrap();
+        // r[1] is not stored but is supplied as a fed (rule-derived) leaf = 5.
+        let fed: Vec<Box<[u32]>> = vec![vec![r[1]].into_boxed_slice()];
+        let leaf = |c: &[u32]| -> Result<Fixed, ModelError> {
+            if c == [r[1]] {
+                Ok(fix(5))
+            } else {
+                Ok(cube.leaf_value(c))
+            }
+        };
+        let v = cube
+            .consolidate_fed::<ModelError, _>(&[region_total], &fed, leaf)
+            .unwrap();
+        assert_eq!(v, fix(15));
+    }
+
+    #[test]
+    fn consolidate_fed_counts_an_overridden_stored_leaf_once() {
+        let (region, region_total, r) = sum_dim("Region", 2);
+        let mut cube = Cube::new("Sales", vec![region]).unwrap();
+        cube.set_leaf(&[r[0]], fix(10)).unwrap();
+        cube.set_leaf(&[r[1]], fix(20)).unwrap();
+        // r[0] is stored AND fed (a rule overrides it to 100); count once.
+        let fed: Vec<Box<[u32]>> = vec![vec![r[0]].into_boxed_slice()];
+        let leaf = |c: &[u32]| -> Result<Fixed, ModelError> {
+            if c == [r[0]] {
+                Ok(fix(100))
+            } else {
+                Ok(cube.leaf_value(c))
+            }
+        };
+        let v = cube
+            .consolidate_fed::<ModelError, _>(&[region_total], &fed, leaf)
+            .unwrap();
+        assert_eq!(v, fix(120));
     }
 
     #[test]

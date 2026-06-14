@@ -10,6 +10,7 @@ pub mod rules;
 mod compile;
 mod compiled;
 mod eval;
+mod feeders;
 mod registry;
 
 pub use compile::compile;
@@ -18,6 +19,7 @@ pub use compiled::{
     DimPredicate, RuleId,
 };
 pub use eval::{CalcEngine, CalcError, CalcView, EvalRegistry};
+pub use feeders::{infer_feeders, FeederIndex, FeederInference, OpaqueRule};
 pub use registry::{CubeRegistry, SingleCube, VecRegistry};
 
 /// Stable crate identifier, reported by the server's wiring banner.
