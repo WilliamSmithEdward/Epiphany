@@ -10,8 +10,12 @@
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-flow";
 
+pub mod csv;
+pub mod run;
 pub mod strip;
 
+pub use csv::{parse_csv, CsvError, Row};
+pub use run::{run_flow, FlowError, FlowOutcome, FlowReport, PlannedCell};
 pub use strip::{strip_types, StripError};
 
 #[cfg(test)]

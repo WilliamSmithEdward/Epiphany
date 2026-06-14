@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use crate::{Fixed, ModelError};
 
 /// The kind of an element (the N/C/S typing).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ElementKind {
     /// A numeric leaf (N): holds a numeric cell value and rolls up.
     Leaf,
