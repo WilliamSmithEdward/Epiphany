@@ -99,7 +99,11 @@ async fn call(
         }
         None => Body::empty(),
     };
-    let resp = app.clone().oneshot(builder.body(body).unwrap()).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap();
     let status = resp.status();
     (status, body_json(resp).await)
 }
@@ -125,7 +129,11 @@ async fn call_h(
         }
         None => Body::empty(),
     };
-    let resp = app.clone().oneshot(builder.body(body).unwrap()).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap();
     let status = resp.status();
     (status, body_json(resp).await)
 }

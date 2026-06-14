@@ -454,9 +454,7 @@ impl Store {
     /// and recovered on reopen, never in the base WAL. A create carries empty
     /// deltas; replacing an existing sandbox overwrites it.
     pub fn define_sandbox(&mut self, sandbox: Sandbox) -> Result<(), PersistError> {
-        self.model
-            .sandboxes
-            .insert(sandbox.name.clone(), sandbox);
+        self.model.sandboxes.insert(sandbox.name.clone(), sandbox);
         self.checkpoint()
     }
 
@@ -526,12 +524,11 @@ impl Store {
     /// WAL. An unknown sandbox returns [`PersistError::Query`].
     pub fn commit_sandbox(&mut self, name: &str, updated: u64) -> Result<(), PersistError> {
         let writes: Vec<CellWrite> = {
-            let sb = self
-                .model
-                .sandbox(name)
-                .ok_or_else(|| PersistError::Query(QueryError::Calc {
+            let sb = self.model.sandbox(name).ok_or_else(|| {
+                PersistError::Query(QueryError::Calc {
                     message: format!("no sandbox '{name}'"),
-                }))?;
+                })
+            })?;
             let mut w: Vec<CellWrite> = sb
                 .cells
                 .iter()
@@ -1067,9 +1064,7 @@ mod tests {
         let f = fixture();
         {
             let mut store = Store::create(&dir, f.cube).unwrap();
-            store
-                .define_sandbox(Sandbox::new("s", "ann", 1))
-                .unwrap();
+            store.define_sandbox(Sandbox::new("s", "ann", 1)).unwrap();
             assert!(store.delete_sandbox("s").unwrap());
             assert!(!store.delete_sandbox("s").unwrap(), "already gone");
         }
@@ -1098,9 +1093,7 @@ mod tests {
         assert!(matches!(err, PersistError::Query(_)));
 
         // An override targeting a consolidated element is rejected wholesale.
-        store
-            .define_sandbox(Sandbox::new("s", "ann", 1))
-            .unwrap();
+        store.define_sandbox(Sandbox::new("s", "ann", 1)).unwrap();
         let err = store
             .sandbox_set_cells(
                 "s",

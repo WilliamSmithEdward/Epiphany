@@ -1458,7 +1458,10 @@ mod tests {
         assert_eq!(sb2.created, 7);
         assert_eq!(sb2.updated, 9);
         assert_eq!(sb2.cells.len(), 2);
-        assert_eq!(sb2.cell(&[north, actual]), Some(Fixed::from_str("123.5").unwrap()));
+        assert_eq!(
+            sb2.cell(&[north, actual]),
+            Some(Fixed::from_str("123.5").unwrap())
+        );
         assert_eq!(sb2.cell(&[south, budget]), Some(Fixed::from(40)));
         assert_eq!(sb2.string_cell(&[north, budget]), Some("needs review"));
         assert_eq!(sb2.len(), 3);

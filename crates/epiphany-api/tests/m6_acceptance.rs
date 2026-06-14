@@ -113,13 +113,23 @@ async fn call(
         }
         None => Body::empty(),
     };
-    let resp = app.clone().oneshot(builder.body(body).unwrap()).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(builder.body(body).unwrap())
+        .await
+        .unwrap();
     let status = resp.status();
     (status, body_json(resp).await)
 }
 
 /// Read one cell's value, optionally through a sandbox.
-async fn read(app: &Router, token: &str, region: &str, measure: &str, sandbox: Option<&str>) -> String {
+async fn read(
+    app: &Router,
+    token: &str,
+    region: &str,
+    measure: &str,
+    sandbox: Option<&str>,
+) -> String {
     let (status, body) = call(
         app,
         "POST",
@@ -200,9 +210,18 @@ async fn dod_what_if_recompute_then_commit() {
 
     // In the sandbox: the Margin rule recomputes (150 - 60 = 90 at North) and the
     // Total consolidation rolls it up (90 + 50 = 140); Total/Sales = 350.
-    assert_eq!(read(&app, &token, "North", "Margin", Some("plan")).await, "90");
-    assert_eq!(read(&app, &token, "Total", "Margin", Some("plan")).await, "140");
-    assert_eq!(read(&app, &token, "Total", "Sales", Some("plan")).await, "350");
+    assert_eq!(
+        read(&app, &token, "North", "Margin", Some("plan")).await,
+        "90"
+    );
+    assert_eq!(
+        read(&app, &token, "Total", "Margin", Some("plan")).await,
+        "140"
+    );
+    assert_eq!(
+        read(&app, &token, "Total", "Sales", Some("plan")).await,
+        "350"
+    );
 
     // Base data is untouched while the what-if is uncommitted.
     assert_eq!(read(&app, &token, "Total", "Margin", None).await, "90");
@@ -257,7 +276,10 @@ async fn dod_what_if_then_discard_leaves_base_unchanged() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(read(&app, &token, "Total", "Margin", Some("scratch")).await, "989"); // (999-60)+50
+    assert_eq!(
+        read(&app, &token, "Total", "Margin", Some("scratch")).await,
+        "989"
+    ); // (999-60)+50
 
     // Discard the sandbox.
     let (s, _) = call(

@@ -80,7 +80,9 @@ pub(crate) async fn read_cells(
     // An active sandbox (X-Epiphany-Sandbox) overlays its what-if leaves beneath
     // the rules, so values recompute over them (ADR-0014); absent it, base.
     let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
-    let sandbox = sandbox_name.as_deref().and_then(|n| snap.model().sandbox(n));
+    let sandbox = sandbox_name
+        .as_deref()
+        .and_then(|n| snap.model().sandbox(n));
     // Values come through the injected resolver (rule-aware in the server,
     // stored-only in no-rules deployments and tests).
     let resolver = state.cells.resolver_with(&snap, sandbox);
@@ -112,7 +114,10 @@ pub(crate) async fn write_cell(
             .snapshot(&cube)
             .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
         let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
-        (build_write(snap.cube(), &req.coord, &req.value)?, sandbox_name)
+        (
+            build_write(snap.cube(), &req.coord, &req.value)?,
+            sandbox_name,
+        )
     };
     // A what-if write stages into the sandbox (base untouched); a base write
     // commits to the cube (ADR-0014).
@@ -136,7 +141,9 @@ pub(crate) async fn write_cell(
         .engine
         .snapshot(&cube)
         .ok_or_else(ApiError::internal)?;
-    let sandbox = sandbox_name.as_deref().and_then(|n| snap.model().sandbox(n));
+    let sandbox = sandbox_name
+        .as_deref()
+        .and_then(|n| snap.model().sandbox(n));
     let resolver = state.cells.resolver_with(&snap, sandbox);
     let resolved = resolve(snap.cube(), &req.coord)?;
     let overlaid = sandbox.is_some_and(|sb| {

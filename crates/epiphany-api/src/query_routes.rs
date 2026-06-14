@@ -540,11 +540,18 @@ pub(crate) async fn execute_saved_view(
     // An active sandbox overlays its what-if leaves, so the cellset recomputes
     // over them (ADR-0014); absent it, base.
     let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
-    let sandbox = sandbox_name.as_deref().and_then(|n| snap.model().sandbox(n));
+    let sandbox = sandbox_name
+        .as_deref()
+        .and_then(|n| snap.model().sandbox(n));
     // Values come through the injected resolver (rule-aware in the server).
     let resolver = state.cells.resolver_with(&snap, sandbox);
     let cellset = snap.model().execute(view, &*resolver, state.evaluator())?;
-    Ok(Json(cellset_dto(snap.cube(), cellset, snap.version(), sandbox)))
+    Ok(Json(cellset_dto(
+        snap.cube(),
+        cellset,
+        snap.version(),
+        sandbox,
+    )))
 }
 
 /// `POST /cubes/{cube}/cellset` -> execute an ad-hoc view spec without saving.
@@ -558,7 +565,9 @@ pub(crate) async fn execute_adhoc(
     let snap = snapshot(&state, &cube)?;
     let view = view_from_body("adhoc".to_string(), cube.clone(), None, &body)?;
     let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
-    let sandbox = sandbox_name.as_deref().and_then(|n| snap.model().sandbox(n));
+    let sandbox = sandbox_name
+        .as_deref()
+        .and_then(|n| snap.model().sandbox(n));
     let resolver = state.cells.resolver_with(&snap, sandbox);
     let cellset = execute_view(
         snap.cube(),
@@ -567,7 +576,12 @@ pub(crate) async fn execute_adhoc(
         &|d, n| snap.subset(d, n),
         state.evaluator(),
     )?;
-    Ok(Json(cellset_dto(snap.cube(), cellset, snap.version(), sandbox)))
+    Ok(Json(cellset_dto(
+        snap.cube(),
+        cellset,
+        snap.version(),
+        sandbox,
+    )))
 }
 
 fn visible_view<'a>(
@@ -609,7 +623,10 @@ fn cell_coord_indices(
         if let Some(p) = col_dims.iter().position(|d| d == dim) {
             return col_tuple.get(p).map(String::as_str);
         }
-        context.iter().find(|(d, _)| d == dim).map(|(_, m)| m.as_str())
+        context
+            .iter()
+            .find(|(d, _)| d == dim)
+            .map(|(_, m)| m.as_str())
     };
     let mut coord = Vec::with_capacity(cube.rank());
     for d in cube.dimensions() {

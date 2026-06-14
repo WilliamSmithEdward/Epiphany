@@ -120,7 +120,10 @@ mod tests {
         let ev = sandbox_event("ann");
         assert!(visible_to(&ev, "ann", false), "the owner sees it");
         assert!(!visible_to(&ev, "bob", false), "another user does not");
-        assert!(visible_to(&ev, "bob", true), "an admin sees any sandbox event");
+        assert!(
+            visible_to(&ev, "bob", true),
+            "an admin sees any sandbox event"
+        );
     }
 
     #[test]
