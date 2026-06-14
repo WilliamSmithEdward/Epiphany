@@ -16,8 +16,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::query::{
-    AxisSpec, Flow, FlowTest, Model, RuleSet, RuleTest, Subset, SubsetKind, TestCell, View,
-    Visibility,
+    AxisSpec, CommandSpec, Connection, ConnectionSpec, Flow, FlowTest, Model, RuleSet, RuleTest,
+    SourceFormat, Subset, SubsetKind, TestCell, View, Visibility,
 };
 use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
@@ -134,6 +134,9 @@ struct ModelDoc {
     flows: Vec<FlowDoc>,
     #[serde(default, rename = "flow_test", skip_serializing_if = "Vec::is_empty")]
     flow_tests: Vec<FlowTestDoc>,
+    // Connections are optional and skipped when empty (backward-compatible).
+    #[serde(default, rename = "connection", skip_serializing_if = "Vec::is_empty")]
+    connections: Vec<ConnectionDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -544,6 +547,67 @@ fn build_flow_test(doc: &FlowTestDoc) -> FlowTest {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct ConnectionDoc {
+    name: String,
+    // The connection kind ("command"); the per-kind fields below apply to it.
+    kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    program: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    args: Vec<String>,
+    #[serde(default)]
+    format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    json_path: Option<String>,
+    #[serde(default)]
+    timeout_ms: u64,
+}
+
+fn format_token(format: SourceFormat) -> String {
+    match format {
+        SourceFormat::Csv => "csv",
+        SourceFormat::Json => "json",
+    }
+    .to_string()
+}
+
+fn build_format(token: &str) -> SourceFormat {
+    match token {
+        "json" => SourceFormat::Json,
+        _ => SourceFormat::Csv,
+    }
+}
+
+fn connection_doc(conn: &Connection) -> ConnectionDoc {
+    match &conn.spec {
+        ConnectionSpec::Command(cmd) => ConnectionDoc {
+            name: conn.name.clone(),
+            kind: "command".to_string(),
+            program: cmd.program.clone(),
+            args: cmd.args.clone(),
+            format: format_token(cmd.format),
+            json_path: cmd.json_path.clone(),
+            timeout_ms: cmd.timeout_ms,
+        },
+    }
+}
+
+fn build_connection(doc: &ConnectionDoc) -> Connection {
+    // Only the command kind exists today; an unknown kind builds a command with
+    // the present fields (forward-compatible) rather than failing the load.
+    Connection {
+        name: doc.name.clone(),
+        spec: ConnectionSpec::Command(CommandSpec {
+            program: doc.program.clone(),
+            args: doc.args.clone(),
+            format: build_format(&doc.format),
+            json_path: doc.json_path.clone(),
+            timeout_ms: doc.timeout_ms,
+        }),
+    }
+}
+
 impl From<ElementKind> for KindDoc {
     fn from(kind: ElementKind) -> Self {
         match kind {
@@ -697,9 +761,12 @@ fn resolve_coord(cube: &Cube, cube_name: &str, names: &[String]) -> Result<Vec<u
     Ok(coord)
 }
 
-/// Build the canonical serialized document for a cube plus already-built subset
-/// and view docs. Shared by [`Cube::to_model_text`] (empty subsets/views) and
-/// [`Model::to_model_text`].
+/// Build the canonical serialized document for a cube plus already-built object
+/// docs. Shared by [`Cube::to_model_text`] (empty collections) and
+/// [`Model::to_model_text`]. The per-object-type doc vectors are passed
+/// positionally; bundling them into a struct would not aid this single internal
+/// assembly point.
+#[allow(clippy::too_many_arguments)]
 fn build_model_doc(
     cube: &Cube,
     subsets: Vec<SubsetDoc>,
@@ -708,6 +775,7 @@ fn build_model_doc(
     rule_tests: Vec<RuleTestDoc>,
     flows: Vec<FlowDoc>,
     flow_tests: Vec<FlowTestDoc>,
+    connections: Vec<ConnectionDoc>,
 ) -> ModelDoc {
     let dimensions: Vec<DimDoc> = cube.dimensions().iter().map(dim_doc).collect();
 
@@ -769,6 +837,7 @@ fn build_model_doc(
         rule_tests,
         flows,
         flow_tests,
+        connections,
     }
 }
 
@@ -819,8 +888,17 @@ impl Model {
         let rule_tests: Vec<RuleTestDoc> = self.tests.values().map(rule_test_doc).collect();
         let flows: Vec<FlowDoc> = self.flows.values().map(flow_doc).collect();
         let flow_tests: Vec<FlowTestDoc> = self.flow_tests.values().map(flow_test_doc).collect();
+        let connections: Vec<ConnectionDoc> =
+            self.connections.values().map(connection_doc).collect();
         let doc = build_model_doc(
-            &self.cube, subsets, views, rules, rule_tests, flows, flow_tests,
+            &self.cube,
+            subsets,
+            views,
+            rules,
+            rule_tests,
+            flows,
+            flow_tests,
+            connections,
         );
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
@@ -862,6 +940,10 @@ impl Model {
         for ftd in &doc.flow_tests {
             flow_tests.insert(ftd.name.clone(), build_flow_test(ftd));
         }
+        let mut connections = BTreeMap::new();
+        for cd in &doc.connections {
+            connections.insert(cd.name.clone(), build_connection(cd));
+        }
         Ok(Model {
             cube,
             subsets,
@@ -870,6 +952,7 @@ impl Model {
             tests,
             flows,
             flow_tests,
+            connections,
         })
     }
 
@@ -894,6 +977,7 @@ impl Cube {
             Vec::new(),
             Vec::new(),
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1243,5 +1327,40 @@ mod tests {
         assert_eq!(ft.params["scale"], "1000");
         assert_eq!(ft.params.len(), 2);
         assert_eq!(ft.assertions[0].value, "100");
+    }
+
+    #[test]
+    fn model_round_trips_connections() {
+        use crate::{CommandSpec, Connection, ConnectionSpec, SourceFormat};
+
+        let mut model = Model::new(sample_cube());
+        model.connections.insert(
+            "py_extract".to_string(),
+            Connection {
+                name: "py_extract".to_string(),
+                spec: ConnectionSpec::Command(CommandSpec {
+                    program: "python".to_string(),
+                    args: vec![
+                        "scripts/extract.py".to_string(),
+                        "--region=North".to_string(),
+                    ],
+                    format: SourceFormat::Json,
+                    json_path: Some("data.rows".to_string()),
+                    timeout_ms: 30_000,
+                }),
+            },
+        );
+
+        let text1 = model.to_model_text().unwrap();
+        let model2 = Model::from_model_text(&text1).unwrap();
+        let text2 = model2.to_model_text().unwrap();
+        assert_eq!(text1, text2, "connections must round-trip byte-identically");
+        assert_eq!(model2.connections.len(), 1);
+        let ConnectionSpec::Command(cmd) = &model2.connections["py_extract"].spec;
+        assert_eq!(cmd.program, "python");
+        assert_eq!(cmd.args.len(), 2);
+        assert_eq!(cmd.format, SourceFormat::Json);
+        assert_eq!(cmd.json_path.as_deref(), Some("data.rows"));
+        assert_eq!(cmd.timeout_ms, 30_000);
     }
 }

@@ -1,4 +1,4 @@
-# ADR-0012: Data-source connectors (HTTP, ODBC) and the fetch/transform split
+# ADR-0012: Data-source connectors (HTTP, ODBC, command) and the fetch/transform split
 
 - **Status:** Proposed
 - **Date:** 2026-06-14
@@ -42,6 +42,11 @@ cargo features so the default build stays lean and pure:
   at the cost of a system driver dependency and FFI (the unsafe is internal to
   `odbc-api`; our usage is its safe API). It is off by default and documented as
   *not* part of the pure single-binary profile.
+- `command` (std only, no extra dependency): run an external program and read
+  its stdout, parsed as CSV or JSON. This is the single connector behind
+  "ingest from a Python script", "from a PowerShell script", and "from an exe":
+  they differ only in the configured `program` and `args` (`python script.py`,
+  `pwsh -File load.ps1`, `./extract.exe`). Its security model is decision 6.
 
 **3. Connections are admin-defined model objects that reference secrets, never
 embed them.** A `Connection` (name, kind, endpoint/DSN, options, and a *reference*
@@ -64,6 +69,30 @@ of external state "as of now" and the transform is deterministic given those
 rows. This is the same semantics as reading a file: we claim the transform is
 deterministic, not that a live pull is reproducible across time.
 
+**6. The command connector is arbitrary code execution by design, so it is
+fenced by four independent controls.** Running a Python/PowerShell script or an
+executable is exactly running host code; treated casually it is the worst kind
+of footgun (RCE for anyone who can author a flow). The controls:
+
+1. **Admin-defined, fixed commands only.** The `program` and `args` are set when
+   an admin creates the connection. A flow author references the connection *by
+   name* and supplies no part of the command line, so a modeler can never make
+   the server run arbitrary code, only a pre-approved command.
+2. **No shell.** The program is spawned directly with an argv array (never via
+   `sh -c` / `cmd /C` over a string), so there is no shell-injection or glob/
+   variable-expansion surface.
+3. **Off unless explicitly enabled.** The server runs command connections only
+   when started with an explicit opt-in (`EPIPHANY_ENABLE_COMMAND_CONNECTORS`);
+   otherwise defining or running one is rejected. So enabling host execution is
+   a deliberate operator act, independent of who can define connections.
+4. **Resource-bounded.** A timeout kills an overrunning process, stdout is capped
+   to a maximum byte size (no OOM), and a non-zero exit fails the run with the
+   captured stderr.
+
+Parameterized command arguments (a flow passing, say, a date range into a fixed
+slot) are deliberately deferred until the controls above are proven; the first
+cut runs fully-fixed commands.
+
 ## Alternatives considered
 
 - **`ctx.fetch` / DB access inside the flow's JS:** rejected. It breaks the
@@ -80,6 +109,9 @@ deterministic, not that a live pull is reproducible across time.
   binary lean and pure, and lets a deployment opt into only what it needs.
 - **Reverse ETL (writing out to connectors):** out of scope; this ADR covers
   inbound ingestion only.
+- **A free-form `ctx.exec(cmd)` or flow-supplied command arguments:** rejected.
+  It would hand arbitrary code execution to anyone who can write a flow. The
+  command, like every connection, is an admin artifact; flows only reference it.
 
 ## Consequences
 
@@ -89,7 +121,12 @@ deterministic, not that a live pull is reproducible across time.
 - New dependencies are feature-gated: `reqwest` (with rustls) under
   `http-connector`, `odbc-api` under `odbc`. `cargo-deny` must be re-checked for
   each; the `odbc` profile is documented as requiring a system ODBC driver
-  manager and is not part of the pure single-binary build.
+  manager and is not part of the pure single-binary build. The `command`
+  connector adds no dependency (std `process`), but its capability is gated at
+  runtime (decision 6) rather than only at compile time.
+- The command connector is implemented first (it answers the immediate
+  "ingest from a script/exe" need and needs no third-party crate); HTTP then
+  ODBC follow on the same foundation.
 - A small connections + secret-reference subsystem is added (admin CRUD, an
   env-backed secret store, an endpoint/DSN allowlist). Scheduled refresh of
   connector-backed flows pairs naturally with the Phase 8 job scheduler.

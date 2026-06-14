@@ -17,8 +17,8 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use epiphany_core::{
-    validate_subset, validate_view, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest, LoadError,
-    Model, ModelError, QueryError, RuleSet, RuleTest, SaveError, Subset, View,
+    validate_subset, validate_view, Connection, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest,
+    LoadError, Model, ModelError, QueryError, RuleSet, RuleTest, SaveError, Subset, View,
 };
 
 use crate::wal::{self, Record};
@@ -419,6 +419,24 @@ impl Store {
     /// only when something changed.
     pub fn delete_flow_test(&mut self, name: &str) -> Result<bool, PersistError> {
         let removed = self.model.flow_tests.remove(name).is_some();
+        if removed {
+            self.checkpoint()?;
+        }
+        Ok(removed)
+    }
+
+    /// Define (create or replace) a data-source connection, then checkpoint.
+    pub fn define_connection(&mut self, connection: Connection) -> Result<(), PersistError> {
+        self.model
+            .connections
+            .insert(connection.name.clone(), connection);
+        self.checkpoint()
+    }
+
+    /// Delete a connection by name. Returns whether one was removed; checkpoints
+    /// only when something changed.
+    pub fn delete_connection(&mut self, name: &str) -> Result<bool, PersistError> {
+        let removed = self.model.connections.remove(name).is_some();
         if removed {
             self.checkpoint()?;
         }

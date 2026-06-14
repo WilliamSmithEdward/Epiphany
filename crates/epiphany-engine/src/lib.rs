@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use epiphany_core::{
-    CellResolver, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest, Model, ModelError,
-    QueryError, RuleSet, RuleTest, Subset, View,
+    CellResolver, Connection, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest, Model,
+    ModelError, QueryError, RuleSet, RuleTest, Subset, View,
 };
 use epiphany_determinism::IdGen;
 use epiphany_persist::{PersistError, Store};
@@ -435,6 +435,36 @@ impl Engine {
             } else {
                 Err(PersistError::Query(QueryError::Calc {
                     message: format!("no flow test '{name}'"),
+                }))
+            }
+        })
+    }
+
+    /// Define (create or replace) a data-source connection and publish a new
+    /// version.
+    pub fn define_connection(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        connection: Connection,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| store.define_connection(connection))
+    }
+
+    /// Delete a connection by name and publish a new version. A missing
+    /// connection returns [`BatchError::Invalid`].
+    pub fn delete_connection(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            if store.delete_connection(name)? {
+                Ok(())
+            } else {
+                Err(PersistError::Query(QueryError::Calc {
+                    message: format!("no connection '{name}'"),
                 }))
             }
         })

@@ -23,8 +23,9 @@ pub use dimension::{AttributeDef, AttributeKind, AttributeValue, Dimension, Elem
 pub use error::ModelError;
 pub use query::{
     execute_view, resolve_subset, validate_subset, validate_view, Axis, AxisSpec, CellResolver,
-    CellTrace, Cellset, ExplainDepth, Flow, FlowTest, Model, NoSetEvaluator, QueryError, RuleSet,
-    RuleTest, SetEvaluator, StoredCells, Subset, SubsetKind, TestCell, TraceKind, View, Visibility,
+    CellTrace, Cellset, CommandSpec, Connection, ConnectionSpec, ExplainDepth, Flow, FlowTest,
+    Model, NoSetEvaluator, QueryError, RuleSet, RuleTest, SetEvaluator, SourceFormat, StoredCells,
+    Subset, SubsetKind, TestCell, TraceKind, View, Visibility,
 };
 pub use text::{LoadError, SaveError};
 pub use value::{Fixed, SCALE, SCALE_DECIMALS};

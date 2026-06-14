@@ -721,8 +721,56 @@ pub struct FlowTest {
     pub assertions: Vec<TestCell>,
 }
 
+/// How a connector's output (or a flow's input) is parsed into rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SourceFormat {
+    /// Comma-separated values, a header row naming the columns.
+    #[default]
+    Csv,
+    /// A JSON array of objects (or an array reached by [`CommandSpec::json_path`]).
+    Json,
+}
+
+/// A command connection's configuration: run `program` with fixed `args` and
+/// read its stdout as `format`. The program and args are set by an admin at
+/// definition time and are never supplied by a flow, and the program is spawned
+/// directly (no shell), so there is no command-injection surface (ADR-0012).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandSpec {
+    /// The executable to run (an absolute path or a program on the host PATH).
+    pub program: String,
+    /// Fixed arguments, passed as an argv array (not a shell string).
+    pub args: Vec<String>,
+    /// How to parse the program's stdout into rows.
+    pub format: SourceFormat,
+    /// For JSON output, a dotted path to the array of record objects; `None`
+    /// means stdout is itself the array.
+    pub json_path: Option<String>,
+    /// Kill the process if it runs longer than this many milliseconds.
+    pub timeout_ms: u64,
+}
+
+/// What a connection does. One variant for now (a command); HTTP and ODBC
+/// variants are the planned follow-ons (ADR-0012).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnectionSpec {
+    /// Run an external program and read its stdout (ADR-0012 decision 6).
+    Command(CommandSpec),
+}
+
+/// A named, admin-defined data-source connection. Flows reference it by name to
+/// ingest external data; the connection itself (and the capability it grants) is
+/// an operator artifact, never authored by a flow.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Connection {
+    /// The connection name (unique within the cube).
+    pub name: String,
+    /// What the connection does.
+    pub spec: ConnectionSpec,
+}
+
 /// A complete durable model: a cube plus its named subsets, views, rules, rule
-/// tests, flows, and flow tests.
+/// tests, flows, flow tests, and connections.
 ///
 /// Subsets are keyed by `(dimension, name)` (a subset name is unique within its
 /// dimension); views, tests, flows, and flow tests are keyed by name (unique
@@ -744,6 +792,8 @@ pub struct Model {
     pub flows: BTreeMap<String, Flow>,
     /// Flow unit tests, keyed by name.
     pub flow_tests: BTreeMap<String, FlowTest>,
+    /// Named data-source connections (admin-defined), keyed by name.
+    pub connections: BTreeMap<String, Connection>,
 }
 
 impl Model {
@@ -757,6 +807,7 @@ impl Model {
             tests: BTreeMap::new(),
             flows: BTreeMap::new(),
             flow_tests: BTreeMap::new(),
+            connections: BTreeMap::new(),
         }
     }
 
