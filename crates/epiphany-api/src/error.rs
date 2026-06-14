@@ -3,6 +3,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
+use epiphany_core::QueryError;
 use serde::Serialize;
 
 /// An API error rendered as `{"error": {"code", "message", "details"?}}`.
@@ -72,6 +73,33 @@ impl ApiError {
     /// The HTTP status this error renders as.
     pub fn status_code(&self) -> StatusCode {
         self.status
+    }
+}
+
+/// Map a core query error to the HTTP envelope with a stable code. A missing
+/// named object is 404; everything else is a 422 the client can act on.
+impl From<QueryError> for ApiError {
+    fn from(e: QueryError) -> Self {
+        let message = e.to_string();
+        match e {
+            QueryError::UnknownSubset { .. } => {
+                ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_SUBSET", message)
+            }
+            QueryError::UnknownDimension { .. } => {
+                ApiError::unprocessable("UNKNOWN_DIMENSION", message)
+            }
+            QueryError::UnknownMember { .. } => ApiError::unprocessable("UNKNOWN_ELEMENT", message),
+            QueryError::DimensionCoverage { .. } => {
+                ApiError::unprocessable("DIMENSION_COVERAGE", message)
+            }
+            QueryError::SubsetDimensionMismatch { .. } => {
+                ApiError::unprocessable("SUBSET_DIMENSION_MISMATCH", message)
+            }
+            QueryError::DynamicUnsupported | QueryError::DynamicEval { .. } => {
+                ApiError::unprocessable("MDX_ERROR", message)
+            }
+            QueryError::Model(_) => ApiError::unprocessable("MODEL_ERROR", message),
+        }
     }
 }
 

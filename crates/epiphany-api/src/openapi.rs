@@ -95,6 +95,96 @@ fn document() -> Value {
                     "422": { "description": "A write was rejected; nothing applied", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
                 }
             }},
+            "/api/v1/cubes/{cube}/dimensions/{dim}/subsets": {
+                "get": {
+                    "summary": "List the visible subsets of a dimension", "security": bearer(),
+                    "parameters": [cube_param(), dim_param()],
+                    "responses": ok("The subsets")
+                },
+                "post": {
+                    "summary": "Create a subset", "security": bearer(),
+                    "parameters": [cube_param(), dim_param()],
+                    "requestBody": json_body("#/components/schemas/SubsetBody"),
+                    "responses": { "201": { "description": "The created subset" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/preview": { "post": {
+                "summary": "Resolve an unsaved subset to its members", "security": bearer(),
+                "parameters": [cube_param(), dim_param()],
+                "requestBody": json_body("#/components/schemas/SubsetBody"),
+                "responses": ok("The resolved members")
+            }},
+            "/api/v1/cubes/{cube}/dimensions/{dim}/mdx/preview": { "post": {
+                "summary": "Resolve an MDX set expression to members", "security": bearer(),
+                "parameters": [cube_param(), dim_param()],
+                "requestBody": json_body("#/components/schemas/MdxPreviewRequest"),
+                "responses": ok("The resolved members")
+            }},
+            "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/{name}": {
+                "get": {
+                    "summary": "A subset", "security": bearer(),
+                    "parameters": [cube_param(), dim_param(), name_param()],
+                    "responses": ok("The subset")
+                },
+                "put": {
+                    "summary": "Replace a subset", "security": bearer(),
+                    "parameters": [cube_param(), dim_param(), name_param()],
+                    "requestBody": json_body("#/components/schemas/SubsetBody"),
+                    "responses": ok("The updated subset")
+                },
+                "delete": {
+                    "summary": "Delete a subset", "security": bearer(),
+                    "parameters": [cube_param(), dim_param(), name_param()],
+                    "responses": { "204": { "description": "Deleted" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/{name}/members": { "get": {
+                "summary": "The resolved members of a saved subset", "security": bearer(),
+                "parameters": [cube_param(), dim_param(), name_param()],
+                "responses": ok("The resolved members")
+            }},
+            "/api/v1/cubes/{cube}/views": {
+                "get": {
+                    "summary": "List the visible views of a cube", "security": bearer(),
+                    "parameters": [cube_param()],
+                    "responses": ok("The views")
+                },
+                "post": {
+                    "summary": "Create a view", "security": bearer(),
+                    "parameters": [cube_param()],
+                    "requestBody": json_body("#/components/schemas/ViewBody"),
+                    "responses": { "201": { "description": "The created view" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/views/{name}": {
+                "get": {
+                    "summary": "A view", "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "responses": ok("The view")
+                },
+                "put": {
+                    "summary": "Replace a view", "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "requestBody": json_body("#/components/schemas/ViewBody"),
+                    "responses": ok("The updated view")
+                },
+                "delete": {
+                    "summary": "Delete a view", "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "responses": { "204": { "description": "Deleted" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/views/{name}/execute": { "post": {
+                "summary": "Execute a saved view to a cellset", "security": bearer(),
+                "parameters": [cube_param(), name_param()],
+                "responses": ok("The cellset")
+            }},
+            "/api/v1/cubes/{cube}/cellset": { "post": {
+                "summary": "Execute an ad-hoc view spec to a cellset", "security": bearer(),
+                "parameters": [cube_param()],
+                "requestBody": json_body("#/components/schemas/ViewBody"),
+                "responses": ok("The cellset")
+            }},
             "/api/v1/ws": { "get": {
                 "summary": "WebSocket change-notification stream", "security": bearer(),
                 "responses": { "101": { "description": "Switching protocols (WebSocket)" } }
@@ -128,7 +218,31 @@ fn document() -> Value {
                         "coord": { "$ref": "#/components/schemas/Coord" }, "value": { "type": "string" } },
                         "required": ["coord", "value"] } },
                     "base_version": { "type": "integer", "format": "int64" } },
-                    "required": ["writes"] }
+                    "required": ["writes"] },
+                "SubsetBody": { "type": "object", "properties": {
+                    "name": { "type": "string", "description": "Required to create; ignored on replace/preview" },
+                    "visibility": { "type": "string", "enum": ["public", "private"] },
+                    "kind": { "type": "string", "enum": ["static", "dynamic"] },
+                    "members": { "type": "array", "items": { "type": "string" }, "description": "Static subset members (author order)" },
+                    "mdx": { "type": "string", "description": "Dynamic subset MDX set expression" } },
+                    "required": ["kind"] },
+                "MdxPreviewRequest": { "type": "object", "properties": {
+                    "mdx": { "type": "string" } }, "required": ["mdx"] },
+                "AxisSpec": { "type": "object", "properties": {
+                    "dimension": { "type": "string" },
+                    "type": { "type": "string", "enum": ["subset", "members"] },
+                    "subset": { "type": "string" },
+                    "members": { "type": "array", "items": { "type": "string" } } },
+                    "required": ["dimension", "type"] },
+                "ViewBody": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "visibility": { "type": "string", "enum": ["public", "private"] },
+                    "suppress_zeros": { "type": "boolean" },
+                    "rows": { "type": "array", "items": { "$ref": "#/components/schemas/AxisSpec" } },
+                    "columns": { "type": "array", "items": { "$ref": "#/components/schemas/AxisSpec" } },
+                    "context": { "type": "array", "items": { "type": "object", "properties": {
+                        "dimension": { "type": "string" }, "member": { "type": "string" } },
+                        "required": ["dimension", "member"] } } } }
             }
         }
     })
@@ -137,6 +251,20 @@ fn document() -> Value {
 fn cube_param() -> Value {
     json!({
         "name": "cube", "in": "path", "required": true,
+        "schema": { "type": "string" }
+    })
+}
+
+fn dim_param() -> Value {
+    json!({
+        "name": "dim", "in": "path", "required": true,
+        "schema": { "type": "string" }
+    })
+}
+
+fn name_param() -> Value {
+    json!({
+        "name": "name", "in": "path", "required": true,
         "schema": { "type": "string" }
     })
 }
@@ -158,6 +286,15 @@ mod tests {
         "/api/v1/cubes/{cube}/cells/read",
         "/api/v1/cubes/{cube}/cell",
         "/api/v1/cubes/{cube}/cells/batch",
+        "/api/v1/cubes/{cube}/dimensions/{dim}/subsets",
+        "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/preview",
+        "/api/v1/cubes/{cube}/dimensions/{dim}/mdx/preview",
+        "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/{name}",
+        "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/{name}/members",
+        "/api/v1/cubes/{cube}/views",
+        "/api/v1/cubes/{cube}/views/{name}",
+        "/api/v1/cubes/{cube}/views/{name}/execute",
+        "/api/v1/cubes/{cube}/cellset",
         "/api/v1/ws",
     ];
 

@@ -90,3 +90,166 @@ pub struct BatchWriteResponse {
     pub applied: usize,
     pub version: u64,
 }
+
+// ---- subsets ----
+
+/// A subset definition request (create, replace, or preview). For preview the
+/// `name` is optional; for create it is required (replace takes it from the URL).
+#[derive(Debug, Deserialize)]
+pub struct SubsetBody {
+    #[serde(default)]
+    pub name: Option<String>,
+    /// `public` (default) or `private`.
+    #[serde(default)]
+    pub visibility: Option<String>,
+    /// `static` or `dynamic`.
+    pub kind: String,
+    /// Member names (static subsets).
+    #[serde(default)]
+    pub members: Vec<String>,
+    /// MDX set expression (dynamic subsets).
+    #[serde(default)]
+    pub mdx: Option<String>,
+}
+
+/// A subset as returned to clients.
+#[derive(Debug, Serialize)]
+pub struct SubsetDto {
+    pub name: String,
+    pub dimension: String,
+    pub owner: Option<String>,
+    pub visibility: &'static str,
+    pub kind: &'static str,
+    pub members: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mdx: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SubsetListResponse {
+    pub subsets: Vec<SubsetDto>,
+}
+
+/// One resolved member of a subset/dimension.
+#[derive(Debug, Serialize)]
+pub struct MemberDto {
+    pub name: String,
+    pub kind: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MembersResponse {
+    pub members: Vec<MemberDto>,
+}
+
+/// Request body for resolving an MDX set expression to members.
+#[derive(Debug, Deserialize)]
+pub struct MdxPreviewRequest {
+    pub mdx: String,
+}
+
+// ---- views and cellsets ----
+
+/// One axis placement in a view request.
+#[derive(Debug, Deserialize)]
+pub struct AxisSpecBody {
+    pub dimension: String,
+    /// `subset` or `members`.
+    #[serde(rename = "type")]
+    pub spec_type: String,
+    #[serde(default)]
+    pub subset: Option<String>,
+    #[serde(default)]
+    pub members: Vec<String>,
+}
+
+/// One context (slicer) assignment.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ContextEntryDto {
+    pub dimension: String,
+    pub member: String,
+}
+
+/// A view definition request (create, replace, or ad-hoc execute).
+#[derive(Debug, Deserialize)]
+pub struct ViewBody {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub visibility: Option<String>,
+    #[serde(default)]
+    pub suppress_zeros: bool,
+    #[serde(default)]
+    pub rows: Vec<AxisSpecBody>,
+    #[serde(default)]
+    pub columns: Vec<AxisSpecBody>,
+    #[serde(default)]
+    pub context: Vec<ContextEntryDto>,
+}
+
+/// One axis placement as returned to clients.
+#[derive(Debug, Serialize)]
+pub struct AxisSpecDto {
+    pub dimension: String,
+    #[serde(rename = "type")]
+    pub spec_type: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subset: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub members: Vec<String>,
+}
+
+/// A view as returned to clients.
+#[derive(Debug, Serialize)]
+pub struct ViewDto {
+    pub name: String,
+    pub cube: String,
+    pub owner: Option<String>,
+    pub visibility: &'static str,
+    pub suppress_zeros: bool,
+    pub rows: Vec<AxisSpecDto>,
+    pub columns: Vec<AxisSpecDto>,
+    pub context: Vec<ContextEntryDto>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ViewListResponse {
+    pub views: Vec<ViewDto>,
+}
+
+/// One member of an axis tuple in a cellset.
+#[derive(Debug, Serialize)]
+pub struct AxisMemberDto {
+    pub dimension: String,
+    pub name: String,
+    pub kind: &'static str,
+}
+
+/// One cell value in a cellset (row-major; `ordinal` is its flat index).
+#[derive(Debug, Serialize)]
+pub struct CellsetCellDto {
+    pub value: Option<String>,
+    pub kind: &'static str,
+    pub editable: bool,
+    pub ordinal: usize,
+}
+
+/// How many tuples zero-suppression removed.
+#[derive(Debug, Serialize)]
+pub struct SuppressedDto {
+    pub row_tuples: usize,
+    pub column_tuples: usize,
+}
+
+/// An executed view: nested axis tuples plus a row-major value matrix.
+#[derive(Debug, Serialize)]
+pub struct CellsetDto {
+    pub row_dimensions: Vec<String>,
+    pub column_dimensions: Vec<String>,
+    pub row_tuples: Vec<Vec<AxisMemberDto>>,
+    pub column_tuples: Vec<Vec<AxisMemberDto>>,
+    pub context: Vec<ContextEntryDto>,
+    pub cells: Vec<CellsetCellDto>,
+    pub version: u64,
+    pub suppressed: SuppressedDto,
+}

@@ -25,5 +25,10 @@ base64 = "0.22"
 tokio = { version = "1", features = ["sync", "macros", "rt"] }
 
 [dev-dependencies]
+# The MDX evaluator is injected at the composition root (the server) in
+# production; tests construct it directly to exercise dynamic subsets, so it is a
+# dev-dependency here. Production API code depends only on the core SetEvaluator
+# trait, keeping the dependency edge one-way (mdx -> core).
+epiphany-mdx = { path = "../epiphany-mdx" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

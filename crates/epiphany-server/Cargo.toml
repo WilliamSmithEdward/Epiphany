@@ -20,6 +20,7 @@ embed-ui = ["dep:rust-embed"]
 epiphany-api = { path = "../epiphany-api" }
 epiphany-core = { path = "../epiphany-core" }
 epiphany-engine = { path = "../epiphany-engine" }
+epiphany-mdx = { path = "../epiphany-mdx" }
 epiphany-persist = { path = "../epiphany-persist" }
 epiphany-security = { path = "../epiphany-security" }
 epiphany-determinism = { path = "../epiphany-determinism" }

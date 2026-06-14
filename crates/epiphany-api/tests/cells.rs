@@ -49,6 +49,7 @@ fn state(name: &str) -> AppState {
         security: Arc::new(Mutex::new(SecurityStore::with_admin("admin", "pw", true))),
         sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
         events: broadcast::channel(16).0,
+        mdx: Arc::new(epiphany_core::NoSetEvaluator),
     }
 }
 

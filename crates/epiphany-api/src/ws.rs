@@ -26,6 +26,8 @@ pub enum ChangeEvent {
         version: u64,
         coords: Vec<CoordMap>,
     },
+    /// A cube's saved objects (subsets/views) changed; clients refetch lists.
+    ObjectsChanged { cube: String, version: u64 },
 }
 
 /// `GET /api/v1/ws` -> a JSON change-event stream (authentication required).

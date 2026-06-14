@@ -198,7 +198,7 @@ fn build_write(cube: &Cube, coord: &CoordMap, value: &str) -> Result<CellWrite, 
     }
 }
 
-fn map_batch_error(error: BatchError) -> ApiError {
+pub(crate) fn map_batch_error(error: BatchError) -> ApiError {
     match error {
         BatchError::UnknownCube(cube) => ApiError::not_found(format!("unknown cube '{cube}'")),
         BatchError::Conflict { expected, actual } => ApiError::conflict(format!(
@@ -209,7 +209,9 @@ fn map_batch_error(error: BatchError) -> ApiError {
             format!("write {index} rejected: {source}"),
         )
         .with_details(serde_json::json!({ "failed_index": index })),
-        BatchError::Invalid(e) => ApiError::unprocessable("INVALID_DEFINITION", e.to_string()),
+        // A structurally invalid definition carries a typed QueryError with its
+        // own status and code (404 for a missing object, 422 otherwise).
+        BatchError::Invalid(e) => ApiError::from(e),
         BatchError::Persist(_) => ApiError::internal(),
     }
 }

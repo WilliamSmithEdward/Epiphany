@@ -13,6 +13,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 
+use epiphany_core::SetEvaluator;
 use epiphany_determinism::Clock;
 use epiphany_engine::Engine;
 use epiphany_security::SecurityStore;
@@ -22,6 +23,7 @@ mod auth;
 mod dto;
 mod error;
 mod openapi;
+mod query_routes;
 mod resolve;
 mod routes;
 mod session;
@@ -47,6 +49,17 @@ pub struct AppState {
     pub sessions: Arc<Mutex<SessionStore>>,
     /// Broadcaster of change events to WebSocket clients.
     pub events: broadcast::Sender<ChangeEvent>,
+    /// The MDX set evaluator for dynamic subsets (the composition-root injects a
+    /// real one; tests inject a `NoSetEvaluator` or the real evaluator as needed).
+    pub mdx: Arc<dyn SetEvaluator + Send + Sync>,
+}
+
+impl AppState {
+    /// The injected set evaluator as a plain trait reference (drops the auto
+    /// traits the core query functions do not require).
+    pub(crate) fn evaluator(&self) -> &dyn SetEvaluator {
+        self.mdx.as_ref()
+    }
 }
 
 impl std::fmt::Debug for AppState {
@@ -69,6 +82,48 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/cubes/{cube}/cells/batch",
             post(routes::batch_write),
+        )
+        // Subsets (dimension-scoped).
+        .route(
+            "/api/v1/cubes/{cube}/dimensions/{dim}/subsets",
+            get(query_routes::list_subsets).post(query_routes::create_subset),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/preview",
+            post(query_routes::preview_subset),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/dimensions/{dim}/mdx/preview",
+            post(query_routes::preview_mdx),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/{name}",
+            get(query_routes::get_subset)
+                .put(query_routes::replace_subset)
+                .delete(query_routes::delete_subset),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/{name}/members",
+            get(query_routes::subset_members),
+        )
+        // Views (cube-scoped).
+        .route(
+            "/api/v1/cubes/{cube}/views",
+            get(query_routes::list_views).post(query_routes::create_view),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/views/{name}",
+            get(query_routes::get_view)
+                .put(query_routes::replace_view)
+                .delete(query_routes::delete_view),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/views/{name}/execute",
+            post(query_routes::execute_saved_view),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/cellset",
+            post(query_routes::execute_adhoc),
         )
         .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))
@@ -175,6 +230,7 @@ mod tests {
             security: Arc::new(Mutex::new(SecurityStore::with_admin("admin", "pw", true))),
             sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
             events: broadcast::channel(16).0,
+            mdx: Arc::new(epiphany_core::NoSetEvaluator),
         }
     }
 

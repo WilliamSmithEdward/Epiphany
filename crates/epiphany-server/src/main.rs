@@ -52,6 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         security: Arc::new(Mutex::new(security)),
         sessions: Arc::new(Mutex::new(SessionStore::new(config.session_ttl_millis))),
         events,
+        // Inject the real MDX evaluator so dynamic subsets resolve; this is the
+        // only place the server names epiphany-mdx (the core trait is the seam).
+        mdx: Arc::new(epiphany_mdx::MdxEvaluator::new()),
     };
     let router = build_router(state);
     #[cfg(feature = "embed-ui")]

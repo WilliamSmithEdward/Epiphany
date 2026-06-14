@@ -69,6 +69,7 @@ fn router_for(dir: &Path) -> (Router, Arc<Mutex<SessionStore>>) {
         security: Arc::new(Mutex::new(SecurityStore::with_admin("admin", "pw", true))),
         sessions: sessions.clone(),
         events: broadcast::channel(16).0,
+        mdx: Arc::new(epiphany_core::NoSetEvaluator),
     };
     (build_router(state), sessions)
 }
