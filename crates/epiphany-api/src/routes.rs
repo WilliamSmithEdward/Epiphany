@@ -177,7 +177,11 @@ fn read_one(
     }
 }
 
-fn build_write(cube: &Cube, coord: &CoordMap, value: &str) -> Result<CellWrite, ApiError> {
+pub(crate) fn build_write(
+    cube: &Cube,
+    coord: &CoordMap,
+    value: &str,
+) -> Result<CellWrite, ApiError> {
     let resolved = resolve(cube, coord)?;
     if !resolved.all_leaf {
         return Err(ApiError::unprocessable(

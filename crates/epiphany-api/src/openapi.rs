@@ -241,6 +241,72 @@ fn document() -> Value {
                 "parameters": [cube_param(), name_param()],
                 "responses": { "204": { "description": "Deleted" } }
             }},
+            "/api/v1/cubes/{cube}/flows": { "get": {
+                "summary": "The cube's flows", "security": bearer(),
+                "parameters": [cube_param()], "responses": ok("The flows")
+            }},
+            "/api/v1/cubes/{cube}/flows/preview": { "post": {
+                "summary": "Validate a flow source without saving", "security": bearer(),
+                "parameters": [cube_param()],
+                "requestBody": json_body("#/components/schemas/FlowPreview"),
+                "responses": {
+                    "200": { "description": "Valid" },
+                    "422": { "description": "A strip/parse error (with line/column)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
+            }},
+            "/api/v1/cubes/{cube}/flows/import": { "post": {
+                "summary": "Guided CSV import (build members and load values)", "security": bearer(),
+                "parameters": [cube_param()],
+                "requestBody": json_body("#/components/schemas/FlowImport"),
+                "responses": ok("The run report")
+            }},
+            "/api/v1/cubes/{cube}/flows/tests": {
+                "get": {
+                    "summary": "The cube's flow tests", "security": bearer(),
+                    "parameters": [cube_param()], "responses": ok("The flow tests")
+                },
+                "post": {
+                    "summary": "Create or replace a flow test", "security": bearer(),
+                    "parameters": [cube_param()],
+                    "requestBody": json_body("#/components/schemas/FlowTest"),
+                    "responses": { "201": { "description": "The created test" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/flows/tests/run": { "post": {
+                "summary": "Run the cube's flow tests", "security": bearer(),
+                "parameters": [cube_param()], "responses": ok("The test report")
+            }},
+            "/api/v1/cubes/{cube}/flows/tests/{name}": { "delete": {
+                "summary": "Delete a flow test", "security": bearer(),
+                "parameters": [cube_param(), name_param()],
+                "responses": { "204": { "description": "Deleted" } }
+            }},
+            "/api/v1/cubes/{cube}/flows/{name}": {
+                "get": {
+                    "summary": "One flow", "security": bearer(),
+                    "parameters": [cube_param(), name_param()], "responses": ok("The flow")
+                },
+                "put": {
+                    "summary": "Validate and store a flow", "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "requestBody": json_body("#/components/schemas/FlowBody"),
+                    "responses": {
+                        "200": { "description": "The stored flow" },
+                        "422": { "description": "A strip/parse error (with line/column)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                    }
+                },
+                "delete": {
+                    "summary": "Delete a flow", "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "responses": { "204": { "description": "Deleted" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/flows/{name}/run": { "post": {
+                "summary": "Run a stored flow over uploaded data", "security": bearer(),
+                "parameters": [cube_param(), name_param()],
+                "requestBody": json_body("#/components/schemas/FlowRun"),
+                "responses": ok("The run report")
+            }},
             "/api/v1/ws": { "get": {
                 "summary": "WebSocket change-notification stream", "security": bearer(),
                 "responses": { "101": { "description": "Switching protocols (WebSocket)" } }
@@ -313,7 +379,31 @@ fn document() -> Value {
                     "name": { "type": "string" },
                     "fixtures": { "type": "array", "items": { "$ref": "#/components/schemas/TestCell" } },
                     "assertions": { "type": "array", "items": { "$ref": "#/components/schemas/TestCell" } } },
-                    "required": ["name"] }
+                    "required": ["name"] },
+                "FlowBody": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "source": { "type": "string", "description": "TypeScript flow source" } },
+                    "required": ["source"] },
+                "FlowPreview": { "type": "object", "properties": {
+                    "source": { "type": "string" } }, "required": ["source"] },
+                "FlowRun": { "type": "object", "properties": {
+                    "input": { "type": "string", "description": "Data-source content (CSV text)" },
+                    "params": { "type": "object", "additionalProperties": { "type": "string" } } } },
+                "FlowImport": { "type": "object", "properties": {
+                    "csv": { "type": "string" },
+                    "columns": { "type": "object", "additionalProperties": { "type": "string" },
+                        "description": "CSV column -> dimension name" },
+                    "value_column": { "type": "string" },
+                    "fixed": { "type": "object", "additionalProperties": { "type": "string" },
+                        "description": "Dimension -> fixed member for unmapped dimensions" } },
+                    "required": ["csv", "columns", "value_column"] },
+                "FlowTest": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "flow": { "type": "string" },
+                    "input": { "type": "string" },
+                    "params": { "type": "object", "additionalProperties": { "type": "string" } },
+                    "assertions": { "type": "array", "items": { "$ref": "#/components/schemas/TestCell" } } },
+                    "required": ["name", "flow"] }
             }
         }
     })
@@ -373,6 +463,14 @@ mod tests {
         "/api/v1/cubes/{cube}/rules/tests",
         "/api/v1/cubes/{cube}/rules/tests/run",
         "/api/v1/cubes/{cube}/rules/tests/{name}",
+        "/api/v1/cubes/{cube}/flows",
+        "/api/v1/cubes/{cube}/flows/preview",
+        "/api/v1/cubes/{cube}/flows/import",
+        "/api/v1/cubes/{cube}/flows/tests",
+        "/api/v1/cubes/{cube}/flows/tests/run",
+        "/api/v1/cubes/{cube}/flows/tests/{name}",
+        "/api/v1/cubes/{cube}/flows/{name}",
+        "/api/v1/cubes/{cube}/flows/{name}/run",
         "/api/v1/ws",
     ];
 

@@ -19,6 +19,9 @@ epiphany-engine = { path = "../epiphany-engine" }
 # through the engine's CellResolverFactory seam, so a no-rules deployment can
 # inject StoredCellsFactory.
 epiphany-calc = { path = "../epiphany-calc" }
+# The flow endpoints run TypeScript ETL flows; the edge stays acyclic
+# (flow -> core only) and the API applies a flow's planned changes via the engine.
+epiphany-flow = { path = "../epiphany-flow" }
 epiphany-persist = { path = "../epiphany-persist" }
 epiphany-security = { path = "../epiphany-security" }
 epiphany-determinism = { path = "../epiphany-determinism" }

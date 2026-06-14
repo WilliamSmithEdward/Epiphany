@@ -444,6 +444,7 @@ dependencies = [
  "epiphany-core",
  "epiphany-determinism",
  "epiphany-engine",
+ "epiphany-flow",
  "epiphany-mdx",
  "epiphany-persist",
  "epiphany-security",

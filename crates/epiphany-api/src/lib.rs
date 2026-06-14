@@ -6,6 +6,10 @@
 //! shared [`ApiError`] envelope. Every route except `/healthz` and the login
 //! endpoint requires a valid session (the [`auth::AuthPrincipal`] extractor).
 
+// The hand-authored OpenAPI document (openapi.rs) is one large `json!` literal;
+// its expansion needs a higher macro recursion limit than the default.
+#![recursion_limit = "512"]
+
 use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
@@ -23,6 +27,7 @@ mod auth;
 mod calc_factory;
 mod dto;
 mod error;
+mod flow_routes;
 mod openapi;
 mod query_routes;
 mod resolve;
@@ -162,6 +167,40 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/cubes/{cube}/rules/tests/{name}",
             axum::routing::delete(rule_routes::delete_rule_test),
+        )
+        // Flows (TypeScript ETL). Static sub-paths (preview/import/tests) take
+        // precedence over the `{name}` route, so "preview"/"import"/"tests" are
+        // reserved flow names.
+        .route("/api/v1/cubes/{cube}/flows", get(flow_routes::list_flows))
+        .route(
+            "/api/v1/cubes/{cube}/flows/preview",
+            post(flow_routes::preview_flow),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/flows/import",
+            post(flow_routes::import_csv),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/flows/tests",
+            get(flow_routes::list_flow_tests).post(flow_routes::put_flow_test),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/flows/tests/run",
+            post(flow_routes::run_flow_tests_handler),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/flows/tests/{name}",
+            axum::routing::delete(flow_routes::delete_flow_test),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/flows/{name}",
+            get(flow_routes::get_flow)
+                .put(flow_routes::put_flow)
+                .delete(flow_routes::delete_flow),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/flows/{name}/run",
+            post(flow_routes::run_flow_handler),
         )
         .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))
