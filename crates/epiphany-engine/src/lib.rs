@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use arc_swap::ArcSwap;
 use epiphany_core::{
     CellResolver, Connection, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest, Model,
-    ModelError, QueryError, RuleSet, RuleTest, Subset, View,
+    ModelError, QueryError, RuleSet, RuleTest, Sandbox, Subset, View,
 };
 use epiphany_determinism::IdGen;
 use epiphany_persist::{PersistError, Store};
@@ -470,6 +470,77 @@ impl Engine {
         })
     }
 
+    /// Create a new, empty sandbox owned by `owner` (ADR-0014), stamping an
+    /// injected created id, and publish a new version. Returns
+    /// [`BatchError::Invalid`] if a sandbox of that name already exists.
+    pub fn create_sandbox(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+        owner: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        let created = self.ids.next_id();
+        self.define(cube, base, |store| {
+            if store.model().sandbox(name).is_some() {
+                return Err(PersistError::Query(QueryError::Calc {
+                    message: format!("sandbox '{name}' already exists"),
+                }));
+            }
+            store.define_sandbox(Sandbox::new(name, owner, created))
+        })
+    }
+
+    /// Stage leaf overrides into a sandbox (a what-if write) and publish a new
+    /// version. The base cube is never touched; the overrides live in the
+    /// sandbox overlay. A non-leaf or out-of-range coordinate is rejected
+    /// wholesale ([`BatchError::Rejected`]).
+    pub fn sandbox_set_cells(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+        writes: &[CellWrite],
+    ) -> Result<CommitOutcome, BatchError> {
+        let updated = self.ids.next_id();
+        self.define(cube, base, |store| {
+            store.sandbox_set_cells(name, writes, updated)
+        })
+    }
+
+    /// Commit a sandbox's overrides into the base cube and publish a new version,
+    /// clearing the deltas (the sandbox stays, empty). Uses the same optimistic
+    /// base-version check as [`apply_batch`](Self::apply_batch): a stale base
+    /// conflicts and changes nothing.
+    pub fn commit_sandbox(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        let updated = self.ids.next_id();
+        self.define(cube, base, |store| store.commit_sandbox(name, updated))
+    }
+
+    /// Discard a sandbox (drop it and its deltas) and publish a new version. A
+    /// missing sandbox returns [`BatchError::Invalid`]; base data is untouched.
+    pub fn discard_sandbox(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            if store.delete_sandbox(name)? {
+                Ok(())
+            } else {
+                Err(PersistError::Query(QueryError::Calc {
+                    message: format!("no sandbox '{name}'"),
+                }))
+            }
+        })
+    }
+
     /// Append dimension elements and consolidation edges (append-only,
     /// idempotent) and publish a new version, returning the commit outcome and
     /// the number of newly-created elements. This is the durable side of a flow's
@@ -522,6 +593,9 @@ impl Engine {
 
         let value = match op(&mut writer.store) {
             Ok(value) => value,
+            Err(PersistError::BatchRejected { index, source }) => {
+                return Err(BatchError::Rejected { index, source })
+            }
             Err(PersistError::Query(e)) => return Err(BatchError::Invalid(e)),
             Err(e) => return Err(BatchError::Persist(e)),
         };
@@ -870,6 +944,126 @@ mod tests {
         for h in readers {
             h.join().unwrap();
         }
+    }
+
+    #[test]
+    fn sandbox_create_set_commit_discard() {
+        let f = fixture("sandbox-lifecycle");
+        // Seed base R0/P0 = 10.
+        let v = f
+            .engine
+            .apply_batch("Sales", Some(0), &[leaf(vec![f.r[0], f.p[0]], 10)])
+            .unwrap()
+            .version;
+        // Create a sandbox; a duplicate create is rejected.
+        let v = f
+            .engine
+            .create_sandbox("Sales", Some(v), "wi", "ann")
+            .unwrap()
+            .version;
+        assert!(matches!(
+            f.engine
+                .create_sandbox("Sales", Some(v), "wi", "ann")
+                .unwrap_err(),
+            BatchError::Invalid(_)
+        ));
+        // Stage a what-if override R0/P0 -> 500.
+        let v = f
+            .engine
+            .sandbox_set_cells("Sales", Some(v), "wi", &[leaf(vec![f.r[0], f.p[0]], 500)])
+            .unwrap()
+            .version;
+        // Base is untouched; the sandbox holds the override.
+        let snap = f.engine.snapshot("Sales").unwrap();
+        assert_eq!(
+            snap.cube().get_leaf(&[f.r[0], f.p[0]]).unwrap(),
+            Fixed::from(10)
+        );
+        assert_eq!(
+            snap.model().sandbox("wi").unwrap().cell(&[f.r[0], f.p[0]]),
+            Some(Fixed::from(500))
+        );
+        // Commit merges into base and clears the delta (sandbox stays, empty).
+        let v = f
+            .engine
+            .commit_sandbox("Sales", Some(v), "wi")
+            .unwrap()
+            .version;
+        let snap = f.engine.snapshot("Sales").unwrap();
+        assert_eq!(
+            snap.cube().get_leaf(&[f.r[0], f.p[0]]).unwrap(),
+            Fixed::from(500)
+        );
+        assert!(snap.model().sandbox("wi").unwrap().is_empty());
+        // Discard removes the sandbox; base is untouched.
+        f.engine.discard_sandbox("Sales", Some(v), "wi").unwrap();
+        let snap = f.engine.snapshot("Sales").unwrap();
+        assert!(snap.model().sandbox("wi").is_none());
+        assert_eq!(
+            snap.cube().get_leaf(&[f.r[0], f.p[0]]).unwrap(),
+            Fixed::from(500)
+        );
+    }
+
+    #[test]
+    fn sandbox_commit_with_stale_base_conflicts() {
+        let f = fixture("sandbox-commit-conflict");
+        let v = f
+            .engine
+            .create_sandbox("Sales", Some(0), "wi", "ann")
+            .unwrap()
+            .version;
+        let v = f
+            .engine
+            .sandbox_set_cells("Sales", Some(v), "wi", &[leaf(vec![f.r[0], f.p[0]], 500)])
+            .unwrap()
+            .version;
+        // A concurrent base write moves the cube past v.
+        f.engine
+            .apply_batch("Sales", Some(v), &[leaf(vec![f.r[1], f.p[0]], 7)])
+            .unwrap();
+        // Committing on the now-stale base conflicts and changes nothing.
+        let err = f.engine.commit_sandbox("Sales", Some(v), "wi").unwrap_err();
+        assert!(matches!(err, BatchError::Conflict { .. }));
+        let snap = f.engine.snapshot("Sales").unwrap();
+        assert_eq!(
+            snap.cube().get_leaf(&[f.r[0], f.p[0]]).unwrap(),
+            Fixed::ZERO,
+            "a conflicting commit must not merge into base"
+        );
+        // The sandbox still holds its override (the commit did not clear it).
+        assert_eq!(
+            snap.model().sandbox("wi").unwrap().cell(&[f.r[0], f.p[0]]),
+            Some(Fixed::from(500))
+        );
+    }
+
+    #[test]
+    fn sandbox_override_of_consolidated_is_rejected() {
+        let f = fixture("sandbox-reject");
+        let v = f
+            .engine
+            .create_sandbox("Sales", Some(0), "wi", "ann")
+            .unwrap()
+            .version;
+        let err = f
+            .engine
+            .sandbox_set_cells(
+                "Sales",
+                Some(v),
+                "wi",
+                &[leaf(vec![f.region_total, f.p[0]], 1)],
+            )
+            .unwrap_err();
+        assert!(matches!(err, BatchError::Rejected { index: 0, .. }));
+        assert!(f
+            .engine
+            .snapshot("Sales")
+            .unwrap()
+            .model()
+            .sandbox("wi")
+            .unwrap()
+            .is_empty());
     }
 
     fn static_subset(name: &str, members: &[&str]) -> Subset {

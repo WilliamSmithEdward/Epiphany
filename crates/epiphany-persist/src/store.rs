@@ -517,6 +517,51 @@ impl Store {
         self.checkpoint()
     }
 
+    /// Commit a sandbox's overrides into the base cube, then clear the deltas and
+    /// checkpoint. The overrides are applied through the same validated batch path
+    /// as any other write ([`set_batch`](Self::set_batch)), so a rejected write
+    /// aborts wholesale and leaves base and the sandbox untouched. On success the
+    /// base cells are updated, the sandbox is emptied (it stays alive for reuse),
+    /// and the single checkpoint folds the batch into the snapshot and clears the
+    /// WAL. An unknown sandbox returns [`PersistError::Query`].
+    pub fn commit_sandbox(&mut self, name: &str, updated: u64) -> Result<(), PersistError> {
+        let writes: Vec<CellWrite> = {
+            let sb = self
+                .model
+                .sandbox(name)
+                .ok_or_else(|| PersistError::Query(QueryError::Calc {
+                    message: format!("no sandbox '{name}'"),
+                }))?;
+            let mut w: Vec<CellWrite> = sb
+                .cells
+                .iter()
+                .map(|(coord, value)| CellWrite::Leaf {
+                    coord: coord.clone(),
+                    value: *value,
+                })
+                .collect();
+            w.extend(sb.string_cells.iter().map(|(coord, value)| CellWrite::Str {
+                coord: coord.clone(),
+                value: value.clone(),
+            }));
+            w
+        };
+        // Apply to base (validates on a clone; WALs on success). A rejected write
+        // propagates and leaves base and the sandbox unchanged.
+        self.set_batch(&writes)?;
+        // Clear the now-merged deltas (the sandbox stays, empty) and checkpoint,
+        // which folds the just-applied batch into the snapshot and clears the WAL.
+        let sb = self
+            .model
+            .sandboxes
+            .get_mut(name)
+            .expect("sandbox presence checked above");
+        sb.cells.clear();
+        sb.string_cells.clear();
+        sb.updated = updated;
+        self.checkpoint()
+    }
+
     /// Append dimension elements and consolidation edges (append-only,
     /// idempotent), then checkpoint. Returns the number of newly-created
     /// elements. This is the durable side of a flow's "build dimension elements"
