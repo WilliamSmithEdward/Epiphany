@@ -19,8 +19,10 @@ use epiphany_flow::{
     parse_csv, run_flow, run_flow_tests, validate_flow, FlowError, FlowOutcome, FlowTestError,
     PlannedCell,
 };
+use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
+use crate::authz::{audit, require_cube_access};
 use crate::dto::CoordMap;
 use crate::routes::{build_write, map_batch_error};
 use crate::ws::ChangeEvent;
@@ -113,10 +115,11 @@ pub(crate) struct FlowListDto {
 
 /// `GET /cubes/{cube}/flows` -> the cube's flows.
 pub(crate) async fn list_flows(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<FlowListDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     Ok(Json(FlowListDto {
         flows: snap
@@ -133,10 +136,11 @@ pub(crate) async fn list_flows(
 
 /// `GET /cubes/{cube}/flows/{name}` -> one flow.
 pub(crate) async fn get_flow(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<Json<FlowDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let flow = snap
         .model()
@@ -151,11 +155,12 @@ pub(crate) async fn get_flow(
 
 /// `PUT /cubes/{cube}/flows/{name}` -> validate and store a flow.
 pub(crate) async fn put_flow(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
     Json(body): Json<FlowDto>,
 ) -> Result<Json<FlowDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     // Validate (strip + parse) before persisting; a bad flow is never stored.
     if body.source.trim().is_empty() {
         return Err(ApiError::unprocessable(
@@ -172,6 +177,13 @@ pub(crate) async fn put_flow(
         .engine
         .define_flow(&cube, None, flow)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &name)),
+        true,
+    );
     broadcast(&state, &cube);
     Ok(Json(FlowDto {
         name,
@@ -181,14 +193,22 @@ pub(crate) async fn put_flow(
 
 /// `DELETE /cubes/{cube}/flows/{name}` -> delete a flow.
 pub(crate) async fn delete_flow(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     state
         .engine
         .delete_flow(&cube, None, &name)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectDelete,
+        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &name)),
+        true,
+    );
     broadcast(&state, &cube);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -205,11 +225,12 @@ pub(crate) struct PreviewResult {
 
 /// `POST /cubes/{cube}/flows/preview` -> validate a flow source without saving.
 pub(crate) async fn preview_flow(
-    _auth: AuthPrincipal,
-    State(_state): State<AppState>,
-    Path(_cube): Path<String>,
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Path(cube): Path<String>,
     Json(body): Json<PreviewBody>,
 ) -> Result<Json<PreviewResult>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     validate_flow(&body.source).map_err(map_flow_error)?;
     Ok(Json(PreviewResult { ok: true }))
 }
@@ -241,11 +262,12 @@ pub(crate) struct RunReport {
 
 /// `POST /cubes/{cube}/flows/{name}/run` -> run a stored flow over uploaded data.
 pub(crate) async fn run_flow_handler(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
     Json(body): Json<RunBody>,
 ) -> Result<Json<RunReport>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     // Resolve the flow source and (if a connection is named) its command spec
     // from one snapshot.
     let (source, command) = {
@@ -288,6 +310,13 @@ pub(crate) async fn run_flow_handler(
     let outcome = run_flow(&source, &cube, rows, &body.params, now).map_err(map_flow_error)?;
 
     let (elements_added, cells_written) = apply_outcome(&state, &cube, &outcome)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::FlowExec,
+        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &name)),
+        true,
+    );
     broadcast(&state, &cube);
     Ok(Json(RunReport {
         rows_read: outcome.report.rows_read,
@@ -317,15 +346,23 @@ pub(crate) struct ImportBody {
 /// members the CSV references and write its values, without writing a flow by
 /// hand. Equivalent to a generated load flow, applied through the same path.
 pub(crate) async fn import_csv(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
     Json(body): Json<ImportBody>,
 ) -> Result<Json<RunReport>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let rows = parse_csv(&body.csv)
         .map_err(|e| ApiError::unprocessable("FLOW_INPUT_ERROR", e.to_string()))?;
     let outcome = plan_import(&rows, &body)?;
     let (elements_added, cells_written) = apply_outcome(&state, &cube, &outcome)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::FlowExec,
+        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, "import")),
+        true,
+    );
     broadcast(&state, &cube);
     Ok(Json(RunReport {
         rows_read: rows.len(),
@@ -441,10 +478,11 @@ fn flow_test_dto(t: &FlowTest) -> FlowTestDto {
 
 /// `GET /cubes/{cube}/flows/tests` -> the cube's flow tests.
 pub(crate) async fn list_flow_tests(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<FlowTestListDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     Ok(Json(FlowTestListDto {
         tests: snap
@@ -458,11 +496,12 @@ pub(crate) async fn list_flow_tests(
 
 /// `POST /cubes/{cube}/flows/tests` -> create or replace a flow test.
 pub(crate) async fn put_flow_test(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
     Json(body): Json<FlowTestDto>,
 ) -> Result<(StatusCode, Json<FlowTestDto>), ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let test = FlowTest {
         name: body.name.clone(),
         flow: body.flow.clone(),
@@ -475,20 +514,35 @@ pub(crate) async fn put_flow_test(
         .engine
         .define_flow_test(&cube, None, test)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &body.name)),
+        true,
+    );
     broadcast(&state, &cube);
     Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// `DELETE /cubes/{cube}/flows/tests/{name}` -> delete a flow test.
 pub(crate) async fn delete_flow_test(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     state
         .engine
         .delete_flow_test(&cube, None, &name)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectDelete,
+        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &name)),
+        true,
+    );
     broadcast(&state, &cube);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -515,10 +569,11 @@ pub(crate) struct TestReportDto {
 
 /// `POST /cubes/{cube}/flows/tests/run` -> run the cube's flow tests.
 pub(crate) async fn run_flow_tests_handler(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<TestReportDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let outcomes = run_flow_tests(snap.model()).map_err(map_flow_test_error)?;
     let all_passed = outcomes.iter().all(|o| o.passed);

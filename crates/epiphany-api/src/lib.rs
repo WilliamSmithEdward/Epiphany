@@ -280,13 +280,18 @@ struct CubeListResponse {
 }
 
 async fn list_cubes(
-    _auth: auth::AuthPrincipal,
+    auth: auth::AuthPrincipal,
     State(state): State<AppState>,
 ) -> Json<CubeListResponse> {
     let cubes = state
         .engine
         .cube_names()
         .into_iter()
+        // A cube is listed only if the caller may at least read it (ADR-0015).
+        .filter(|name| {
+            authz::cube_level(&state, &auth.principal.username, name)
+                >= epiphany_security::AccessLevel::Read
+        })
         .map(|name| {
             let (rank, cell_count, string_cell_count) = state
                 .engine

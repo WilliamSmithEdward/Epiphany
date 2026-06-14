@@ -39,6 +39,40 @@ fn audit_ref(obj: &ObjectRef) -> (String, String) {
     (obj.kind.as_str().to_string(), target)
 }
 
+/// The caller's cube-level access (ADR-0015 decision 2a), for filtering lists
+/// without erroring.
+pub(crate) fn cube_level(state: &AppState, username: &str, cube: &str) -> AccessLevel {
+    state
+        .security
+        .lock()
+        .expect("security mutex")
+        .cube_access(username, cube)
+}
+
+/// Gate a request on cube-level access (ADR-0015 decision 2a: a cube is open
+/// until an admin restricts it). Used for cube, cell, rule, and flow handlers,
+/// which are cube-scoped. On denial this emits `AccessDenied` and returns 403.
+pub(crate) fn require_cube_access(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    cube: &str,
+    needed: AccessLevel,
+) -> Result<(), ApiError> {
+    if cube_level(state, &auth.principal.username, cube) >= needed {
+        Ok(())
+    } else {
+        let obj = ObjectRef::cube(cube);
+        audit(
+            state,
+            &auth.principal.username,
+            AuditAction::AccessDenied,
+            Some(&obj),
+            false,
+        );
+        Err(ApiError::forbidden("you do not have access to this cube"))
+    }
+}
+
 /// Gate a request on object access (ADR-0015). `owner`/`public` are the object's
 /// owner and visibility from the snapshot (pass `None`/`false` for objects that
 /// have neither). On denial this emits an `AccessDenied` record and returns 403.

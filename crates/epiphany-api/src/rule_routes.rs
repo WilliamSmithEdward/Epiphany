@@ -14,8 +14,10 @@ use epiphany_calc::{
 };
 use epiphany_core::{CellTrace, Cube, ExplainDepth, RuleTest, TestCell, TraceKind};
 use epiphany_engine::ReadSnapshot;
+use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
+use crate::authz::{audit, require_cube_access};
 use crate::calc_factory::{compile_source, OwnedOverlay, PinnedRegistry, ValidateError};
 use crate::dto::CoordMap;
 use crate::resolve::resolve;
@@ -79,10 +81,11 @@ pub(crate) struct RulesDto {
 
 /// `GET /cubes/{cube}/rules` -> the cube's rule source.
 pub(crate) async fn get_rules(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<RulesDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     Ok(Json(RulesDto {
         source: snap.rules().source.clone(),
@@ -91,11 +94,12 @@ pub(crate) async fn get_rules(
 
 /// `PUT /cubes/{cube}/rules` -> validate and set the cube's rule source.
 pub(crate) async fn put_rules(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
     Json(body): Json<RulesDto>,
 ) -> Result<Json<RulesDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     // Validate (parse + compile) before persisting; bad rules never get stored.
     compile_source(&state.engine, &cube, &body.source)
         .map_err(|e| map_validate(e, &body.source))?;
@@ -103,20 +107,35 @@ pub(crate) async fn put_rules(
         .engine
         .define_rules(&cube, None, body.source.clone())
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, "rules")),
+        true,
+    );
     broadcast(&state, &cube, outcome.version);
     Ok(Json(body))
 }
 
 /// `DELETE /cubes/{cube}/rules` -> clear the cube's rules.
 pub(crate) async fn delete_rules(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<StatusCode, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let outcome = state
         .engine
         .delete_rules(&cube, None)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectDelete,
+        Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, "rules")),
+        true,
+    );
     broadcast(&state, &cube, outcome.version);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -128,11 +147,12 @@ pub(crate) struct PreviewResult {
 
 /// `POST /cubes/{cube}/rules/preview` -> validate a rule source without saving.
 pub(crate) async fn preview_rules(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
     Json(body): Json<RulesDto>,
 ) -> Result<Json<PreviewResult>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     compile_source(&state.engine, &cube, &body.source)
         .map_err(|e| map_validate(e, &body.source))?;
     Ok(Json(PreviewResult { ok: true }))
@@ -198,6 +218,7 @@ pub(crate) async fn explain_cell(
     selector: SandboxSelector,
     Json(req): Json<ExplainRequest>,
 ) -> Result<Json<TraceDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let resolved = resolve(snap.cube(), &req.coord)?;
     let depth = match req.depth.as_deref() {
@@ -250,10 +271,11 @@ pub(crate) struct FeederReportDto {
 
 /// `GET /cubes/{cube}/feeders/diagnostics` -> auto-inferred feeders + validation.
 pub(crate) async fn feeder_diagnostics(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<FeederReportDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let registry = PinnedRegistry::build(&state.engine);
     let ordinal = registry
         .ordinal_of(&cube)
@@ -328,10 +350,11 @@ fn test_dto(t: &RuleTest) -> RuleTestDto {
 
 /// `GET /cubes/{cube}/rules/tests` -> the cube's rule tests.
 pub(crate) async fn list_rule_tests(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<RuleTestListDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     Ok(Json(RuleTestListDto {
         tests: snap.tests().values().map(test_dto).collect(),
@@ -340,11 +363,12 @@ pub(crate) async fn list_rule_tests(
 
 /// `POST /cubes/{cube}/rules/tests` -> create or replace a rule test.
 pub(crate) async fn put_rule_test(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
     Json(body): Json<RuleTestDto>,
 ) -> Result<(StatusCode, Json<RuleTestDto>), ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let test = RuleTest {
         name: body.name.clone(),
         fixtures: body.fixtures.into_iter().map(to_cell).collect(),
@@ -355,20 +379,35 @@ pub(crate) async fn put_rule_test(
         .engine
         .define_rule_test(&cube, None, test)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, &body.name)),
+        true,
+    );
     broadcast(&state, &cube, outcome.version);
     Ok((StatusCode::CREATED, Json(response)))
 }
 
 /// `DELETE /cubes/{cube}/rules/tests/{name}` -> delete a rule test.
 pub(crate) async fn delete_rule_test(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let outcome = state
         .engine
         .delete_rule_test(&cube, None, &name)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectDelete,
+        Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, &name)),
+        true,
+    );
     broadcast(&state, &cube, outcome.version);
     Ok(StatusCode::NO_CONTENT)
 }
@@ -395,10 +434,11 @@ pub(crate) struct TestReportDto {
 
 /// `POST /cubes/{cube}/rules/tests/run` -> run the cube's rule tests.
 pub(crate) async fn run_rule_tests_handler(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<TestReportDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let outcomes = run_rule_tests(snap.model())
         .map_err(|e| ApiError::unprocessable("RULE_TEST_ERROR", e.to_string()))?;

@@ -15,9 +15,10 @@ use epiphany_core::{
     execute_view, resolve_subset, Cellset, Cube, Sandbox, Subset, SubsetKind, View, Visibility,
 };
 use epiphany_engine::ReadSnapshot;
-use epiphany_security::Principal;
+use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef, Principal};
 
 use crate::auth::AuthPrincipal;
+use crate::authz::{audit, require_cube_access};
 use crate::dto::{
     AxisMemberDto, AxisSpecBody, AxisSpecDto, CellsetCellDto, CellsetDto, ContextEntryDto,
     MdxPreviewRequest, MemberDto, MembersResponse, SubsetBody, SubsetDto, SubsetListResponse,
@@ -158,6 +159,7 @@ pub(crate) async fn create_subset(
         .name
         .clone()
         .ok_or_else(|| ApiError::bad_request("subset 'name' is required"))?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let snap = snapshot(&state, &cube)?;
     ensure_dimension(snap.cube(), &dim)?;
     if snap.subset(&dim, &name).is_some() {
@@ -179,6 +181,13 @@ pub(crate) async fn create_subset(
         .engine
         .define_subset(&cube, None, subset.clone())
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectCreate,
+        Some(&ObjectRef::in_cube(ObjectKind::Subset, &cube, &subset.name)),
+        true,
+    );
     let _ = state.events.send(ChangeEvent::ObjectsChanged {
         cube: cube.clone(),
         version: outcome.version,
@@ -192,6 +201,7 @@ pub(crate) async fn list_subsets(
     State(state): State<AppState>,
     Path((cube, dim)): Path<(String, String)>,
 ) -> Result<Json<SubsetListResponse>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     ensure_dimension(snap.cube(), &dim)?;
     let subsets = snap
@@ -212,6 +222,7 @@ pub(crate) async fn get_subset(
     State(state): State<AppState>,
     Path((cube, dim, name)): Path<(String, String, String)>,
 ) -> Result<Json<SubsetDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let s = visible_subset(&snap, &auth.principal, &dim, &name)?;
     Ok(Json(subset_dto(s)))
@@ -228,6 +239,7 @@ pub(crate) async fn replace_subset(
     let existing = snap
         .subset(&dim, &name)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_SUBSET", "no such subset"))?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     if !can_modify(&auth.principal, &existing.owner) {
         return Err(forbidden());
     }
@@ -238,6 +250,13 @@ pub(crate) async fn replace_subset(
         .engine
         .define_subset(&cube, None, subset.clone())
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&ObjectRef::in_cube(ObjectKind::Subset, &cube, &subset.name)),
+        true,
+    );
     let _ = state.events.send(ChangeEvent::ObjectsChanged {
         cube: cube.clone(),
         version: outcome.version,
@@ -255,6 +274,7 @@ pub(crate) async fn delete_subset(
     let existing = snap
         .subset(&dim, &name)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_SUBSET", "no such subset"))?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     if !can_modify(&auth.principal, &existing.owner) {
         return Err(forbidden());
     }
@@ -262,6 +282,13 @@ pub(crate) async fn delete_subset(
         .engine
         .delete_subset(&cube, None, &dim, &name)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectDelete,
+        Some(&ObjectRef::in_cube(ObjectKind::Subset, &cube, &name)),
+        true,
+    );
     let _ = state.events.send(ChangeEvent::ObjectsChanged {
         cube,
         version: outcome.version,
@@ -275,6 +302,7 @@ pub(crate) async fn subset_members(
     State(state): State<AppState>,
     Path((cube, dim, name)): Path<(String, String, String)>,
 ) -> Result<Json<MembersResponse>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let s = visible_subset(&snap, &auth.principal, &dim, &name)?;
     let indices = resolve_subset(snap.cube(), s, state.evaluator())?;
@@ -283,11 +311,12 @@ pub(crate) async fn subset_members(
 
 /// `POST /cubes/{cube}/dimensions/{dim}/subsets/preview` -> resolve an unsaved subset.
 pub(crate) async fn preview_subset(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, dim)): Path<(String, String)>,
     Json(body): Json<SubsetBody>,
 ) -> Result<Json<MembersResponse>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     ensure_dimension(snap.cube(), &dim)?;
     let subset = subset_from_body("preview".to_string(), dim.clone(), None, &body)?;
@@ -297,11 +326,12 @@ pub(crate) async fn preview_subset(
 
 /// `POST /cubes/{cube}/dimensions/{dim}/mdx/preview` -> resolve an MDX set.
 pub(crate) async fn preview_mdx(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, dim)): Path<(String, String)>,
     Json(body): Json<MdxPreviewRequest>,
 ) -> Result<Json<MembersResponse>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     ensure_dimension(snap.cube(), &dim)?;
     let subset = Subset {
@@ -421,6 +451,7 @@ pub(crate) async fn create_view(
     Path(cube): Path<String>,
     Json(body): Json<ViewBody>,
 ) -> Result<(StatusCode, Json<ViewDto>), ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let name = body
         .name
         .clone()
@@ -443,6 +474,13 @@ pub(crate) async fn create_view(
         .engine
         .define_view(&cube, None, view.clone())
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectCreate,
+        Some(&ObjectRef::in_cube(ObjectKind::View, &cube, &view.name)),
+        true,
+    );
     let _ = state.events.send(ChangeEvent::ObjectsChanged {
         cube: cube.clone(),
         version: outcome.version,
@@ -456,6 +494,7 @@ pub(crate) async fn list_views(
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<ViewListResponse>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let views = snap
         .model()
@@ -473,6 +512,7 @@ pub(crate) async fn get_view(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<Json<ViewDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let v = visible_view(&snap, &auth.principal, &name)?;
     Ok(Json(view_dto(v)))
@@ -489,6 +529,7 @@ pub(crate) async fn replace_view(
     let existing = snap
         .view(&name)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_VIEW", "no such view"))?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     if !can_modify(&auth.principal, &existing.owner) {
         return Err(forbidden());
     }
@@ -497,6 +538,13 @@ pub(crate) async fn replace_view(
         .engine
         .define_view(&cube, None, view.clone())
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&ObjectRef::in_cube(ObjectKind::View, &cube, &view.name)),
+        true,
+    );
     let _ = state.events.send(ChangeEvent::ObjectsChanged {
         cube: cube.clone(),
         version: outcome.version,
@@ -514,6 +562,7 @@ pub(crate) async fn delete_view(
     let existing = snap
         .view(&name)
         .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_VIEW", "no such view"))?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     if !can_modify(&auth.principal, &existing.owner) {
         return Err(forbidden());
     }
@@ -521,6 +570,13 @@ pub(crate) async fn delete_view(
         .engine
         .delete_view(&cube, None, &name)
         .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectDelete,
+        Some(&ObjectRef::in_cube(ObjectKind::View, &cube, &name)),
+        true,
+    );
     let _ = state.events.send(ChangeEvent::ObjectsChanged {
         cube,
         version: outcome.version,
@@ -535,6 +591,7 @@ pub(crate) async fn execute_saved_view(
     Path((cube, name)): Path<(String, String)>,
     selector: SandboxSelector,
 ) -> Result<Json<CellsetDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let view = visible_view(&snap, &auth.principal, &name)?;
     // An active sandbox overlays its what-if leaves, so the cellset recomputes
@@ -562,6 +619,7 @@ pub(crate) async fn execute_adhoc(
     selector: SandboxSelector,
     Json(body): Json<ViewBody>,
 ) -> Result<Json<CellsetDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let view = view_from_body("adhoc".to_string(), cube.clone(), None, &body)?;
     let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;

@@ -295,6 +295,24 @@ impl SecurityStore {
         level
     }
 
+    /// Effective access to a cube for object-level gating (ADR-0015, decision
+    /// 2a). A cube with no object grants is "unmanaged" and open to any
+    /// authenticated user at `Write` (preserving pre-Phase-7 behavior), but never
+    /// `Admin`; once an admin adds any grant the cube is "managed" and access is
+    /// exactly the grants. An unknown user gets `None`.
+    pub fn cube_access(&self, username: &str, cube: &str) -> AccessLevel {
+        let Some(p) = self.principal(username) else {
+            return AccessLevel::None;
+        };
+        if p.is_admin {
+            return AccessLevel::Admin;
+        }
+        match self.object_acls.get(&ObjectRef::cube(cube)) {
+            Some(list) => list.level_for(&p.username, &p.groups),
+            None => AccessLevel::Write,
+        }
+    }
+
     /// The element restriction for a `(cube, dimension, element)`: `None` means no
     /// element ACL applies, so the member is unrestricted (an admin is always
     /// unrestricted); `Some(level)` means the member is restricted to `level`.
@@ -801,6 +819,27 @@ mod tests {
             store.resolve_access("ghost", &view, None, true),
             AccessLevel::None
         );
+    }
+
+    #[test]
+    fn cube_access_is_open_until_restricted() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        // Unmanaged: any authenticated user gets Write, but not Admin.
+        assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::Write);
+        assert_eq!(store.cube_access("admin", "Sales"), AccessLevel::Admin);
+        // Granting one user makes the cube managed: everyone else drops to None.
+        store
+            .set_object_access(
+                ObjectRef::cube("Sales"),
+                &Subject::User("ann".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::Read);
+        assert_eq!(store.cube_access("bob", "Sales"), AccessLevel::None);
+        assert_eq!(store.cube_access("admin", "Sales"), AccessLevel::Admin);
+        // A different, ungranted cube stays open.
+        assert_eq!(store.cube_access("bob", "Other"), AccessLevel::Write);
     }
 
     #[test]

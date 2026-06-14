@@ -9,8 +9,10 @@ use axum::Json;
 
 use epiphany_core::{CellResolver, Cube, Fixed};
 use epiphany_engine::{BatchError, CellWrite};
+use epiphany_security::AccessLevel;
 
 use crate::auth::AuthPrincipal;
+use crate::authz::require_cube_access;
 use crate::dto::{
     BatchWriteRequest, BatchWriteResponse, CellDto, CoordMap, CubeDetailDto, DimensionDto, EdgeDto,
     ElementDto, ReadCellsRequest, ReadCellsResponse, WriteCellRequest,
@@ -22,10 +24,11 @@ use crate::{ApiError, AppState};
 
 /// `GET /api/v1/cubes/{cube}` -> the cube with its dimensions and elements.
 pub(crate) async fn get_cube(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<CubeDetailDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = state
         .engine
         .snapshot(&cube)
@@ -72,6 +75,7 @@ pub(crate) async fn read_cells(
     selector: SandboxSelector,
     Json(req): Json<ReadCellsRequest>,
 ) -> Result<Json<ReadCellsResponse>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = state
         .engine
         .snapshot(&cube)
@@ -106,6 +110,7 @@ pub(crate) async fn write_cell(
     selector: SandboxSelector,
     Json(req): Json<WriteCellRequest>,
 ) -> Result<Json<CellDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let (write, sandbox_name) = {
         let snap = state
             .engine
@@ -156,6 +161,7 @@ pub(crate) async fn batch_write(
     selector: SandboxSelector,
     Json(req): Json<BatchWriteRequest>,
 ) -> Result<Json<BatchWriteResponse>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let (writes, sandbox_name) = {
         let snap = state
             .engine
