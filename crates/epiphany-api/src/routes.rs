@@ -100,64 +100,89 @@ pub(crate) async fn read_cells(
 
 /// `PUT /api/v1/cubes/{cube}/cell` -> write one leaf cell, return its new value.
 pub(crate) async fn write_cell(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
+    selector: SandboxSelector,
     Json(req): Json<WriteCellRequest>,
 ) -> Result<Json<CellDto>, ApiError> {
-    let write = {
+    let (write, sandbox_name) = {
         let snap = state
             .engine
             .snapshot(&cube)
             .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
-        build_write(snap.cube(), &req.coord, &req.value)?
+        let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
+        (build_write(snap.cube(), &req.coord, &req.value)?, sandbox_name)
     };
-    let outcome = state
-        .engine
-        .apply_batch(&cube, None, &[write])
-        .map_err(map_batch_error)?;
+    // A what-if write stages into the sandbox (base untouched); a base write
+    // commits to the cube (ADR-0014).
+    let outcome = match &sandbox_name {
+        Some(name) => state.engine.sandbox_set_cells(&cube, None, name, &[write]),
+        None => state.engine.apply_batch(&cube, None, &[write]),
+    }
+    .map_err(map_batch_error)?;
     let _ = state.events.send(ChangeEvent::CellsChanged {
         cube: cube.clone(),
         version: outcome.version,
         coords: vec![req.coord.clone()],
+        sandbox: sandbox_name.clone(),
+        owner: sandbox_name
+            .as_ref()
+            .map(|_| auth.principal.username.clone()),
     });
-    // Re-read on a fresh snapshot so the caller sees the committed value.
+    // Re-read on a fresh snapshot, overlaying the sandbox so the caller sees the
+    // staged what-if value (flagged overlaid).
     let snap = state
         .engine
         .snapshot(&cube)
         .ok_or_else(ApiError::internal)?;
-    let resolver = state.cells.resolver(&snap);
+    let sandbox = sandbox_name.as_deref().and_then(|n| snap.model().sandbox(n));
+    let resolver = state.cells.resolver_with(&snap, sandbox);
     let resolved = resolve(snap.cube(), &req.coord)?;
-    Ok(Json(read_one(&*resolver, &req.coord, &resolved, false)?))
+    let overlaid = sandbox.is_some_and(|sb| {
+        sb.cells.contains_key(&resolved.indices) || sb.string_cells.contains_key(&resolved.indices)
+    });
+    Ok(Json(read_one(&*resolver, &req.coord, &resolved, overlaid)?))
 }
 
 /// `POST /api/v1/cubes/{cube}/cells/batch` -> apply all writes or none.
 pub(crate) async fn batch_write(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
+    selector: SandboxSelector,
     Json(req): Json<BatchWriteRequest>,
 ) -> Result<Json<BatchWriteResponse>, ApiError> {
-    let writes = {
+    let (writes, sandbox_name) = {
         let snap = state
             .engine
             .snapshot(&cube)
             .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
+        let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
         let cube_ref = snap.cube();
-        req.writes
+        let writes = req
+            .writes
             .iter()
             .map(|item| build_write(cube_ref, &item.coord, &item.value))
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, _>>()?;
+        (writes, sandbox_name)
     };
-    let outcome = state
-        .engine
-        .apply_batch(&cube, req.base_version, &writes)
-        .map_err(map_batch_error)?;
+    // A what-if batch stages into the sandbox (base untouched); the base-version
+    // check applies only to base commits.
+    let outcome = match &sandbox_name {
+        Some(name) => state.engine.sandbox_set_cells(&cube, None, name, &writes),
+        None => state.engine.apply_batch(&cube, req.base_version, &writes),
+    }
+    .map_err(map_batch_error)?;
     let coords = req.writes.iter().map(|w| w.coord.clone()).collect();
     let _ = state.events.send(ChangeEvent::CellsChanged {
         cube: cube.clone(),
         version: outcome.version,
         coords,
+        sandbox: sandbox_name.clone(),
+        owner: sandbox_name
+            .as_ref()
+            .map(|_| auth.principal.username.clone()),
     });
     Ok(Json(BatchWriteResponse {
         applied: writes.len(),

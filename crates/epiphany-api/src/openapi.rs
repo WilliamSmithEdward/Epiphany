@@ -31,7 +31,7 @@ fn document() -> Value {
         "info": {
             "title": "Epiphany API",
             "version": env!("CARGO_PKG_VERSION"),
-            "description": "In-memory multidimensional OLAP server. Clean modern JSON (not OData). Numeric cell values are decimal STRINGS (never JSON numbers) for exactness (ADR-0008). All paths except /healthz, /api/v1/openapi.json and /api/v1/auth/login require a session (bearer token or session cookie)."
+            "description": "In-memory multidimensional OLAP server. Clean modern JSON (not OData). Numeric cell values are decimal STRINGS (never JSON numbers) for exactness (ADR-0008). All paths except /healthz, /api/v1/openapi.json and /api/v1/auth/login require a session (bearer token or session cookie). The cell read, view-execute, cellset, explain, and write endpoints accept an optional X-Epiphany-Sandbox header naming a what-if sandbox to overlay (ADR-0014); absent it, they operate on base data."
         },
         "servers": [{ "url": "/" }],
         "paths": {

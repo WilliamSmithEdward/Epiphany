@@ -430,3 +430,94 @@ async fn sandbox_read_recomputes_what_if_and_marks_overlaid() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[tokio::test]
+async fn sandbox_write_isolates_base_then_commit_merges() {
+    let dir = scratch("write-isolate");
+    let (app, _engine) = router_calc(&dir);
+    let ann = login(&app, "ann").await;
+
+    let cell = |v: &str| json!({ "coord": { "Region": "North", "Measure": "Sales" }, "value": v });
+    let read = json!({ "coords": [{ "Region": "North", "Measure": "Sales" }] });
+
+    // Base write North/Sales = 100 (no sandbox).
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/cell",
+        &ann,
+        Some(cell("100")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Create a sandbox and write North/Sales = 999 into it (header).
+    call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/sandboxes",
+        &ann,
+        Some(json!({ "name": "wi" })),
+    )
+    .await;
+    let (s, w) = call_h(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/cell",
+        &ann,
+        Some(cell("999")),
+        ("x-epiphany-sandbox", "wi"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{w}");
+    assert_eq!(w["value"], "999");
+    assert_eq!(w["overlaid"], true);
+
+    // Base read is unchanged; the sandbox read sees the what-if value.
+    let (_, base) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/cells/read",
+        &ann,
+        Some(read.clone()),
+    )
+    .await;
+    assert_eq!(base["cells"][0]["value"], "100");
+    assert_eq!(base["cells"][0]["overlaid"], false);
+    let (_, sb) = call_h(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/cells/read",
+        &ann,
+        Some(read.clone()),
+        ("x-epiphany-sandbox", "wi"),
+    )
+    .await;
+    assert_eq!(sb["cells"][0]["value"], "999");
+    assert_eq!(sb["cells"][0]["overlaid"], true);
+
+    // Commit merges into base; the sandbox stays but is now empty.
+    let (s, c) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/sandboxes/wi/commit",
+        &ann,
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{c}");
+    assert_eq!(c["committed"], 1);
+    let (_, after) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/cells/read",
+        &ann,
+        Some(read),
+    )
+    .await;
+    assert_eq!(after["cells"][0]["value"], "999");
+    let (_, meta) = call(&app, "GET", "/api/v1/cubes/Sales/sandboxes/wi", &ann, None).await;
+    assert_eq!(meta["cell_count"], 0);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
