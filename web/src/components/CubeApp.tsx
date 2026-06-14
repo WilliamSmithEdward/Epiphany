@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react'
 import { connectWs, listCubes, logout, type CubeSummary } from '../api/client'
 import PivotGrid from './PivotGrid'
+import ViewWorkspace from './ViewWorkspace'
+
+type Mode = 'grid' | 'views'
 
 export default function CubeApp({
   username,
@@ -14,6 +17,7 @@ export default function CubeApp({
   const [error, setError] = useState<string | null>(null)
   const [live, setLive] = useState(false)
   const [reload, setReload] = useState(0)
+  const [mode, setMode] = useState<Mode>('grid')
 
   useEffect(() => {
     listCubes()
@@ -28,7 +32,9 @@ export default function CubeApp({
 
   useEffect(() => {
     const socket = connectWs((event) => {
-      if (event.type === 'cells_changed') setReload((n) => n + 1)
+      if (event.type === 'cells_changed' || event.type === 'objects_changed') {
+        setReload((n) => n + 1)
+      }
     })
     socket.onopen = () => setLive(true)
     socket.onclose = () => setLive(false)
@@ -71,7 +77,25 @@ export default function CubeApp({
         </nav>
         <main className="content">
           {error ? <p className="error">{error}</p> : null}
-          {selected ? <PivotGrid cube={selected} reloadSignal={reload} /> : <p>No cube selected.</p>}
+          {selected ? (
+            <>
+              <div className="modes">
+                <button className={mode === 'grid' ? 'active' : ''} onClick={() => setMode('grid')}>
+                  Grid
+                </button>
+                <button className={mode === 'views' ? 'active' : ''} onClick={() => setMode('views')}>
+                  Views
+                </button>
+              </div>
+              {mode === 'grid' ? (
+                <PivotGrid cube={selected} reloadSignal={reload} />
+              ) : (
+                <ViewWorkspace cube={selected} reloadSignal={reload} />
+              )}
+            </>
+          ) : (
+            <p>No cube selected.</p>
+          )}
         </main>
       </div>
     </div>
