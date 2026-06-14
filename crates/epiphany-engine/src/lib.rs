@@ -19,7 +19,8 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use epiphany_core::{
-    CellResolver, Cube, Fixed, Model, ModelError, QueryError, RuleSet, RuleTest, Subset, View,
+    CellResolver, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest, Model, ModelError,
+    QueryError, RuleSet, RuleTest, Subset, View,
 };
 use epiphany_determinism::IdGen;
 use epiphany_persist::{PersistError, Store};
@@ -379,6 +380,80 @@ impl Engine {
         })
     }
 
+    /// Define (create or replace) a flow definition and publish a new version.
+    /// The source is stored verbatim; the caller validates it (via the flow
+    /// layer) first.
+    pub fn define_flow(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        flow: Flow,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| store.define_flow(flow))
+    }
+
+    /// Delete a flow by name and publish a new version. A missing flow returns
+    /// [`BatchError::Invalid`].
+    pub fn delete_flow(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            if store.delete_flow(name)? {
+                Ok(())
+            } else {
+                Err(PersistError::Query(QueryError::Calc {
+                    message: format!("no flow '{name}'"),
+                }))
+            }
+        })
+    }
+
+    /// Define (create or replace) a flow unit test and publish a new version.
+    pub fn define_flow_test(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        test: FlowTest,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| store.define_flow_test(test))
+    }
+
+    /// Delete a flow test by name and publish a new version. A missing test
+    /// returns [`BatchError::Invalid`].
+    pub fn delete_flow_test(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            if store.delete_flow_test(name)? {
+                Ok(())
+            } else {
+                Err(PersistError::Query(QueryError::Calc {
+                    message: format!("no flow test '{name}'"),
+                }))
+            }
+        })
+    }
+
+    /// Append dimension elements and consolidation edges (append-only,
+    /// idempotent) and publish a new version, returning the commit outcome and
+    /// the number of newly-created elements. This is the durable side of a flow's
+    /// "build dimension elements" stage.
+    pub fn define_elements(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        elements: &[ElementSpec],
+        edges: &[EdgeSpec],
+    ) -> Result<(CommitOutcome, usize), BatchError> {
+        self.define_with(cube, base, |store| store.extend_schema(elements, edges))
+    }
+
     /// Shared commit path for definition changes: take the writer lock, check the
     /// optional base version, run `op` against the store (which validates and
     /// checkpoints), then publish the new immutable model version.
@@ -388,6 +463,18 @@ impl Engine {
         base: Option<Version>,
         op: impl FnOnce(&mut Store) -> Result<(), PersistError>,
     ) -> Result<CommitOutcome, BatchError> {
+        self.define_with(cube, base, op)
+            .map(|(outcome, ())| outcome)
+    }
+
+    /// Like [`define`](Self::define) but threads a value back from `op` (e.g. a
+    /// count of changes), alongside the commit outcome.
+    fn define_with<T>(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        op: impl FnOnce(&mut Store) -> Result<T, PersistError>,
+    ) -> Result<(CommitOutcome, T), BatchError> {
         let state = self
             .cubes
             .get(cube)
@@ -403,11 +490,11 @@ impl Engine {
             }
         }
 
-        match op(&mut writer.store) {
-            Ok(()) => {}
+        let value = match op(&mut writer.store) {
+            Ok(value) => value,
             Err(PersistError::Query(e)) => return Err(BatchError::Invalid(e)),
             Err(e) => return Err(BatchError::Persist(e)),
-        }
+        };
 
         let version = self.ids.next_id();
         state.published.store(Arc::new(Published {
@@ -415,7 +502,7 @@ impl Engine {
             model: writer.store.model().clone(),
         }));
         writer.version = version;
-        Ok(CommitOutcome { version })
+        Ok((CommitOutcome { version }, value))
     }
 
     /// Force a checkpoint (full-persist) of a cube.
@@ -471,7 +558,7 @@ impl CellResolver for StoredResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_core::{Dimension, Fixed};
+    use epiphany_core::{Dimension, ElementKind, Fixed};
 
     /// A Region(3 leaves under Total) x Period(2 leaves under Total) cube.
     struct Fixture {
@@ -551,6 +638,65 @@ mod tests {
             Fixed::ZERO
         );
         assert_eq!(snap.cube().cell_count(), 1);
+    }
+
+    #[test]
+    fn define_elements_adds_members_and_rolls_up() {
+        let f = fixture("define-elements");
+        // Seed R0/P0 = 10.
+        f.engine
+            .apply_batch("Sales", Some(0), &[leaf(vec![f.r[0], f.p[0]], 10)])
+            .unwrap();
+
+        // A flow's Schema stage: append a new leaf R3 under Total.
+        let (outcome, added) = f
+            .engine
+            .define_elements(
+                "Sales",
+                None,
+                &[ElementSpec {
+                    dimension: "R".into(),
+                    name: "R3".into(),
+                    kind: ElementKind::Leaf,
+                }],
+                &[EdgeSpec {
+                    dimension: "R".into(),
+                    parent: "Total".into(),
+                    child: "R3".into(),
+                    weight: 1,
+                }],
+            )
+            .unwrap();
+        assert_eq!(added, 1);
+
+        // The new element is visible in a fresh snapshot and writable.
+        let snap = f.engine.snapshot("Sales").unwrap();
+        let r3 = snap.cube().dimension(0).resolve("R3").unwrap();
+        f.engine
+            .apply_batch("Sales", Some(outcome.version), &[leaf(vec![r3, f.p[0]], 5)])
+            .unwrap();
+
+        // Total over P0 now includes R0(10) + R3(5) = 15; the seeded cell survived.
+        let snap = f.engine.snapshot("Sales").unwrap();
+        assert_eq!(
+            snap.cube().get(&[f.region_total, f.p[0]]).unwrap(),
+            Fixed::from(15)
+        );
+        // Re-running the same schema change is idempotent (adds nothing).
+        let (_, added_again) = f
+            .engine
+            .define_elements(
+                "Sales",
+                None,
+                &[ElementSpec {
+                    dimension: "R".into(),
+                    name: "R3".into(),
+                    kind: ElementKind::Leaf,
+                }],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(added_again, 0);
     }
 
     #[test]

@@ -6,17 +6,19 @@
 //! Recovery loads the snapshot, then replays the WAL tail. A checkpoint (the
 //! explicit full-persist command) rewrites the snapshot and clears the WAL.
 //!
-//! The store owns the cube and only mutates it through `set_leaf`, so the
-//! dimension structure never changes underneath the WAL: the element indices a
-//! record names stay valid against the snapshot they replay onto.
+//! The store mutates the cube's cells through `set_leaf`, and grows its
+//! dimensions only by appending elements (`extend_schema`, used by flows), which
+//! is checkpointed immediately. Because growth is append-only, the element
+//! indices a WAL record names stay valid against the snapshot they replay onto;
+//! elements are never removed or reordered.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use epiphany_core::{
-    validate_subset, validate_view, Cube, Fixed, LoadError, Model, ModelError, QueryError, RuleSet,
-    RuleTest, SaveError, Subset, View,
+    validate_subset, validate_view, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest, LoadError,
+    Model, ModelError, QueryError, RuleSet, RuleTest, SaveError, Subset, View,
 };
 
 use crate::wal::{self, Record};
@@ -387,6 +389,60 @@ impl Store {
             self.checkpoint()?;
         }
         Ok(removed)
+    }
+
+    /// Define (create or replace) a flow definition, then checkpoint. The source
+    /// is stored verbatim; its validity is checked by the flow layer at the API
+    /// boundary (the store stays flow-free).
+    pub fn define_flow(&mut self, flow: Flow) -> Result<(), PersistError> {
+        self.model.flows.insert(flow.name.clone(), flow);
+        self.checkpoint()
+    }
+
+    /// Delete a flow by name. Returns whether one was removed; checkpoints only
+    /// when something changed.
+    pub fn delete_flow(&mut self, name: &str) -> Result<bool, PersistError> {
+        let removed = self.model.flows.remove(name).is_some();
+        if removed {
+            self.checkpoint()?;
+        }
+        Ok(removed)
+    }
+
+    /// Define (create or replace) a flow unit test, then checkpoint.
+    pub fn define_flow_test(&mut self, test: FlowTest) -> Result<(), PersistError> {
+        self.model.flow_tests.insert(test.name.clone(), test);
+        self.checkpoint()
+    }
+
+    /// Delete a flow test by name. Returns whether one was removed; checkpoints
+    /// only when something changed.
+    pub fn delete_flow_test(&mut self, name: &str) -> Result<bool, PersistError> {
+        let removed = self.model.flow_tests.remove(name).is_some();
+        if removed {
+            self.checkpoint()?;
+        }
+        Ok(removed)
+    }
+
+    /// Append dimension elements and consolidation edges (append-only,
+    /// idempotent), then checkpoint. Returns the number of newly-created
+    /// elements. This is the durable side of a flow's "build dimension elements"
+    /// stage: structural validation runs first, and an invalid change leaves the
+    /// model and snapshot untouched. Existing cells are preserved (the cube
+    /// re-packs internally when a dimension's bit-width grows).
+    pub fn extend_schema(
+        &mut self,
+        elements: &[ElementSpec],
+        edges: &[EdgeSpec],
+    ) -> Result<usize, PersistError> {
+        // Apply to a clone first so a rejected change leaves the live model
+        // untouched (the same all-or-nothing contract as batch cell writes).
+        let mut next = self.model.cube.clone();
+        let added = next.extend_schema(elements, edges)?;
+        self.model.cube = next;
+        self.checkpoint()?;
+        Ok(added)
     }
 
     /// Flush and fsync the WAL. Useful when [`set_sync`](Self::set_sync) is off.

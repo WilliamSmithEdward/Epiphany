@@ -18,7 +18,7 @@ mod query;
 mod text;
 mod value;
 
-pub use cube::{Coord, Cube};
+pub use cube::{Coord, Cube, EdgeSpec, ElementSpec};
 pub use dimension::{AttributeDef, AttributeKind, AttributeValue, Dimension, Element, ElementKind};
 pub use error::ModelError;
 pub use query::{

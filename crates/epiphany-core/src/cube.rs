@@ -23,7 +23,7 @@ fn bits_for(len: u32) -> u32 {
 /// Each dimension occupies a bit field, sized to its element count, at a fixed
 /// offset. When the total width fits in 64 bits the cube packs each coordinate
 /// into a single `u64` key; otherwise it falls back to a boxed slice.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Layout {
     offsets: Vec<u32>,
     masks: Vec<u64>,
@@ -260,6 +260,33 @@ fn cell_weight(per_dim: &[HashMap<u32, i64>], component: impl Fn(usize) -> u32) 
     Some(weight)
 }
 
+/// A request to add one element to a named dimension. Append-only and
+/// idempotent by name: re-adding an existing element is a no-op (its kind must
+/// match). Used by flows to build dimension members at run time.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ElementSpec {
+    /// The dimension to add the element to.
+    pub dimension: String,
+    /// The element name.
+    pub name: String,
+    /// The element kind (numeric leaf, string leaf, or consolidated).
+    pub kind: ElementKind,
+}
+
+/// A request to add one weighted consolidation edge to a named dimension.
+/// Idempotent: an edge that already exists is a no-op.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EdgeSpec {
+    /// The dimension the edge belongs to.
+    pub dimension: String,
+    /// The consolidated parent element name.
+    pub parent: String,
+    /// The child element name.
+    pub child: String,
+    /// The consolidation weight.
+    pub weight: i64,
+}
+
 impl Cube {
     /// Create a cube from an ordered, non-empty list of dimensions.
     pub fn new(name: impl Into<String>, dimensions: Vec<Dimension>) -> Result<Self, ModelError> {
@@ -297,6 +324,117 @@ impl Cube {
     /// All dimensions, in order.
     pub fn dimensions(&self) -> &[Dimension] {
         &self.dimensions
+    }
+
+    /// Append elements and consolidation edges to existing dimensions, returning
+    /// the number of newly-created elements.
+    ///
+    /// Append-only and idempotent: re-adding an element or edge that already
+    /// exists is a no-op, so a flow can run repeatedly. Existing element indices
+    /// are preserved (new elements are appended), so stored cells stay valid; the
+    /// coordinate packing is rebuilt only if a dimension's bit-width grew. This is
+    /// the runtime "build dimension elements" capability flows use; it never
+    /// removes or reorders elements (which would invalidate stored coordinates).
+    pub fn extend_schema(
+        &mut self,
+        elements: &[ElementSpec],
+        edges: &[EdgeSpec],
+    ) -> Result<usize, ModelError> {
+        let mut added = 0;
+        for spec in elements {
+            let d = self.dimension_index(&spec.dimension)?;
+            let dim = &mut self.dimensions[d];
+            match dim.index_of(&spec.name) {
+                Some(existing) => {
+                    if dim.element(existing)?.kind != spec.kind {
+                        return Err(ModelError::ElementKindConflict {
+                            dimension: spec.dimension.clone(),
+                            element: spec.name.clone(),
+                        });
+                    }
+                }
+                None => {
+                    match spec.kind {
+                        ElementKind::Leaf => dim.add_leaf(spec.name.clone()),
+                        ElementKind::String => dim.add_string(spec.name.clone()),
+                        ElementKind::Consolidated => dim.add_consolidated(spec.name.clone()),
+                    };
+                    added += 1;
+                }
+            }
+        }
+        for edge in edges {
+            let d = self.dimension_index(&edge.dimension)?;
+            let dim = &mut self.dimensions[d];
+            let parent = dim
+                .index_of(&edge.parent)
+                .ok_or_else(|| ModelError::ElementNotFound {
+                    dimension: edge.dimension.clone(),
+                    element: edge.parent.clone(),
+                })?;
+            let child = dim
+                .index_of(&edge.child)
+                .ok_or_else(|| ModelError::ElementNotFound {
+                    dimension: edge.dimension.clone(),
+                    element: edge.child.clone(),
+                })?;
+            // Idempotent: skip an edge that already exists (re-adding would
+            // double-count in consolidation).
+            if dim
+                .edges()
+                .iter()
+                .any(|&(p, c, _)| p == parent && c == child)
+            {
+                continue;
+            }
+            dim.add_child(parent, child, edge.weight)?;
+        }
+        self.relayout();
+        Ok(added)
+    }
+
+    /// The position of a dimension by name.
+    fn dimension_index(&self, name: &str) -> Result<usize, ModelError> {
+        self.dimensions
+            .iter()
+            .position(|d| d.name() == name)
+            .ok_or_else(|| ModelError::UnknownDimension {
+                cube: self.name.clone(),
+                dimension: name.to_string(),
+            })
+    }
+
+    /// Recompute the coordinate packing and re-pack all cells if a dimension's
+    /// bit-width grew (so existing packed keys would otherwise be misaligned).
+    /// A no-op when the layout is unchanged (the common case for appends within
+    /// the same bit-width).
+    fn relayout(&mut self) {
+        let new_layout = Layout::new(&self.dimensions);
+        if new_layout == self.layout {
+            return;
+        }
+        let rank = self.rank();
+        let cells: Vec<(Vec<u32>, Fixed)> = self
+            .cells
+            .entries(&self.layout, rank)
+            .map(|(coord, &value)| (coord, value))
+            .collect();
+        let strings: Vec<(Vec<u32>, u32)> = self
+            .string_cells
+            .entries(&self.layout, rank)
+            .map(|(coord, &id)| (coord, id))
+            .collect();
+        let mut new_cells = CellStore::new(new_layout.narrow);
+        for (coord, value) in cells {
+            new_cells.put(&new_layout, &coord, value);
+        }
+        let mut new_strings = CellStore::new(new_layout.narrow);
+        for (coord, id) in strings {
+            new_strings.put(&new_layout, &coord, id);
+        }
+        self.cells = new_cells;
+        self.string_cells = new_strings;
+        self.layout = new_layout;
     }
 
     /// Number of populated numeric leaf cells.
@@ -656,6 +794,114 @@ mod tests {
         assert_eq!(cube.get(&[r[0], period_total]).unwrap(), fix(40));
         assert_eq!(cube.get(&[region_total, period_total]).unwrap(), fix(100));
         assert_eq!(cube.get(&[r[0], p[0]]).unwrap(), fix(10));
+    }
+
+    #[test]
+    fn extend_schema_grows_dimension_and_repacks_cells() {
+        // Dim A: 2 leaves (1 bit). Dim B: 2 leaves, sitting at bit offset 1.
+        let mut a = Dimension::new("A");
+        let a0 = a.add_leaf("a0");
+        a.add_leaf("a1");
+        let mut b = Dimension::new("B");
+        let b0 = b.add_leaf("b0");
+        b.add_leaf("b1");
+        let mut cube = Cube::new("C", vec![a, b]).unwrap();
+        cube.set_leaf(&[a0, b0], fix(42)).unwrap();
+
+        // Add 3 leaves to A -> 5 elements -> 3 bits, shifting B's bit offset and
+        // forcing a re-pack of the existing cell's key.
+        let specs: Vec<ElementSpec> = (0..3)
+            .map(|i| ElementSpec {
+                dimension: "A".into(),
+                name: format!("a{}", i + 2),
+                kind: ElementKind::Leaf,
+            })
+            .collect();
+        assert_eq!(cube.extend_schema(&specs, &[]).unwrap(), 3);
+
+        // The pre-existing cell survived the re-pack.
+        assert_eq!(cube.get_leaf(&[a0, b0]).unwrap(), fix(42));
+        // A newly-added element is addressable and writable.
+        let a4 = cube.dimension(0).resolve("a4").unwrap();
+        cube.set_leaf(&[a4, b0], fix(7)).unwrap();
+        assert_eq!(cube.get_leaf(&[a4, b0]).unwrap(), fix(7));
+        assert_eq!(cube.get_leaf(&[a0, b0]).unwrap(), fix(42));
+
+        // Idempotent: re-adding the same elements creates nothing new.
+        assert_eq!(cube.extend_schema(&specs, &[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn extend_schema_adds_consolidation_and_is_edge_idempotent() {
+        let mut region = Dimension::new("Region");
+        region.add_leaf("North");
+        let mut cube = Cube::new("Sales", vec![region]).unwrap();
+        let north = cube.dimension(0).resolve("North").unwrap();
+        cube.set_leaf(&[north], fix(100)).unwrap();
+
+        let els = vec![
+            ElementSpec {
+                dimension: "Region".into(),
+                name: "South".into(),
+                kind: ElementKind::Leaf,
+            },
+            ElementSpec {
+                dimension: "Region".into(),
+                name: "Total".into(),
+                kind: ElementKind::Consolidated,
+            },
+        ];
+        let edges = vec![
+            EdgeSpec {
+                dimension: "Region".into(),
+                parent: "Total".into(),
+                child: "North".into(),
+                weight: 1,
+            },
+            EdgeSpec {
+                dimension: "Region".into(),
+                parent: "Total".into(),
+                child: "South".into(),
+                weight: 1,
+            },
+        ];
+        cube.extend_schema(&els, &edges).unwrap();
+        let south = cube.dimension(0).resolve("South").unwrap();
+        let total = cube.dimension(0).resolve("Total").unwrap();
+        cube.set_leaf(&[south], fix(50)).unwrap();
+        assert_eq!(cube.get(&[total]).unwrap(), fix(150));
+
+        // Re-applying the same elements and edges must not double-count.
+        cube.extend_schema(&els, &edges).unwrap();
+        assert_eq!(cube.get(&[total]).unwrap(), fix(150));
+    }
+
+    #[test]
+    fn extend_schema_rejects_kind_conflict_and_unknown_dimension() {
+        let mut region = Dimension::new("Region");
+        region.add_leaf("North");
+        let mut cube = Cube::new("Sales", vec![region]).unwrap();
+        let conflict = cube.extend_schema(
+            &[ElementSpec {
+                dimension: "Region".into(),
+                name: "North".into(),
+                kind: ElementKind::Consolidated,
+            }],
+            &[],
+        );
+        assert!(matches!(
+            conflict,
+            Err(ModelError::ElementKindConflict { .. })
+        ));
+        let bad = cube.extend_schema(
+            &[ElementSpec {
+                dimension: "Nope".into(),
+                name: "X".into(),
+                kind: ElementKind::Leaf,
+            }],
+            &[],
+        );
+        assert!(matches!(bad, Err(ModelError::UnknownDimension { .. })));
     }
 
     #[test]

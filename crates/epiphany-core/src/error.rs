@@ -47,6 +47,10 @@ pub enum ModelError {
     CellTypeMismatch { dimension: String, element: String },
     /// Attempted to write a string value to a coordinate with no string element.
     StringCellRequiresStringElement { cube: String },
+    /// A schema change named a dimension the cube does not have.
+    UnknownDimension { cube: String, dimension: String },
+    /// A schema change re-declared an existing element with a different kind.
+    ElementKindConflict { dimension: String, element: String },
 }
 
 impl fmt::Display for ModelError {
@@ -111,6 +115,14 @@ impl fmt::Display for ModelError {
             ModelError::StringCellRequiresStringElement { cube } => write!(
                 f,
                 "a string cell in cube '{cube}' must address a string element"
+            ),
+            ModelError::UnknownDimension { cube, dimension } => write!(
+                f,
+                "cube '{cube}' has no dimension '{dimension}'"
+            ),
+            ModelError::ElementKindConflict { dimension, element } => write!(
+                f,
+                "element '{element}' already exists in dimension '{dimension}' with a different kind"
             ),
         }
     }
