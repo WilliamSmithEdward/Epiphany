@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::query::{
     AxisSpec, CommandSpec, Connection, ConnectionSpec, Flow, FlowTest, Model, RuleSet, RuleTest,
-    SourceFormat, Subset, SubsetKind, TestCell, View, Visibility,
+    Sandbox, SourceFormat, Subset, SubsetKind, TestCell, View, Visibility,
 };
 use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
@@ -137,6 +137,10 @@ struct ModelDoc {
     // Connections are optional and skipped when empty (backward-compatible).
     #[serde(default, rename = "connection", skip_serializing_if = "Vec::is_empty")]
     connections: Vec<ConnectionDoc>,
+    // Sandboxes are optional and skipped when empty, so a model without any
+    // serializes byte-identically to the pre-6A format.
+    #[serde(default, rename = "sandbox", skip_serializing_if = "Vec::is_empty")]
+    sandboxes: Vec<SandboxDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -608,6 +612,86 @@ fn build_connection(doc: &ConnectionDoc) -> Connection {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct SandboxCellDoc {
+    coord: Vec<String>,
+    value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SandboxDoc {
+    name: String,
+    owner: String,
+    created: u64,
+    updated: u64,
+    #[serde(default, rename = "cell", skip_serializing_if = "Vec::is_empty")]
+    cells: Vec<SandboxCellDoc>,
+    #[serde(default, rename = "string_cell", skip_serializing_if = "Vec::is_empty")]
+    string_cells: Vec<SandboxCellDoc>,
+}
+
+fn sandbox_doc(cube: &Cube, sb: &Sandbox) -> SandboxDoc {
+    let coord_names = |coord: &[u32]| -> Vec<String> {
+        coord
+            .iter()
+            .enumerate()
+            .map(|(d, &idx)| {
+                cube.dimension(d)
+                    .element(idx)
+                    .expect("valid index")
+                    .name
+                    .clone()
+            })
+            .collect()
+    };
+    // The BTreeMaps iterate sorted by coordinate, so output is canonical.
+    let cells = sb
+        .cells
+        .iter()
+        .map(|(coord, value)| SandboxCellDoc {
+            coord: coord_names(coord),
+            value: value.to_string(),
+        })
+        .collect();
+    let string_cells = sb
+        .string_cells
+        .iter()
+        .map(|(coord, value)| SandboxCellDoc {
+            coord: coord_names(coord),
+            value: value.clone(),
+        })
+        .collect();
+    SandboxDoc {
+        name: sb.name.clone(),
+        owner: sb.owner.clone(),
+        created: sb.created,
+        updated: sb.updated,
+        cells,
+        string_cells,
+    }
+}
+
+fn build_sandbox(cube: &Cube, cube_name: &str, doc: &SandboxDoc) -> Result<Sandbox, LoadError> {
+    let mut cells = BTreeMap::new();
+    for c in &doc.cells {
+        let coord = resolve_coord(cube, cube_name, &c.coord)?;
+        cells.insert(coord, Fixed::from_str(&c.value)?);
+    }
+    let mut string_cells = BTreeMap::new();
+    for c in &doc.string_cells {
+        let coord = resolve_coord(cube, cube_name, &c.coord)?;
+        string_cells.insert(coord, c.value.clone());
+    }
+    Ok(Sandbox {
+        name: doc.name.clone(),
+        owner: doc.owner.clone(),
+        created: doc.created,
+        updated: doc.updated,
+        cells,
+        string_cells,
+    })
+}
+
 impl From<ElementKind> for KindDoc {
     fn from(kind: ElementKind) -> Self {
         match kind {
@@ -776,6 +860,7 @@ fn build_model_doc(
     flows: Vec<FlowDoc>,
     flow_tests: Vec<FlowTestDoc>,
     connections: Vec<ConnectionDoc>,
+    sandboxes: Vec<SandboxDoc>,
 ) -> ModelDoc {
     let dimensions: Vec<DimDoc> = cube.dimensions().iter().map(dim_doc).collect();
 
@@ -838,6 +923,7 @@ fn build_model_doc(
         flows,
         flow_tests,
         connections,
+        sandboxes,
     }
 }
 
@@ -890,6 +976,11 @@ impl Model {
         let flow_tests: Vec<FlowTestDoc> = self.flow_tests.values().map(flow_test_doc).collect();
         let connections: Vec<ConnectionDoc> =
             self.connections.values().map(connection_doc).collect();
+        let sandboxes: Vec<SandboxDoc> = self
+            .sandboxes
+            .values()
+            .map(|sb| sandbox_doc(&self.cube, sb))
+            .collect();
         let doc = build_model_doc(
             &self.cube,
             subsets,
@@ -899,6 +990,7 @@ impl Model {
             flows,
             flow_tests,
             connections,
+            sandboxes,
         );
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
@@ -944,6 +1036,10 @@ impl Model {
         for cd in &doc.connections {
             connections.insert(cd.name.clone(), build_connection(cd));
         }
+        let mut sandboxes = BTreeMap::new();
+        for sd in &doc.sandboxes {
+            sandboxes.insert(sd.name.clone(), build_sandbox(&cube, &doc.cube.name, sd)?);
+        }
         Ok(Model {
             cube,
             subsets,
@@ -953,6 +1049,7 @@ impl Model {
             flows,
             flow_tests,
             connections,
+            sandboxes,
         })
     }
 
@@ -977,6 +1074,7 @@ impl Cube {
             Vec::new(),
             Vec::new(),
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1327,6 +1425,43 @@ mod tests {
         assert_eq!(ft.params["scale"], "1000");
         assert_eq!(ft.params.len(), 2);
         assert_eq!(ft.assertions[0].value, "100");
+    }
+
+    #[test]
+    fn model_round_trips_sandboxes() {
+        use crate::Sandbox;
+
+        let mut model = Model::new(sample_cube());
+        let north = model.cube.dimension(0).resolve("North").unwrap();
+        let south = model.cube.dimension(0).resolve("South").unwrap();
+        let actual = model.cube.dimension(1).resolve("Actual").unwrap();
+        let budget = model.cube.dimension(1).resolve("Budget").unwrap();
+
+        let mut sb = Sandbox::new("whatif", "ann", 7);
+        sb.updated = 9;
+        // Mixed numeric overrides plus a string override (sample_cube has no
+        // string element, so reuse a numeric coord's name space for the test).
+        sb.cells
+            .insert(vec![north, actual], Fixed::from_str("123.5").unwrap());
+        sb.cells.insert(vec![south, budget], Fixed::from(40));
+        sb.string_cells
+            .insert(vec![north, budget], "needs review".to_string());
+        model.sandboxes.insert("whatif".to_string(), sb);
+
+        let text1 = model.to_model_text().unwrap();
+        let model2 = Model::from_model_text(&text1).unwrap();
+        let text2 = model2.to_model_text().unwrap();
+        assert_eq!(text1, text2, "sandboxes must round-trip byte-identically");
+
+        let sb2 = model2.sandbox("whatif").unwrap();
+        assert_eq!(sb2.owner, "ann");
+        assert_eq!(sb2.created, 7);
+        assert_eq!(sb2.updated, 9);
+        assert_eq!(sb2.cells.len(), 2);
+        assert_eq!(sb2.cell(&[north, actual]), Some(Fixed::from_str("123.5").unwrap()));
+        assert_eq!(sb2.cell(&[south, budget]), Some(Fixed::from(40)));
+        assert_eq!(sb2.string_cell(&[north, budget]), Some("needs review"));
+        assert_eq!(sb2.len(), 3);
     }
 
     #[test]

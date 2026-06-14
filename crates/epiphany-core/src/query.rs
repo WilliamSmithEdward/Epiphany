@@ -773,8 +773,64 @@ pub struct Connection {
     pub spec: ConnectionSpec,
 }
 
+/// A named, per-user what-if overlay over one cube (ADR-0014): a sparse set of
+/// stored-leaf value overrides (numeric and string). Rules and consolidations
+/// recompute over the overrides without touching base data. Coordinates are
+/// stored as element indices, like the cube's own cells, and serialize as
+/// element names so they survive structural change and round-trip canonically.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sandbox {
+    /// The sandbox name (unique within the cube).
+    pub name: String,
+    /// The owning user. A sandbox is private to its owner (admins may use any).
+    pub owner: String,
+    /// An injected id stamped when the sandbox was created (never a wall clock,
+    /// per ADR-0009, so creation order is reproducible in tests).
+    pub created: u64,
+    /// An injected id stamped on the most recent change to the sandbox.
+    pub updated: u64,
+    /// Numeric leaf overrides, keyed by coordinate (element indices).
+    pub cells: BTreeMap<Vec<u32>, Fixed>,
+    /// String leaf overrides, keyed by coordinate (element indices).
+    pub string_cells: BTreeMap<Vec<u32>, String>,
+}
+
+impl Sandbox {
+    /// A new, empty sandbox owned by `owner`, stamped with creation id `created`.
+    pub fn new(name: impl Into<String>, owner: impl Into<String>, created: u64) -> Self {
+        Self {
+            name: name.into(),
+            owner: owner.into(),
+            created,
+            updated: created,
+            cells: BTreeMap::new(),
+            string_cells: BTreeMap::new(),
+        }
+    }
+
+    /// The numeric override at a coordinate, if any.
+    pub fn cell(&self, coord: &[u32]) -> Option<Fixed> {
+        self.cells.get(coord).copied()
+    }
+
+    /// The string override at a coordinate, if any.
+    pub fn string_cell(&self, coord: &[u32]) -> Option<&str> {
+        self.string_cells.get(coord).map(String::as_str)
+    }
+
+    /// The number of overridden cells (numeric plus string).
+    pub fn len(&self) -> usize {
+        self.cells.len() + self.string_cells.len()
+    }
+
+    /// Whether the sandbox has no overrides.
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty() && self.string_cells.is_empty()
+    }
+}
+
 /// A complete durable model: a cube plus its named subsets, views, rules, rule
-/// tests, flows, flow tests, and connections.
+/// tests, flows, flow tests, connections, and per-user sandboxes.
 ///
 /// Subsets are keyed by `(dimension, name)` (a subset name is unique within its
 /// dimension); views, tests, flows, and flow tests are keyed by name (unique
@@ -798,6 +854,8 @@ pub struct Model {
     pub flow_tests: BTreeMap<String, FlowTest>,
     /// Named data-source connections (admin-defined), keyed by name.
     pub connections: BTreeMap<String, Connection>,
+    /// Per-user what-if sandboxes, keyed by name (ADR-0014).
+    pub sandboxes: BTreeMap<String, Sandbox>,
 }
 
 impl Model {
@@ -812,7 +870,13 @@ impl Model {
             flows: BTreeMap::new(),
             flow_tests: BTreeMap::new(),
             connections: BTreeMap::new(),
+            sandboxes: BTreeMap::new(),
         }
+    }
+
+    /// Look up a sandbox by name.
+    pub fn sandbox(&self, name: &str) -> Option<&Sandbox> {
+        self.sandboxes.get(name)
     }
 
     /// Look up a subset by dimension and name.
