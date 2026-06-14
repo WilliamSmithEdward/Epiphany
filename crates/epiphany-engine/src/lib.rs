@@ -18,7 +18,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
-use epiphany_core::{Cube, Model, ModelError, QueryError, Subset, View};
+use epiphany_core::{
+    CellResolver, Cube, Fixed, Model, ModelError, QueryError, RuleSet, RuleTest, Subset, View,
+};
 use epiphany_determinism::IdGen;
 use epiphany_persist::{PersistError, Store};
 
@@ -108,6 +110,21 @@ impl ReadSnapshot {
     /// A view in this snapshot, by name.
     pub fn view(&self, name: &str) -> Option<&View> {
         self.inner.model.view(name)
+    }
+
+    /// The cube's rules in this snapshot (opaque source text).
+    pub fn rules(&self) -> &RuleSet {
+        &self.inner.model.rules
+    }
+
+    /// The rule unit tests in this snapshot, keyed by name.
+    pub fn tests(&self) -> &BTreeMap<String, RuleTest> {
+        &self.inner.model.tests
+    }
+
+    /// A rule test in this snapshot, by name.
+    pub fn test(&self, name: &str) -> Option<&RuleTest> {
+        self.inner.model.tests.get(name)
     }
 
     /// The version this snapshot pins.
@@ -304,6 +321,64 @@ impl Engine {
         })
     }
 
+    /// Set the cube's rules source and publish a new version. The source is
+    /// stored verbatim; the caller validates it (via the calc layer) first.
+    pub fn define_rules(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        source: String,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| store.define_rules(source))
+    }
+
+    /// Clear the cube's rules and publish a new version. Returns
+    /// [`BatchError::Invalid`] if there were none.
+    pub fn delete_rules(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            if store.delete_rules()? {
+                Ok(())
+            } else {
+                Err(PersistError::Query(QueryError::Calc {
+                    message: "no rules to delete".to_string(),
+                }))
+            }
+        })
+    }
+
+    /// Define (create or replace) a rule unit test and publish a new version.
+    pub fn define_rule_test(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        test: RuleTest,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| store.define_rule_test(test))
+    }
+
+    /// Delete a rule test by name and publish a new version. A missing test
+    /// returns [`BatchError::Invalid`].
+    pub fn delete_rule_test(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            if store.delete_rule_test(name)? {
+                Ok(())
+            } else {
+                Err(PersistError::Query(QueryError::Calc {
+                    message: format!("no rule test '{name}'"),
+                }))
+            }
+        })
+    }
+
     /// Shared commit path for definition changes: take the writer lock, check the
     /// optional base version, run `op` against the store (which validates and
     /// checkpoints), then publish the new immutable model version.
@@ -351,6 +426,45 @@ impl Engine {
             .ok_or_else(|| BatchError::UnknownCube(cube.to_string()))?;
         let mut writer = state.writer.lock().expect("writer mutex poisoned");
         writer.store.checkpoint().map_err(BatchError::Persist)
+    }
+}
+
+/// The seam the API injects to build a per-query value resolver over a pinned
+/// snapshot, mirroring how `SetEvaluator` is injected. The default
+/// [`StoredCellsFactory`] reads stored cells and consolidation (no rules); the
+/// server injects a rule-aware factory that overlays calc. The returned resolver
+/// owns its snapshot, so it is independent of any borrow.
+pub trait CellResolverFactory: Send + Sync {
+    /// Build a value resolver bound to a pinned snapshot.
+    fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver>;
+}
+
+/// The default factory: a resolver reading stored cells, byte-identical to the
+/// no-rules behavior. Stateless.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StoredCellsFactory;
+
+impl CellResolverFactory for StoredCellsFactory {
+    fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver> {
+        Box::new(StoredResolver {
+            snapshot: snapshot.clone(),
+        })
+    }
+}
+
+/// A [`CellResolver`] that owns a pinned snapshot and reads stored values.
+#[derive(Debug)]
+struct StoredResolver {
+    snapshot: ReadSnapshot,
+}
+
+impl CellResolver for StoredResolver {
+    fn value(&self, coord: &[u32]) -> Result<Fixed, QueryError> {
+        Ok(self.snapshot.cube().get(coord)?)
+    }
+
+    fn string_value(&self, coord: &[u32]) -> Result<Option<String>, QueryError> {
+        Ok(self.snapshot.cube().get_string(coord)?.map(str::to_string))
     }
 }
 
@@ -659,5 +773,33 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, BatchError::Conflict { .. }));
         assert_eq!(f.engine.version("Sales").unwrap(), v1);
+    }
+
+    #[test]
+    fn define_rules_publishes_and_snapshot_exposes_them() {
+        let f = fixture("define-rules");
+        f.engine
+            .define_rules("Sales", Some(0), "['R':'R0'] = 1;".to_string())
+            .unwrap();
+        let snap = f.engine.snapshot("Sales").unwrap();
+        assert!(!snap.rules().is_empty());
+        let v = f.engine.version("Sales").unwrap();
+        f.engine.delete_rules("Sales", Some(v)).unwrap();
+        assert!(f.engine.snapshot("Sales").unwrap().rules().is_empty());
+    }
+
+    #[test]
+    fn stored_cells_factory_resolver_matches_get() {
+        let f = fixture("stored-factory");
+        f.engine
+            .apply_batch("Sales", Some(0), &[leaf(vec![f.r[0], f.p[0]], 10)])
+            .unwrap();
+        let snap = f.engine.snapshot("Sales").unwrap();
+        let resolver = StoredCellsFactory.resolver(&snap);
+        let coord = [f.region_total, f.period_total];
+        assert_eq!(
+            resolver.value(&coord).unwrap(),
+            snap.cube().get(&coord).unwrap()
+        );
     }
 }

@@ -15,8 +15,8 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use epiphany_core::{
-    validate_subset, validate_view, Cube, Fixed, LoadError, Model, ModelError, QueryError,
-    SaveError, Subset, View,
+    validate_subset, validate_view, Cube, Fixed, LoadError, Model, ModelError, QueryError, RuleSet,
+    RuleTest, SaveError, Subset, View,
 };
 
 use crate::wal::{self, Record};
@@ -354,6 +354,41 @@ impl Store {
         Ok(removed)
     }
 
+    /// Set the cube's rules source, then checkpoint. The source is stored
+    /// verbatim; its validity is checked by the calc layer at the API boundary
+    /// (the store and persist crate stay calc-free).
+    pub fn define_rules(&mut self, source: String) -> Result<(), PersistError> {
+        self.model.rules = RuleSet { source };
+        self.checkpoint()
+    }
+
+    /// Clear the cube's rules. Returns whether there were any; checkpoints only
+    /// when something changed.
+    pub fn delete_rules(&mut self) -> Result<bool, PersistError> {
+        if self.model.rules.is_empty() {
+            return Ok(false);
+        }
+        self.model.rules = RuleSet::default();
+        self.checkpoint()?;
+        Ok(true)
+    }
+
+    /// Define (create or replace) a rule unit test, then checkpoint.
+    pub fn define_rule_test(&mut self, test: RuleTest) -> Result<(), PersistError> {
+        self.model.tests.insert(test.name.clone(), test);
+        self.checkpoint()
+    }
+
+    /// Delete a rule test by name. Returns whether one was removed; checkpoints
+    /// only when something changed.
+    pub fn delete_rule_test(&mut self, name: &str) -> Result<bool, PersistError> {
+        let removed = self.model.tests.remove(name).is_some();
+        if removed {
+            self.checkpoint()?;
+        }
+        Ok(removed)
+    }
+
     /// Flush and fsync the WAL. Useful when [`set_sync`](Self::set_sync) is off.
     pub fn flush(&mut self) -> Result<(), PersistError> {
         self.wal.flush()?;
@@ -387,7 +422,7 @@ fn open_fresh_wal(dir: &Path) -> Result<File, PersistError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_core::{AxisSpec, Dimension, SubsetKind, Visibility};
+    use epiphany_core::{AxisSpec, Dimension, RuleTest, SubsetKind, Visibility};
 
     /// A 2-D cube: Region (3 leaves under Total) x Period (2 leaves under Total).
     /// Returns the cube and the leaf/consolidated indices needed by tests.
@@ -733,6 +768,35 @@ mod tests {
         let store = Store::open(&dir).unwrap();
         assert!(store.model().subset("Region", "S").is_none());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rules_and_tests_persist_through_reopen() {
+        let dir = scratch("rules-persist");
+        let f = fixture();
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            store
+                .define_rules("['Region':'R0'] = 1;".to_string())
+                .unwrap();
+            store
+                .define_rule_test(RuleTest {
+                    name: "t".to_string(),
+                    fixtures: Vec::new(),
+                    assertions: Vec::new(),
+                })
+                .unwrap();
+        }
+        let store = Store::open(&dir).unwrap();
+        assert!(!store.model().rules.is_empty());
+        assert!(store.model().tests.contains_key("t"));
+        // Deleting clears them.
+        let mut store = store;
+        assert!(store.delete_rules().unwrap());
+        assert!(store.delete_rule_test("t").unwrap());
+        let store = Store::open(&dir).unwrap();
+        assert!(store.model().rules.is_empty());
+        assert!(store.model().tests.is_empty());
     }
 
     #[test]
