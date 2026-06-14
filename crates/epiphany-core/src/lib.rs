@@ -22,8 +22,8 @@ pub use cube::{Coord, Cube};
 pub use dimension::{AttributeDef, AttributeKind, AttributeValue, Dimension, Element, ElementKind};
 pub use error::ModelError;
 pub use query::{
-    execute_view, resolve_subset, Axis, AxisSpec, Cellset, Model, NoSetEvaluator, QueryError,
-    SetEvaluator, Subset, SubsetKind, View, Visibility,
+    execute_view, resolve_subset, validate_subset, validate_view, Axis, AxisSpec, Cellset, Model,
+    NoSetEvaluator, QueryError, SetEvaluator, Subset, SubsetKind, View, Visibility,
 };
 pub use text::{LoadError, SaveError};
 pub use value::{Fixed, SCALE, SCALE_DECIMALS};

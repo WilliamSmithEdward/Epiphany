@@ -14,7 +14,10 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use epiphany_core::{Cube, Fixed, LoadError, ModelError, SaveError};
+use epiphany_core::{
+    validate_subset, validate_view, Cube, Fixed, LoadError, Model, ModelError, QueryError,
+    SaveError, Subset, View,
+};
 
 use crate::wal::{self, Record};
 
@@ -45,6 +48,8 @@ pub enum PersistError {
     Corrupt(String),
     /// A write in a batch was rejected by the model; the batch was not applied.
     BatchRejected { index: usize, source: ModelError },
+    /// A subset/view definition was structurally invalid; nothing was changed.
+    Query(QueryError),
 }
 
 impl std::fmt::Display for PersistError {
@@ -58,6 +63,7 @@ impl std::fmt::Display for PersistError {
             PersistError::BatchRejected { index, source } => {
                 write!(f, "batch write {index} rejected: {source}")
             }
+            PersistError::Query(e) => write!(f, "invalid definition: {e}"),
         }
     }
 }
@@ -84,12 +90,23 @@ impl From<SaveError> for PersistError {
         PersistError::Save(e)
     }
 }
+impl From<QueryError> for PersistError {
+    fn from(e: QueryError) -> Self {
+        PersistError::Query(e)
+    }
+}
 
-/// A cube made durable by a snapshot plus a write-ahead log in a directory.
+/// A model made durable by a snapshot plus a write-ahead log in a directory.
+///
+/// The snapshot is the whole model-as-code text (cube + named subsets + views);
+/// the WAL is the append-only tail of cell writes since the last checkpoint.
+/// Structural changes (defining or deleting a subset/view) are captured by an
+/// immediate checkpoint, not the log, so the WAL/cell-write path is unchanged
+/// and the element indices a record names stay valid against the snapshot.
 #[derive(Debug)]
 pub struct Store {
     dir: PathBuf,
-    cube: Cube,
+    model: Model,
     wal: File,
     uncheckpointed: u64,
     sync_on_write: bool,
@@ -102,11 +119,12 @@ impl Store {
     pub fn create(dir: impl Into<PathBuf>, cube: Cube) -> Result<Self, PersistError> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
-        write_snapshot(&dir, &cube)?;
+        let model = Model::new(cube);
+        write_snapshot(&dir, &model)?;
         let wal = open_fresh_wal(&dir)?;
         Ok(Self {
             dir,
-            cube,
+            model,
             wal,
             uncheckpointed: 0,
             sync_on_write: true,
@@ -119,7 +137,7 @@ impl Store {
     /// truncated to its last intact write.
     pub fn open(dir: impl Into<PathBuf>) -> Result<Self, PersistError> {
         let dir = dir.into();
-        let mut cube = Cube::load_from_path(dir.join(SNAPSHOT_FILE))?;
+        let mut model = Model::load_from_path(dir.join(SNAPSHOT_FILE))?;
 
         let wal_path = dir.join(WAL_FILE);
         let wal = if wal_path.exists() {
@@ -127,8 +145,8 @@ impl Store {
             let replay = wal::replay(&bytes).map_err(|e| PersistError::Corrupt(e.to_string()))?;
             for record in &replay.records {
                 match record {
-                    Record::SetLeaf { coord, value } => cube.set_leaf(coord, *value)?,
-                    Record::SetString { coord, value } => cube.set_string(coord, value)?,
+                    Record::SetLeaf { coord, value } => model.cube.set_leaf(coord, *value)?,
+                    Record::SetString { coord, value } => model.cube.set_string(coord, value)?,
                     // Batch markers are consumed by wal::replay and never surface here.
                     Record::BatchBegin { .. } | Record::BatchEnd => {}
                 }
@@ -144,7 +162,7 @@ impl Store {
 
         Ok(Self {
             dir,
-            cube,
+            model,
             wal,
             uncheckpointed: 0,
             sync_on_write: true,
@@ -181,7 +199,12 @@ impl Store {
 
     /// The cube, for reads.
     pub fn cube(&self) -> &Cube {
-        &self.cube
+        &self.model.cube
+    }
+
+    /// The whole durable model (cube plus named subsets and views), for reads.
+    pub fn model(&self) -> &Model {
+        &self.model
     }
 
     /// Write a leaf cell: apply it to the in-memory cube and append it to the
@@ -189,7 +212,7 @@ impl Store {
     /// never logged. May trigger an automatic checkpoint (see
     /// [`set_auto_checkpoint`](Self::set_auto_checkpoint)).
     pub fn set_leaf(&mut self, coord: &[u32], value: Fixed) -> Result<(), PersistError> {
-        self.cube.set_leaf(coord, value)?;
+        self.model.cube.set_leaf(coord, value)?;
         let framed = wal::encode(&Record::SetLeaf {
             coord: coord.to_vec(),
             value,
@@ -209,7 +232,7 @@ impl Store {
     /// WAL. Like [`set_leaf`](Self::set_leaf), the model validates first and may
     /// trigger an automatic checkpoint.
     pub fn set_string(&mut self, coord: &[u32], value: &str) -> Result<(), PersistError> {
-        self.cube.set_string(coord, value)?;
+        self.model.cube.set_string(coord, value)?;
         let framed = wal::encode(&Record::SetString {
             coord: coord.to_vec(),
             value: value.to_string(),
@@ -234,7 +257,7 @@ impl Store {
     /// Counts as one auto-checkpoint step.
     pub fn set_batch(&mut self, writes: &[CellWrite]) -> Result<(), PersistError> {
         // 1. Validate + apply to a throwaway clone; abort the whole batch on error.
-        let mut trial = self.cube.clone();
+        let mut trial = self.model.cube.clone();
         for (index, write) in writes.iter().enumerate() {
             let applied = match write {
                 CellWrite::Leaf { coord, value } => trial.set_leaf(coord, *value),
@@ -265,7 +288,7 @@ impl Store {
             self.wal.sync_data()?;
         }
         // 3. Adopt the validated trial; the WAL already reflects it durably.
-        self.cube = trial;
+        self.model.cube = trial;
         self.uncheckpointed += 1;
         if self.checkpoint_after != 0 && self.uncheckpointed >= self.checkpoint_after {
             self.checkpoint()?;
@@ -273,16 +296,62 @@ impl Store {
         Ok(())
     }
 
-    /// Full-persist: rewrite the snapshot from the current in-memory cube and
-    /// clear the WAL. After this, recovery needs only the snapshot.
+    /// Full-persist: rewrite the snapshot from the current in-memory model and
+    /// clear the WAL. After this, recovery needs only the snapshot. Because the
+    /// snapshot is written from the in-memory cube (which already reflects every
+    /// outstanding WAL write), a checkpoint also folds those writes in safely.
     pub fn checkpoint(&mut self) -> Result<(), PersistError> {
-        write_snapshot(&self.dir, &self.cube)?;
+        write_snapshot(&self.dir, &self.model)?;
         self.wal.set_len(0)?;
         self.wal.seek(SeekFrom::Start(0))?;
         self.wal.write_all(&wal::header())?;
         self.wal.sync_data()?;
         self.uncheckpointed = 0;
         Ok(())
+    }
+
+    /// Define (create or replace) a subset, then checkpoint so the definition is
+    /// durable. Structural validation runs first: an invalid subset returns
+    /// [`PersistError::Query`] and leaves the model and snapshot untouched.
+    pub fn define_subset(&mut self, subset: Subset) -> Result<(), PersistError> {
+        validate_subset(&self.model.cube, &subset)?;
+        self.model
+            .subsets
+            .insert((subset.dimension.clone(), subset.name.clone()), subset);
+        self.checkpoint()
+    }
+
+    /// Delete a subset by dimension and name. Returns whether one was removed;
+    /// checkpoints only when something changed.
+    pub fn delete_subset(&mut self, dimension: &str, name: &str) -> Result<bool, PersistError> {
+        let removed = self
+            .model
+            .subsets
+            .remove(&(dimension.to_string(), name.to_string()))
+            .is_some();
+        if removed {
+            self.checkpoint()?;
+        }
+        Ok(removed)
+    }
+
+    /// Define (create or replace) a view, then checkpoint. Structural validation
+    /// (coverage, subset references, member/context resolution) runs first; an
+    /// invalid view returns [`PersistError::Query`] and changes nothing.
+    pub fn define_view(&mut self, view: View) -> Result<(), PersistError> {
+        validate_view(&self.model, &view)?;
+        self.model.views.insert(view.name.clone(), view);
+        self.checkpoint()
+    }
+
+    /// Delete a view by name. Returns whether one was removed; checkpoints only
+    /// when something changed.
+    pub fn delete_view(&mut self, name: &str) -> Result<bool, PersistError> {
+        let removed = self.model.views.remove(name).is_some();
+        if removed {
+            self.checkpoint()?;
+        }
+        Ok(removed)
     }
 
     /// Flush and fsync the WAL. Useful when [`set_sync`](Self::set_sync) is off.
@@ -295,9 +364,9 @@ impl Store {
 
 /// Write the snapshot atomically: serialize to a temp file, then rename over the
 /// live snapshot (rename replaces the destination on all supported platforms).
-fn write_snapshot(dir: &Path, cube: &Cube) -> Result<(), PersistError> {
+fn write_snapshot(dir: &Path, model: &Model) -> Result<(), PersistError> {
     let tmp = dir.join(SNAPSHOT_TMP);
-    let text = cube.to_model_text()?;
+    let text = model.to_model_text()?;
     fs::write(&tmp, text)?;
     fs::rename(&tmp, dir.join(SNAPSHOT_FILE))?;
     Ok(())
@@ -318,7 +387,7 @@ fn open_fresh_wal(dir: &Path) -> Result<File, PersistError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_core::Dimension;
+    use epiphany_core::{AxisSpec, Dimension, SubsetKind, Visibility};
 
     /// A 2-D cube: Region (3 leaves under Total) x Period (2 leaves under Total).
     /// Returns the cube and the leaf/consolidated indices needed by tests.
@@ -556,6 +625,126 @@ mod tests {
             store.cube().get_leaf(&[r[0], p[0]]).unwrap(),
             Fixed::from(7)
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn static_subset(name: &str, members: &[&str]) -> Subset {
+        Subset {
+            name: name.into(),
+            dimension: "Region".into(),
+            owner: None,
+            visibility: Visibility::Public,
+            kind: SubsetKind::Static {
+                members: members.iter().map(|s| s.to_string()).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn definitions_persist_through_reopen() {
+        let dir = scratch("definitions");
+        let f = fixture();
+        let (r, p) = (f.r.clone(), f.p.clone());
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            store.set_leaf(&[r[0], p[0]], Fixed::from(10)).unwrap();
+            store
+                .define_subset(static_subset("Core", &["R0", "R1"]))
+                .unwrap();
+            store
+                .define_view(View {
+                    name: "Grid".into(),
+                    cube: "Sales".into(),
+                    owner: None,
+                    visibility: Visibility::Public,
+                    rows: vec![AxisSpec::Subset {
+                        dimension: "Region".into(),
+                        subset: "Core".into(),
+                    }],
+                    columns: vec![AxisSpec::Members {
+                        dimension: "Period".into(),
+                        members: vec!["P0".into()],
+                    }],
+                    context: Vec::new(),
+                    suppress_zeros: false,
+                })
+                .unwrap();
+            // Drop WITHOUT a further checkpoint: define already checkpointed.
+        }
+        let store = Store::open(&dir).unwrap();
+        assert!(store.model().subset("Region", "Core").is_some());
+        assert!(store.model().view("Grid").is_some());
+        // The earlier cell write survived too (the define's checkpoint folded it
+        // into the snapshot).
+        assert_eq!(
+            store.cube().get_leaf(&[r[0], p[0]]).unwrap(),
+            Fixed::from(10)
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn define_checkpoints_outstanding_cell_writes() {
+        let dir = scratch("interleave");
+        let f = fixture();
+        let (r, p, region_total, period_total) = (f.r, f.p, f.region_total, f.period_total);
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            // Cells via a batch, NOT checkpointed.
+            store
+                .set_batch(&[
+                    CellWrite::Leaf {
+                        coord: vec![r[0], p[0]],
+                        value: Fixed::from(10),
+                    },
+                    CellWrite::Leaf {
+                        coord: vec![r[1], p[0]],
+                        value: Fixed::from(20),
+                    },
+                ])
+                .unwrap();
+            // Defining a subset triggers a checkpoint that folds the batch in and
+            // clears the WAL back to its header.
+            store.define_subset(static_subset("S", &["R0"])).unwrap();
+            assert_eq!(
+                fs::metadata(dir.join(WAL_FILE)).unwrap().len(),
+                wal::WAL_HEADER_LEN
+            );
+        }
+        let store = Store::open(&dir).unwrap();
+        assert_eq!(
+            store.cube().get(&[region_total, period_total]).unwrap(),
+            Fixed::from(30)
+        );
+        assert!(store.model().subset("Region", "S").is_some());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_removes_a_definition() {
+        let dir = scratch("delete-def");
+        let f = fixture();
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            store.define_subset(static_subset("S", &["R0"])).unwrap();
+            assert!(store.delete_subset("Region", "S").unwrap());
+            assert!(!store.delete_subset("Region", "S").unwrap(), "already gone");
+        }
+        let store = Store::open(&dir).unwrap();
+        assert!(store.model().subset("Region", "S").is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn invalid_definition_is_rejected_and_changes_nothing() {
+        let dir = scratch("invalid-def");
+        let f = fixture();
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        let err = store
+            .define_subset(static_subset("Bad", &["Atlantis"]))
+            .unwrap_err();
+        assert!(matches!(err, PersistError::Query(_)));
+        assert!(store.model().subset("Region", "Bad").is_none());
         fs::remove_dir_all(&dir).ok();
     }
 }

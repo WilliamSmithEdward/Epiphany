@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
-use epiphany_core::{Cube, ModelError};
+use epiphany_core::{Cube, Model, ModelError, QueryError, Subset, View};
 use epiphany_determinism::IdGen;
 use epiphany_persist::{PersistError, Store};
 
@@ -49,6 +49,8 @@ pub enum BatchError {
     Conflict { expected: Version, actual: Version },
     /// A write was rejected by the model; the batch was not applied.
     Rejected { index: usize, source: ModelError },
+    /// A subset/view definition was structurally invalid; nothing was changed.
+    Invalid(QueryError),
     /// Durably logging the batch failed.
     Persist(PersistError),
 }
@@ -64,6 +66,7 @@ impl std::fmt::Display for BatchError {
             BatchError::Rejected { index, source } => {
                 write!(f, "batch write {index} rejected: {source}")
             }
+            BatchError::Invalid(e) => write!(f, "invalid definition: {e}"),
             BatchError::Persist(e) => write!(f, "could not persist batch: {e}"),
         }
     }
@@ -71,15 +74,16 @@ impl std::fmt::Display for BatchError {
 
 impl std::error::Error for BatchError {}
 
-/// One published, immutable cube version.
+/// One published, immutable model version (cube plus its subsets and views).
 #[derive(Debug)]
 struct Published {
     version: Version,
-    cube: Cube,
+    model: Model,
 }
 
-/// A lock-free, immutable read snapshot of one cube. Holding it pins a single
-/// committed version for the life of a query; concurrent commits never mutate it.
+/// A lock-free, immutable read snapshot of one cube's model. Holding it pins a
+/// single committed version (cube, subsets, and views) for the life of a query;
+/// concurrent commits never mutate it.
 #[derive(Debug, Clone)]
 pub struct ReadSnapshot {
     inner: Arc<Published>,
@@ -88,7 +92,22 @@ pub struct ReadSnapshot {
 impl ReadSnapshot {
     /// The pinned cube version.
     pub fn cube(&self) -> &Cube {
-        &self.inner.cube
+        &self.inner.model.cube
+    }
+
+    /// The pinned model (cube plus its named subsets and views).
+    pub fn model(&self) -> &Model {
+        &self.inner.model
+    }
+
+    /// A subset in this snapshot, by dimension and name.
+    pub fn subset(&self, dimension: &str, name: &str) -> Option<&Subset> {
+        self.inner.model.subset(dimension, name)
+    }
+
+    /// A view in this snapshot, by name.
+    pub fn view(&self, name: &str) -> Option<&View> {
+        self.inner.model.view(name)
     }
 
     /// The version this snapshot pins.
@@ -137,7 +156,7 @@ impl Engine {
             .map(|(name, store)| {
                 let published = ArcSwap::from_pointee(Published {
                     version: 0,
-                    cube: store.cube().clone(),
+                    model: store.model().clone(),
                 });
                 let state = CubeState {
                     writer: Mutex::new(Writer { store, version: 0 }),
@@ -217,10 +236,110 @@ impl Engine {
         let version = self.ids.next_id();
         state.published.store(Arc::new(Published {
             version,
-            cube: writer.store.cube().clone(),
+            model: writer.store.model().clone(),
         }));
         writer.version = version;
 
+        Ok(CommitOutcome { version })
+    }
+
+    /// Define (create or replace) a subset and publish a new version. Like
+    /// [`apply_batch`](Self::apply_batch), `base` gives optimistic concurrency.
+    /// An invalid definition returns [`BatchError::Invalid`] and changes nothing.
+    pub fn define_subset(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        subset: Subset,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| store.define_subset(subset))
+    }
+
+    /// Delete a subset by dimension and name and publish a new version. A missing
+    /// subset returns [`BatchError::Invalid`] (it changed nothing).
+    pub fn delete_subset(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        dimension: &str,
+        name: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            if store.delete_subset(dimension, name)? {
+                Ok(())
+            } else {
+                Err(PersistError::Query(QueryError::UnknownSubset {
+                    name: name.to_string(),
+                }))
+            }
+        })
+    }
+
+    /// Define (create or replace) a view and publish a new version.
+    pub fn define_view(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        view: View,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| store.define_view(view))
+    }
+
+    /// Delete a view by name and publish a new version. A missing view returns
+    /// [`BatchError::Invalid`].
+    pub fn delete_view(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            if store.delete_view(name)? {
+                Ok(())
+            } else {
+                Err(PersistError::Query(QueryError::UnknownSubset {
+                    name: name.to_string(),
+                }))
+            }
+        })
+    }
+
+    /// Shared commit path for definition changes: take the writer lock, check the
+    /// optional base version, run `op` against the store (which validates and
+    /// checkpoints), then publish the new immutable model version.
+    fn define(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        op: impl FnOnce(&mut Store) -> Result<(), PersistError>,
+    ) -> Result<CommitOutcome, BatchError> {
+        let state = self
+            .cubes
+            .get(cube)
+            .ok_or_else(|| BatchError::UnknownCube(cube.to_string()))?;
+        let mut writer = state.writer.lock().expect("writer mutex poisoned");
+
+        if let Some(base) = base {
+            if base != writer.version {
+                return Err(BatchError::Conflict {
+                    expected: base,
+                    actual: writer.version,
+                });
+            }
+        }
+
+        match op(&mut writer.store) {
+            Ok(()) => {}
+            Err(PersistError::Query(e)) => return Err(BatchError::Invalid(e)),
+            Err(e) => return Err(BatchError::Persist(e)),
+        }
+
+        let version = self.ids.next_id();
+        state.published.store(Arc::new(Published {
+            version,
+            model: writer.store.model().clone(),
+        }));
+        writer.version = version;
         Ok(CommitOutcome { version })
     }
 
@@ -461,5 +580,84 @@ mod tests {
         for h in readers {
             h.join().unwrap();
         }
+    }
+
+    fn static_subset(name: &str, members: &[&str]) -> Subset {
+        use epiphany_core::{SubsetKind, Visibility};
+        Subset {
+            name: name.into(),
+            dimension: "R".into(),
+            owner: None,
+            visibility: Visibility::Public,
+            kind: SubsetKind::Static {
+                members: members.iter().map(|s| s.to_string()).collect(),
+            },
+        }
+    }
+
+    #[test]
+    fn define_subset_commits_and_is_snapshot_isolated() {
+        let f = fixture("define-subset");
+        let before = f.engine.snapshot("Sales").unwrap();
+        let outcome = f
+            .engine
+            .define_subset("Sales", Some(0), static_subset("Core", &["R0", "R1"]))
+            .unwrap();
+        assert!(outcome.version > 0);
+        // The pre-define snapshot does not see it; a fresh one does.
+        assert!(before.subset("R", "Core").is_none());
+        let after = f.engine.snapshot("Sales").unwrap();
+        assert!(after.subset("R", "Core").is_some());
+        assert!(after.version() > before.version());
+    }
+
+    #[test]
+    fn invalid_definition_is_rejected_without_publishing() {
+        let f = fixture("define-invalid");
+        let before = f.engine.version("Sales").unwrap();
+        let err = f
+            .engine
+            .define_subset("Sales", None, static_subset("Bad", &["Nope"]))
+            .unwrap_err();
+        assert!(matches!(err, BatchError::Invalid(_)));
+        assert_eq!(
+            f.engine.version("Sales").unwrap(),
+            before,
+            "a rejected define must not publish a new version"
+        );
+        assert!(f
+            .engine
+            .snapshot("Sales")
+            .unwrap()
+            .subset("R", "Bad")
+            .is_none());
+    }
+
+    #[test]
+    fn deleting_a_missing_subset_is_invalid() {
+        let f = fixture("delete-missing");
+        let err = f
+            .engine
+            .delete_subset("Sales", None, "R", "Ghost")
+            .unwrap_err();
+        assert!(matches!(err, BatchError::Invalid(_)));
+    }
+
+    #[test]
+    fn stale_base_rejects_a_definition() {
+        let f = fixture("define-conflict");
+        // Move the cube past version 0 with a cell commit.
+        let v1 = f
+            .engine
+            .apply_batch("Sales", Some(0), &[leaf(vec![f.r[0], f.p[0]], 1)])
+            .unwrap()
+            .version;
+        // A define staged on the stale base 0 conflicts and changes nothing.
+        let err = f
+            .engine
+            .define_subset("Sales", Some(0), static_subset("Core", &["R0"]))
+            .unwrap_err();
+        assert!(matches!(err, BatchError::Conflict { .. }));
+        assert_eq!(f.engine.version("Sales").unwrap(), v1);
     }
 }

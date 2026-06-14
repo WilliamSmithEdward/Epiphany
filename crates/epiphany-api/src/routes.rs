@@ -209,6 +209,7 @@ fn map_batch_error(error: BatchError) -> ApiError {
             format!("write {index} rejected: {source}"),
         )
         .with_details(serde_json::json!({ "failed_index": index })),
+        BatchError::Invalid(e) => ApiError::unprocessable("INVALID_DEFINITION", e.to_string()),
         BatchError::Persist(_) => ApiError::internal(),
     }
 }

@@ -215,6 +215,25 @@ pub fn resolve_subset(
     }
 }
 
+/// Structurally validate a subset definition without resolving it.
+///
+/// Checks that the dimension exists and (for a static subset) that every listed
+/// member resolves. A dynamic subset's MDX is opaque here (it is validated by
+/// the evaluator at the API boundary), so only its dimension is checked.
+pub fn validate_subset(cube: &Cube, subset: &Subset) -> Result<(), QueryError> {
+    let dim = dimension_by_name(cube, &subset.dimension)?;
+    if let SubsetKind::Static { members } = &subset.kind {
+        for member in members {
+            dim.resolve(member)
+                .ok_or_else(|| QueryError::UnknownMember {
+                    dimension: dim.name().to_string(),
+                    member: member.clone(),
+                })?;
+        }
+    }
+    Ok(())
+}
+
 /// A single placement on an axis: a saved subset, or an inline member list.
 ///
 /// Each spec selects members from exactly one dimension. An [`Axis`] is an
@@ -413,6 +432,55 @@ pub fn execute_view<'a>(
         context: view.context.clone(),
         cells,
     })
+}
+
+/// Structurally validate a view against a model without executing it.
+///
+/// Checks exact one-axis-per-dimension coverage, that every referenced subset
+/// exists with a matching dimension, and that inline-member and context names
+/// resolve. Does not resolve dynamic subsets (no evaluator needed), so it is the
+/// validation used when persisting a definition.
+pub fn validate_view(model: &Model, view: &View) -> Result<(), QueryError> {
+    let cube = &model.cube;
+    validate_coverage(cube, view)?;
+    for spec in view.rows.iter().chain(view.columns.iter()) {
+        match spec {
+            AxisSpec::Subset { dimension, subset } => {
+                let s =
+                    model
+                        .subset(dimension, subset)
+                        .ok_or_else(|| QueryError::UnknownSubset {
+                            name: subset.clone(),
+                        })?;
+                if &s.dimension != dimension {
+                    return Err(QueryError::SubsetDimensionMismatch {
+                        subset: subset.clone(),
+                        axis_dimension: dimension.clone(),
+                        subset_dimension: s.dimension.clone(),
+                    });
+                }
+            }
+            AxisSpec::Members { dimension, members } => {
+                let dim = dimension_by_name(cube, dimension)?;
+                for member in members {
+                    dim.resolve(member)
+                        .ok_or_else(|| QueryError::UnknownMember {
+                            dimension: dim.name().to_string(),
+                            member: member.clone(),
+                        })?;
+                }
+            }
+        }
+    }
+    for (dimension, member) in &view.context {
+        let dim = dimension_by_name(cube, dimension)?;
+        dim.resolve(member)
+            .ok_or_else(|| QueryError::UnknownMember {
+                dimension: dimension.clone(),
+                member: member.clone(),
+            })?;
+    }
+    Ok(())
 }
 
 /// Validate that every cube dimension is placed on exactly one axis or context,
