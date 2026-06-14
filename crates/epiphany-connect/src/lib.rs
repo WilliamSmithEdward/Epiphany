@@ -14,6 +14,12 @@
 //! can define one. This crate enforces the *mechanical* safety: the program is
 //! spawned directly with an argv array (no shell, so no command injection), with
 //! a timeout, a stdout size cap, and a non-zero-exit error.
+//!
+//! Limitation: on a timeout only the spawned process is killed, not any
+//! grandchildren it forked (process-group/job-object termination is platform
+//! work deferred for now). Configure a connection to run the target program
+//! directly (e.g. `python script.py`) rather than wrapping it in a shell that
+//! forks, so a kill reaches the real worker.
 
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -177,6 +183,11 @@ fn parse_output(
     format: SourceFormat,
     json_path: Option<&str>,
 ) -> Result<Vec<Row>, ConnectError> {
+    // Empty output means "no rows" for either format (a program that legitimately
+    // produced nothing), rather than a JSON parse error on an empty document.
+    if text.trim().is_empty() {
+        return Ok(Vec::new());
+    }
     match format {
         SourceFormat::Csv => parse_csv(text).map_err(|e| ConnectError::BadOutput(e.to_string())),
         SourceFormat::Json => parse_json(text, json_path),
@@ -193,6 +204,14 @@ fn parse_json(text: &str, json_path: Option<&str>) -> Result<Vec<Row>, ConnectEr
     let mut node = &root;
     if let Some(path) = json_path {
         for segment in path.split('.').filter(|s| !s.is_empty()) {
+            // Distinguish "not an object to navigate into" from "key missing", so
+            // a mis-typed path is debuggable.
+            if !node.is_object() {
+                return Err(ConnectError::BadOutput(format!(
+                    "json_path: expected an object at '{segment}', found {}",
+                    json_type_name(node)
+                )));
+            }
             node = node.get(segment).ok_or_else(|| {
                 ConnectError::BadOutput(format!("json_path segment '{segment}' not found"))
             })?;
@@ -215,6 +234,18 @@ fn parse_json(text: &str, json_path: Option<&str>) -> Result<Vec<Row>, ConnectEr
         rows.push(row);
     }
     Ok(rows)
+}
+
+/// A human name for a JSON value's type, for diagnostics.
+fn json_type_name(v: &serde_json::Value) -> &'static str {
+    match v {
+        serde_json::Value::Null => "null",
+        serde_json::Value::Bool(_) => "a boolean",
+        serde_json::Value::Number(_) => "a number",
+        serde_json::Value::String(_) => "a string",
+        serde_json::Value::Array(_) => "an array",
+        serde_json::Value::Object(_) => "an object",
+    }
 }
 
 /// Render a JSON scalar as the string a cell value expects. Objects/arrays are
@@ -292,6 +323,23 @@ mod tests {
         let rows = parse_output(json, SourceFormat::Json, Some("data.rows")).unwrap();
         assert_eq!(rows.len(), 1);
         assert!(rows[0].contains(&("R".to_string(), "North".to_string())));
+    }
+
+    #[test]
+    fn empty_output_is_zero_rows_for_both_formats() {
+        assert!(parse_output("", SourceFormat::Csv, None)
+            .unwrap()
+            .is_empty());
+        assert!(parse_output("   \n", SourceFormat::Json, None)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn json_path_into_a_non_object_reports_the_type() {
+        let err = parse_output(r#"{"a":42}"#, SourceFormat::Json, Some("a.b")).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("number"), "{msg}");
     }
 
     #[test]

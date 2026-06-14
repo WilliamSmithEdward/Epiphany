@@ -746,7 +746,9 @@ pub struct CommandSpec {
     /// For JSON output, a dotted path to the array of record objects; `None`
     /// means stdout is itself the array.
     pub json_path: Option<String>,
-    /// Kill the process if it runs longer than this many milliseconds.
+    /// Kill the process if it runs longer than this many milliseconds. A value
+    /// of 0 means no timeout (the REST layer coerces an unset value to a safe
+    /// default, so 0 only arises from a hand-edited model).
     pub timeout_ms: u64,
 }
 

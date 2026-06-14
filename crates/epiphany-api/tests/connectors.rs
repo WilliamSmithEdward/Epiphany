@@ -250,6 +250,66 @@ async fn defining_a_connection_requires_admin() {
 }
 
 #[tokio::test]
+async fn non_admin_sees_redacted_command_line() {
+    let dir = scratch("redact");
+    // An admin defines the connection (durable).
+    let admin = router_for(&dir, true, true);
+    let atok = login(&admin).await;
+    let (status, _) = call(
+        &admin,
+        "PUT",
+        "/api/v1/cubes/Sales/connections/emit",
+        &atok,
+        Some(emit_csv_connection()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // The admin sees the full command line.
+    let (_, alist) = call(
+        &admin,
+        "GET",
+        "/api/v1/cubes/Sales/connections",
+        &atok,
+        None,
+    )
+    .await;
+    assert!(!alist["connections"][0]["program"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+
+    // A non-admin (reopened over the same data dir) sees the name but not the
+    // program or args.
+    let user = router_for(&dir, false, true);
+    let utok = login(&user).await;
+    let (status, ulist) = call(&user, "GET", "/api/v1/cubes/Sales/connections", &utok, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let conn = &ulist["connections"][0];
+    assert_eq!(conn["name"], "emit");
+    assert_eq!(conn["program"], "", "program redacted for non-admins");
+    assert_eq!(conn["args"].as_array().unwrap().len(), 0, "args redacted");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
+async fn an_unknown_output_format_is_rejected() {
+    let dir = scratch("format");
+    let app = router_for(&dir, true, true);
+    let token = login(&app).await;
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/connections/bad",
+        &token,
+        Some(json!({ "name": "bad", "kind": "command", "program": "echo", "format": "xml" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
 async fn a_failing_connector_reports_an_error() {
     let dir = scratch("error");
     let app = router_for(&dir, true, true);
