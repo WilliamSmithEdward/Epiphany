@@ -671,3 +671,55 @@ table.pivot th.rowhead {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.82rem;
 }
+
+/* ---- sandboxes / what-if (ADR-0014) ---- */
+.sandbox-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.sandbox-bar.whatif {
+  border-color: #e6b450;
+  background: #fff8ec;
+}
+
+.sandbox-bar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.sandbox-bar input,
+.sandbox-bar select {
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+}
+
+.whatif-badge {
+  color: #8a5a00;
+  background: #ffeccc;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 0.85em;
+}
+
+/* A cell holding an uncommitted what-if override. */
+.cell.overlaid,
+.cell.overlaid input {
+  background: #fff4e0;
+}
+
+.cell.overlaid {
+  box-shadow: inset 3px 0 0 #e6a017;
+}

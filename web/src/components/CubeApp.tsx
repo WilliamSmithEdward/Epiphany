@@ -3,6 +3,7 @@ import { connectWs, listCubes, logout, type CubeSummary } from '../api/client'
 import FlowsWorkspace from './FlowsWorkspace'
 import PivotGrid from './PivotGrid'
 import RulesWorkspace from './RulesWorkspace'
+import SandboxBar from './SandboxBar'
 import ViewWorkspace from './ViewWorkspace'
 
 type Mode = 'grid' | 'views' | 'rules' | 'flows'
@@ -81,6 +82,13 @@ export default function CubeApp({
           {error ? <p className="error">{error}</p> : null}
           {selected ? (
             <>
+              {mode === 'grid' || mode === 'views' ? (
+                <SandboxBar
+                  key={selected}
+                  cube={selected}
+                  onChange={() => setReload((n) => n + 1)}
+                />
+              ) : null}
               <div className="modes">
                 <button className={mode === 'grid' ? 'active' : ''} onClick={() => setMode('grid')}>
                   Grid

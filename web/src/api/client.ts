@@ -40,6 +40,8 @@ export interface CellDto {
   value: string | null
   kind: 'numeric' | 'string'
   editable: boolean
+  /** True when the value is a what-if override from the active sandbox. */
+  overlaid: boolean
 }
 
 export interface LoginResult {
@@ -58,9 +60,23 @@ export function setToken(value: string | null): void {
   token = value
 }
 
+// The active what-if sandbox (ADR-0014). When set, every data request carries
+// the X-Epiphany-Sandbox header, so reads recompute over the sandbox and writes
+// stage into it; null means base. Managed by the sandbox switcher.
+let activeSandbox: string | null = null
+
+export function setActiveSandbox(value: string | null): void {
+  activeSandbox = value
+}
+
+export function getActiveSandbox(): string | null {
+  return activeSandbox
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {}
   if (token) headers['authorization'] = `Bearer ${token}`
+  if (activeSandbox) headers['x-epiphany-sandbox'] = activeSandbox
   if (body !== undefined) headers['content-type'] = 'application/json'
   const response = await fetch(path, {
     method,
@@ -128,6 +144,44 @@ export async function batchWrite(
   return request<BatchResult>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/cells/batch`, {
     writes,
   })
+}
+
+// ---- sandboxes (what-if, ADR-0014) ----
+
+/** A what-if sandbox as returned by the server. */
+export interface SandboxDto {
+  name: string
+  owner: string
+  created: number
+  updated: number
+  cell_count: number
+}
+
+function sandboxBase(cube: string): string {
+  return `/api/v1/cubes/${encodeURIComponent(cube)}/sandboxes`
+}
+
+export async function listSandboxes(cube: string): Promise<SandboxDto[]> {
+  const result = await request<{ sandboxes: SandboxDto[] }>('GET', sandboxBase(cube))
+  return result.sandboxes
+}
+
+export async function createSandbox(cube: string, name: string): Promise<SandboxDto> {
+  return request<SandboxDto>('POST', sandboxBase(cube), { name })
+}
+
+export async function deleteSandbox(cube: string, name: string): Promise<void> {
+  return request<void>('DELETE', `${sandboxBase(cube)}/${encodeURIComponent(name)}`)
+}
+
+export async function commitSandbox(
+  cube: string,
+  name: string,
+): Promise<{ version: number; committed: number }> {
+  return request<{ version: number; committed: number }>(
+    'POST',
+    `${sandboxBase(cube)}/${encodeURIComponent(name)}/commit`,
+  )
 }
 
 // ---- subsets, views, and cellsets (Phase 3) ----
@@ -209,6 +263,8 @@ export interface CellsetCellDto {
   kind: 'numeric' | 'string'
   editable: boolean
   ordinal: number
+  /** True when the value is a what-if override from the active sandbox. */
+  overlaid: boolean
 }
 
 export interface CellsetDto {

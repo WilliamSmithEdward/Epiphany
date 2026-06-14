@@ -84,13 +84,20 @@ export default function CellsetGrid({
               if (!cell) return <td key={c} className="cell" />
               if (!cell.editable) {
                 return (
-                  <td key={c} className="cell consolidated">
+                  <td
+                    key={c}
+                    className={cell.overlaid ? 'cell consolidated overlaid' : 'cell consolidated'}
+                  >
                     {cell.value ?? ''}
                   </td>
                 )
               }
               return (
-                <td key={c} className="cell">
+                <td
+                  key={c}
+                  className={cell.overlaid ? 'cell overlaid' : 'cell'}
+                  title={cell.overlaid ? 'Uncommitted what-if value' : undefined}
+                >
                   <input
                     key={cell.value ?? ''}
                     defaultValue={cell.value ?? ''}
