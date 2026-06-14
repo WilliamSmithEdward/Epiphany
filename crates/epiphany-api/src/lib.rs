@@ -13,7 +13,7 @@
 use std::sync::{Arc, Mutex};
 
 use axum::extract::State;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
 
@@ -36,6 +36,7 @@ mod resolve;
 mod routes;
 mod rule_routes;
 mod sandbox_routes;
+mod security_routes;
 mod session;
 mod ws;
 
@@ -238,6 +239,32 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/cubes/{cube}/sandboxes/{name}/commit",
             post(sandbox_routes::commit_sandbox),
         )
+        // Security administration (admin only, ADR-0015 + ADR-0010).
+        .route(
+            "/api/v1/users",
+            get(security_routes::list_users).post(security_routes::create_user),
+        )
+        .route(
+            "/api/v1/users/{username}",
+            patch(security_routes::patch_user).delete(security_routes::delete_user),
+        )
+        .route(
+            "/api/v1/groups",
+            get(security_routes::list_groups).post(security_routes::create_group),
+        )
+        .route(
+            "/api/v1/groups/{name}",
+            delete(security_routes::delete_group),
+        )
+        .route(
+            "/api/v1/acl/objects",
+            get(security_routes::list_object_acls).put(security_routes::put_object_acl),
+        )
+        .route(
+            "/api/v1/acl/elements",
+            get(security_routes::list_element_acls).put(security_routes::put_element_acl),
+        )
+        .route("/api/v1/audit", get(security_routes::query_audit))
         .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/logout", post(auth::logout))

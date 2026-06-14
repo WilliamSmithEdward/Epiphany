@@ -25,6 +25,14 @@ pub struct Principal {
     pub groups: Vec<String>,
 }
 
+/// A user summary for the admin listing surface (never includes the hash).
+#[derive(Debug, Clone)]
+pub struct UserView {
+    pub username: String,
+    pub is_admin: bool,
+    pub groups: Vec<String>,
+}
+
 /// A randomly generated admin password, surfaced exactly once on first run.
 /// Its `Debug` redacts the value so it never lands in logs (RG-13).
 pub struct GeneratedAdminPassword(pub String);
@@ -235,6 +243,109 @@ impl SecurityStore {
     /// Number of users.
     pub fn user_count(&self) -> usize {
         self.users.len()
+    }
+
+    // ---- admin management (Phase 7) ----
+
+    /// All users (without hashes), for the admin listing surface.
+    pub fn list_users(&self) -> Vec<UserView> {
+        self.users
+            .iter()
+            .map(|(username, u)| UserView {
+                username: username.clone(),
+                is_admin: u.is_admin,
+                groups: u.groups.iter().cloned().collect(),
+            })
+            .collect()
+    }
+
+    /// Create a user with an initial group set (admin operation), persisting.
+    pub fn create_user_with_groups(
+        &mut self,
+        username: &str,
+        password: &str,
+        is_admin: bool,
+        groups: &[String],
+    ) -> Result<(), SecurityError> {
+        let refs: Vec<&str> = groups.iter().map(String::as_str).collect();
+        self.insert_user(username, password, is_admin, false, &refs)?;
+        for g in groups {
+            self.groups.insert(g.clone());
+        }
+        self.save()
+    }
+
+    /// Delete a user. Returns whether one was removed; persists on change.
+    pub fn delete_user(&mut self, username: &str) -> Result<bool, SecurityError> {
+        let removed = self.users.remove(username).is_some();
+        if removed {
+            self.save()?;
+        }
+        Ok(removed)
+    }
+
+    /// Set a user's admin flag, persisting.
+    pub fn set_user_admin(&mut self, username: &str, is_admin: bool) -> Result<(), SecurityError> {
+        let user = self
+            .users
+            .get_mut(username)
+            .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
+        user.is_admin = is_admin;
+        self.save()
+    }
+
+    /// Replace a user's group membership, persisting (and registering any new
+    /// groups in the global set).
+    pub fn set_user_groups(
+        &mut self,
+        username: &str,
+        groups: &[String],
+    ) -> Result<(), SecurityError> {
+        let user = self
+            .users
+            .get_mut(username)
+            .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
+        user.groups = groups.iter().cloned().collect();
+        for g in groups {
+            self.groups.insert(g.clone());
+        }
+        self.save()
+    }
+
+    /// Reset a user's password (admin operation), persisting.
+    pub fn reset_password(&mut self, username: &str, new: &str) -> Result<(), SecurityError> {
+        let new_hash = hash_password(new, self.fast_kdf)?;
+        let user = self
+            .users
+            .get_mut(username)
+            .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
+        user.password_hash = new_hash;
+        self.save()
+    }
+
+    /// All group names.
+    pub fn list_groups(&self) -> Vec<String> {
+        self.groups.iter().cloned().collect()
+    }
+
+    /// Create a group (idempotent), persisting.
+    pub fn create_group(&mut self, name: &str) -> Result<(), SecurityError> {
+        self.groups.insert(name.to_string());
+        self.save()
+    }
+
+    /// Delete a group and remove it from every user's membership. Returns whether
+    /// it existed; persists on change. (Any grants naming it become dangling and
+    /// are simply never consulted, per ADR-0015.)
+    pub fn delete_group(&mut self, name: &str) -> Result<bool, SecurityError> {
+        let removed = self.groups.remove(name);
+        if removed {
+            for user in self.users.values_mut() {
+                user.groups.remove(name);
+            }
+            self.save()?;
+        }
+        Ok(removed)
     }
 
     // ---- access resolution (ADR-0015) ----

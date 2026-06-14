@@ -12,7 +12,7 @@ mod store;
 
 pub use acl::{AccessLevel, AccessList, ObjectKind, ObjectRef, Subject};
 pub use audit::{AuditAction, AuditFilter, AuditLog, AuditRecord};
-pub use store::{GeneratedAdminPassword, Principal, SecurityError, SecurityStore};
+pub use store::{GeneratedAdminPassword, Principal, SecurityError, SecurityStore, UserView};
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-security";

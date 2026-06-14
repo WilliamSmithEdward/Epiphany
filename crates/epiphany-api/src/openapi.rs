@@ -371,6 +371,88 @@ fn document() -> Value {
             "/api/v1/ws": { "get": {
                 "summary": "WebSocket change-notification stream", "security": bearer(),
                 "responses": { "101": { "description": "Switching protocols (WebSocket)" } }
+            }},
+            "/api/v1/users": {
+                "get": {
+                    "summary": "List all users (admin)", "security": bearer(),
+                    "responses": ok("The users, their admin flag, and group membership")
+                },
+                "post": {
+                    "summary": "Create a user (admin)", "security": bearer(),
+                    "requestBody": json_body("#/components/schemas/CreateUserRequest"),
+                    "responses": {
+                        "201": { "description": "Created" },
+                        "409": { "description": "A user of that name exists", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                    }
+                }
+            },
+            "/api/v1/users/{username}": {
+                "patch": {
+                    "summary": "Update a user's admin flag, groups, or password (admin)",
+                    "security": bearer(),
+                    "parameters": [username_param()],
+                    "requestBody": json_body("#/components/schemas/PatchUserRequest"),
+                    "responses": { "204": { "description": "Updated" } }
+                },
+                "delete": {
+                    "summary": "Delete a user (admin)", "security": bearer(),
+                    "parameters": [username_param()],
+                    "responses": { "204": { "description": "Deleted" } }
+                }
+            },
+            "/api/v1/groups": {
+                "get": {
+                    "summary": "List all groups (admin)", "security": bearer(),
+                    "responses": ok("The group names")
+                },
+                "post": {
+                    "summary": "Create a group (admin)", "security": bearer(),
+                    "requestBody": json_body("#/components/schemas/CreateGroupRequest"),
+                    "responses": { "201": { "description": "Created" } }
+                }
+            },
+            "/api/v1/groups/{name}": { "delete": {
+                "summary": "Delete a group (admin)", "security": bearer(),
+                "parameters": [name_param()],
+                "responses": { "204": { "description": "Deleted" } }
+            }},
+            "/api/v1/acl/objects": {
+                "get": {
+                    "summary": "List all object grants (admin)", "security": bearer(),
+                    "responses": ok("The object grants")
+                },
+                "put": {
+                    "summary": "Grant or (with level 'none') revoke object access (admin)",
+                    "security": bearer(),
+                    "requestBody": json_body("#/components/schemas/ObjectGrant"),
+                    "responses": { "204": { "description": "Applied" } }
+                }
+            },
+            "/api/v1/acl/elements": {
+                "get": {
+                    "summary": "List all element grants (admin)", "security": bearer(),
+                    "responses": ok("The element grants")
+                },
+                "put": {
+                    "summary": "Grant or (with level 'none') revoke element access (admin)",
+                    "security": bearer(),
+                    "requestBody": json_body("#/components/schemas/ElementGrant"),
+                    "responses": { "204": { "description": "Applied" } }
+                }
+            },
+            "/api/v1/audit": { "get": {
+                "summary": "Query the audit log (admin)", "security": bearer(),
+                "parameters": [
+                    { "name": "actor", "in": "query", "required": false, "schema": { "type": "string" } },
+                    { "name": "action", "in": "query", "required": false, "schema": { "type": "string" }, "description": "An action token, e.g. access_denied" },
+                    { "name": "target", "in": "query", "required": false, "schema": { "type": "string" } },
+                    { "name": "outcome", "in": "query", "required": false, "schema": { "type": "string", "enum": ["allowed", "denied"] } },
+                    { "name": "from", "in": "query", "required": false, "schema": { "type": "integer", "format": "int64" }, "description": "Inclusive lower bound on timestamp (millis)" },
+                    { "name": "to", "in": "query", "required": false, "schema": { "type": "integer", "format": "int64" }, "description": "Inclusive upper bound on timestamp (millis)" },
+                    { "name": "offset", "in": "query", "required": false, "schema": { "type": "integer" } },
+                    { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer" } }
+                ],
+                "responses": ok("The matching audit records")
             }}
         },
         "components": {
@@ -479,7 +561,35 @@ fn document() -> Value {
                     "name": { "type": "string", "description": "Unique sandbox name within the cube" } },
                     "required": ["name"] },
                 "SandboxCommit": { "type": "object", "properties": {
-                    "base_version": { "type": "integer", "format": "int64", "description": "Optimistic base version; omit for last-writer-wins" } } }
+                    "base_version": { "type": "integer", "format": "int64", "description": "Optimistic base version; omit for last-writer-wins" } } },
+                "CreateUserRequest": { "type": "object", "properties": {
+                    "username": { "type": "string" },
+                    "password": { "type": "string" },
+                    "is_admin": { "type": "boolean" },
+                    "groups": { "type": "array", "items": { "type": "string" } } },
+                    "required": ["username", "password"] },
+                "PatchUserRequest": { "type": "object", "properties": {
+                    "is_admin": { "type": "boolean" },
+                    "groups": { "type": "array", "items": { "type": "string" } },
+                    "password": { "type": "string", "description": "Reset the user's password" } } },
+                "CreateGroupRequest": { "type": "object", "properties": {
+                    "name": { "type": "string" } }, "required": ["name"] },
+                "ObjectGrant": { "type": "object", "properties": {
+                    "kind": { "type": "string", "description": "Object kind, e.g. cube, rule, flow, view, subset, connection, sandbox" },
+                    "cube": { "type": "string", "description": "Owning cube for cube-scoped kinds; omit for global kinds" },
+                    "name": { "type": "string" },
+                    "subject_kind": { "type": "string", "enum": ["user", "group"] },
+                    "subject": { "type": "string" },
+                    "level": { "type": "string", "enum": ["none", "read", "write", "admin"], "description": "'none' revokes the grant" } },
+                    "required": ["kind", "name", "subject_kind", "subject", "level"] },
+                "ElementGrant": { "type": "object", "properties": {
+                    "cube": { "type": "string" },
+                    "dimension": { "type": "string" },
+                    "element": { "type": "string" },
+                    "subject_kind": { "type": "string", "enum": ["user", "group"] },
+                    "subject": { "type": "string" },
+                    "level": { "type": "string", "enum": ["none", "read", "write", "admin"], "description": "'none' revokes the grant" } },
+                    "required": ["cube", "dimension", "element", "subject_kind", "subject", "level"] }
             }
         }
     })
@@ -502,6 +612,13 @@ fn dim_param() -> Value {
 fn name_param() -> Value {
     json!({
         "name": "name", "in": "path", "required": true,
+        "schema": { "type": "string" }
+    })
+}
+
+fn username_param() -> Value {
+    json!({
+        "name": "username", "in": "path", "required": true,
         "schema": { "type": "string" }
     })
 }
@@ -553,6 +670,13 @@ mod tests {
         "/api/v1/cubes/{cube}/sandboxes/{name}",
         "/api/v1/cubes/{cube}/sandboxes/{name}/commit",
         "/api/v1/ws",
+        "/api/v1/users",
+        "/api/v1/users/{username}",
+        "/api/v1/groups",
+        "/api/v1/groups/{name}",
+        "/api/v1/acl/objects",
+        "/api/v1/acl/elements",
+        "/api/v1/audit",
     ];
 
     #[test]

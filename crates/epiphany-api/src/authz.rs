@@ -39,6 +39,30 @@ fn audit_ref(obj: &ObjectRef) -> (String, String) {
     (obj.kind.as_str().to_string(), target)
 }
 
+/// Gate a request on administrator status, re-resolved from the live store so a
+/// demoted admin loses access immediately. On denial emits `AccessDenied` and
+/// returns 403. Used for the server-global security-admin surface.
+pub(crate) fn require_admin(state: &AppState, auth: &AuthPrincipal) -> Result<(), ApiError> {
+    let is_admin = state
+        .security
+        .lock()
+        .expect("security mutex")
+        .principal(&auth.principal.username)
+        .is_some_and(|p| p.is_admin);
+    if is_admin {
+        Ok(())
+    } else {
+        audit(
+            state,
+            &auth.principal.username,
+            AuditAction::AccessDenied,
+            None,
+            false,
+        );
+        Err(ApiError::forbidden("administrator access required"))
+    }
+}
+
 /// The caller's cube-level access (ADR-0015 decision 2a), for filtering lists
 /// without erroring.
 pub(crate) fn cube_level(state: &AppState, username: &str, cube: &str) -> AccessLevel {

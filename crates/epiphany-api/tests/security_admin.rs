@@ -1,0 +1,450 @@
+//! Security-administration acceptance (Phase 7F): the admin REST surface for
+//! users, groups, object/element ACLs (ADR-0015), and the audit query (ADR-0010).
+//! Every route is admin-only and every mutation lands an audit record.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use axum::Router;
+use epiphany_api::{build_router, AppState, SessionStore};
+use epiphany_core::{Cube, Dimension};
+use epiphany_determinism::{IdGen, ManualClock};
+use epiphany_engine::Engine;
+use epiphany_mdx::MdxEvaluator;
+use epiphany_persist::Store;
+use epiphany_security::{AuditLog, SecurityStore};
+use http_body_util::BodyExt;
+use serde_json::{json, Value};
+use tower::ServiceExt;
+
+fn sales_cube() -> Cube {
+    let mut region = Dimension::new("Region");
+    region.add_leaf("North");
+    let mut measure = Dimension::new("Measure");
+    measure.add_leaf("Sales");
+    Cube::new("Sales", vec![region, measure]).unwrap()
+}
+
+fn harness(name: &str) -> Router {
+    let dir = std::env::temp_dir().join(format!("epiphany-secadmin-{}-{name}", std::process::id()));
+    std::fs::remove_dir_all(&dir).ok();
+    let store = Store::create(dir, sales_cube()).unwrap();
+    let mut stores = BTreeMap::new();
+    stores.insert("Sales".to_string(), store);
+    let mut sec = SecurityStore::with_admin("admin", "pw", true);
+    sec.create_user("ann", "pw", false).unwrap();
+    let state = AppState {
+        engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
+        clock: Arc::new(ManualClock::new(1_000)),
+        security: Arc::new(Mutex::new(sec)),
+        sessions: Arc::new(Mutex::new(SessionStore::new(60_000))),
+        events: tokio::sync::broadcast::channel(16).0,
+        mdx: Arc::new(MdxEvaluator::new()),
+        cells: Arc::new(epiphany_engine::StoredCellsFactory),
+        command_connectors_enabled: false,
+        audit: Arc::new(Mutex::new(AuditLog::in_memory())),
+    };
+    build_router(state)
+}
+
+async fn login(app: &Router, user: &str, pass: &str) -> Option<String> {
+    let body = json!({ "username": user, "password": pass }).to_string();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    if resp.status() != StatusCode::OK {
+        return None;
+    }
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    Some(v["token"].as_str().unwrap().to_string())
+}
+
+/// Issue an authenticated request with an optional JSON body; return status and
+/// parsed body (Null for an empty body).
+async fn call(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"));
+    let body = match body {
+        Some(v) => {
+            req = req.header("content-type", "application/json");
+            Body::from(v.to_string())
+        }
+        None => Body::empty(),
+    };
+    let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, v)
+}
+
+async fn read_status(app: &Router, token: &str) -> StatusCode {
+    call(
+        app,
+        "POST",
+        "/api/v1/cubes/Sales/cells/read",
+        token,
+        Some(json!({ "coords": [{ "Region": "North", "Measure": "Sales" }] })),
+    )
+    .await
+    .0
+}
+
+async fn write_status(app: &Router, token: &str) -> StatusCode {
+    call(
+        app,
+        "PUT",
+        "/api/v1/cubes/Sales/cell",
+        token,
+        Some(json!({ "coord": { "Region": "North", "Measure": "Sales" }, "value": "5" })),
+    )
+    .await
+    .0
+}
+
+#[tokio::test]
+async fn non_admin_is_forbidden_from_every_admin_route() {
+    let app = harness("nonadmin");
+    let ann = login(&app, "ann", "pw").await.unwrap();
+
+    for (method, uri, body) in [
+        ("GET", "/api/v1/users", None),
+        (
+            "POST",
+            "/api/v1/users",
+            Some(json!({ "username": "x", "password": "pw" })),
+        ),
+        ("GET", "/api/v1/groups", None),
+        ("GET", "/api/v1/acl/objects", None),
+        ("GET", "/api/v1/acl/elements", None),
+        ("GET", "/api/v1/audit", None),
+    ] {
+        let (status, _) = call(&app, method, uri, &ann, body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+    }
+}
+
+#[tokio::test]
+async fn admin_manages_users_groups_and_membership() {
+    let app = harness("users");
+    let admin = login(&app, "admin", "pw").await.unwrap();
+
+    // Create a user.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/users",
+        &admin,
+        Some(json!({ "username": "carl", "password": "pw", "is_admin": false })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    // The new user can authenticate.
+    assert!(login(&app, "carl", "pw").await.is_some());
+
+    // A duplicate is a conflict.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/users",
+        &admin,
+        Some(json!({ "username": "carl", "password": "pw" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Create a group and put carl in it.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/groups",
+        &admin,
+        Some(json!({ "name": "editors" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(
+        &app,
+        "PATCH",
+        "/api/v1/users/carl",
+        &admin,
+        Some(json!({ "groups": ["editors"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // The listing reflects the membership.
+    let (status, users) = call(&app, "GET", "/api/v1/users", &admin, None).await;
+    assert_eq!(status, StatusCode::OK);
+    let carl = users["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|u| u["username"] == "carl")
+        .unwrap();
+    assert_eq!(carl["groups"], json!(["editors"]));
+    assert_eq!(carl["is_admin"], false);
+
+    // Reset carl's password; the old one stops working, the new one works.
+    let (status, _) = call(
+        &app,
+        "PATCH",
+        "/api/v1/users/carl",
+        &admin,
+        Some(json!({ "password": "pw2" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(login(&app, "carl", "pw").await.is_none());
+    assert!(login(&app, "carl", "pw2").await.is_some());
+
+    // Promote carl to admin; he can now reach the admin surface.
+    let carl_before = login(&app, "carl", "pw2").await.unwrap();
+    assert_eq!(
+        call(&app, "GET", "/api/v1/users", &carl_before, None)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, _) = call(
+        &app,
+        "PATCH",
+        "/api/v1/users/carl",
+        &admin,
+        Some(json!({ "is_admin": true })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // A freshly minted session resolves the new admin status.
+    let carl_admin = login(&app, "carl", "pw2").await.unwrap();
+    assert_eq!(
+        call(&app, "GET", "/api/v1/users", &carl_admin, None)
+            .await
+            .0,
+        StatusCode::OK
+    );
+
+    // Delete the group, then the user.
+    assert_eq!(
+        call(&app, "DELETE", "/api/v1/groups/editors", &admin, None)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let (_, groups) = call(&app, "GET", "/api/v1/groups", &admin, None).await;
+    assert!(!groups["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|g| g == "editors"));
+    assert_eq!(
+        call(&app, "DELETE", "/api/v1/users/carl", &admin, None)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert!(login(&app, "carl", "pw2").await.is_none());
+    // Deleting an absent user is a 404.
+    assert_eq!(
+        call(&app, "DELETE", "/api/v1/users/carl", &admin, None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn object_grant_via_rest_governs_cube_access() {
+    let app = harness("objacl");
+    let admin = login(&app, "admin", "pw").await.unwrap();
+    let ann = login(&app, "ann", "pw").await.unwrap();
+
+    // Add a second non-admin, in a group.
+    call(
+        &app,
+        "POST",
+        "/api/v1/users",
+        &admin,
+        Some(json!({ "username": "dan", "password": "pw", "groups": ["viewers"] })),
+    )
+    .await;
+    let dan = login(&app, "dan", "pw").await.unwrap();
+
+    // Unmanaged: both can read.
+    assert_eq!(read_status(&app, &ann).await, StatusCode::OK);
+    assert_eq!(read_status(&app, &dan).await, StatusCode::OK);
+
+    // Grant the group Read on the cube via REST: now the cube is managed.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/acl/objects",
+        &admin,
+        Some(json!({
+            "kind": "cube", "name": "Sales",
+            "subject_kind": "group", "subject": "viewers", "level": "read"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // dan (in viewers) reads but cannot write; ann (ungranted) is denied.
+    assert_eq!(read_status(&app, &dan).await, StatusCode::OK);
+    assert_eq!(write_status(&app, &dan).await, StatusCode::FORBIDDEN);
+    assert_eq!(read_status(&app, &ann).await, StatusCode::FORBIDDEN);
+
+    // The grant is listed.
+    let (_, grants) = call(&app, "GET", "/api/v1/acl/objects", &admin, None).await;
+    let g = &grants["grants"].as_array().unwrap()[0];
+    assert_eq!(g["kind"], "cube");
+    assert_eq!(g["name"], "Sales");
+    assert_eq!(g["subject_kind"], "group");
+    assert_eq!(g["subject"], "viewers");
+    assert_eq!(g["level"], "read");
+
+    // Revoke (level none): the cube becomes unmanaged again, ann reads once more.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/acl/objects",
+        &admin,
+        Some(json!({
+            "kind": "cube", "name": "Sales",
+            "subject_kind": "group", "subject": "viewers", "level": "none"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, grants) = call(&app, "GET", "/api/v1/acl/objects", &admin, None).await;
+    assert!(grants["grants"].as_array().unwrap().is_empty());
+    assert_eq!(read_status(&app, &ann).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn element_grant_roundtrips_via_rest() {
+    let app = harness("elemacl");
+    let admin = login(&app, "admin", "pw").await.unwrap();
+
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/acl/elements",
+        &admin,
+        Some(json!({
+            "cube": "Sales", "dimension": "Region", "element": "North",
+            "subject_kind": "user", "subject": "ann", "level": "read"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, grants) = call(&app, "GET", "/api/v1/acl/elements", &admin, None).await;
+    let g = &grants["grants"].as_array().unwrap()[0];
+    assert_eq!(g["cube"], "Sales");
+    assert_eq!(g["dimension"], "Region");
+    assert_eq!(g["element"], "North");
+    assert_eq!(g["subject"], "ann");
+    assert_eq!(g["level"], "read");
+
+    // A bad level is a 400.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/acl/elements",
+        &admin,
+        Some(json!({
+            "cube": "Sales", "dimension": "Region", "element": "North",
+            "subject_kind": "user", "subject": "ann", "level": "super"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Revoke.
+    call(
+        &app,
+        "PUT",
+        "/api/v1/acl/elements",
+        &admin,
+        Some(json!({
+            "cube": "Sales", "dimension": "Region", "element": "North",
+            "subject_kind": "user", "subject": "ann", "level": "none"
+        })),
+    )
+    .await;
+    let (_, grants) = call(&app, "GET", "/api/v1/acl/elements", &admin, None).await;
+    assert!(grants["grants"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn audit_query_filters_logins_changes_and_denials() {
+    let app = harness("audit");
+    let admin = login(&app, "admin", "pw").await.unwrap();
+
+    // A denied admin attempt by a non-admin lands an access_denied record.
+    let ann = login(&app, "ann", "pw").await.unwrap();
+    call(&app, "GET", "/api/v1/users", &ann, None).await;
+
+    // A user-change (create) lands a user_change record.
+    call(
+        &app,
+        "POST",
+        "/api/v1/users",
+        &admin,
+        Some(json!({ "username": "eve", "password": "pw" })),
+    )
+    .await;
+
+    // Logins are audited too.
+    let (status, all) = call(&app, "GET", "/api/v1/audit", &admin, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!all["records"].as_array().unwrap().is_empty());
+
+    // Filter to denials only.
+    let (_, denied) = call(&app, "GET", "/api/v1/audit?outcome=denied", &admin, None).await;
+    let denials = denied["records"].as_array().unwrap();
+    assert!(!denials.is_empty());
+    assert!(denials.iter().all(|r| r["allowed"] == false));
+    assert!(denials.iter().any(|r| r["action"] == "access_denied"));
+
+    // Filter by action token.
+    let (_, changes) = call(
+        &app,
+        "GET",
+        "/api/v1/audit?action=user_change",
+        &admin,
+        None,
+    )
+    .await;
+    let changes = changes["records"].as_array().unwrap();
+    assert!(!changes.is_empty());
+    assert!(changes.iter().all(|r| r["action"] == "user_change"));
+
+    // Filter by actor.
+    let (_, by_actor) = call(&app, "GET", "/api/v1/audit?actor=ann", &admin, None).await;
+    let recs = by_actor["records"].as_array().unwrap();
+    assert!(!recs.is_empty());
+    assert!(recs.iter().all(|r| r["actor"] == "ann"));
+}
