@@ -11,6 +11,12 @@
 //! is checkpointed immediately. Because growth is append-only, the element
 //! indices a WAL record names stay valid against the snapshot they replay onto;
 //! elements are never removed or reordered.
+//!
+//! Single-process: one process owns a cube's data directory at a time. Within a
+//! process the engine serializes writers with a per-cube lock; the store does
+//! not take an OS file lock, so concurrent processes over the same directory are
+//! unsupported (the snapshot rename is atomic on every platform, but the WAL is
+//! not coordinated across processes).
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};

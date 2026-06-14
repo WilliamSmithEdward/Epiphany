@@ -39,8 +39,11 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
-      - name: Ensure clippy
-        run: rustup component add clippy
+      # Refresh to the current stable: some runner images ship an older
+      # preinstalled stable than a dependency's MSRV, and a pinned `channel =
+      # "stable"` uses the installed one without updating it.
+      - name: Use current stable Rust
+        run: rustup update stable && rustup default stable && rustup component add clippy
       - name: Cache cargo
         uses: actions/cache@v5
         with:
@@ -101,6 +104,8 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v6
+      - name: Use current stable Rust
+        run: rustup update stable && rustup default stable
       - uses: actions/setup-node@v6
         with:
           node-version-file: .node-version
