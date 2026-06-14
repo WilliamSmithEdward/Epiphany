@@ -16,5 +16,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0010](0010-audit-logging.md) | Audit / user-action logging | Proposed | 7/8 |
 | [0011](0011-mdx-seam-and-execution.md) | MDX evaluator seam, execute-time resolution, and zero-suppression | Accepted | 3 |
 | [0012](0012-data-source-connectors.md) | Data-source connectors (command, HTTP) and the fetch/transform split | Accepted | 5+ |
+| [0013](0013-flow-scheduling-and-orchestration.md) | Flow scheduling and orchestration | Proposed | 8 |
 
-> All originally-reserved ADR numbers are allocated; later decisions continue from 0012.
+> All originally-reserved ADR numbers are allocated; later decisions continue from 0013.
