@@ -9,12 +9,13 @@
 //! that references them by name, so it stays forward-compatible with a future
 //! multi-cube model that shares dimensions.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
+use crate::query::{AxisSpec, Model, Subset, SubsetKind, View, Visibility};
 use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
 const FORMAT_TAG: &str = "epiphany-model/v0";
@@ -112,6 +113,12 @@ struct ModelDoc {
     cells: Vec<CellDoc>,
     #[serde(default, rename = "string_cell", skip_serializing_if = "Vec::is_empty")]
     string_cells: Vec<StringCellDoc>,
+    // Subsets and views are optional and skipped when empty, so a model without
+    // them serializes byte-identically to the pre-3E (cube-only) format.
+    #[serde(default, rename = "subset", skip_serializing_if = "Vec::is_empty")]
+    subsets: Vec<SubsetDoc>,
+    #[serde(default, rename = "view", skip_serializing_if = "Vec::is_empty")]
+    views: Vec<ViewDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -184,6 +191,201 @@ struct CellDoc {
 struct StringCellDoc {
     coord: Vec<String>,
     value: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum VisibilityDoc {
+    Public,
+    Private,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum SubsetKindDoc {
+    Static,
+    Dynamic,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SubsetDoc {
+    name: String,
+    dimension: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    visibility: VisibilityDoc,
+    kind: SubsetKindDoc,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    members: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mdx: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum AxisSpecTypeDoc {
+    Subset,
+    Members,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AxisSpecDoc {
+    dimension: String,
+    #[serde(rename = "type")]
+    spec_type: AxisSpecTypeDoc,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    subset: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    members: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ContextDoc {
+    dimension: String,
+    member: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ViewDoc {
+    name: String,
+    cube: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    visibility: VisibilityDoc,
+    #[serde(default)]
+    suppress_zeros: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    rows: Vec<AxisSpecDoc>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    columns: Vec<AxisSpecDoc>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    context: Vec<ContextDoc>,
+}
+
+impl From<Visibility> for VisibilityDoc {
+    fn from(v: Visibility) -> Self {
+        match v {
+            Visibility::Public => VisibilityDoc::Public,
+            Visibility::Private => VisibilityDoc::Private,
+        }
+    }
+}
+
+impl From<VisibilityDoc> for Visibility {
+    fn from(v: VisibilityDoc) -> Self {
+        match v {
+            VisibilityDoc::Public => Visibility::Public,
+            VisibilityDoc::Private => Visibility::Private,
+        }
+    }
+}
+
+fn subset_doc(subset: &Subset) -> SubsetDoc {
+    let (kind, members, mdx) = match &subset.kind {
+        SubsetKind::Static { members } => (SubsetKindDoc::Static, members.clone(), None),
+        SubsetKind::Dynamic { mdx } => (SubsetKindDoc::Dynamic, Vec::new(), Some(mdx.clone())),
+    };
+    SubsetDoc {
+        name: subset.name.clone(),
+        dimension: subset.dimension.clone(),
+        owner: subset.owner.clone(),
+        visibility: subset.visibility.into(),
+        kind,
+        members,
+        mdx,
+    }
+}
+
+fn build_subset(doc: &SubsetDoc) -> Subset {
+    let kind = match doc.kind {
+        SubsetKindDoc::Static => SubsetKind::Static {
+            members: doc.members.clone(),
+        },
+        SubsetKindDoc::Dynamic => SubsetKind::Dynamic {
+            mdx: doc.mdx.clone().unwrap_or_default(),
+        },
+    };
+    Subset {
+        name: doc.name.clone(),
+        dimension: doc.dimension.clone(),
+        owner: doc.owner.clone(),
+        visibility: doc.visibility.into(),
+        kind,
+    }
+}
+
+fn axis_doc(axis: &[AxisSpec]) -> Vec<AxisSpecDoc> {
+    axis.iter()
+        .map(|spec| match spec {
+            AxisSpec::Subset { dimension, subset } => AxisSpecDoc {
+                dimension: dimension.clone(),
+                spec_type: AxisSpecTypeDoc::Subset,
+                subset: Some(subset.clone()),
+                members: Vec::new(),
+            },
+            AxisSpec::Members { dimension, members } => AxisSpecDoc {
+                dimension: dimension.clone(),
+                spec_type: AxisSpecTypeDoc::Members,
+                subset: None,
+                members: members.clone(),
+            },
+        })
+        .collect()
+}
+
+fn build_axis(docs: &[AxisSpecDoc]) -> Vec<AxisSpec> {
+    docs.iter()
+        .map(|d| match d.spec_type {
+            AxisSpecTypeDoc::Subset => AxisSpec::Subset {
+                dimension: d.dimension.clone(),
+                subset: d.subset.clone().unwrap_or_default(),
+            },
+            AxisSpecTypeDoc::Members => AxisSpec::Members {
+                dimension: d.dimension.clone(),
+                members: d.members.clone(),
+            },
+        })
+        .collect()
+}
+
+fn view_doc(view: &View) -> ViewDoc {
+    // Context is sorted by dimension for canonical, order-independent output.
+    let mut context: Vec<ContextDoc> = view
+        .context
+        .iter()
+        .map(|(dimension, member)| ContextDoc {
+            dimension: dimension.clone(),
+            member: member.clone(),
+        })
+        .collect();
+    context.sort_by(|a, b| a.dimension.cmp(&b.dimension));
+    ViewDoc {
+        name: view.name.clone(),
+        cube: view.cube.clone(),
+        owner: view.owner.clone(),
+        visibility: view.visibility.into(),
+        suppress_zeros: view.suppress_zeros,
+        rows: axis_doc(&view.rows),
+        columns: axis_doc(&view.columns),
+        context,
+    }
+}
+
+fn build_view(doc: &ViewDoc) -> View {
+    View {
+        name: doc.name.clone(),
+        cube: doc.cube.clone(),
+        owner: doc.owner.clone(),
+        visibility: doc.visibility.into(),
+        rows: build_axis(&doc.rows),
+        columns: build_axis(&doc.columns),
+        context: doc
+            .context
+            .iter()
+            .map(|c| (c.dimension.clone(), c.member.clone()))
+            .collect(),
+        suppress_zeros: doc.suppress_zeros,
+    }
 }
 
 impl From<ElementKind> for KindDoc {
@@ -339,101 +541,165 @@ fn resolve_coord(cube: &Cube, cube_name: &str, names: &[String]) -> Result<Vec<u
     Ok(coord)
 }
 
-impl Cube {
-    /// Serialize this cube and its dimensions to canonical model-as-code TOML.
-    pub fn to_model_text(&self) -> Result<String, SaveError> {
-        let dimensions: Vec<DimDoc> = self.dimensions().iter().map(dim_doc).collect();
+/// Build the canonical serialized document for a cube plus already-built subset
+/// and view docs. Shared by [`Cube::to_model_text`] (empty subsets/views) and
+/// [`Model::to_model_text`].
+fn build_model_doc(cube: &Cube, subsets: Vec<SubsetDoc>, views: Vec<ViewDoc>) -> ModelDoc {
+    let dimensions: Vec<DimDoc> = cube.dimensions().iter().map(dim_doc).collect();
 
-        // Cells, sorted by coordinate (element-index tuple) for canonical output.
-        let mut sorted: Vec<(Vec<u32>, Fixed)> = self.cell_entries().collect();
-        sorted.sort_by(|a, b| a.0.cmp(&b.0));
-        let coord_names = |coord: &[u32]| -> Vec<String> {
-            coord
+    let coord_names = |coord: &[u32]| -> Vec<String> {
+        coord
+            .iter()
+            .enumerate()
+            .map(|(d, &idx)| {
+                cube.dimension(d)
+                    .element(idx)
+                    .expect("valid index")
+                    .name
+                    .clone()
+            })
+            .collect()
+    };
+
+    // Cells, sorted by coordinate (element-index tuple) for canonical output.
+    let mut sorted: Vec<(Vec<u32>, Fixed)> = cube.cell_entries().collect();
+    sorted.sort_by(|a, b| a.0.cmp(&b.0));
+    let cells: Vec<CellDoc> = sorted
+        .into_iter()
+        .map(|(coord, value)| CellDoc {
+            coord: coord_names(&coord),
+            value: value.to_string(),
+        })
+        .collect();
+
+    // String cells, sorted by coordinate for canonical output.
+    let mut sorted_strings: Vec<(Vec<u32>, String)> = cube
+        .string_cell_entries()
+        .map(|(coord, value)| (coord, value.to_string()))
+        .collect();
+    sorted_strings.sort_by(|a, b| a.0.cmp(&b.0));
+    let string_cells: Vec<StringCellDoc> = sorted_strings
+        .into_iter()
+        .map(|(coord, value)| StringCellDoc {
+            coord: coord_names(&coord),
+            value,
+        })
+        .collect();
+
+    ModelDoc {
+        format: FORMAT_TAG.to_string(),
+        cube: CubeDoc {
+            name: cube.name().to_string(),
+            dimensions: cube
+                .dimensions()
                 .iter()
-                .enumerate()
-                .map(|(d, &idx)| {
-                    self.dimension(d)
-                        .element(idx)
-                        .expect("valid index")
-                        .name
-                        .clone()
-                })
-                .collect()
-        };
+                .map(|d| d.name().to_string())
+                .collect(),
+        },
+        dimensions,
+        cells,
+        string_cells,
+        subsets,
+        views,
+    }
+}
 
-        let cells: Vec<CellDoc> = sorted
-            .into_iter()
-            .map(|(coord, value)| CellDoc {
-                coord: coord_names(&coord),
-                value: value.to_string(),
-            })
-            .collect();
+/// Build a cube from a parsed document (dimensions, then cube, then cells).
+fn build_cube_from_doc(doc: &ModelDoc) -> Result<Cube, LoadError> {
+    // Build each dimension, keyed by name.
+    let mut dims_by_name: HashMap<String, Dimension> = HashMap::new();
+    for dim_doc in &doc.dimensions {
+        dims_by_name.insert(dim_doc.name.clone(), build_dimension(dim_doc)?);
+    }
 
-        // String cells, sorted by coordinate for canonical output.
-        let mut sorted_strings: Vec<(Vec<u32>, String)> = self
-            .string_cell_entries()
-            .map(|(coord, value)| (coord, value.to_string()))
-            .collect();
-        sorted_strings.sort_by(|a, b| a.0.cmp(&b.0));
-        let string_cells: Vec<StringCellDoc> = sorted_strings
-            .into_iter()
-            .map(|(coord, value)| StringCellDoc {
-                coord: coord_names(&coord),
-                value,
-            })
-            .collect();
+    // Assemble the cube's dimensions in referenced order.
+    let mut cube_dims = Vec::with_capacity(doc.cube.dimensions.len());
+    for name in &doc.cube.dimensions {
+        let dim = dims_by_name
+            .get(name)
+            .ok_or_else(|| LoadError::UnknownDimension(name.clone()))?;
+        cube_dims.push(dim.clone());
+    }
+    let mut cube = Cube::new(&doc.cube.name, cube_dims)?;
 
-        let doc = ModelDoc {
-            format: FORMAT_TAG.to_string(),
-            cube: CubeDoc {
-                name: self.name().to_string(),
-                dimensions: self
-                    .dimensions()
-                    .iter()
-                    .map(|d| d.name().to_string())
-                    .collect(),
-            },
-            dimensions,
-            cells,
-            string_cells,
-        };
+    // Populate numeric cells, then string cells.
+    for cell in &doc.cells {
+        let coord = resolve_coord(&cube, &doc.cube.name, &cell.coord)?;
+        cube.set_leaf(&coord, Fixed::from_str(&cell.value)?)?;
+    }
+    for cell in &doc.string_cells {
+        let coord = resolve_coord(&cube, &doc.cube.name, &cell.coord)?;
+        cube.set_string(&coord, &cell.value)?;
+    }
+    Ok(cube)
+}
+
+impl Model {
+    /// Serialize this model (cube, subsets, views) to canonical model-as-code
+    /// TOML. Subsets are emitted sorted by `(dimension, name)`, views sorted by
+    /// name; a model with neither is byte-identical to [`Cube::to_model_text`].
+    pub fn to_model_text(&self) -> Result<String, SaveError> {
+        let subsets: Vec<SubsetDoc> = self.subsets.values().map(subset_doc).collect();
+        let views: Vec<ViewDoc> = self.views.values().map(view_doc).collect();
+        let doc = build_model_doc(&self.cube, subsets, views);
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
 
-    /// Parse a cube and its dimensions from model-as-code TOML.
+    /// Parse a model (cube, subsets, views) from model-as-code TOML.
+    pub fn from_model_text(text: &str) -> Result<Model, LoadError> {
+        let doc: ModelDoc = toml::from_str(text).map_err(LoadError::Toml)?;
+        if doc.format != FORMAT_TAG {
+            return Err(LoadError::UnknownFormat(doc.format));
+        }
+        let cube = build_cube_from_doc(&doc)?;
+
+        let mut subsets = BTreeMap::new();
+        for sd in &doc.subsets {
+            // A subset must reference a real dimension of the cube.
+            if !cube.dimensions().iter().any(|d| d.name() == sd.dimension) {
+                return Err(LoadError::UnknownDimension(sd.dimension.clone()));
+            }
+            subsets.insert((sd.dimension.clone(), sd.name.clone()), build_subset(sd));
+        }
+        let mut views = BTreeMap::new();
+        for vd in &doc.views {
+            views.insert(vd.name.clone(), build_view(vd));
+        }
+        Ok(Model {
+            cube,
+            subsets,
+            views,
+        })
+    }
+
+    /// Save this model to a model-as-code file (canonical TOML).
+    pub fn save_to_path(&self, path: impl AsRef<std::path::Path>) -> Result<(), SaveError> {
+        let text = self.to_model_text()?;
+        std::fs::write(path, text).map_err(SaveError::Io)
+    }
+
+    /// Load a model from a model-as-code file.
+    pub fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Model, LoadError> {
+        let text = std::fs::read_to_string(path).map_err(LoadError::Io)?;
+        Model::from_model_text(&text)
+    }
+}
+
+impl Cube {
+    /// Serialize this cube and its dimensions to canonical model-as-code TOML.
+    pub fn to_model_text(&self) -> Result<String, SaveError> {
+        let doc = build_model_doc(self, Vec::new(), Vec::new());
+        toml::to_string(&doc).map_err(SaveError::Toml)
+    }
+
+    /// Parse a cube and its dimensions from model-as-code TOML. Any subset/view
+    /// tables present are ignored (use [`Model::from_model_text`] to keep them).
     pub fn from_model_text(text: &str) -> Result<Cube, LoadError> {
         let doc: ModelDoc = toml::from_str(text).map_err(LoadError::Toml)?;
         if doc.format != FORMAT_TAG {
             return Err(LoadError::UnknownFormat(doc.format));
         }
-
-        // Build each dimension, keyed by name.
-        let mut dims_by_name: HashMap<String, Dimension> = HashMap::new();
-        for dim_doc in &doc.dimensions {
-            dims_by_name.insert(dim_doc.name.clone(), build_dimension(dim_doc)?);
-        }
-
-        // Assemble the cube's dimensions in referenced order.
-        let mut cube_dims = Vec::with_capacity(doc.cube.dimensions.len());
-        for name in &doc.cube.dimensions {
-            let dim = dims_by_name
-                .get(name)
-                .ok_or_else(|| LoadError::UnknownDimension(name.clone()))?;
-            cube_dims.push(dim.clone());
-        }
-        let mut cube = Cube::new(&doc.cube.name, cube_dims)?;
-
-        // Populate numeric cells, then string cells.
-        for cell in &doc.cells {
-            let coord = resolve_coord(&cube, &doc.cube.name, &cell.coord)?;
-            cube.set_leaf(&coord, Fixed::from_str(&cell.value)?)?;
-        }
-        for cell in &doc.string_cells {
-            let coord = resolve_coord(&cube, &doc.cube.name, &cell.coord)?;
-            cube.set_string(&coord, &cell.value)?;
-        }
-
-        Ok(cube)
+        build_cube_from_doc(&doc)
     }
 
     /// Save this cube to a model-as-code file (canonical TOML).
@@ -590,5 +856,87 @@ mod tests {
             Some("high")
         );
         assert_eq!(cube2.get_leaf(&[region2, sales2]).unwrap(), Fixed::from(42));
+    }
+
+    #[test]
+    fn model_without_subsets_or_views_matches_cube_text() {
+        let cube = sample_cube();
+        let model = Model::new(cube.clone());
+        // Backward compatibility: the pre-3E (cube-only) bytes are unchanged.
+        assert_eq!(
+            model.to_model_text().unwrap(),
+            cube.to_model_text().unwrap()
+        );
+    }
+
+    #[test]
+    fn model_round_trips_subsets_and_views_canonically() {
+        use crate::{AxisSpec, Subset, SubsetKind, View, Visibility};
+
+        let mut model = Model::new(sample_cube());
+        model.subsets.insert(
+            ("Region".into(), "Core".into()),
+            Subset {
+                name: "Core".into(),
+                dimension: "Region".into(),
+                owner: Some("ann".into()),
+                visibility: Visibility::Private,
+                kind: SubsetKind::Static {
+                    members: vec!["North".into(), "South".into()],
+                },
+            },
+        );
+        model.subsets.insert(
+            ("Region".into(), "Rolled".into()),
+            Subset {
+                name: "Rolled".into(),
+                dimension: "Region".into(),
+                owner: None,
+                visibility: Visibility::Public,
+                kind: SubsetKind::Dynamic {
+                    mdx: "[Region].[Total].Children".into(),
+                },
+            },
+        );
+        model.views.insert(
+            "Grid".into(),
+            View {
+                name: "Grid".into(),
+                cube: "Sales".into(),
+                owner: None,
+                visibility: Visibility::Public,
+                rows: vec![AxisSpec::Subset {
+                    dimension: "Region".into(),
+                    subset: "Core".into(),
+                }],
+                columns: vec![AxisSpec::Members {
+                    dimension: "Version".into(),
+                    members: vec!["Actual".into(), "Budget".into()],
+                }],
+                context: Vec::new(),
+                suppress_zeros: true,
+            },
+        );
+
+        let text1 = model.to_model_text().unwrap();
+        let model2 = Model::from_model_text(&text1).unwrap();
+        let text2 = model2.to_model_text().unwrap();
+        assert_eq!(
+            text1, text2,
+            "a model with subsets and views must round-trip byte-identically"
+        );
+
+        // The loaded model carries the objects (owner/visibility/opaque MDX).
+        let core = model2.subset("Region", "Core").unwrap();
+        assert_eq!(core.owner.as_deref(), Some("ann"));
+        assert_eq!(core.visibility, Visibility::Private);
+        let rolled = model2.subset("Region", "Rolled").unwrap();
+        assert_eq!(
+            rolled.kind,
+            SubsetKind::Dynamic {
+                mdx: "[Region].[Total].Children".into()
+            }
+        );
+        assert!(model2.view("Grid").unwrap().suppress_zeros);
     }
 }

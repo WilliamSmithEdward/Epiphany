@@ -501,6 +501,48 @@ fn resolve_axis<'a>(
     Ok((dimensions, crossjoin(&per_spec)))
 }
 
+/// A complete durable model: a cube plus its named subsets and views.
+///
+/// Subsets are keyed by `(dimension, name)` (a subset name is unique within its
+/// dimension); views are keyed by name (unique within the cube). This is the
+/// unit the store owns and persists (Phase 3F) and the snapshot serializes.
+#[derive(Clone, Debug)]
+pub struct Model {
+    /// The cube and its dimensions.
+    pub cube: Cube,
+    /// Named subsets, keyed by `(dimension, name)`.
+    pub subsets: BTreeMap<(String, String), Subset>,
+    /// Named views, keyed by name.
+    pub views: BTreeMap<String, View>,
+}
+
+impl Model {
+    /// A model wrapping `cube` with no subsets or views.
+    pub fn new(cube: Cube) -> Self {
+        Self {
+            cube,
+            subsets: BTreeMap::new(),
+            views: BTreeMap::new(),
+        }
+    }
+
+    /// Look up a subset by dimension and name.
+    pub fn subset(&self, dimension: &str, name: &str) -> Option<&Subset> {
+        self.subsets.get(&(dimension.to_string(), name.to_string()))
+    }
+
+    /// Look up a view by name.
+    pub fn view(&self, name: &str) -> Option<&View> {
+        self.views.get(name)
+    }
+
+    /// Execute one of this model's views, resolving its subsets and (via `eval`)
+    /// any dynamic subsets.
+    pub fn execute(&self, view: &View, eval: &dyn SetEvaluator) -> Result<Cellset, QueryError> {
+        execute_view(&self.cube, view, &|d, n| self.subset(d, n), eval)
+    }
+}
+
 /// Crossjoin per-spec member lists into tuples, first list varying slowest. An
 /// empty list of lists yields one empty tuple; any empty member list yields none.
 fn crossjoin(lists: &[Vec<u32>]) -> Vec<Vec<u32>> {
