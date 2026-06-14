@@ -130,6 +130,191 @@ export async function batchWrite(
   })
 }
 
+// ---- subsets, views, and cellsets (Phase 3) ----
+
+export type Visibility = 'public' | 'private'
+export type SubsetKindTag = 'static' | 'dynamic'
+
+/** A subset as returned by the server. */
+export interface SubsetDto {
+  name: string
+  dimension: string
+  owner: string | null
+  visibility: Visibility
+  kind: SubsetKindTag
+  members: string[]
+  mdx?: string
+}
+
+/** A subset definition sent to the server (create, replace, or preview). */
+export interface SubsetDef {
+  name?: string
+  visibility?: Visibility
+  kind: SubsetKindTag
+  members?: string[]
+  mdx?: string
+}
+
+export interface MemberDto {
+  name: string
+  kind: ElementKind
+}
+
+/** One axis placement in a view definition. */
+export type AxisSpecDef =
+  | { dimension: string; type: 'subset'; subset: string }
+  | { dimension: string; type: 'members'; members: string[] }
+
+export interface ContextEntry {
+  dimension: string
+  member: string
+}
+
+/** A view definition sent to the server (create, replace, or ad-hoc execute). */
+export interface ViewDef {
+  name?: string
+  visibility?: Visibility
+  suppress_zeros?: boolean
+  rows: AxisSpecDef[]
+  columns: AxisSpecDef[]
+  context?: ContextEntry[]
+}
+
+export interface AxisSpecDto {
+  dimension: string
+  type: 'subset' | 'members'
+  subset?: string
+  members?: string[]
+}
+
+export interface ViewDto {
+  name: string
+  cube: string
+  owner: string | null
+  visibility: Visibility
+  suppress_zeros: boolean
+  rows: AxisSpecDto[]
+  columns: AxisSpecDto[]
+  context: ContextEntry[]
+}
+
+export interface AxisMemberDto {
+  dimension: string
+  name: string
+  kind: ElementKind
+}
+
+export interface CellsetCellDto {
+  value: string | null
+  kind: 'numeric' | 'string'
+  editable: boolean
+  ordinal: number
+}
+
+export interface CellsetDto {
+  row_dimensions: string[]
+  column_dimensions: string[]
+  row_tuples: AxisMemberDto[][]
+  column_tuples: AxisMemberDto[][]
+  context: ContextEntry[]
+  cells: CellsetCellDto[]
+  version: number
+  suppressed: { row_tuples: number; column_tuples: number }
+}
+
+function dimBase(cube: string, dim: string): string {
+  return `/api/v1/cubes/${encodeURIComponent(cube)}/dimensions/${encodeURIComponent(dim)}`
+}
+
+export async function listSubsets(cube: string, dim: string): Promise<SubsetDto[]> {
+  const result = await request<{ subsets: SubsetDto[] }>('GET', `${dimBase(cube, dim)}/subsets`)
+  return result.subsets
+}
+
+export async function getSubset(cube: string, dim: string, name: string): Promise<SubsetDto> {
+  return request<SubsetDto>('GET', `${dimBase(cube, dim)}/subsets/${encodeURIComponent(name)}`)
+}
+
+export async function createSubset(cube: string, dim: string, def: SubsetDef): Promise<SubsetDto> {
+  return request<SubsetDto>('POST', `${dimBase(cube, dim)}/subsets`, def)
+}
+
+export async function updateSubset(
+  cube: string,
+  dim: string,
+  name: string,
+  def: SubsetDef,
+): Promise<SubsetDto> {
+  return request<SubsetDto>('PUT', `${dimBase(cube, dim)}/subsets/${encodeURIComponent(name)}`, def)
+}
+
+export async function deleteSubset(cube: string, dim: string, name: string): Promise<void> {
+  return request<void>('DELETE', `${dimBase(cube, dim)}/subsets/${encodeURIComponent(name)}`)
+}
+
+export async function subsetMembers(cube: string, dim: string, name: string): Promise<MemberDto[]> {
+  const result = await request<{ members: MemberDto[] }>(
+    'GET',
+    `${dimBase(cube, dim)}/subsets/${encodeURIComponent(name)}/members`,
+  )
+  return result.members
+}
+
+export async function previewSubset(cube: string, dim: string, def: SubsetDef): Promise<MemberDto[]> {
+  const result = await request<{ members: MemberDto[] }>(
+    'POST',
+    `${dimBase(cube, dim)}/subsets/preview`,
+    def,
+  )
+  return result.members
+}
+
+export async function previewMdx(cube: string, dim: string, mdx: string): Promise<MemberDto[]> {
+  const result = await request<{ members: MemberDto[] }>('POST', `${dimBase(cube, dim)}/mdx/preview`, {
+    mdx,
+  })
+  return result.members
+}
+
+export async function listViews(cube: string): Promise<ViewDto[]> {
+  const result = await request<{ views: ViewDto[] }>(
+    'GET',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/views`,
+  )
+  return result.views
+}
+
+export async function getView(cube: string, name: string): Promise<ViewDto> {
+  return request<ViewDto>('GET', `/api/v1/cubes/${encodeURIComponent(cube)}/views/${encodeURIComponent(name)}`)
+}
+
+export async function createView(cube: string, def: ViewDef): Promise<ViewDto> {
+  return request<ViewDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/views`, def)
+}
+
+export async function updateView(cube: string, name: string, def: ViewDef): Promise<ViewDto> {
+  return request<ViewDto>(
+    'PUT',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/views/${encodeURIComponent(name)}`,
+    def,
+  )
+}
+
+export async function deleteView(cube: string, name: string): Promise<void> {
+  return request<void>('DELETE', `/api/v1/cubes/${encodeURIComponent(cube)}/views/${encodeURIComponent(name)}`)
+}
+
+export async function executeView(cube: string, name: string): Promise<CellsetDto> {
+  return request<CellsetDto>(
+    'POST',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/views/${encodeURIComponent(name)}/execute`,
+  )
+}
+
+export async function executeAdhoc(cube: string, def: ViewDef): Promise<CellsetDto> {
+  return request<CellsetDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/cellset`, def)
+}
+
 export interface ChangeEvent {
   type: string
   cube?: string
