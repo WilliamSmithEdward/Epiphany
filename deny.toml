@@ -4,6 +4,12 @@
 [advisories]
 version = 2
 yanked = "deny"
+# `paste` is a tiny, ubiquitous proc-macro pulled in transitively by the boa
+# JavaScript engine (epiphany-flow, ADR-0004). It is flagged unmaintained
+# (RUSTSEC-2024-0436) - an informational "no longer maintained" notice, not a
+# vulnerability - and the dependency is not under our control. Ignore it
+# explicitly; revisit if boa drops it or a real vulnerability is published.
+ignore = ["RUSTSEC-2024-0436"]
 
 [licenses]
 version = 2
