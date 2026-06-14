@@ -1,0 +1,18 @@
+[package]
+name = "epiphany-connect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Epiphany: data-source connectors (run a program and read its output) feeding flow input rows."
+
+[lints]
+workspace = true
+
+[dependencies]
+epiphany-core = { path = "../epiphany-core" }
+# Connectors produce the same row shape flows consume, and reuse the CSV reader.
+epiphany-flow = { path = "../epiphany-flow" }
+# Parse a connector program's JSON stdout.
+serde_json = "1"

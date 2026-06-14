@@ -466,6 +466,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "epiphany-connect"
+version = "0.0.0"
+dependencies = [
+ "epiphany-core",
+ "epiphany-flow",
+ "serde_json",
+]
+
+[[package]]
 name = "epiphany-core"
 version = "0.0.0"
 dependencies = [
