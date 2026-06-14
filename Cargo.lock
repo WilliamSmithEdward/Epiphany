@@ -441,6 +441,7 @@ dependencies = [
  "axum",
  "base64",
  "epiphany-calc",
+ "epiphany-connect",
  "epiphany-core",
  "epiphany-determinism",
  "epiphany-engine",

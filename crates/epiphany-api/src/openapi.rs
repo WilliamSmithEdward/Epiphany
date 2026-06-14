@@ -302,11 +302,36 @@ fn document() -> Value {
                 }
             },
             "/api/v1/cubes/{cube}/flows/{name}/run": { "post": {
-                "summary": "Run a stored flow over uploaded data", "security": bearer(),
+                "summary": "Run a stored flow over uploaded data or a connection", "security": bearer(),
                 "parameters": [cube_param(), name_param()],
                 "requestBody": json_body("#/components/schemas/FlowRun"),
                 "responses": ok("The run report")
             }},
+            "/api/v1/cubes/{cube}/connections": { "get": {
+                "summary": "The cube's data-source connections", "security": bearer(),
+                "parameters": [cube_param()], "responses": ok("The connections")
+            }},
+            "/api/v1/cubes/{cube}/connections/{name}": {
+                "get": {
+                    "summary": "One connection", "security": bearer(),
+                    "parameters": [cube_param(), name_param()], "responses": ok("The connection")
+                },
+                "put": {
+                    "summary": "Define a connection (admin; command kind requires server opt-in)",
+                    "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "requestBody": json_body("#/components/schemas/Connection"),
+                    "responses": {
+                        "200": { "description": "The stored connection" },
+                        "403": { "description": "Not an admin, or command connectors disabled", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                    }
+                },
+                "delete": {
+                    "summary": "Delete a connection (admin)", "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "responses": { "204": { "description": "Deleted" } }
+                }
+            },
             "/api/v1/ws": { "get": {
                 "summary": "WebSocket change-notification stream", "security": bearer(),
                 "responses": { "101": { "description": "Switching protocols (WebSocket)" } }
@@ -387,8 +412,18 @@ fn document() -> Value {
                 "FlowPreview": { "type": "object", "properties": {
                     "source": { "type": "string" } }, "required": ["source"] },
                 "FlowRun": { "type": "object", "properties": {
-                    "input": { "type": "string", "description": "Data-source content (CSV text)" },
+                    "input": { "type": "string", "description": "Inline data-source content (CSV text)" },
+                    "connection": { "type": "string", "description": "A configured connection to fetch rows from, instead of inline input" },
                     "params": { "type": "object", "additionalProperties": { "type": "string" } } } },
+                "Connection": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "kind": { "type": "string", "enum": ["command"] },
+                    "program": { "type": "string", "description": "The executable (command kind)" },
+                    "args": { "type": "array", "items": { "type": "string" } },
+                    "format": { "type": "string", "enum": ["csv", "json"] },
+                    "json_path": { "type": "string", "description": "Dotted path to the JSON record array" },
+                    "timeout_ms": { "type": "integer", "format": "int64" } },
+                    "required": ["name", "kind"] },
                 "FlowImport": { "type": "object", "properties": {
                     "csv": { "type": "string" },
                     "columns": { "type": "object", "additionalProperties": { "type": "string" },
@@ -471,6 +506,8 @@ mod tests {
         "/api/v1/cubes/{cube}/flows/tests/{name}",
         "/api/v1/cubes/{cube}/flows/{name}",
         "/api/v1/cubes/{cube}/flows/{name}/run",
+        "/api/v1/cubes/{cube}/connections",
+        "/api/v1/cubes/{cube}/connections/{name}",
         "/api/v1/ws",
     ];
 

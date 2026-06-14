@@ -22,6 +22,8 @@ epiphany-calc = { path = "../epiphany-calc" }
 # The flow endpoints run TypeScript ETL flows; the edge stays acyclic
 # (flow -> core only) and the API applies a flow's planned changes via the engine.
 epiphany-flow = { path = "../epiphany-flow" }
+# Data-source connectors (a flow can ingest from a configured connection).
+epiphany-connect = { path = "../epiphany-connect" }
 epiphany-persist = { path = "../epiphany-persist" }
 epiphany-security = { path = "../epiphany-security" }
 epiphany-determinism = { path = "../epiphany-determinism" }

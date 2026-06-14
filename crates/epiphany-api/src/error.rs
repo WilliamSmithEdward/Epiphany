@@ -61,6 +61,11 @@ impl ApiError {
         Self::new(StatusCode::UNAUTHORIZED, "UNAUTHORIZED", message)
     }
 
+    /// 403 Forbidden (authenticated, but not permitted).
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "FORBIDDEN", message)
+    }
+
     /// 500 Internal Server Error (the cause is logged, not serialized).
     pub fn internal() -> Self {
         Self::new(

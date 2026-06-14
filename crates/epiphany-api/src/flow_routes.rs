@@ -12,7 +12,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use epiphany_core::{ElementKind, ElementSpec, Flow, FlowTest, TestCell};
+use epiphany_connect::run_command;
+use epiphany_core::{ConnectionSpec, ElementKind, ElementSpec, Flow, FlowTest, TestCell};
 use epiphany_engine::CellWrite;
 use epiphany_flow::{
     parse_csv, run_flow, run_flow_tests, validate_flow, FlowError, FlowOutcome, FlowTestError,
@@ -217,9 +218,14 @@ pub(crate) async fn preview_flow(
 
 #[derive(Deserialize)]
 pub(crate) struct RunBody {
-    /// The data-source content (CSV text). Empty for a source-less flow.
+    /// Inline data-source content (CSV text). Used when `connection` is unset;
+    /// empty for a source-less flow.
     #[serde(default)]
     pub input: String,
+    /// The name of a configured connection to fetch the input rows from. When
+    /// set, it supplies the rows instead of `input`.
+    #[serde(default)]
+    pub connection: Option<String>,
     /// Flow parameters.
     #[serde(default)]
     pub params: BTreeMap<String, String>,
@@ -240,17 +246,44 @@ pub(crate) async fn run_flow_handler(
     Path((cube, name)): Path<(String, String)>,
     Json(body): Json<RunBody>,
 ) -> Result<Json<RunReport>, ApiError> {
-    let source = {
+    // Resolve the flow source and (if a connection is named) its command spec
+    // from one snapshot.
+    let (source, command) = {
         let snap = snapshot(&state, &cube)?;
-        snap.model()
+        let model = snap.model();
+        let source = model
             .flows
             .get(&name)
             .ok_or_else(|| ApiError::not_found(format!("unknown flow '{name}'")))?
             .source
-            .clone()
+            .clone();
+        let command = match &body.connection {
+            Some(conn_name) => {
+                let conn = model.connections.get(conn_name).ok_or_else(|| {
+                    ApiError::not_found(format!("unknown connection '{conn_name}'"))
+                })?;
+                let ConnectionSpec::Command(cmd) = &conn.spec;
+                Some(cmd.clone())
+            }
+            None => None,
+        };
+        (source, command)
     };
-    let rows = parse_csv(&body.input)
-        .map_err(|e| ApiError::unprocessable("FLOW_INPUT_ERROR", e.to_string()))?;
+
+    // Fetch input rows: from the connection (impure edge), else inline CSV.
+    let rows = match command {
+        Some(cmd) => {
+            if !state.command_connectors_enabled {
+                return Err(ApiError::forbidden(
+                    "command connectors are disabled on this server",
+                ));
+            }
+            run_command(&cmd)
+                .map_err(|e| ApiError::unprocessable("CONNECTOR_ERROR", e.to_string()))?
+        }
+        None => parse_csv(&body.input)
+            .map_err(|e| ApiError::unprocessable("FLOW_INPUT_ERROR", e.to_string()))?,
+    };
     let now = state.clock.now_millis();
     let outcome = run_flow(&source, &cube, rows, &body.params, now).map_err(map_flow_error)?;
 

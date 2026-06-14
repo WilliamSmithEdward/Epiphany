@@ -25,6 +25,7 @@ use tokio::sync::broadcast;
 
 mod auth;
 mod calc_factory;
+mod connection_routes;
 mod dto;
 mod error;
 mod flow_routes;
@@ -64,6 +65,10 @@ pub struct AppState {
     /// snapshot. The server injects a rule-aware [`CalcFactory`]; no-rules tests
     /// inject the engine's `StoredCellsFactory`.
     pub cells: Arc<dyn CellResolverFactory>,
+    /// Whether command (process-execution) connections may be defined and run.
+    /// Off unless the operator opts in (ADR-0012 decision 6); the second gate,
+    /// after admin-only definition.
+    pub command_connectors_enabled: bool,
 }
 
 impl AppState {
@@ -202,6 +207,18 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/cubes/{cube}/flows/{name}/run",
             post(flow_routes::run_flow_handler),
         )
+        // Data-source connections (admin-defined; command kind also requires the
+        // server opt-in).
+        .route(
+            "/api/v1/cubes/{cube}/connections",
+            get(connection_routes::list_connections),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/connections/{name}",
+            get(connection_routes::get_connection)
+                .put(connection_routes::put_connection)
+                .delete(connection_routes::delete_connection),
+        )
         .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))
         .route("/api/v1/auth/logout", post(auth::logout))
@@ -309,6 +326,7 @@ mod tests {
             events: broadcast::channel(16).0,
             mdx: Arc::new(epiphany_core::NoSetEvaluator),
             cells: Arc::new(epiphany_engine::StoredCellsFactory),
+            command_connectors_enabled: false,
         }
     }
 

@@ -51,6 +51,7 @@ fn state(name: &str) -> AppState {
         events: broadcast::channel(16).0,
         mdx: Arc::new(epiphany_core::NoSetEvaluator),
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
+        command_connectors_enabled: false,
     }
 }
 

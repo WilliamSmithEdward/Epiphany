@@ -49,6 +49,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Inject the real MDX evaluator (dynamic subsets) and the rule-aware cell
     // resolver factory (calc); these are the composition-root injections.
     let cells = Arc::new(epiphany_api::CalcFactory::new(engine.clone()));
+    // Command (process-execution) connectors are arbitrary code execution, so
+    // they are off unless the operator explicitly opts in (ADR-0012).
+    let command_connectors_enabled = std::env::var("EPIPHANY_ENABLE_COMMAND_CONNECTORS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if command_connectors_enabled {
+        tracing::warn!(
+            "command (process-execution) connectors are ENABLED: admin-defined connections may run host programs"
+        );
+    }
     let state = AppState {
         engine,
         clock: Arc::new(SystemClock),
@@ -57,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         events,
         mdx: Arc::new(epiphany_mdx::MdxEvaluator::new()),
         cells,
+        command_connectors_enabled,
     };
     let router = build_router(state);
     #[cfg(feature = "embed-ui")]

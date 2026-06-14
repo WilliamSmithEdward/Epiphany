@@ -88,6 +88,7 @@ fn router_for(dir: &Path) -> Router {
         events: tokio::sync::broadcast::channel(16).0,
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
+        command_connectors_enabled: false,
     };
     build_router(state)
 }

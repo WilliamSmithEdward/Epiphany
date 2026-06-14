@@ -107,6 +107,7 @@ fn router_for(dir: &Path) -> Router {
         events: tokio::sync::broadcast::channel(16).0,
         mdx: Arc::new(MdxEvaluator::new()),
         cells,
+        command_connectors_enabled: false,
     };
     build_router(state)
 }
