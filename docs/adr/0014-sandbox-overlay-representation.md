@@ -82,8 +82,11 @@ required, not stylistic.
 a matching rule) is computed, not stored, and the overlay does not mask it: the
 matching-rule branch runs before the stored-leaf terminal. The contract is
 crisp: what-if overrides stored leaf inputs; everything computed (rules,
-consolidations) recomputes on top. What-if writes are leaf-only, reusing the
-existing non-leaf write rejection.
+consolidations) recomputes on top. What-if writes are numeric leaves only: a
+non-leaf coordinate is rejected as in base writes, and a string-leaf override is
+also rejected this phase (the overlay is numeric, so a string what-if would be
+invisible on read and must not be staged or committed; string what-if is a
+deferred refinement, see Consequences).
 
 **4. Memo is partitioned by scope.** The per-query memo key gains a scope id:
 `(scope_id, cube_ordinal, coordinate)`, where `scope_id` is 0 for base reads and

@@ -190,18 +190,30 @@ pub(crate) struct CommitResponse {
     committed: usize,
 }
 
+/// Optional commit body: the base version the client last synced against, for
+/// the optimistic concurrency check. Absent means last-writer-wins.
+#[derive(Deserialize)]
+pub(crate) struct CommitBody {
+    #[serde(default)]
+    base_version: Option<u64>,
+}
+
 /// `POST /cubes/{cube}/sandboxes/{name}/commit` -> merge the sandbox's what-if
-/// values into base (owner or admin), clearing the deltas.
+/// values into base (owner or admin), clearing the deltas. An optional
+/// `base_version` enables the optimistic check: if base moved past it, the
+/// commit conflicts (409) and base is unchanged (ADR-0014).
 pub(crate) async fn commit_sandbox(
     auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
+    body: Option<Json<CommitBody>>,
 ) -> Result<Json<CommitResponse>, ApiError> {
     let snap = snapshot(&state, &cube)?;
     let committed = authorize_sandbox(&snap, &auth.principal, &name)?.len();
+    let base = body.and_then(|Json(b)| b.base_version);
     let outcome = state
         .engine
-        .commit_sandbox(&cube, None, &name)
+        .commit_sandbox(&cube, base, &name)
         .map_err(map_batch_error)?;
     Ok(Json(CommitResponse {
         version: outcome.version,

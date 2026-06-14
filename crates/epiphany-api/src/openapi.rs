@@ -362,7 +362,11 @@ fn document() -> Value {
                 "summary": "Commit a sandbox's what-if values into base (owner or admin)",
                 "security": bearer(),
                 "parameters": [cube_param(), name_param()],
-                "responses": ok("The commit outcome (new version and committed cell count)")
+                "requestBody": { "required": false, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SandboxCommit" } } } },
+                "responses": {
+                    "200": { "description": "The commit outcome (new version and committed cell count)" },
+                    "409": { "description": "Base moved past the supplied base_version", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
             }},
             "/api/v1/ws": { "get": {
                 "summary": "WebSocket change-notification stream", "security": bearer(),
@@ -473,7 +477,9 @@ fn document() -> Value {
                     "required": ["name", "flow"] },
                 "SandboxCreate": { "type": "object", "properties": {
                     "name": { "type": "string", "description": "Unique sandbox name within the cube" } },
-                    "required": ["name"] }
+                    "required": ["name"] },
+                "SandboxCommit": { "type": "object", "properties": {
+                    "base_version": { "type": "integer", "format": "int64", "description": "Optimistic base version; omit for last-writer-wins" } } }
             }
         }
     })

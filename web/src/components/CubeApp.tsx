@@ -50,6 +50,11 @@ export default function CubeApp({
       .finally(onLogout)
   }, [onLogout])
 
+  // Stable identity: an inline callback here would change every render and make
+  // SandboxBar's reset effect (and its load->apply->onChange chain) re-fire in a
+  // loop. Memoizing it keeps that effect keyed to cube changes only.
+  const bumpReload = useCallback(() => setReload((n) => n + 1), [])
+
   return (
     <div className="app">
       <header className="topbar">
@@ -83,11 +88,7 @@ export default function CubeApp({
           {selected ? (
             <>
               {mode === 'grid' || mode === 'views' ? (
-                <SandboxBar
-                  key={selected}
-                  cube={selected}
-                  onChange={() => setReload((n) => n + 1)}
-                />
+                <SandboxBar key={selected} cube={selected} onChange={bumpReload} />
               ) : null}
               <div className="modes">
                 <button className={mode === 'grid' ? 'active' : ''} onClick={() => setMode('grid')}>

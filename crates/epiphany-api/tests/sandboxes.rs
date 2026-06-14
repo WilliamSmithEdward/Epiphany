@@ -529,3 +529,82 @@ async fn sandbox_write_isolates_base_then_commit_merges() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[tokio::test]
+async fn sandbox_rejects_string_what_if_but_allows_numeric() {
+    // String what-if is out of scope this phase (the overlay is numeric, ADR-0014):
+    // a string override into a sandbox is rejected loudly rather than staged and
+    // silently committed; a numeric override in the same sandbox still works.
+    let dir = scratch("string-reject");
+    let cube = {
+        let mut region = Dimension::new("Region");
+        region.add_leaf("North");
+        let mut measure = Dimension::new("Measure");
+        measure.add_leaf("Sales");
+        measure.add_string("Note");
+        Cube::new("Sales", vec![region, measure]).unwrap()
+    };
+    let store = Store::create(dir.to_path_buf(), cube).unwrap();
+    let mut stores = BTreeMap::new();
+    stores.insert("Sales".to_string(), store);
+    let engine = Engine::from_stores(stores, Arc::new(IdGen::default()));
+    let state = AppState {
+        engine: engine.clone(),
+        clock: Arc::new(ManualClock::new(1_000)),
+        security: Arc::new(Mutex::new(SecurityStore::with_admin("ann", "pw", true))),
+        sessions: Arc::new(Mutex::new(SessionStore::new(60_000))),
+        events: tokio::sync::broadcast::channel(16).0,
+        mdx: Arc::new(MdxEvaluator::new()),
+        cells: Arc::new(CalcFactory::new(engine)),
+        command_connectors_enabled: false,
+    };
+    let app = build_router(state);
+    let ann = login(&app, "ann").await;
+
+    // A base string write works.
+    let note = |v: &str| json!({ "coord": { "Region": "North", "Measure": "Note" }, "value": v });
+    let (s, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/cell",
+        &ann,
+        Some(note("base")),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // A string what-if write into a sandbox is rejected (422); base is untouched.
+    call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/sandboxes",
+        &ann,
+        Some(json!({ "name": "wi" })),
+    )
+    .await;
+    let (s, _) = call_h(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/cell",
+        &ann,
+        Some(note("what-if")),
+        ("x-epiphany-sandbox", "wi"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A numeric what-if in the same sandbox still works and is flagged overlaid.
+    let (s, w) = call_h(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/cell",
+        &ann,
+        Some(json!({ "coord": { "Region": "North", "Measure": "Sales" }, "value": "42" })),
+        ("x-epiphany-sandbox", "wi"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{w}");
+    assert_eq!(w["overlaid"], true);
+
+    std::fs::remove_dir_all(&dir).ok();
+}

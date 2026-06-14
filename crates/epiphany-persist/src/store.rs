@@ -484,6 +484,14 @@ impl Store {
                 message: format!("no sandbox '{name}'"),
             }));
         }
+        // String what-if is out of scope for this phase: the overlay is numeric
+        // only (ADR-0014), so reject a string override loudly rather than stage a
+        // value the read path cannot surface and would silently commit to base.
+        if writes.iter().any(|w| matches!(w, CellWrite::Str { .. })) {
+            return Err(PersistError::Query(QueryError::Calc {
+                message: "string what-if values are not supported in a sandbox".to_string(),
+            }));
+        }
         // Validate every override against a throwaway clone (leaf-only, in-range);
         // this never mutates base cells, only confirms the coordinate is writable.
         let mut trial = self.model.cube.clone();
@@ -494,21 +502,17 @@ impl Store {
             };
             applied.map_err(|source| PersistError::BatchRejected { index, source })?;
         }
-        // Record the overrides in the sandbox overlay (the value verbatim, so an
-        // explicit zero override is kept rather than dropped).
+        // Record the numeric overrides in the sandbox overlay (the value verbatim,
+        // so an explicit zero override is kept rather than dropped). String writes
+        // were rejected above, so `string_cells` stays empty this phase.
         let sb = self
             .model
             .sandboxes
             .get_mut(name)
             .expect("sandbox presence checked above");
         for write in writes {
-            match write {
-                CellWrite::Leaf { coord, value } => {
-                    sb.cells.insert(coord.clone(), *value);
-                }
-                CellWrite::Str { coord, value } => {
-                    sb.string_cells.insert(coord.clone(), value.clone());
-                }
+            if let CellWrite::Leaf { coord, value } = write {
+                sb.cells.insert(coord.clone(), *value);
             }
         }
         sb.updated = updated;

@@ -90,11 +90,9 @@ pub(crate) async fn read_cells(
     for coord in &req.coords {
         let resolved = resolve(cube_ref, coord)?;
         // A cell is "overlaid" only when this exact leaf is a what-if override
-        // (a consolidation that merely rolled one up is not flagged).
-        let overlaid = sandbox.is_some_and(|sb| {
-            sb.cells.contains_key(&resolved.indices)
-                || sb.string_cells.contains_key(&resolved.indices)
-        });
+        // (a consolidation that merely rolled one up is not flagged). Overrides
+        // are numeric this phase (ADR-0014), so only `cells` is consulted.
+        let overlaid = sandbox.is_some_and(|sb| sb.cells.contains_key(&resolved.indices));
         cells.push(read_one(&*resolver, coord, &resolved, overlaid)?);
     }
     Ok(Json(ReadCellsResponse { cells }))
@@ -146,9 +144,7 @@ pub(crate) async fn write_cell(
         .and_then(|n| snap.model().sandbox(n));
     let resolver = state.cells.resolver_with(&snap, sandbox);
     let resolved = resolve(snap.cube(), &req.coord)?;
-    let overlaid = sandbox.is_some_and(|sb| {
-        sb.cells.contains_key(&resolved.indices) || sb.string_cells.contains_key(&resolved.indices)
-    });
+    let overlaid = sandbox.is_some_and(|sb| sb.cells.contains_key(&resolved.indices));
     Ok(Json(read_one(&*resolver, &req.coord, &resolved, overlaid)?))
 }
 
