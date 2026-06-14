@@ -332,6 +332,38 @@ fn document() -> Value {
                     "responses": { "204": { "description": "Deleted" } }
                 }
             },
+            "/api/v1/cubes/{cube}/sandboxes": {
+                "get": {
+                    "summary": "The caller's what-if sandboxes (admin sees all)", "security": bearer(),
+                    "parameters": [cube_param()], "responses": ok("The sandboxes")
+                },
+                "post": {
+                    "summary": "Create a what-if sandbox owned by the caller", "security": bearer(),
+                    "parameters": [cube_param()],
+                    "requestBody": json_body("#/components/schemas/SandboxCreate"),
+                    "responses": {
+                        "201": { "description": "The created sandbox" },
+                        "409": { "description": "A sandbox of that name exists", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                    }
+                }
+            },
+            "/api/v1/cubes/{cube}/sandboxes/{name}": {
+                "get": {
+                    "summary": "One sandbox (owner or admin)", "security": bearer(),
+                    "parameters": [cube_param(), name_param()], "responses": ok("The sandbox")
+                },
+                "delete": {
+                    "summary": "Discard a sandbox (owner or admin)", "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "responses": { "204": { "description": "Discarded" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/sandboxes/{name}/commit": { "post": {
+                "summary": "Commit a sandbox's what-if values into base (owner or admin)",
+                "security": bearer(),
+                "parameters": [cube_param(), name_param()],
+                "responses": ok("The commit outcome (new version and committed cell count)")
+            }},
             "/api/v1/ws": { "get": {
                 "summary": "WebSocket change-notification stream", "security": bearer(),
                 "responses": { "101": { "description": "Switching protocols (WebSocket)" } }
@@ -438,7 +470,10 @@ fn document() -> Value {
                     "input": { "type": "string" },
                     "params": { "type": "object", "additionalProperties": { "type": "string" } },
                     "assertions": { "type": "array", "items": { "$ref": "#/components/schemas/TestCell" } } },
-                    "required": ["name", "flow"] }
+                    "required": ["name", "flow"] },
+                "SandboxCreate": { "type": "object", "properties": {
+                    "name": { "type": "string", "description": "Unique sandbox name within the cube" } },
+                    "required": ["name"] }
             }
         }
     })
@@ -508,6 +543,9 @@ mod tests {
         "/api/v1/cubes/{cube}/flows/{name}/run",
         "/api/v1/cubes/{cube}/connections",
         "/api/v1/cubes/{cube}/connections/{name}",
+        "/api/v1/cubes/{cube}/sandboxes",
+        "/api/v1/cubes/{cube}/sandboxes/{name}",
+        "/api/v1/cubes/{cube}/sandboxes/{name}/commit",
         "/api/v1/ws",
     ];
 

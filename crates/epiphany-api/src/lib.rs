@@ -34,6 +34,7 @@ mod query_routes;
 mod resolve;
 mod routes;
 mod rule_routes;
+mod sandbox_routes;
 mod session;
 mod ws;
 
@@ -218,6 +219,20 @@ pub fn build_router(state: AppState) -> Router {
             get(connection_routes::get_connection)
                 .put(connection_routes::put_connection)
                 .delete(connection_routes::delete_connection),
+        )
+        // Sandboxes (per-user what-if overlays, ADR-0014). Data endpoints select
+        // one with the X-Epiphany-Sandbox header; lifecycle is by path here.
+        .route(
+            "/api/v1/cubes/{cube}/sandboxes",
+            get(sandbox_routes::list_sandboxes).post(sandbox_routes::create_sandbox),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/sandboxes/{name}",
+            get(sandbox_routes::get_sandbox).delete(sandbox_routes::delete_sandbox),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/sandboxes/{name}/commit",
+            post(sandbox_routes::commit_sandbox),
         )
         .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))
