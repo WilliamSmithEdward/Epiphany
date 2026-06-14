@@ -10,7 +10,7 @@
 use epiphany_core::{CellTrace, Cube, ExplainDepth, Fixed, TraceKind};
 
 use crate::compiled::AddrSlot;
-use crate::eval::{CalcEngine, CalcError, EvalRegistry};
+use crate::eval::{CalcEngine, CalcError, EvalRegistry, SandboxOverlay};
 use crate::feeders::collect_cells;
 
 /// A safety cap on `ExplainDepth::Full` recursion (the per-query cycle guard in
@@ -24,6 +24,18 @@ pub fn explain(
     coord: &[u32],
     depth: ExplainDepth,
 ) -> Result<CellTrace, CalcError> {
+    explain_with(registry, ordinal, coord, depth, None)
+}
+
+/// Explain a value, optionally overlaying a sandbox's what-if leaves (ADR-0014)
+/// so the provenance matches a sandboxed read rather than base.
+pub fn explain_with(
+    registry: &dyn EvalRegistry,
+    ordinal: u32,
+    coord: &[u32],
+    depth: ExplainDepth,
+    overlay: Option<&dyn SandboxOverlay>,
+) -> Result<CellTrace, CalcError> {
     // `levels` is the recursion budget: a node expands its inputs while the
     // budget exceeds 1, so 1 = the cell alone, 2 = the cell plus one input level.
     let levels = match depth {
@@ -31,7 +43,10 @@ pub fn explain(
         ExplainDepth::Full => FULL_DEPTH_CAP,
         ExplainDepth::Levels(n) => n.saturating_add(1),
     };
-    let engine = CalcEngine::new(registry);
+    let engine = match overlay {
+        Some(ov) => CalcEngine::with_overlay(registry, ov),
+        None => CalcEngine::new(registry),
+    };
     explain_node(&engine, registry, ordinal, coord, levels)
 }
 

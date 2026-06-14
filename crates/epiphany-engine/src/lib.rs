@@ -628,6 +628,20 @@ impl Engine {
 pub trait CellResolverFactory: Send + Sync {
     /// Build a value resolver bound to a pinned snapshot.
     fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver>;
+
+    /// Build a resolver that overlays a sandbox's what-if values beneath the
+    /// rules (ADR-0014). The default ignores the sandbox (no overlay), so a
+    /// factory that does not support what-if -- and a `None` sandbox -- behaves
+    /// exactly like [`resolver`](Self::resolver). The rule-aware factory the
+    /// server injects overrides this.
+    fn resolver_with(
+        &self,
+        snapshot: &ReadSnapshot,
+        sandbox: Option<&epiphany_core::Sandbox>,
+    ) -> Box<dyn CellResolver> {
+        let _ = sandbox;
+        self.resolver(snapshot)
+    }
 }
 
 /// The default factory: a resolver reading stored cells, byte-identical to the

@@ -16,6 +16,7 @@ use crate::dto::{
     ElementDto, ReadCellsRequest, ReadCellsResponse, WriteCellRequest,
 };
 use crate::resolve::{kind_str, resolve, Resolved};
+use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
 
@@ -65,9 +66,10 @@ fn cube_detail(cube: &Cube) -> CubeDetailDto {
 /// `POST /api/v1/cubes/{cube}/cells/read` -> values for a set of coordinates
 /// (consolidation-aware).
 pub(crate) async fn read_cells(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
+    selector: SandboxSelector,
     Json(req): Json<ReadCellsRequest>,
 ) -> Result<Json<ReadCellsResponse>, ApiError> {
     let snap = state
@@ -75,13 +77,23 @@ pub(crate) async fn read_cells(
         .snapshot(&cube)
         .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
     let cube_ref = snap.cube();
+    // An active sandbox (X-Epiphany-Sandbox) overlays its what-if leaves beneath
+    // the rules, so values recompute over them (ADR-0014); absent it, base.
+    let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
+    let sandbox = sandbox_name.as_deref().and_then(|n| snap.model().sandbox(n));
     // Values come through the injected resolver (rule-aware in the server,
     // stored-only in no-rules deployments and tests).
-    let resolver = state.cells.resolver(&snap);
+    let resolver = state.cells.resolver_with(&snap, sandbox);
     let mut cells = Vec::with_capacity(req.coords.len());
     for coord in &req.coords {
         let resolved = resolve(cube_ref, coord)?;
-        cells.push(read_one(&*resolver, coord, &resolved)?);
+        // A cell is "overlaid" only when this exact leaf is a what-if override
+        // (a consolidation that merely rolled one up is not flagged).
+        let overlaid = sandbox.is_some_and(|sb| {
+            sb.cells.contains_key(&resolved.indices)
+                || sb.string_cells.contains_key(&resolved.indices)
+        });
+        cells.push(read_one(&*resolver, coord, &resolved, overlaid)?);
     }
     Ok(Json(ReadCellsResponse { cells }))
 }
@@ -116,7 +128,7 @@ pub(crate) async fn write_cell(
         .ok_or_else(ApiError::internal)?;
     let resolver = state.cells.resolver(&snap);
     let resolved = resolve(snap.cube(), &req.coord)?;
-    Ok(Json(read_one(&*resolver, &req.coord, &resolved)?))
+    Ok(Json(read_one(&*resolver, &req.coord, &resolved, false)?))
 }
 
 /// `POST /api/v1/cubes/{cube}/cells/batch` -> apply all writes or none.
@@ -157,6 +169,7 @@ fn read_one(
     cells: &dyn CellResolver,
     coord: &CoordMap,
     resolved: &Resolved,
+    overlaid: bool,
 ) -> Result<CellDto, ApiError> {
     if resolved.has_string {
         let value = cells.string_value(&resolved.indices)?;
@@ -165,6 +178,7 @@ fn read_one(
             value,
             kind: "string",
             editable: resolved.all_leaf,
+            overlaid,
         })
     } else {
         let value = cells.value(&resolved.indices)?;
@@ -173,6 +187,7 @@ fn read_one(
             value: Some(value.to_string()),
             kind: "numeric",
             editable: resolved.all_leaf,
+            overlaid,
         })
     }
 }

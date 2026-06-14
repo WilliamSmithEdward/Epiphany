@@ -24,7 +24,7 @@ pub use eval::{CalcEngine, CalcError, CalcView, EvalRegistry, SandboxOverlay};
 pub use feeders::{
     infer_feeders, validate_feeders, FeederDiagnostics, FeederIndex, FeederInference, OpaqueRule,
 };
-pub use provenance::explain;
+pub use provenance::{explain, explain_with};
 pub use registry::{CubeRegistry, SingleCube, VecRegistry};
 pub use testing::{run_rule_tests, AssertionFailure, TestOutcome, TestRunError};
 

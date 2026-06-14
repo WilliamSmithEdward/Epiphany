@@ -6,11 +6,14 @@
 //! the engine's `StoredCellsFactory` instead). [`PinnedRegistry`] is the
 //! eval-time registry the explain and diagnostics endpoints also build.
 
+use std::collections::BTreeMap;
+
 use epiphany_calc::rules::RuleParseError;
 use epiphany_calc::{
     compile, rules, CalcEngine, CompileError, CompiledModel, CubeRegistry, EvalRegistry,
+    SandboxOverlay,
 };
-use epiphany_core::{CellResolver, Cube, Fixed, QueryError};
+use epiphany_core::{CellResolver, Cube, Fixed, QueryError, Sandbox};
 use epiphany_engine::{CellResolverFactory, Engine, ReadSnapshot};
 
 /// Why validating a rule source against the live model failed.
@@ -118,16 +121,58 @@ impl EvalRegistry for PinnedRegistry {
     }
 }
 
+/// A what-if overlay for one target cube (ADR-0014): the sandbox's numeric leaf
+/// overrides, consulted beneath the rules. Owned by the resolver (and by the
+/// explain handler) so it lives as long as each per-read [`CalcEngine`] borrows
+/// it.
+pub(crate) struct OwnedOverlay {
+    target: u32,
+    cells: BTreeMap<Vec<u32>, Fixed>,
+    scope: u64,
+}
+
+impl OwnedOverlay {
+    /// Build an overlay of `sandbox`'s numeric leaves for cube ordinal `target`.
+    /// The scope id (the sandbox's injected created id, forced non-zero) keeps
+    /// the memo from aliasing a base value.
+    pub(crate) fn new(target: u32, sandbox: &Sandbox) -> Self {
+        Self {
+            target,
+            cells: sandbox.cells.clone(),
+            scope: sandbox.created.max(1),
+        }
+    }
+}
+
+impl SandboxOverlay for OwnedOverlay {
+    fn leaf(&self, ordinal: u32, coord: &[u32]) -> Option<Fixed> {
+        if ordinal == self.target {
+            self.cells.get(coord).copied()
+        } else {
+            None
+        }
+    }
+
+    fn scope_id(&self) -> u64 {
+        self.scope
+    }
+}
+
 /// A [`CellResolver`] that overlays rules for one target cube, backed by a pinned
-/// multi-cube registry. A fresh evaluator (and memo) is used per value read.
+/// multi-cube registry, optionally overlaying a sandbox's what-if leaves. A fresh
+/// evaluator (and memo) is used per value read.
 struct CalcCellResolver {
     registry: PinnedRegistry,
     target: u32,
+    overlay: Option<OwnedOverlay>,
 }
 
 impl CellResolver for CalcCellResolver {
     fn value(&self, coord: &[u32]) -> Result<Fixed, QueryError> {
-        let engine = CalcEngine::new(&self.registry);
+        let engine = match &self.overlay {
+            Some(overlay) => CalcEngine::with_overlay(&self.registry, overlay),
+            None => CalcEngine::new(&self.registry),
+        };
         Ok(engine.value(self.target, coord)?)
     }
 
@@ -157,8 +202,22 @@ impl CalcFactory {
 
 impl CellResolverFactory for CalcFactory {
     fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver> {
+        self.resolver_with(snapshot, None)
+    }
+
+    fn resolver_with(
+        &self,
+        snapshot: &ReadSnapshot,
+        sandbox: Option<&Sandbox>,
+    ) -> Box<dyn CellResolver> {
         let registry = PinnedRegistry::build(&self.engine);
         let target = registry.ordinal_of(snapshot.cube().name()).unwrap_or(0);
-        Box::new(CalcCellResolver { registry, target })
+        // The overlay covers the target cube's leaves only (ADR-0014).
+        let overlay = sandbox.map(|sb| OwnedOverlay::new(target, sb));
+        Box::new(CalcCellResolver {
+            registry,
+            target,
+            overlay,
+        })
     }
 }

@@ -9,15 +9,18 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use epiphany_calc::{explain, infer_feeders, run_rule_tests, validate_feeders, EvalRegistry};
+use epiphany_calc::{
+    explain_with, infer_feeders, run_rule_tests, validate_feeders, EvalRegistry, SandboxOverlay,
+};
 use epiphany_core::{CellTrace, Cube, ExplainDepth, RuleTest, TestCell, TraceKind};
 use epiphany_engine::ReadSnapshot;
 
 use crate::auth::AuthPrincipal;
-use crate::calc_factory::{compile_source, PinnedRegistry, ValidateError};
+use crate::calc_factory::{compile_source, OwnedOverlay, PinnedRegistry, ValidateError};
 use crate::dto::CoordMap;
 use crate::resolve::resolve;
 use crate::routes::map_batch_error;
+use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
 
@@ -189,9 +192,10 @@ fn trace_dto(trace: CellTrace) -> TraceDto {
 
 /// `POST /cubes/{cube}/cells/explain` -> a provenance trace for a cell.
 pub(crate) async fn explain_cell(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
+    selector: SandboxSelector,
     Json(req): Json<ExplainRequest>,
 ) -> Result<Json<TraceDto>, ApiError> {
     let snap = snapshot(&state, &cube)?;
@@ -209,8 +213,21 @@ pub(crate) async fn explain_cell(
     let ordinal = registry
         .ordinal_of(&cube)
         .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
-    let trace = explain(&registry, ordinal, &resolved.indices, depth)
-        .map_err(|e| ApiError::unprocessable("CALC_ERROR", e.to_string()))?;
+    // Explain over the same what-if overlay as the read, so provenance matches a
+    // sandboxed value rather than base (ADR-0014).
+    let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
+    let overlay = sandbox_name
+        .as_deref()
+        .and_then(|n| snap.model().sandbox(n))
+        .map(|sb| OwnedOverlay::new(ordinal, sb));
+    let trace = explain_with(
+        &registry,
+        ordinal,
+        &resolved.indices,
+        depth,
+        overlay.as_ref().map(|o| o as &dyn SandboxOverlay),
+    )
+    .map_err(|e| ApiError::unprocessable("CALC_ERROR", e.to_string()))?;
     Ok(Json(trace_dto(trace)))
 }
 

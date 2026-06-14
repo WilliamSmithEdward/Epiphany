@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::Json;
 
 use epiphany_core::{
-    execute_view, resolve_subset, Cellset, Cube, Subset, SubsetKind, View, Visibility,
+    execute_view, resolve_subset, Cellset, Cube, Sandbox, Subset, SubsetKind, View, Visibility,
 };
 use epiphany_engine::ReadSnapshot;
 use epiphany_security::Principal;
@@ -25,6 +25,7 @@ use crate::dto::{
 };
 use crate::resolve::kind_str;
 use crate::routes::map_batch_error;
+use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
 
@@ -532,25 +533,33 @@ pub(crate) async fn execute_saved_view(
     auth: AuthPrincipal,
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
+    selector: SandboxSelector,
 ) -> Result<Json<CellsetDto>, ApiError> {
     let snap = snapshot(&state, &cube)?;
     let view = visible_view(&snap, &auth.principal, &name)?;
+    // An active sandbox overlays its what-if leaves, so the cellset recomputes
+    // over them (ADR-0014); absent it, base.
+    let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
+    let sandbox = sandbox_name.as_deref().and_then(|n| snap.model().sandbox(n));
     // Values come through the injected resolver (rule-aware in the server).
-    let resolver = state.cells.resolver(&snap);
+    let resolver = state.cells.resolver_with(&snap, sandbox);
     let cellset = snap.model().execute(view, &*resolver, state.evaluator())?;
-    Ok(Json(cellset_dto(snap.cube(), cellset, snap.version())))
+    Ok(Json(cellset_dto(snap.cube(), cellset, snap.version(), sandbox)))
 }
 
 /// `POST /cubes/{cube}/cellset` -> execute an ad-hoc view spec without saving.
 pub(crate) async fn execute_adhoc(
-    _auth: AuthPrincipal,
+    auth: AuthPrincipal,
     State(state): State<AppState>,
     Path(cube): Path<String>,
+    selector: SandboxSelector,
     Json(body): Json<ViewBody>,
 ) -> Result<Json<CellsetDto>, ApiError> {
     let snap = snapshot(&state, &cube)?;
     let view = view_from_body("adhoc".to_string(), cube.clone(), None, &body)?;
-    let resolver = state.cells.resolver(&snap);
+    let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
+    let sandbox = sandbox_name.as_deref().and_then(|n| snap.model().sandbox(n));
+    let resolver = state.cells.resolver_with(&snap, sandbox);
     let cellset = execute_view(
         snap.cube(),
         &view,
@@ -558,7 +567,7 @@ pub(crate) async fn execute_adhoc(
         &|d, n| snap.subset(d, n),
         state.evaluator(),
     )?;
-    Ok(Json(cellset_dto(snap.cube(), cellset, snap.version())))
+    Ok(Json(cellset_dto(snap.cube(), cellset, snap.version(), sandbox)))
 }
 
 fn visible_view<'a>(
@@ -582,7 +591,34 @@ fn forbidden() -> ApiError {
 /// Build the API cellset from the core cellset, re-resolving each tuple member to
 /// its element kind and deriving per-cell `editable` (a cell is editable only if
 /// every member across its row tuple, column tuple, and the context is a leaf).
-fn cellset_dto(cube: &Cube, cs: Cellset, version: u64) -> CellsetDto {
+/// Reconstruct a cell's full coordinate (as element indices) from its row tuple,
+/// column tuple, and the context, for checking against a sandbox's overrides.
+/// `None` if any member does not resolve.
+fn cell_coord_indices(
+    cube: &Cube,
+    row_dims: &[String],
+    row_tuple: &[String],
+    col_dims: &[String],
+    col_tuple: &[String],
+    context: &[(String, String)],
+) -> Option<Vec<u32>> {
+    let name_for = |dim: &str| -> Option<&str> {
+        if let Some(p) = row_dims.iter().position(|d| d == dim) {
+            return row_tuple.get(p).map(String::as_str);
+        }
+        if let Some(p) = col_dims.iter().position(|d| d == dim) {
+            return col_tuple.get(p).map(String::as_str);
+        }
+        context.iter().find(|(d, _)| d == dim).map(|(_, m)| m.as_str())
+    };
+    let mut coord = Vec::with_capacity(cube.rank());
+    for d in cube.dimensions() {
+        coord.push(d.index_of(name_for(d.name())?)?);
+    }
+    Some(coord)
+}
+
+fn cellset_dto(cube: &Cube, cs: Cellset, version: u64, sandbox: Option<&Sandbox>) -> CellsetDto {
     let leaf_of = |dim_name: &str, member: &str| -> bool {
         cube.dimensions()
             .iter()
@@ -635,6 +671,24 @@ fn cellset_dto(cube: &Cube, cs: Cellset, version: u64) -> CellsetDto {
         .map(|(ordinal, value)| {
             let r = ordinal / ncols;
             let c = ordinal % ncols;
+            // Flag a cell whose exact leaf is a what-if override in the active
+            // sandbox (a consolidation that rolled one up is not flagged).
+            let overlaid = sandbox.is_some_and(|sb| {
+                cs.row_tuples
+                    .get(r)
+                    .zip(cs.column_tuples.get(c))
+                    .and_then(|(rt, ct)| {
+                        cell_coord_indices(
+                            cube,
+                            &cs.row_dimensions,
+                            rt,
+                            &cs.column_dimensions,
+                            ct,
+                            &cs.context,
+                        )
+                    })
+                    .is_some_and(|ix| sb.cells.contains_key(&ix))
+            });
             CellsetCellDto {
                 value: Some(value.to_string()),
                 kind: "numeric",
@@ -642,6 +696,7 @@ fn cellset_dto(cube: &Cube, cs: Cellset, version: u64) -> CellsetDto {
                     && row_leaf.get(r).copied().unwrap_or(false)
                     && col_leaf.get(c).copied().unwrap_or(false),
                 ordinal,
+                overlaid,
             }
         })
         .collect();

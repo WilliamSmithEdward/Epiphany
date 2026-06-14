@@ -27,9 +27,6 @@ const SANDBOX_HEADER: &str = "x-epiphany-sandbox";
 /// header. `None` when the header is absent or blank (base behavior, fully
 /// back-compatible). Carries only the name; existence and ownership are checked
 /// per-request against the cube snapshot by [`resolve_sandbox`].
-// Consumed by the data endpoints (read/execute/explain/write) in the next
-// increment; defined here with the rest of the sandbox surface.
-#[allow(dead_code)]
 pub struct SandboxSelector(pub Option<String>);
 
 impl FromRequestParts<AppState> for SandboxSelector {
@@ -66,7 +63,6 @@ fn authorize_sandbox<'a>(
 /// Resolve a data request's [`SandboxSelector`] to the sandbox name to overlay,
 /// authorizing ownership. `None` means base (no header). Used by the read,
 /// execute, explain, and write paths.
-#[allow(dead_code)]
 pub(crate) fn resolve_sandbox(
     snap: &ReadSnapshot,
     principal: &Principal,

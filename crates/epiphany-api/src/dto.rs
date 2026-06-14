@@ -42,13 +42,16 @@ pub struct CubeDetailDto {
 }
 
 /// One cell value. `value` is a decimal string (numeric) or text (string), or
-/// null if unpopulated; `editable` is false for consolidated coordinates.
+/// null if unpopulated; `editable` is false for consolidated coordinates;
+/// `overlaid` is true when the value is a what-if override from the active
+/// sandbox (ADR-0014), so the UI can mark it as uncommitted.
 #[derive(Debug, Serialize)]
 pub struct CellDto {
     pub coord: CoordMap,
     pub value: Option<String>,
     pub kind: &'static str,
     pub editable: bool,
+    pub overlaid: bool,
 }
 
 /// Bulk cell read (for the pivot grid).
@@ -226,12 +229,15 @@ pub struct AxisMemberDto {
 }
 
 /// One cell value in a cellset (row-major; `ordinal` is its flat index).
+/// `overlaid` is true when the value is a what-if override from the active
+/// sandbox (ADR-0014).
 #[derive(Debug, Serialize)]
 pub struct CellsetCellDto {
     pub value: Option<String>,
     pub kind: &'static str,
     pub editable: bool,
     pub ordinal: usize,
+    pub overlaid: bool,
 }
 
 /// How many tuples zero-suppression removed.
