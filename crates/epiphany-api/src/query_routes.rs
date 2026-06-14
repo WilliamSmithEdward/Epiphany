@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::Json;
 
 use epiphany_core::{
-    execute_view, resolve_subset, Cellset, Cube, Subset, SubsetKind, View, Visibility,
+    execute_view, resolve_subset, Cellset, Cube, StoredCells, Subset, SubsetKind, View, Visibility,
 };
 use epiphany_engine::ReadSnapshot;
 use epiphany_security::Principal;
@@ -535,7 +535,12 @@ pub(crate) async fn execute_saved_view(
 ) -> Result<Json<CellsetDto>, ApiError> {
     let snap = snapshot(&state, &cube)?;
     let view = visible_view(&snap, &auth.principal, &name)?;
-    let cellset = snap.model().execute(view, state.evaluator())?;
+    // Phase 4B routes value reads through the resolver seam; with StoredCells the
+    // output is byte-identical to plain stored consolidation. The composition
+    // root swaps in the rule-aware resolver in 4K.
+    let cellset = snap
+        .model()
+        .execute(view, &StoredCells(snap.cube()), state.evaluator())?;
     Ok(Json(cellset_dto(snap.cube(), cellset, snap.version())))
 }
 
@@ -551,6 +556,7 @@ pub(crate) async fn execute_adhoc(
     let cellset = execute_view(
         snap.cube(),
         &view,
+        &StoredCells(snap.cube()),
         &|d, n| snap.subset(d, n),
         state.evaluator(),
     )?;

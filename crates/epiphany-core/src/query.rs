@@ -86,6 +86,32 @@ impl SetEvaluator for NoSetEvaluator {
     }
 }
 
+/// The value seam: cell reads route through this so the same view-execution and
+/// cell-read code serves plain stored consolidation ([`StoredCells`]) and, in
+/// Phase 4, a rule-aware overlay implemented in `epiphany-calc` and injected at
+/// the composition root. This mirrors the [`SetEvaluator`] injection pattern.
+pub trait CellResolver {
+    /// The numeric (consolidation-aware) value at a coordinate.
+    fn value(&self, coord: &[u32]) -> Result<Fixed, QueryError>;
+    /// The string value at a coordinate, if any.
+    fn string_value(&self, coord: &[u32]) -> Result<Option<String>, QueryError>;
+}
+
+/// The default resolver: reads stored cells and consolidation directly, so its
+/// output is byte-identical to [`Cube::get`] / [`Cube::get_string`] (no rules).
+#[derive(Clone, Copy, Debug)]
+pub struct StoredCells<'a>(pub &'a Cube);
+
+impl CellResolver for StoredCells<'_> {
+    fn value(&self, coord: &[u32]) -> Result<Fixed, QueryError> {
+        Ok(self.0.get(coord)?)
+    }
+
+    fn string_value(&self, coord: &[u32]) -> Result<Option<String>, QueryError> {
+        Ok(self.0.get_string(coord)?.map(str::to_string))
+    }
+}
+
 /// Errors from resolving subsets and executing views.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QueryError {
@@ -129,6 +155,12 @@ pub enum QueryError {
         /// The MDX parse/eval failure rendered as text.
         message: String,
     },
+    /// A rule failed to evaluate (message from the calc layer: parse, cycle,
+    /// division by zero, overflow, etc.). Carried as text so core stays calc-free.
+    Calc {
+        /// The calc failure rendered as text.
+        message: String,
+    },
     /// An underlying core model error.
     Model(ModelError),
 }
@@ -159,6 +191,7 @@ impl fmt::Display for QueryError {
                 )
             }
             QueryError::DynamicEval { message } => write!(f, "{message}"),
+            QueryError::Calc { message } => write!(f, "{message}"),
             QueryError::Model(e) => write!(f, "{e}"),
         }
     }
@@ -320,15 +353,19 @@ pub struct Cellset {
 
 /// Execute a view over a cube into a [`Cellset`].
 ///
-/// `subset_lookup(dimension, name)` resolves a saved subset referenced by an
-/// axis; `eval` resolves dynamic (MDX) subsets. The function validates exact
-/// one-axis-per-dimension coverage, resolves each axis to crossjoined member
-/// tuples, reads consolidation-aware values via [`Cube::get`], then applies
-/// zero-suppression (rows first, then columns) preserving order. An axis or
-/// suppression that yields zero tuples is a valid empty result, not an error.
+/// `cells` is the value seam: cell values are read through it, so a
+/// [`StoredCells`] reads exactly today's stored consolidation while a rule-aware
+/// resolver overlays rule-derived values (Phase 4). `subset_lookup(dimension,
+/// name)` resolves a saved subset referenced by an axis; `eval` resolves dynamic
+/// (MDX) subsets. The function validates exact one-axis-per-dimension coverage,
+/// resolves each axis to crossjoined member tuples, reads consolidation-aware
+/// values via `cells`, then applies zero-suppression (rows first, then columns)
+/// preserving order. An axis or suppression that yields zero tuples is a valid
+/// empty result, not an error.
 pub fn execute_view<'a>(
     cube: &Cube,
     view: &View,
+    cells: &dyn CellResolver,
     subset_lookup: &dyn Fn(&str, &str) -> Option<&'a Subset>,
     eval: &dyn SetEvaluator,
 ) -> Result<Cellset, QueryError> {
@@ -382,7 +419,7 @@ pub fn execute_view<'a>(
             for (k, &idx) in col.iter().enumerate() {
                 coord[col_ci[k]] = idx;
             }
-            line.push(cube.get(&coord)?);
+            line.push(cells.value(&coord)?);
         }
         matrix.push(line);
     }
@@ -604,10 +641,16 @@ impl Model {
         self.views.get(name)
     }
 
-    /// Execute one of this model's views, resolving its subsets and (via `eval`)
-    /// any dynamic subsets.
-    pub fn execute(&self, view: &View, eval: &dyn SetEvaluator) -> Result<Cellset, QueryError> {
-        execute_view(&self.cube, view, &|d, n| self.subset(d, n), eval)
+    /// Execute one of this model's views. Cell values are read through `cells`
+    /// (a [`StoredCells`] for plain reads, a rule-aware resolver for calc);
+    /// `eval` resolves dynamic (MDX) subsets.
+    pub fn execute(
+        &self,
+        view: &View,
+        cells: &dyn CellResolver,
+        eval: &dyn SetEvaluator,
+    ) -> Result<Cellset, QueryError> {
+        execute_view(&self.cube, view, cells, &|d, n| self.subset(d, n), eval)
     }
 }
 
@@ -808,7 +851,8 @@ mod tests {
             &[("Product", "Widget")],
             false,
         );
-        let cs = execute_view(&cube, &v, &no_subsets, &NoSetEvaluator).unwrap();
+        let cs =
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
         assert_eq!(
             cs.row_tuples,
             vec![vec!["North"], vec!["South"], vec!["Total"]]
@@ -821,7 +865,7 @@ mod tests {
         assert_eq!(cs.cells, fixed(&[100, 60, 40, 200, 150, 50, 300, 210, 90]));
         // Determinism.
         assert_eq!(
-            execute_view(&cube, &v, &no_subsets, &NoSetEvaluator).unwrap(),
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap(),
             cs
         );
     }
@@ -838,7 +882,8 @@ mod tests {
             &[],
             false,
         );
-        let cs = execute_view(&cube, &v, &no_subsets, &NoSetEvaluator).unwrap();
+        let cs =
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
         assert_eq!(cs.row_dimensions, vec!["Region", "Product"]);
         assert_eq!(
             cs.row_tuples,
@@ -865,7 +910,8 @@ mod tests {
             &[],
             true,
         );
-        let cs = execute_view(&cube, &v, &no_subsets, &NoSetEvaluator).unwrap();
+        let cs =
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
         // North/Gadget is all zero -> dropped and reported; South/Gadget is
         // partially zero (50,50,0) -> kept.
         assert_eq!(
@@ -890,7 +936,8 @@ mod tests {
             &[("Measure", "Sales")],
             true,
         );
-        let cs = execute_view(&cube, &v, &no_subsets, &NoSetEvaluator).unwrap();
+        let cs =
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
         assert_eq!(cs.column_tuples, vec![vec!["Widget"]]);
         assert_eq!(cs.suppressed_column_tuples, vec![vec!["Gadget"]]);
         assert_eq!(cs.cells, fixed(&[100]));
@@ -908,7 +955,8 @@ mod tests {
             &[],
             false,
         );
-        let cs = execute_view(&cube, &v, &no_subsets, &NoSetEvaluator).unwrap();
+        let cs =
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
         let ri = |n: &str| cube.dimension(0).resolve(n).unwrap();
         let pi = |n: &str| cube.dimension(1).resolve(n).unwrap();
         let mi = |n: &str| cube.dimension(2).resolve(n).unwrap();
@@ -936,7 +984,7 @@ mod tests {
             false,
         );
         assert!(matches!(
-            execute_view(&cube, &v, &no_subsets, &NoSetEvaluator),
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator),
             Err(QueryError::DimensionCoverage { .. })
         ));
     }
@@ -952,7 +1000,7 @@ mod tests {
             false,
         );
         assert!(matches!(
-            execute_view(&cube, &v, &no_subsets, &NoSetEvaluator),
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator),
             Err(QueryError::DimensionCoverage { .. })
         ));
     }
@@ -971,7 +1019,7 @@ mod tests {
             false,
         );
         assert!(matches!(
-            execute_view(&cube, &v, &no_subsets, &NoSetEvaluator),
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator),
             Err(QueryError::UnknownSubset { .. })
         ));
 
@@ -996,7 +1044,7 @@ mod tests {
             false,
         );
         assert!(matches!(
-            execute_view(&cube, &v2, &lookup, &NoSetEvaluator),
+            execute_view(&cube, &v2, &StoredCells(&cube), &lookup, &NoSetEvaluator),
             Err(QueryError::SubsetDimensionMismatch { .. })
         ));
     }
@@ -1011,7 +1059,8 @@ mod tests {
             &[("Product", "Widget")],
             false,
         );
-        let cs = execute_view(&cube, &v, &no_subsets, &NoSetEvaluator).unwrap();
+        let cs =
+            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
         assert!(cs.row_tuples.is_empty());
         assert!(cs.cells.is_empty());
         assert_eq!(cs.column_tuples, vec![vec!["Sales"]]);

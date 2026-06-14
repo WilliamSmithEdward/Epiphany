@@ -98,6 +98,7 @@ impl From<QueryError> for ApiError {
             QueryError::DynamicUnsupported | QueryError::DynamicEval { .. } => {
                 ApiError::unprocessable("MDX_ERROR", message)
             }
+            QueryError::Calc { .. } => ApiError::unprocessable("CALC_ERROR", message),
             QueryError::Model(_) => ApiError::unprocessable("MODEL_ERROR", message),
         }
     }

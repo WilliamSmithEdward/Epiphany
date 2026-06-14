@@ -468,6 +468,69 @@ impl Cube {
             .map(Fixed::from_scaled)
             .map_err(|_| ModelError::Overflow)
     }
+
+    /// Consolidate a coordinate, sourcing each contributing leaf's value through
+    /// `leaf_value` instead of reading the stored cell store directly.
+    ///
+    /// This is the rule-aware consolidation entry point (the seam the calc engine
+    /// uses): with a stored-cell source it equals [`get`](Self::get) exactly; with
+    /// a rule overlay it folds rule-derived leaf values into the rollup through
+    /// the same exact weighted `i128` algebra. An all-leaf coordinate
+    /// short-circuits to a single `leaf_value` call (no enumeration). A
+    /// consolidated coordinate enumerates its contributing leaf coordinates (the
+    /// cartesian product of each dimension's net-weighted leaves) and sums
+    /// `weight * value` exactly. The error type is generic so a caller can thread
+    /// either a `ModelError` or a richer calc error through the closure.
+    ///
+    /// The enumeration is dense over the consolidation's leaf space, so callers
+    /// that can be sparse (feeder-driven) should restrict the queried region; the
+    /// no-rules read path stays on the sparse [`get`](Self::get).
+    pub fn consolidate_with<E, F>(&self, coord: &[u32], leaf_value: F) -> Result<Fixed, E>
+    where
+        E: From<ModelError>,
+        F: Fn(&[u32]) -> Result<Fixed, E>,
+    {
+        self.check_coord(coord).map_err(E::from)?;
+
+        let mut per_dim: Vec<Vec<(u32, i64)>> = Vec::with_capacity(self.rank());
+        let mut all_leaf = true;
+        for (d, &idx) in coord.iter().enumerate() {
+            if self.dimensions[d].element(idx).map_err(E::from)?.kind != ElementKind::Leaf {
+                all_leaf = false;
+            }
+            per_dim.push(self.dimensions[d].leaf_weights(idx).map_err(E::from)?);
+        }
+
+        // Fast path: a pure leaf coordinate is a single source lookup.
+        if all_leaf {
+            return leaf_value(coord);
+        }
+
+        // Dense enumeration of the contributing leaf coordinates: a mixed-radix
+        // walk over the per-dimension weighted-leaf lists. Any empty list (a
+        // net-zero rollup) means no contributing leaves.
+        let total: usize = per_dim.iter().map(|w| w.len()).product();
+        if total == 0 {
+            return Ok(Fixed::ZERO);
+        }
+        let rank = self.rank();
+        let mut combo = vec![0u32; rank];
+        let mut acc: i128 = 0;
+        for n in 0..total {
+            let mut rem = n;
+            let mut weight: i128 = 1;
+            for d in 0..rank {
+                let len = per_dim[d].len();
+                let (leaf, w) = per_dim[d][rem % len];
+                rem /= len;
+                combo[d] = leaf;
+                weight *= i128::from(w);
+            }
+            acc += weight * i128::from(leaf_value(&combo)?.to_scaled());
+        }
+        let scaled = i64::try_from(acc).map_err(|_| E::from(ModelError::Overflow))?;
+        Ok(Fixed::from_scaled(scaled))
+    }
 }
 
 #[cfg(test)]
@@ -753,5 +816,77 @@ mod tests {
         assert_eq!(cube.get(&[region_total, sales]).unwrap(), fix(150));
         // A numeric read over the string measure is zero (no numeric cells there).
         assert_eq!(cube.get(&[region_total, comment]).unwrap(), Fixed::ZERO);
+    }
+
+    #[test]
+    fn consolidate_with_stored_source_equals_get() {
+        let (region, region_total, r) = sum_dim("Region", 3);
+        let (period, period_total, p) = sum_dim("Period", 2);
+        let mut cube = Cube::new("Sales", vec![region, period]).unwrap();
+        cube.set_leaf(&[r[0], p[0]], fix(10)).unwrap();
+        cube.set_leaf(&[r[1], p[0]], fix(20)).unwrap();
+        cube.set_leaf(&[r[0], p[1]], fix(30)).unwrap();
+        let coords = [
+            [r[0], p[0]],
+            [r[2], p[1]],
+            [region_total, p[0]],
+            [r[0], period_total],
+            [region_total, period_total],
+        ];
+        for c in coords {
+            let via = cube
+                .consolidate_with::<ModelError, _>(&c, |lc| Ok(cube.leaf_value(lc)))
+                .unwrap();
+            assert_eq!(via, cube.get(&c).unwrap(), "mismatch at {c:?}");
+        }
+    }
+
+    #[test]
+    fn consolidate_with_fast_path_does_not_enumerate() {
+        let (region, region_total, r) = sum_dim("Region", 3);
+        let cube = Cube::new("Sales", vec![region]).unwrap();
+        // A pure-leaf coordinate calls the source exactly once.
+        let calls = std::cell::Cell::new(0usize);
+        cube.consolidate_with::<ModelError, _>(&[r[0]], |_| {
+            calls.set(calls.get() + 1);
+            Ok(Fixed::ZERO)
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 1, "a leaf read must not enumerate");
+        // A consolidated coordinate enumerates its three contributing leaves.
+        let calls = std::cell::Cell::new(0usize);
+        cube.consolidate_with::<ModelError, _>(&[region_total], |_| {
+            calls.set(calls.get() + 1);
+            Ok(Fixed::ZERO)
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 3);
+    }
+
+    #[test]
+    fn consolidate_with_equals_get_randomized() {
+        let (region, _rt, r) = sum_dim("Region", 4);
+        let (period, _pt, p) = sum_dim("Period", 3);
+        let mut cube = Cube::new("Sales", vec![region, period]).unwrap();
+        let mut rng = DeterministicRng::new(7);
+        for &ri in &r {
+            for &pi in &p {
+                if rng.next_u64().is_multiple_of(2) {
+                    let v = Fixed::from_scaled((rng.next_u64() % 1000) as i64);
+                    cube.set_leaf(&[ri, pi], v).unwrap();
+                }
+            }
+        }
+        let rlen = cube.dimension(0).len();
+        let plen = cube.dimension(1).len();
+        for ri in 0..rlen {
+            for pi in 0..plen {
+                let c = [ri, pi];
+                let via = cube
+                    .consolidate_with::<ModelError, _>(&c, |lc| Ok(cube.leaf_value(lc)))
+                    .unwrap();
+                assert_eq!(via, cube.get(&c).unwrap(), "mismatch at {c:?}");
+            }
+        }
     }
 }
