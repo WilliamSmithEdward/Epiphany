@@ -54,6 +54,21 @@ CI (`.github/workflows/ci.yml`) runs all of the above and gates merges.
   The concrete install is under `%APPDATA%\fnm\node-versions\<ver>\installation`.
 - **git** is on PATH.
 
+## Supported platforms
+Epiphany ships as a single self-contained binary (the web UI is embedded with `--features embed-ui`). Cross-platform and multi-arch support is CI-gated, not assumed: on every push and PR, `cargo clippy -D warnings` and `cargo test --workspace` run on each of the tested targets below, so the cfg-gated paths (e.g. the Windows vs Unix command-connector code) are linted and exercised on every platform. Each runner refreshes to the current stable Rust before building.
+
+| Target | Arch | CI runner | Status |
+|---|---|---|---|
+| Linux | x86_64 | `ubuntu-latest` | tested + released |
+| Linux | aarch64 | `ubuntu-24.04-arm` | tested + released |
+| Windows | x86_64 (MSVC) | `windows-latest` | tested + released |
+| macOS | aarch64 (Apple Silicon) | `macos-latest` | tested + released |
+| macOS | x86_64 (Intel) | (none) | builds, not CI-gated |
+
+On a milestone tag (`m*`) the release job builds and uploads a single binary per tested target. Intel macOS (x86_64) still compiles, but it is not in the matrix: GitHub's Intel macOS runners are being retired and are capacity-starved (jobs can sit queued for hours), so gating CI on them is unreliable. Apple Silicon covers the current Mac platform.
+
+A cube data directory is single-process: the engine serializes in-process writers and the store takes no cross-process OS file lock (see `epiphany-persist`). Run one server per data directory.
+
 ## Conventions
 - Edition 2021. `unsafe_code = "deny"` workspace-wide; justify any per-crate exception in an ADR.
 - **Tests are dependency-free.** The workspace uses no third-party test crates; write golden/parser tests as hand-authored `assert_eq!` and property tests as `DeterministicRng`-seeded loops, not `insta`/`proptest`. This keeps `cargo-deny` green with no new license surface. Adopting snapshot/property tooling is a deliberate, separately-scoped decision (it adds a transitive tree to triage), not a default.

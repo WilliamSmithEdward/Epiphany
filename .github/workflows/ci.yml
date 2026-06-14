@@ -25,14 +25,18 @@ jobs:
   test:
     name: Test (${{ matrix.label }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        # macOS is covered on Apple Silicon (aarch64); the Intel macOS runner
+        # (macos-13) is omitted - Apple/GitHub are retiring it and it is
+        # capacity-starved (jobs can sit queued for hours). The Intel-macOS
+        # binary still builds, it is just not CI-gated.
         include:
           - { os: ubuntu-latest, label: linux-x86_64 }
           - { os: ubuntu-24.04-arm, label: linux-aarch64 }
           - { os: windows-latest, label: windows-x86_64 }
-          - { os: macos-13, label: macos-x86_64 }
           - { os: macos-latest, label: macos-aarch64 }
     defaults:
       run:
@@ -97,7 +101,6 @@ jobs:
           - { os: ubuntu-latest, label: linux-x86_64, ext: "" }
           - { os: ubuntu-24.04-arm, label: linux-aarch64, ext: "" }
           - { os: windows-latest, label: windows-x86_64, ext: ".exe" }
-          - { os: macos-13, label: macos-x86_64, ext: "" }
           - { os: macos-latest, label: macos-aarch64, ext: "" }
     defaults:
       run:
