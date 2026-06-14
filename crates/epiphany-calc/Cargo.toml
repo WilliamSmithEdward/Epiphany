@@ -12,3 +12,7 @@ workspace = true
 
 [dependencies]
 epiphany-core = { path = "../epiphany-core" }
+
+[dev-dependencies]
+# Deterministic RNG for property-style tests (no proptest; hand-written loops).
+epiphany-determinism = { path = "../epiphany-determinism" }
