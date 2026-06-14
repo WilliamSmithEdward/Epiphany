@@ -13,6 +13,7 @@ mod eval;
 mod feeders;
 mod provenance;
 mod registry;
+mod testing;
 
 pub use compile::compile;
 pub use compiled::{
@@ -25,6 +26,7 @@ pub use feeders::{
 };
 pub use provenance::explain;
 pub use registry::{CubeRegistry, SingleCube, VecRegistry};
+pub use testing::{run_rule_tests, AssertionFailure, TestOutcome, TestRunError};
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-calc";
