@@ -30,6 +30,24 @@ pub trait EvalRegistry {
     fn ordinal(&self, name: &str) -> Option<u32>;
 }
 
+/// A per-query what-if overlay consulted at the stored-leaf terminal (ADR-0014).
+///
+/// [`SandboxOverlay::leaf`] returns an override for a STORED leaf at
+/// `(ordinal, coord)`, or `None` to fall through to the cube's stored value. It
+/// is consulted only after a matching rule has been ruled out, so a rule-derived
+/// leaf is never masked; rules and consolidations recompute over the overridden
+/// leaves because they recurse through [`CalcEngine::value`]. [`scope_id`] is a
+/// stable, non-zero id that partitions the memo so a base value and a what-if
+/// value for the same coordinate can never alias.
+///
+/// [`scope_id`]: SandboxOverlay::scope_id
+pub trait SandboxOverlay {
+    /// The numeric override for a stored leaf, or `None` to use the stored value.
+    fn leaf(&self, ordinal: u32, coord: &[u32]) -> Option<Fixed>;
+    /// A stable, non-zero scope id identifying this overlay (a memo partition).
+    fn scope_id(&self) -> u64;
+}
+
 /// A failure while evaluating rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CalcError {
@@ -86,12 +104,17 @@ enum CellState {
     Done(Fixed),
 }
 
-/// Per-query memo: `(cube ordinal, coordinate) -> state`.
-type Memo = HashMap<(u32, Box<[u32]>), CellState>;
+/// Per-query memo: `(scope id, cube ordinal, coordinate) -> state`. The scope id
+/// is 0 for base reads and the sandbox's scope id for a sandboxed read, so the
+/// two never alias even if an engine were shared across scopes (ADR-0014).
+type Memo = HashMap<(u64, u32, Box<[u32]>), CellState>;
 
-/// A pull-based rule evaluator over one query's pinned snapshot.
+/// A pull-based rule evaluator over one query's pinned snapshot. An optional
+/// what-if overlay (ADR-0014) replaces stored leaves beneath the rules.
 pub struct CalcEngine<'a> {
     registry: &'a dyn EvalRegistry,
+    overlay: Option<&'a dyn SandboxOverlay>,
+    scope_id: u64,
     memo: RefCell<Memo>,
 }
 
@@ -104,10 +127,26 @@ impl std::fmt::Debug for CalcEngine<'_> {
 }
 
 impl<'a> CalcEngine<'a> {
-    /// Create an engine over a registry. Cheap: the memo starts empty.
+    /// Create an engine over a registry. Cheap: the memo starts empty. No
+    /// overlay, so reads are byte-identical to the no-sandbox behavior.
     pub fn new(registry: &'a dyn EvalRegistry) -> Self {
         Self {
             registry,
+            overlay: None,
+            scope_id: 0,
+            memo: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Create an engine that overlays a sandbox's what-if values beneath the
+    /// rules (ADR-0014). The overlay's [`scope_id`](SandboxOverlay::scope_id)
+    /// partitions this engine's memo.
+    pub fn with_overlay(registry: &'a dyn EvalRegistry, overlay: &'a dyn SandboxOverlay) -> Self {
+        let scope_id = overlay.scope_id();
+        Self {
+            registry,
+            overlay: Some(overlay),
+            scope_id,
             memo: RefCell::new(HashMap::new()),
         }
     }
@@ -123,7 +162,7 @@ impl<'a> CalcEngine<'a> {
 
     /// The rule-aware value at a coordinate in cube `ordinal`.
     pub fn value(&self, ordinal: u32, coord: &[u32]) -> Result<Fixed, CalcError> {
-        let key = (ordinal, coord.to_vec().into_boxed_slice());
+        let key = (self.scope_id, ordinal, coord.to_vec().into_boxed_slice());
         {
             let mut memo = self.memo.borrow_mut();
             match memo.get(&key) {
@@ -178,7 +217,16 @@ impl<'a> CalcEngine<'a> {
                 .unwrap_or(false)
         });
         if all_leaf {
-            // No rule at this leaf: the stored value.
+            // A what-if overlay replaces the STORED leaf value (a rule-derived
+            // leaf was handled above, so it is never masked). Rules and
+            // consolidations that read this leaf through `value` recompute over
+            // the override (ADR-0014).
+            if let Some(overlay) = self.overlay {
+                if let Some(v) = overlay.leaf(ordinal, coord) {
+                    return Ok(v);
+                }
+            }
+            // No rule and no overlay at this leaf: the stored value.
             Ok(cube.get(coord)?)
         } else {
             // Consolidate, pulling each contributing leaf back through the
@@ -446,6 +494,102 @@ mod tests {
         assert_eq!(
             engine.value(0, &coord(&reg, "Total", "Sales")).unwrap(),
             Fixed::from(300)
+        );
+    }
+
+    /// A what-if overlay over one cube ordinal, for the sandbox tests.
+    struct TestOverlay {
+        ordinal: u32,
+        cells: std::collections::BTreeMap<Vec<u32>, Fixed>,
+        scope: u64,
+    }
+    impl SandboxOverlay for TestOverlay {
+        fn leaf(&self, ordinal: u32, coord: &[u32]) -> Option<Fixed> {
+            if ordinal == self.ordinal {
+                self.cells.get(coord).copied()
+            } else {
+                None
+            }
+        }
+        fn scope_id(&self) -> u64 {
+            self.scope
+        }
+    }
+
+    #[test]
+    fn sandbox_overlay_overrides_leaf_and_recomputes_rules_and_rollups() {
+        let mut cube = sales_cube();
+        let (n, s) = (
+            cube.dimension(0).resolve("North").unwrap(),
+            cube.dimension(0).resolve("South").unwrap(),
+        );
+        let (sales, cost) = (
+            cube.dimension(1).resolve("Sales").unwrap(),
+            cube.dimension(1).resolve("Cost").unwrap(),
+        );
+        cube.set_leaf(&[n, sales], Fixed::from(100)).unwrap();
+        cube.set_leaf(&[n, cost], Fixed::from(60)).unwrap();
+        cube.set_leaf(&[s, sales], Fixed::from(200)).unwrap();
+        cube.set_leaf(&[s, cost], Fixed::from(150)).unwrap();
+        let reg = build(
+            cube,
+            "['Measure':'Margin'] = value['Measure':'Sales'] - value['Measure':'Cost'];",
+        );
+
+        // Base values (no overlay).
+        let base = CalcEngine::new(&reg);
+        assert_eq!(
+            base.value(0, &coord(&reg, "Total", "Sales")).unwrap(),
+            Fixed::from(300)
+        );
+        assert_eq!(
+            base.value(0, &coord(&reg, "North", "Margin")).unwrap(),
+            Fixed::from(40)
+        );
+        assert_eq!(
+            base.value(0, &coord(&reg, "Total", "Margin")).unwrap(),
+            Fixed::from(90)
+        );
+
+        // Overlay: what-if North/Sales = 500.
+        let mut cells = std::collections::BTreeMap::new();
+        cells.insert(coord(&reg, "North", "Sales"), Fixed::from(500));
+        let overlay = TestOverlay {
+            ordinal: 0,
+            cells,
+            scope: 42,
+        };
+        let sb = CalcEngine::with_overlay(&reg, &overlay);
+        // The stored leaf reads the override...
+        assert_eq!(
+            sb.value(0, &coord(&reg, "North", "Sales")).unwrap(),
+            Fixed::from(500)
+        );
+        // ...the rule recomputes over it (500 - 60 = 440)...
+        assert_eq!(
+            sb.value(0, &coord(&reg, "North", "Margin")).unwrap(),
+            Fixed::from(440)
+        );
+        // ...the Sales consolidation rolls it up (500 + 200 = 700)...
+        assert_eq!(
+            sb.value(0, &coord(&reg, "Total", "Sales")).unwrap(),
+            Fixed::from(700)
+        );
+        // ...and the Margin consolidation rolls the recomputed leaves (440 + 50).
+        assert_eq!(
+            sb.value(0, &coord(&reg, "Total", "Margin")).unwrap(),
+            Fixed::from(490)
+        );
+
+        // A fresh base engine is unaffected by the overlay (base data untouched).
+        let base2 = CalcEngine::new(&reg);
+        assert_eq!(
+            base2.value(0, &coord(&reg, "Total", "Sales")).unwrap(),
+            Fixed::from(300)
+        );
+        assert_eq!(
+            base2.value(0, &coord(&reg, "Total", "Margin")).unwrap(),
+            Fixed::from(90)
         );
     }
 
