@@ -1,7 +1,20 @@
-//! Epiphany mdx: MDX parser/evaluator for dynamic subsets and cellsets.
+//! Epiphany mdx: a parser and evaluator for the commonly-used MDX set
+//! sublanguage, used for dynamic subsets and cellsets.
 //!
-//! Phase 0 skeleton. Phase 3 fills this in (the commonly-used MDX subset:
-//! membership, level/attribute filtering, sorting). See `docs/ROADMAP.md`.
+//! Phase 3 fills this in. The crate is split into a pure, dependency-free front
+//! end (this module's [`parse`], over [`lexer`]/[`parser`]) producing a
+//! [`SetExpr`] AST, and (from Phase 3B) a tree-walking evaluator over a borrowed
+//! dimension/cube. The grammar is documented on [`parser`]. See `docs/ROADMAP.md`.
+
+mod ast;
+mod error;
+mod lexer;
+mod parser;
+
+pub use ast::{CmpOp, MemberRef, Operand, OrderDir, Predicate, SetExpr};
+pub use error::{MdxParseError, ParseErrorKind};
+pub use lexer::Span;
+pub use parser::parse;
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-mdx";
