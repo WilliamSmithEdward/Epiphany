@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["m*"]
   pull_request:
 
 permissions:
@@ -13,16 +14,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  rust:
-    name: Rust (fmt, clippy, test)
+  fmt:
+    name: Format
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup component add rustfmt
+      - run: cargo fmt --all -- --check
+
+  test:
+    name: Test (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, label: linux-x86_64 }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64 }
+          - { os: windows-latest, label: windows-x86_64 }
+          - { os: macos-13, label: macos-x86_64 }
+          - { os: macos-latest, label: macos-aarch64 }
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@v6
-      - name: Ensure rustfmt + clippy
-        run: rustup component add rustfmt clippy
+      - name: Ensure clippy
+        run: rustup component add clippy
       - name: Cache cargo
         uses: actions/cache@v5
         with:
@@ -30,8 +48,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-      - run: cargo fmt --all -- --check
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      # clippy and the test suite run on every OS/arch so the cfg-gated code
+      # (e.g. the Windows vs Unix command-connector paths) is linted and
+      # exercised on each platform, not just Linux-x86_64.
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
 
@@ -59,3 +79,45 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run build
+
+  release:
+    name: Release binary (${{ matrix.label }})
+    # Build a single self-contained binary (with the embedded UI) for each
+    # supported target on a milestone tag.
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [test, web]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, label: linux-x86_64, ext: "" }
+          - { os: ubuntu-24.04-arm, label: linux-aarch64, ext: "" }
+          - { os: windows-latest, label: windows-x86_64, ext: ".exe" }
+          - { os: macos-13, label: macos-x86_64, ext: "" }
+          - { os: macos-latest, label: macos-aarch64, ext: "" }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build the web UI (to embed)
+        run: npm ci && npm run build
+        working-directory: web
+      - name: Build the server (single binary, embedded UI)
+        run: cargo build --release -p epiphany-server --features embed-ui
+      - name: Stage the artifact
+        run: |
+          mkdir -p dist
+          cp "target/release/epiphany-server${{ matrix.ext }}" "dist/epiphany-server-${{ matrix.label }}${{ matrix.ext }}"
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: epiphany-server-${{ matrix.label }}
+          path: dist/epiphany-server-${{ matrix.label }}${{ matrix.ext }}
+          if-no-files-found: error
