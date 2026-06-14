@@ -14,12 +14,16 @@
 mod cube;
 mod dimension;
 mod error;
+mod query;
 mod text;
 mod value;
 
 pub use cube::{Coord, Cube};
 pub use dimension::{AttributeDef, AttributeKind, AttributeValue, Dimension, Element, ElementKind};
 pub use error::ModelError;
+pub use query::{
+    resolve_subset, NoSetEvaluator, QueryError, SetEvaluator, Subset, SubsetKind, Visibility,
+};
 pub use text::{LoadError, SaveError};
 pub use value::{Fixed, SCALE, SCALE_DECIMALS};
 
