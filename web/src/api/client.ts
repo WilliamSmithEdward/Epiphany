@@ -315,6 +315,169 @@ export async function executeAdhoc(cube: string, def: ViewDef): Promise<CellsetD
   return request<CellsetDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/cellset`, def)
 }
 
+// ---- rules, explain, feeders, and rule tests (Phase 4) ----
+
+/** A cube's rule source. */
+export interface RulesDto {
+  source: string
+}
+
+/** The structured result of validating a rule source without saving it. */
+export type RulePreview =
+  | { ok: true }
+  | { ok: false; message: string; line?: number; column?: number }
+
+export async function getRules(cube: string): Promise<RulesDto> {
+  return request<RulesDto>('GET', `/api/v1/cubes/${encodeURIComponent(cube)}/rules`)
+}
+
+export async function putRules(cube: string, source: string): Promise<RulesDto> {
+  return request<RulesDto>('PUT', `/api/v1/cubes/${encodeURIComponent(cube)}/rules`, { source })
+}
+
+/**
+ * Validate a rule source (parse + compile) without saving. A parse/compile
+ * failure resolves to `{ ok: false }` with the message and, when the server
+ * located it, the 1-based line/column - so the editor can mark the error
+ * inline rather than throwing.
+ */
+export async function previewRules(cube: string, source: string): Promise<RulePreview> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (token) headers['authorization'] = `Bearer ${token}`
+  const response = await fetch(`/api/v1/cubes/${encodeURIComponent(cube)}/rules/preview`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ source }),
+  })
+  if (response.ok) return { ok: true }
+  if (response.status === 401) {
+    setToken(null)
+    throw new Error('Your session has expired. Please sign in again.')
+  }
+  try {
+    const parsed = (await response.json()) as {
+      error?: { message?: string; details?: { line?: number; column?: number } }
+    }
+    return {
+      ok: false,
+      message: parsed.error?.message ?? `Validation failed (${response.status})`,
+      line: parsed.error?.details?.line,
+      column: parsed.error?.details?.column,
+    }
+  } catch {
+    return { ok: false, message: `Validation failed (${response.status})` }
+  }
+}
+
+export type ExplainDepth = 'full' | 'immediate' | string
+
+/** One node of a provenance ("explain") trace. */
+export interface TraceDto {
+  cube: string
+  coord: string[]
+  value: string
+  kind: 'stored' | 'rule' | 'consolidation'
+  rule?: number
+  span_start?: number
+  span_end?: number
+  contributions?: number
+  inputs: TraceDto[]
+}
+
+export async function explainCell(
+  cube: string,
+  coord: Coord,
+  depth: ExplainDepth = 'full',
+): Promise<TraceDto> {
+  return request<TraceDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/cells/explain`, {
+    coord,
+    depth,
+  })
+}
+
+/** A rule whose feeders could not be auto-inferred, with the reason. */
+export interface OpaqueRuleDto {
+  rule: number
+  reason: string
+}
+
+/** Auto-inferred feeders plus under/over-feed validation for a cube. */
+export interface FeederReportDto {
+  fed_cell_count: number
+  under_fed: string[][]
+  over_fed: string[][]
+  estimated_over_fed_bytes: number
+  opaque_rules: OpaqueRuleDto[]
+}
+
+export async function feederDiagnostics(cube: string): Promise<FeederReportDto> {
+  return request<FeederReportDto>(
+    'GET',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/feeders/diagnostics`,
+  )
+}
+
+/** A fixture or assertion cell in a rule test. */
+export interface TestCellDto {
+  coord: Coord
+  value: string
+}
+
+/** A rule unit test: fixtures set leaves, assertions check derived values. */
+export interface RuleTestDto {
+  name: string
+  fixtures: TestCellDto[]
+  assertions: TestCellDto[]
+}
+
+export async function listRuleTests(cube: string): Promise<RuleTestDto[]> {
+  const result = await request<{ tests: RuleTestDto[] }>(
+    'GET',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/rules/tests`,
+  )
+  return result.tests
+}
+
+export async function putRuleTest(cube: string, test: RuleTestDto): Promise<RuleTestDto> {
+  return request<RuleTestDto>(
+    'POST',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/rules/tests`,
+    test,
+  )
+}
+
+export async function deleteRuleTest(cube: string, name: string): Promise<void> {
+  return request<void>(
+    'DELETE',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/rules/tests/${encodeURIComponent(name)}`,
+  )
+}
+
+/** One failed assertion within a rule test run. */
+export interface AssertionFailureDto {
+  coord: Coord
+  expected: string
+  actual: string
+}
+
+export interface TestOutcomeDto {
+  name: string
+  passed: boolean
+  failures: AssertionFailureDto[]
+}
+
+export interface TestReportDto {
+  all_passed: boolean
+  outcomes: TestOutcomeDto[]
+}
+
+export async function runRuleTests(cube: string): Promise<TestReportDto> {
+  return request<TestReportDto>(
+    'POST',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/rules/tests/run`,
+  )
+}
+
 export interface ChangeEvent {
   type: string
   cube?: string

@@ -448,3 +448,141 @@ table.pivot th.rowhead {
   padding: 0.1rem 0.4rem;
   font-size: 0.8rem;
 }
+
+/* Rules workspace (Phase 4) */
+.ok {
+  color: #1e8a4c;
+  font-size: 0.85rem;
+}
+
+.warn {
+  color: #b7791f;
+  font-size: 0.85rem;
+}
+
+.rules-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.rules-editor {
+  grid-column: 1 / 2;
+  grid-row: 1 / 4;
+}
+
+.rules-editor-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.rules-editor-head h3 {
+  margin: 0 0 0.4rem;
+}
+
+.rules-source {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.6rem;
+  resize: vertical;
+}
+
+.feeder-panel,
+.explain-panel,
+.test-panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.8rem;
+}
+
+.coord-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.3rem 0 0;
+  font-size: 0.8rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.explain-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0;
+}
+
+.explain-picker label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.8rem;
+  color: var(--muted);
+  gap: 0.15rem;
+}
+
+.trace-node {
+  font-size: 0.82rem;
+}
+
+.trace-inputs {
+  margin-left: 1rem;
+  border-left: 2px solid var(--line);
+  padding-left: 0.6rem;
+}
+
+.trace-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.15rem 0;
+}
+
+.trace-kind {
+  flex: 0 0 auto;
+  border-radius: 4px;
+  padding: 0 0.35rem;
+  font-size: 0.72rem;
+  background: var(--consolidated);
+  color: var(--muted);
+}
+
+.trace-kind.rule {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.trace-coord {
+  flex: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.trace-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.test-list,
+.failure-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.3rem 0 0;
+  font-size: 0.85rem;
+}
+
+.failure-list {
+  margin-left: 1rem;
+  color: var(--error);
+  font-size: 0.78rem;
+}
+
+.test-status {
+  font-weight: 700;
+  font-size: 0.72rem;
+}
