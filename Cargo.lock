@@ -183,6 +183,7 @@ version = "0.0.0"
 dependencies = [
  "axum",
  "base64",
+ "epiphany-calc",
  "epiphany-core",
  "epiphany-determinism",
  "epiphany-engine",
@@ -203,6 +204,7 @@ name = "epiphany-calc"
 version = "0.0.0"
 dependencies = [
  "epiphany-core",
+ "epiphany-determinism",
 ]
 
 [[package]]

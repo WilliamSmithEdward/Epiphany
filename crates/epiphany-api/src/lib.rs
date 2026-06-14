@@ -15,20 +15,23 @@ use serde::Serialize;
 
 use epiphany_core::SetEvaluator;
 use epiphany_determinism::Clock;
-use epiphany_engine::Engine;
+use epiphany_engine::{CellResolverFactory, Engine};
 use epiphany_security::SecurityStore;
 use tokio::sync::broadcast;
 
 mod auth;
+mod calc_factory;
 mod dto;
 mod error;
 mod openapi;
 mod query_routes;
 mod resolve;
 mod routes;
+mod rule_routes;
 mod session;
 mod ws;
 
+pub use calc_factory::CalcFactory;
 pub use error::ApiError;
 pub use session::SessionStore;
 pub use ws::ChangeEvent;
@@ -52,6 +55,10 @@ pub struct AppState {
     /// The MDX set evaluator for dynamic subsets (the composition-root injects a
     /// real one; tests inject a `NoSetEvaluator` or the real evaluator as needed).
     pub mdx: Arc<dyn SetEvaluator + Send + Sync>,
+    /// The value-resolver factory: builds a per-query resolver over a pinned
+    /// snapshot. The server injects a rule-aware [`CalcFactory`]; no-rules tests
+    /// inject the engine's `StoredCellsFactory`.
+    pub cells: Arc<dyn CellResolverFactory>,
 }
 
 impl AppState {
@@ -124,6 +131,37 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/cubes/{cube}/cellset",
             post(query_routes::execute_adhoc),
+        )
+        // Rules (cube-scoped) and the calc affordances.
+        .route(
+            "/api/v1/cubes/{cube}/rules",
+            get(rule_routes::get_rules)
+                .put(rule_routes::put_rules)
+                .delete(rule_routes::delete_rules),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/rules/preview",
+            post(rule_routes::preview_rules),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/cells/explain",
+            post(rule_routes::explain_cell),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/feeders/diagnostics",
+            get(rule_routes::feeder_diagnostics),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/rules/tests",
+            get(rule_routes::list_rule_tests).post(rule_routes::put_rule_test),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/rules/tests/run",
+            post(rule_routes::run_rule_tests_handler),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/rules/tests/{name}",
+            axum::routing::delete(rule_routes::delete_rule_test),
         )
         .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))
@@ -231,6 +269,7 @@ mod tests {
             sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
             events: broadcast::channel(16).0,
             mdx: Arc::new(epiphany_core::NoSetEvaluator),
+            cells: Arc::new(epiphany_engine::StoredCellsFactory),
         }
     }
 

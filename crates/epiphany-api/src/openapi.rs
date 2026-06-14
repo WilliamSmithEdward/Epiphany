@@ -185,6 +185,62 @@ fn document() -> Value {
                 "requestBody": json_body("#/components/schemas/ViewBody"),
                 "responses": ok("The cellset")
             }},
+            "/api/v1/cubes/{cube}/rules": {
+                "get": {
+                    "summary": "The cube's rule source", "security": bearer(),
+                    "parameters": [cube_param()], "responses": ok("The rule source")
+                },
+                "put": {
+                    "summary": "Validate and set the cube's rules", "security": bearer(),
+                    "parameters": [cube_param()],
+                    "requestBody": json_body("#/components/schemas/Rules"),
+                    "responses": {
+                        "200": { "description": "The stored rules" },
+                        "422": { "description": "A rule parse/compile error (with line/column)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                    }
+                },
+                "delete": {
+                    "summary": "Clear the cube's rules", "security": bearer(),
+                    "parameters": [cube_param()], "responses": { "204": { "description": "Cleared" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/rules/preview": { "post": {
+                "summary": "Validate a rule source without saving", "security": bearer(),
+                "parameters": [cube_param()],
+                "requestBody": json_body("#/components/schemas/Rules"),
+                "responses": ok("Validation result")
+            }},
+            "/api/v1/cubes/{cube}/cells/explain": { "post": {
+                "summary": "A provenance trace for a calculated cell", "security": bearer(),
+                "parameters": [cube_param()],
+                "requestBody": json_body("#/components/schemas/ExplainRequest"),
+                "responses": ok("The provenance trace")
+            }},
+            "/api/v1/cubes/{cube}/feeders/diagnostics": { "get": {
+                "summary": "Auto-inferred feeders and under/over-feed diagnostics", "security": bearer(),
+                "parameters": [cube_param()], "responses": ok("The feeder report")
+            }},
+            "/api/v1/cubes/{cube}/rules/tests": {
+                "get": {
+                    "summary": "The cube's rule unit tests", "security": bearer(),
+                    "parameters": [cube_param()], "responses": ok("The rule tests")
+                },
+                "post": {
+                    "summary": "Create or replace a rule unit test", "security": bearer(),
+                    "parameters": [cube_param()],
+                    "requestBody": json_body("#/components/schemas/RuleTest"),
+                    "responses": { "201": { "description": "The created test" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/rules/tests/run": { "post": {
+                "summary": "Run the cube's rule unit tests", "security": bearer(),
+                "parameters": [cube_param()], "responses": ok("The test report")
+            }},
+            "/api/v1/cubes/{cube}/rules/tests/{name}": { "delete": {
+                "summary": "Delete a rule unit test", "security": bearer(),
+                "parameters": [cube_param(), name_param()],
+                "responses": { "204": { "description": "Deleted" } }
+            }},
             "/api/v1/ws": { "get": {
                 "summary": "WebSocket change-notification stream", "security": bearer(),
                 "responses": { "101": { "description": "Switching protocols (WebSocket)" } }
@@ -242,7 +298,22 @@ fn document() -> Value {
                     "columns": { "type": "array", "items": { "$ref": "#/components/schemas/AxisSpec" } },
                     "context": { "type": "array", "items": { "type": "object", "properties": {
                         "dimension": { "type": "string" }, "member": { "type": "string" } },
-                        "required": ["dimension", "member"] } } } }
+                        "required": ["dimension", "member"] } } } },
+                "Rules": { "type": "object", "properties": {
+                    "source": { "type": "string", "description": "Rules-language source text" } },
+                    "required": ["source"] },
+                "ExplainRequest": { "type": "object", "properties": {
+                    "coord": { "$ref": "#/components/schemas/Coord" },
+                    "depth": { "type": "string", "description": "immediate | full | a level count" } },
+                    "required": ["coord"] },
+                "TestCell": { "type": "object", "properties": {
+                    "coord": { "$ref": "#/components/schemas/Coord" }, "value": { "type": "string" } },
+                    "required": ["coord", "value"] },
+                "RuleTest": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "fixtures": { "type": "array", "items": { "$ref": "#/components/schemas/TestCell" } },
+                    "assertions": { "type": "array", "items": { "$ref": "#/components/schemas/TestCell" } } },
+                    "required": ["name"] }
             }
         }
     })
@@ -295,6 +366,13 @@ mod tests {
         "/api/v1/cubes/{cube}/views/{name}",
         "/api/v1/cubes/{cube}/views/{name}/execute",
         "/api/v1/cubes/{cube}/cellset",
+        "/api/v1/cubes/{cube}/rules",
+        "/api/v1/cubes/{cube}/rules/preview",
+        "/api/v1/cubes/{cube}/cells/explain",
+        "/api/v1/cubes/{cube}/feeders/diagnostics",
+        "/api/v1/cubes/{cube}/rules/tests",
+        "/api/v1/cubes/{cube}/rules/tests/run",
+        "/api/v1/cubes/{cube}/rules/tests/{name}",
         "/api/v1/ws",
     ];
 

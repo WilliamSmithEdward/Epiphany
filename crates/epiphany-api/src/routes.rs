@@ -7,7 +7,7 @@ use std::str::FromStr;
 use axum::extract::{Path, State};
 use axum::Json;
 
-use epiphany_core::{Cube, Fixed};
+use epiphany_core::{CellResolver, Cube, Fixed};
 use epiphany_engine::{BatchError, CellWrite};
 
 use crate::auth::AuthPrincipal;
@@ -75,10 +75,13 @@ pub(crate) async fn read_cells(
         .snapshot(&cube)
         .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
     let cube_ref = snap.cube();
+    // Values come through the injected resolver (rule-aware in the server,
+    // stored-only in no-rules deployments and tests).
+    let resolver = state.cells.resolver(&snap);
     let mut cells = Vec::with_capacity(req.coords.len());
     for coord in &req.coords {
         let resolved = resolve(cube_ref, coord)?;
-        cells.push(read_one(cube_ref, coord, &resolved)?);
+        cells.push(read_one(&*resolver, coord, &resolved)?);
     }
     Ok(Json(ReadCellsResponse { cells }))
 }
@@ -111,8 +114,9 @@ pub(crate) async fn write_cell(
         .engine
         .snapshot(&cube)
         .ok_or_else(ApiError::internal)?;
+    let resolver = state.cells.resolver(&snap);
     let resolved = resolve(snap.cube(), &req.coord)?;
-    Ok(Json(read_one(snap.cube(), &req.coord, &resolved)?))
+    Ok(Json(read_one(&*resolver, &req.coord, &resolved)?))
 }
 
 /// `POST /api/v1/cubes/{cube}/cells/batch` -> apply all writes or none.
@@ -149,12 +153,13 @@ pub(crate) async fn batch_write(
     }))
 }
 
-fn read_one(cube: &Cube, coord: &CoordMap, resolved: &Resolved) -> Result<CellDto, ApiError> {
+fn read_one(
+    cells: &dyn CellResolver,
+    coord: &CoordMap,
+    resolved: &Resolved,
+) -> Result<CellDto, ApiError> {
     if resolved.has_string {
-        let value = cube
-            .get_string(&resolved.indices)
-            .map_err(|_| ApiError::internal())?
-            .map(str::to_string);
+        let value = cells.string_value(&resolved.indices)?;
         Ok(CellDto {
             coord: coord.clone(),
             value,
@@ -162,9 +167,7 @@ fn read_one(cube: &Cube, coord: &CoordMap, resolved: &Resolved) -> Result<CellDt
             editable: resolved.all_leaf,
         })
     } else {
-        let value = cube
-            .get(&resolved.indices)
-            .map_err(|_| ApiError::internal())?;
+        let value = cells.value(&resolved.indices)?;
         Ok(CellDto {
             coord: coord.clone(),
             value: Some(value.to_string()),

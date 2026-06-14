@@ -50,6 +50,7 @@ fn state(name: &str) -> AppState {
         sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
         events: broadcast::channel(16).0,
         mdx: Arc::new(epiphany_core::NoSetEvaluator),
+        cells: Arc::new(epiphany_engine::StoredCellsFactory),
     }
 }
 

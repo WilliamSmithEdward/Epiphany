@@ -87,6 +87,7 @@ fn router_for(dir: &Path) -> Router {
         sessions: Arc::new(Mutex::new(SessionStore::new(60_000))),
         events: tokio::sync::broadcast::channel(16).0,
         mdx: Arc::new(MdxEvaluator::new()),
+        cells: Arc::new(epiphany_engine::StoredCellsFactory),
     };
     build_router(state)
 }

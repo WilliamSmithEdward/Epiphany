@@ -73,6 +73,7 @@ fn router(name: &str) -> Router {
         sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
         events: tokio::sync::broadcast::channel(16).0,
         mdx: Arc::new(MdxEvaluator::new()),
+        cells: Arc::new(epiphany_engine::StoredCellsFactory),
     };
     build_router(state)
 }

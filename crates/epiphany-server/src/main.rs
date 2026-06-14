@@ -46,15 +46,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let (events, _) = tokio::sync::broadcast::channel(256);
+    // Inject the real MDX evaluator (dynamic subsets) and the rule-aware cell
+    // resolver factory (calc); these are the composition-root injections.
+    let cells = Arc::new(epiphany_api::CalcFactory::new(engine.clone()));
     let state = AppState {
         engine,
         clock: Arc::new(SystemClock),
         security: Arc::new(Mutex::new(security)),
         sessions: Arc::new(Mutex::new(SessionStore::new(config.session_ttl_millis))),
         events,
-        // Inject the real MDX evaluator so dynamic subsets resolve; this is the
-        // only place the server names epiphany-mdx (the core trait is the seam).
         mdx: Arc::new(epiphany_mdx::MdxEvaluator::new()),
+        cells,
     };
     let router = build_router(state);
     #[cfg(feature = "embed-ui")]

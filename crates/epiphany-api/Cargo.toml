@@ -13,6 +13,12 @@ workspace = true
 [dependencies]
 epiphany-core = { path = "../epiphany-core" }
 epiphany-engine = { path = "../epiphany-engine" }
+# The rule endpoints (preview/explain/diagnostics/test-run) and the rule-aware
+# read resolver are genuine calc features, so the API depends on epiphany-calc
+# directly. The edge stays acyclic (calc -> core only). Value reads still go
+# through the engine's CellResolverFactory seam, so a no-rules deployment can
+# inject StoredCellsFactory.
+epiphany-calc = { path = "../epiphany-calc" }
 epiphany-persist = { path = "../epiphany-persist" }
 epiphany-security = { path = "../epiphany-security" }
 epiphany-determinism = { path = "../epiphany-determinism" }
