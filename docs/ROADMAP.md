@@ -347,19 +347,19 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Subsets (static and dynamic/MDX) | 3 | [x] |
 | Views (native and MDX cellsets), zero suppression | 3 | [x] |
 | MDX engine (commonly-used subset) | 3 | [x] |
-| Rules language with cross-cube references | 4 | [ ] |
-| Sparse feeds and sparse-skip optimization | 4 | [ ] |
-| Automatic feeder inference and validation | 4 | [ ] |
-| Calculation provenance / explain | 4 | [ ] |
-| On-demand calc with in-query memoization | 4 | [ ] |
-| TypeScript flows (Init/Schema/Rows/Finalize) | 5 | [ ] |
-| Flow data sources (CSV/SQL/view) | 5 | [ ] |
-| Model testing framework (rule and flow unit tests) | 4, 5 | [ ] |
-| Sandboxes (what-if) | 6 | [ ] |
+| Rules language with cross-cube references | 4 | [x] |
+| Sparse feeds and sparse-skip optimization | 4 | [x] |
+| Automatic feeder inference and validation | 4 | [x] |
+| Calculation provenance / explain | 4 | [x] |
+| On-demand calc with in-query memoization | 4 | [x] |
+| TypeScript flows (Init/Schema/Rows/Finalize) | 5 | [x] |
+| Flow data sources (CSV/SQL/view) | 5 | [~] |
+| Model testing framework (rule and flow unit tests) | 4, 5 | [x] |
+| Sandboxes (what-if) | 6 | [x] |
 | Object and element security | 7 | [ ] |
 | Audit / user-action logging | 7, 8 | [ ] |
 | Scheduled jobs | 8 | [ ] |
-| Web editors (rules, flows, subsets, views) | 3 to 5 | [~] |
+| Web editors (rules, flows, subsets, views) | 3 to 5 | [x] |
 
 ---
 
@@ -412,8 +412,10 @@ graph LR
 1. **M1, "It stores and aggregates"** (end of Phase 1) - **achieved**: load a cube from text, write leaves, read correct consolidations, round-trip to text, recover after restart. Gated by `epiphany-persist/tests/m1_acceptance.rs`.
 2. **M2, "It's a product"** (end of Phase 2) - **achieved**: browser login, open a cube, edit a cell, see consolidations update, and survive a restart. The first demo. Gated by `epiphany-api/tests/m2_acceptance.rs`; the single binary serves the web UI with `--features embed-ui`.
 3. **M3, "It slices"** (end of Phase 3) - **achieved**: define an MDX-backed dynamic subset, build a nested view (two dimensions on rows) with zero-suppression, execute it to a cellset over REST, and render it in the grid with write-back; the subset and view persist across a restart. Gated by `epiphany-api/tests/m3_acceptance.rs`.
-4. **M4, "It calculates"** (end of Phase 4): rules plus auto-inferred feeds produce correct results on a cross-cube model, with working "explain". The defining milestone.
-5. **M5, "It plans"** (end of Phase 6): sandboxed what-if recalculating over rules.
+4. **M4, "It calculates"** (end of Phase 4) - **achieved**: rules plus auto-inferred feeds produce correct results on a cross-cube model, with working "explain". The defining milestone. Gated by `epiphany-api/tests/m4_acceptance.rs`.
+5. **M5, "It plans"** (end of Phase 6) - **achieved**: sandboxed what-if recalculates over rules and consolidations without touching base data, then commits or discards. Gated by `epiphany-api/tests/m6_acceptance.rs`.
+
+> Release tags follow phase numbers (`m1`..`m8`), not these demo-milestone labels: Phase 5 (Flows) shipped as tag `m5`, and this milestone ("It plans", Phase 6) ships as tag `m6`.
 
 **Each milestone is gated by an automated, deterministic acceptance suite.** The DoD is executable, not a judgment call. A green suite in CI (deterministic mode) means the milestone is met; red or flaky means it is not done.
 
