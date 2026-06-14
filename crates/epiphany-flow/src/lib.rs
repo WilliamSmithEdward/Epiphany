@@ -1,12 +1,18 @@
 //! Epiphany flow: Flows: TypeScript ETL/automation on an embedded JS engine.
 //!
-//! Phase 0 skeleton. Phase 5 fills this in: a TypeScript flow interpreter
-//! (Init/Schema/Rows/Finalize), data-source connectors (CSV/SQL/view),
-//! vectorized host functions, the job scheduler, and flow sandboxing with
-//! determinism guards (virtual clock, seeded RNG). See `docs/ROADMAP.md`.
+//! A flow is TypeScript source ([`epiphany_core::Flow`]) that the runtime strips
+//! to JavaScript ([`strip`]) and runs on an embedded engine (boa, ADR-0004)
+//! against a deterministic host context, turning its staged outputs into
+//! dimension-element and cell changes. The crate depends only on
+//! `epiphany-core` and `epiphany-determinism`; the API layer applies a flow's
+//! planned changes through the engine.
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-flow";
+
+pub mod strip;
+
+pub use strip::{strip_types, StripError};
 
 #[cfg(test)]
 mod tests {
