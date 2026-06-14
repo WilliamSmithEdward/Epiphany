@@ -384,10 +384,22 @@ fn lower_cell(
                 }
             },
             None => {
-                // Default an un-overridden dimension to the target's member of
-                // the same name (the relative-reference convention). A referenced
-                // dimension with no same-named target dimension must be addressed
-                // explicitly (cross-cube mapping is deferred).
+                // A same-cube reference defaults an un-overridden dimension to the
+                // target's member of the same name (relative reference). A
+                // cross-cube reference must address every dimension explicitly:
+                // FromTarget would copy an element INDEX between unrelated
+                // dimensions, which is meaningless. Relative cross-cube references
+                // need the deferred `with (src -> dst)` name mapping.
+                if ordinal != target_ordinal {
+                    return Err(CompileError::Unsupported {
+                        feature: format!(
+                            "a relative cross-cube reference (address dimension '{}' of cube '{}' explicitly)",
+                            ref_dim.name(),
+                            ref_cube.name()
+                        ),
+                        span: cell.span,
+                    });
+                }
                 match dim_position(target, ref_dim.name()) {
                     Some(tpos) => addr.push(AddrSlot::FromTarget(tpos)),
                     None => {

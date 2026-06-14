@@ -9,6 +9,7 @@ pub mod rules;
 
 mod compile;
 mod compiled;
+mod eval;
 mod registry;
 
 pub use compile::compile;
@@ -16,6 +17,7 @@ pub use compiled::{
     AddrSlot, CCell, CCond, CExpr, CompileError, CompiledArea, CompiledModel, CompiledRule,
     DimPredicate, RuleId,
 };
+pub use eval::{CalcEngine, CalcError, CalcView, EvalRegistry};
 pub use registry::{CubeRegistry, SingleCube, VecRegistry};
 
 /// Stable crate identifier, reported by the server's wiring banner.
