@@ -49,8 +49,19 @@ the base snapshot.
 
 ## Decision
 
+**0. Scope: a sandbox belongs to one cube.** A sandbox is a per-cube object,
+like a subset, view, or rule set, and overlays leaf cells in that one cube. The
+engine holds each cube in its own store published behind its own snapshot, and
+the whole API surface is already per cube, so a per-cube sandbox fits the
+existing persistence and routing with no server-level registry. Same-cube rules
+and consolidations recompute over the overlay, which is exactly the done-when.
+Cross-cube what-if (a what-if leaf in cube A flowing into a rule that another
+cube B reads while B is queried without A's sandbox) is out of scope for this
+phase and is a documented deferral; it would require a server-level, cross-store
+sandbox and is a separate increment under its own scope.
+
 **1. Cell-granular sparse delta, not a cube clone.** A sandbox is a sparse map
-of overridden stored leaf values per cube (numeric and string kept separate,
+of overridden stored leaf values for its cube (numeric and string kept separate,
 mirroring the cube's own split), deterministically ordered. An empty sandbox
 costs almost nothing; cost is O(overridden cells). This is copy-on-write at cell
 granularity, which is the truest realization of ADR-0001 for this feature.
@@ -83,34 +94,36 @@ were ever shared across scopes, a base value and a what-if value for the same
 coordinate cannot alias. Cycle detection is unaffected because the key still
 uniquely identifies a cell within a scope.
 
-**5. Durable, with split storage.** Sandboxes are durable and recover on
-restart. Storage is split:
+**5. Durable in the model snapshot, never the base write log.** A sandbox (its
+metadata and its cell deltas together) is a per-cube model object, registered and
+persisted through the define-then-checkpoint path exactly like a subset or view,
+so it serializes into the base snapshot and recovers with the model. What it must
+never enter is the base write log: log records are incremental batch indices
+valid only against the base snapshot, so admitting sandbox writes there would
+corrupt the base-version replay contract and the guarantee that the published
+version is always durable base truth. The snapshot, by contrast, is a full
+serialization and carries sandbox state safely. A sandbox write therefore commits
+as a define (a full checkpoint), not a base-log append, so it never touches base
+cells or the base log; discard removes the sandbox from the model and
+checkpoints. A separate per-sandbox delta file with its own incremental log is a
+later scaling optimization (it avoids a full snapshot per what-if write and makes
+discard a file truncate), not required for the DoD.
 
-- **Metadata** (name, owner, created and updated ids, the set of cubes touched)
-  is a durable model object registered via the define-then-checkpoint pattern,
-  so it recovers exactly like a subset or view.
-- **Cell deltas live in a separate per-sandbox file (its own snapshot and write
-  log), never the base log or base checkpoint.** This is mandatory: base log
-  indices are valid only against the base snapshot, so admitting sandbox writes
-  into the base log would corrupt the base-version replay contract and the
-  guarantee that the published version is always durable base truth. The split
-  also makes discard a cheap truncate and keeps the shared base snapshot clean.
-
-**6. Commit and discard.** Commit applies each touched cube's delta to base
-through `Engine::apply_batch` against the base version observed when the sandbox
-was opened, using the existing optimistic version check; a cube whose base moved
-under the sandbox returns a conflict and is reported per cube (partial-merge
-semantics are surfaced, not hidden), and on success the delta is cleared. Discard
-drops the metadata and truncates the delta file. Both leave base untouched until
-commit succeeds.
+**6. Commit and discard.** Commit applies the sandbox's delta to its cube through
+`Engine::apply_batch` against the base version observed when the sandbox last
+synced, using the existing optimistic version check; if the cube's base moved
+under the sandbox the commit conflicts and base is left unchanged, and on success
+the delta is cleared. Discard removes the sandbox and checkpoints. Both leave
+base untouched until commit succeeds.
 
 **7. Selection is per-request and per-user.** A request selects a sandbox with a
-header; absent the header, behavior is identical to today (fully back-compatible).
-An extractor resolves the header and authorizes by owner (a non-admin may use
-only sandboxes they own; admins may use any). The read, view-execute, explain,
-and write paths become sandbox-aware purely by honoring the selector; explain
-builds its provenance over the same overlay so what-if provenance matches the
-what-if read.
+header naming a sandbox within the cube the request addresses (sandboxes are per
+cube, decision 0); absent the header, behavior is identical to today (fully
+back-compatible). An extractor resolves the header and authorizes by owner (a
+non-admin may use only sandboxes they own; admins may use any). The read,
+view-execute, explain, and write paths become sandbox-aware purely by honoring
+the selector; explain builds its provenance over the same overlay so what-if
+provenance matches the what-if read.
 
 ## Alternatives considered
 
@@ -133,10 +146,16 @@ what-if read.
   through the outer resolver, so an overlay there would be invisible to rules and
   rollups, defeating the DoD.
 - **Runtime-only sandboxes (no persistence).** Rejected: what-if would be lost
-  across a restart, contradicting the per-user, persisted intent. The split
-  storage gives durability without endangering base recovery.
+  across a restart, contradicting the per-user, persisted intent. Persisting in
+  the model snapshot gives durability without endangering base recovery (the
+  write log, not the snapshot, is the hazard).
 - **Sandbox deltas in the base write log.** Rejected as unsafe: it would corrupt
-  the base-version replay contract (see decision 5).
+  the base-version replay contract (see decision 5). The snapshot path is used
+  instead.
+- **Server-level, cross-store sandbox spanning cubes.** Deferred (decision 0):
+  it needs a registry above the per-cube stores and a cross-store commit, beyond
+  this phase. The per-cube sandbox satisfies the done-when; cross-cube what-if is
+  a later increment.
 
 ## Consequences
 
@@ -148,16 +167,19 @@ what-if read.
   count, so many concurrent per-user sandboxes are cheap.
 - Determinism holds: a sandboxed read pins one base snapshot plus one immutable,
   ordered delta; ids are injected; the memo is scope-partitioned.
-- Base durability is protected: sandbox deltas never touch the base log or
-  checkpoint, and commit goes through the same validated, version-checked base
-  write path as any other write, so a stale-base commit is detected rather than
-  silently overwriting.
-- New surfaces: a `Sandbox` model type and a sandbox overlay in the calc and
-  engine layers; per-sandbox delta files; lifecycle and commit and discard
+- Base durability is protected: sandbox writes use the snapshot (checkpoint)
+  path and never enter the base write log, and commit goes through the same
+  validated, version-checked base write path as any other write, so a stale-base
+  commit is detected rather than silently overwriting.
+- New surfaces: a `Sandbox` model type (persisted in the snapshot) and a sandbox
+  overlay in the calc and engine layers; lifecycle and commit and discard
   endpoints; a per-request sandbox selector and owner authorization; and a web
-  sandbox switcher with a visual distinction for uncommitted values. String
-  what-if overlay and a feeder-aware sparse consolidation over large override
-  sets are available later refinements, not required for the DoD.
+  sandbox switcher with a visual distinction for uncommitted values.
+- Documented deferrals (each its own later increment): cross-cube what-if
+  (decision 0), a string what-if overlay (the overlay is numeric for this phase,
+  matching numeric-only rules), a feeder-aware sparse consolidation over large
+  override sets, and a separate per-sandbox delta file to avoid a full snapshot
+  per what-if write.
 - Validated by a deterministic Phase 6 acceptance suite: enter what-if numbers in
   a sandbox, assert rules and consolidations recompute over them while base is
   unaffected, then commit and assert base reflects them, or discard and assert
