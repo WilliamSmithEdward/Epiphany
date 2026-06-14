@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use epiphany_core::{
     validate_subset, validate_view, Connection, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest,
-    LoadError, Model, ModelError, QueryError, RuleSet, RuleTest, SaveError, Subset, View,
+    LoadError, Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox, SaveError, Subset, View,
 };
 
 use crate::wal::{self, Record};
@@ -447,6 +447,74 @@ impl Store {
             self.checkpoint()?;
         }
         Ok(removed)
+    }
+
+    /// Define (create or replace) a sandbox, then checkpoint. A sandbox is a
+    /// per-user what-if overlay (ADR-0014); it is persisted in the model snapshot
+    /// and recovered on reopen, never in the base WAL. A create carries empty
+    /// deltas; replacing an existing sandbox overwrites it.
+    pub fn define_sandbox(&mut self, sandbox: Sandbox) -> Result<(), PersistError> {
+        self.model
+            .sandboxes
+            .insert(sandbox.name.clone(), sandbox);
+        self.checkpoint()
+    }
+
+    /// Delete a sandbox by name (discard). Returns whether one was removed;
+    /// checkpoints only when something changed.
+    pub fn delete_sandbox(&mut self, name: &str) -> Result<bool, PersistError> {
+        let removed = self.model.sandboxes.remove(name).is_some();
+        if removed {
+            self.checkpoint()?;
+        }
+        Ok(removed)
+    }
+
+    /// Stage leaf overrides into a sandbox's delta and checkpoint. The base cube
+    /// is never touched: each write is validated against a throwaway cube clone
+    /// (so a non-leaf or out-of-range coordinate is rejected wholesale, exactly
+    /// like [`set_batch`](Self::set_batch)), then the value is recorded in the
+    /// sandbox's overlay. `updated` is the injected id stamped on the sandbox.
+    pub fn sandbox_set_cells(
+        &mut self,
+        name: &str,
+        writes: &[CellWrite],
+        updated: u64,
+    ) -> Result<(), PersistError> {
+        if !self.model.sandboxes.contains_key(name) {
+            return Err(PersistError::Query(QueryError::Calc {
+                message: format!("no sandbox '{name}'"),
+            }));
+        }
+        // Validate every override against a throwaway clone (leaf-only, in-range);
+        // this never mutates base cells, only confirms the coordinate is writable.
+        let mut trial = self.model.cube.clone();
+        for (index, write) in writes.iter().enumerate() {
+            let applied = match write {
+                CellWrite::Leaf { coord, value } => trial.set_leaf(coord, *value),
+                CellWrite::Str { coord, value } => trial.set_string(coord, value),
+            };
+            applied.map_err(|source| PersistError::BatchRejected { index, source })?;
+        }
+        // Record the overrides in the sandbox overlay (the value verbatim, so an
+        // explicit zero override is kept rather than dropped).
+        let sb = self
+            .model
+            .sandboxes
+            .get_mut(name)
+            .expect("sandbox presence checked above");
+        for write in writes {
+            match write {
+                CellWrite::Leaf { coord, value } => {
+                    sb.cells.insert(coord.clone(), *value);
+                }
+                CellWrite::Str { coord, value } => {
+                    sb.string_cells.insert(coord.clone(), value.clone());
+                }
+            }
+        }
+        sb.updated = updated;
+        self.checkpoint()
     }
 
     /// Append dimension elements and consolidation edges (append-only,
@@ -888,6 +956,119 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, PersistError::Query(_)));
         assert!(store.model().subset("Region", "Bad").is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sandboxes_persist_and_do_not_touch_base() {
+        let dir = scratch("sandbox-persist");
+        let f = fixture();
+        let (r, p, region_total, period_total) =
+            (f.r.clone(), f.p.clone(), f.region_total, f.period_total);
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            // Base data: R0/P0 = 10, R1/P0 = 20 (Total = 30).
+            store
+                .set_batch(&[
+                    CellWrite::Leaf {
+                        coord: vec![r[0], p[0]],
+                        value: Fixed::from(10),
+                    },
+                    CellWrite::Leaf {
+                        coord: vec![r[1], p[0]],
+                        value: Fixed::from(20),
+                    },
+                ])
+                .unwrap();
+            // A sandbox overriding R0/P0 -> 500 (what-if), never base.
+            store
+                .define_sandbox(Sandbox::new("whatif", "ann", 1))
+                .unwrap();
+            store
+                .sandbox_set_cells(
+                    "whatif",
+                    &[CellWrite::Leaf {
+                        coord: vec![r[0], p[0]],
+                        value: Fixed::from(500),
+                    }],
+                    2,
+                )
+                .unwrap();
+            // Base cube is unchanged by the sandbox override.
+            assert_eq!(
+                store.cube().get_leaf(&[r[0], p[0]]).unwrap(),
+                Fixed::from(10)
+            );
+            // Drop without an extra checkpoint: define/sandbox already checkpointed.
+        }
+        let store = Store::open(&dir).unwrap();
+        // Base survived and is still the un-overlaid value.
+        assert_eq!(
+            store.cube().get(&[region_total, period_total]).unwrap(),
+            Fixed::from(30)
+        );
+        // The sandbox and its delta recovered intact.
+        let sb = store.model().sandbox("whatif").unwrap();
+        assert_eq!(sb.owner, "ann");
+        assert_eq!(sb.created, 1);
+        assert_eq!(sb.updated, 2);
+        assert_eq!(sb.cell(&[r[0], p[0]]), Some(Fixed::from(500)));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn delete_sandbox_removes_it() {
+        let dir = scratch("sandbox-delete");
+        let f = fixture();
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            store
+                .define_sandbox(Sandbox::new("s", "ann", 1))
+                .unwrap();
+            assert!(store.delete_sandbox("s").unwrap());
+            assert!(!store.delete_sandbox("s").unwrap(), "already gone");
+        }
+        let store = Store::open(&dir).unwrap();
+        assert!(store.model().sandbox("s").is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sandbox_override_rejects_non_leaf_and_unknown_sandbox() {
+        let dir = scratch("sandbox-reject");
+        let f = fixture();
+        let (p, region_total) = (f.p.clone(), f.region_total);
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        // Writing to a sandbox that does not exist is rejected.
+        let err = store
+            .sandbox_set_cells(
+                "ghost",
+                &[CellWrite::Leaf {
+                    coord: vec![0, p[0]],
+                    value: Fixed::from(1),
+                }],
+                1,
+            )
+            .unwrap_err();
+        assert!(matches!(err, PersistError::Query(_)));
+
+        // An override targeting a consolidated element is rejected wholesale.
+        store
+            .define_sandbox(Sandbox::new("s", "ann", 1))
+            .unwrap();
+        let err = store
+            .sandbox_set_cells(
+                "s",
+                &[CellWrite::Leaf {
+                    coord: vec![region_total, p[0]],
+                    value: Fixed::from(99),
+                }],
+                2,
+            )
+            .unwrap_err();
+        assert!(matches!(err, PersistError::BatchRejected { index: 0, .. }));
+        // The sandbox is left empty (no partial override).
+        assert!(store.model().sandbox("s").unwrap().is_empty());
         fs::remove_dir_all(&dir).ok();
     }
 }
