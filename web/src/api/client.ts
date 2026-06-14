@@ -478,6 +478,126 @@ export async function runRuleTests(cube: string): Promise<TestReportDto> {
   )
 }
 
+// ---- flows (Phase 5) ----
+
+/** A flow: name and TypeScript source. */
+export interface FlowDto {
+  name: string
+  source: string
+}
+
+/** The structured result of validating a flow source without saving it. */
+export type FlowPreview =
+  | { ok: true }
+  | { ok: false; message: string; line?: number; column?: number }
+
+/** A flow run report. */
+export interface RunReport {
+  rows_read: number
+  cells_written: number
+  elements_added: number
+  logs: string[]
+}
+
+function flowBase(cube: string): string {
+  return `/api/v1/cubes/${encodeURIComponent(cube)}/flows`
+}
+
+export async function listFlows(cube: string): Promise<FlowDto[]> {
+  const result = await request<{ flows: FlowDto[] }>('GET', flowBase(cube))
+  return result.flows
+}
+
+export async function putFlow(cube: string, name: string, source: string): Promise<FlowDto> {
+  return request<FlowDto>('PUT', `${flowBase(cube)}/${encodeURIComponent(name)}`, { name, source })
+}
+
+export async function deleteFlow(cube: string, name: string): Promise<void> {
+  return request<void>('DELETE', `${flowBase(cube)}/${encodeURIComponent(name)}`)
+}
+
+/**
+ * Validate a flow source (strip + parse) without saving. A failure resolves to
+ * `{ ok: false }` with the message and, when located, the line/column - so the
+ * editor can mark the error inline rather than throwing.
+ */
+export async function previewFlow(cube: string, source: string): Promise<FlowPreview> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' }
+  if (token) headers['authorization'] = `Bearer ${token}`
+  const response = await fetch(`${flowBase(cube)}/preview`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ source }),
+  })
+  if (response.ok) return { ok: true }
+  if (response.status === 401) {
+    setToken(null)
+    throw new Error('Your session has expired. Please sign in again.')
+  }
+  try {
+    const parsed = (await response.json()) as {
+      error?: { message?: string; details?: { line?: number; column?: number } }
+    }
+    return {
+      ok: false,
+      message: parsed.error?.message ?? `Validation failed (${response.status})`,
+      line: parsed.error?.details?.line,
+      column: parsed.error?.details?.column,
+    }
+  } catch {
+    return { ok: false, message: `Validation failed (${response.status})` }
+  }
+}
+
+export async function runFlow(
+  cube: string,
+  name: string,
+  input: string,
+  params: Record<string, string> = {},
+): Promise<RunReport> {
+  return request<RunReport>('POST', `${flowBase(cube)}/${encodeURIComponent(name)}/run`, {
+    input,
+    params,
+  })
+}
+
+export interface ImportRequest {
+  csv: string
+  columns: Record<string, string>
+  value_column: string
+  fixed?: Record<string, string>
+}
+
+export async function importCsv(cube: string, req: ImportRequest): Promise<RunReport> {
+  return request<RunReport>('POST', `${flowBase(cube)}/import`, req)
+}
+
+/** A flow unit test. */
+export interface FlowTestDto {
+  name: string
+  flow: string
+  input: string
+  params: Record<string, string>
+  assertions: TestCellDto[]
+}
+
+export async function listFlowTests(cube: string): Promise<FlowTestDto[]> {
+  const result = await request<{ tests: FlowTestDto[] }>('GET', `${flowBase(cube)}/tests`)
+  return result.tests
+}
+
+export async function putFlowTest(cube: string, test: FlowTestDto): Promise<FlowTestDto> {
+  return request<FlowTestDto>('POST', `${flowBase(cube)}/tests`, test)
+}
+
+export async function deleteFlowTest(cube: string, name: string): Promise<void> {
+  return request<void>('DELETE', `${flowBase(cube)}/tests/${encodeURIComponent(name)}`)
+}
+
+export async function runFlowTests(cube: string): Promise<TestReportDto> {
+  return request<TestReportDto>('POST', `${flowBase(cube)}/tests/run`)
+}
+
 export interface ChangeEvent {
   type: string
   cube?: string

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import { connectWs, listCubes, logout, type CubeSummary } from '../api/client'
+import FlowsWorkspace from './FlowsWorkspace'
 import PivotGrid from './PivotGrid'
 import RulesWorkspace from './RulesWorkspace'
 import ViewWorkspace from './ViewWorkspace'
 
-type Mode = 'grid' | 'views' | 'rules'
+type Mode = 'grid' | 'views' | 'rules' | 'flows'
 
 export default function CubeApp({
   username,
@@ -90,13 +91,18 @@ export default function CubeApp({
                 <button className={mode === 'rules' ? 'active' : ''} onClick={() => setMode('rules')}>
                   Rules
                 </button>
+                <button className={mode === 'flows' ? 'active' : ''} onClick={() => setMode('flows')}>
+                  Flows
+                </button>
               </div>
               {mode === 'grid' ? (
                 <PivotGrid cube={selected} reloadSignal={reload} />
               ) : mode === 'views' ? (
                 <ViewWorkspace cube={selected} reloadSignal={reload} />
-              ) : (
+              ) : mode === 'rules' ? (
                 <RulesWorkspace cube={selected} reloadSignal={reload} />
+              ) : (
+                <FlowsWorkspace cube={selected} reloadSignal={reload} />
               )}
             </>
           ) : (

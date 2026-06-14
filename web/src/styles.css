@@ -586,3 +586,68 @@ table.pivot th.rowhead {
   font-weight: 700;
   font-size: 0.72rem;
 }
+
+/* Flows workspace (Phase 5) */
+.flows-workspace {
+  display: grid;
+  grid-template-columns: 11rem minmax(0, 1.3fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.flow-list {
+  grid-column: 1 / 2;
+  grid-row: 1 / 5;
+}
+
+.flow-editor {
+  grid-column: 2 / 3;
+}
+
+.flow-list .saved-views li {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.flow-list .link {
+  border: none;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 0.3rem;
+}
+
+.flow-run,
+.flow-import {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.8rem;
+}
+
+.run-report {
+  font-size: 0.85rem;
+}
+
+.import-map {
+  margin: 0.5rem 0;
+}
+
+.import-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  margin: 0.2rem 0;
+}
+
+.import-row span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.import-row select,
+.import-row input {
+  flex: 0 0 9rem;
+}
