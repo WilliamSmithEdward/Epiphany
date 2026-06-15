@@ -751,6 +751,48 @@ pub struct FlowTest {
     pub assertions: Vec<TestCell>,
 }
 
+/// A schedule trigger (ADR-0013). `Interval` is the Phase 8 cut; a calendar/cron
+/// trigger is a deferred follow-on (its own increment).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Trigger {
+    /// Fire every `every_millis`, measured from the last fire. Pure millis
+    /// arithmetic (DST-immune). A never-fired job is due immediately.
+    Interval {
+        /// The interval between fires, in milliseconds.
+        every_millis: u64,
+    },
+}
+
+impl Trigger {
+    /// The instant at which a job with this trigger is next due, given when it
+    /// last fired (`None` = never). Pure: it never reads a clock. A firing is due
+    /// when `next_due(last_fired) <= now`. A never-fired interval job returns `0`,
+    /// so it fires on the first reconcile tick after it is enabled.
+    pub fn next_due(&self, last_fired: Option<u64>) -> u64 {
+        match self {
+            Trigger::Interval { every_millis } => {
+                last_fired.map_or(0, |t| t.saturating_add(*every_millis))
+            }
+        }
+    }
+}
+
+/// A scheduled job (ADR-0013): an ordered sequence of the cube's flows, run on a
+/// trigger. This is *desired state*, persisted as model-as-code like a flow; run
+/// history lives in the separate durable run ledger, never here. The owning cube
+/// is implied by the model the job lives in (like a [`Flow`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Job {
+    /// The job name (unique within the cube).
+    pub name: String,
+    /// The flow names to run in order (fail-fast), each a flow of this cube.
+    pub steps: Vec<String>,
+    /// When the job fires.
+    pub trigger: Trigger,
+    /// Whether the scheduler considers this job; a disabled job never fires.
+    pub enabled: bool,
+}
+
 /// How a connector's output (or a flow's input) is parsed into rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SourceFormat {
@@ -886,6 +928,8 @@ pub struct Model {
     pub connections: BTreeMap<String, Connection>,
     /// Per-user what-if sandboxes, keyed by name (ADR-0014).
     pub sandboxes: BTreeMap<String, Sandbox>,
+    /// Scheduled jobs (ADR-0013), keyed by name.
+    pub jobs: BTreeMap<String, Job>,
 }
 
 impl Model {
@@ -901,7 +945,13 @@ impl Model {
             flow_tests: BTreeMap::new(),
             connections: BTreeMap::new(),
             sandboxes: BTreeMap::new(),
+            jobs: BTreeMap::new(),
         }
+    }
+
+    /// Look up a job by name.
+    pub fn job(&self, name: &str) -> Option<&Job> {
+        self.jobs.get(name)
     }
 
     /// Look up a sandbox by name.

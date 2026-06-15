@@ -16,8 +16,8 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::query::{
-    AxisSpec, CommandSpec, Connection, ConnectionSpec, Flow, FlowTest, Model, RuleSet, RuleTest,
-    Sandbox, SourceFormat, Subset, SubsetKind, TestCell, View, Visibility,
+    AxisSpec, CommandSpec, Connection, ConnectionSpec, Flow, FlowTest, Job, Model, RuleSet,
+    RuleTest, Sandbox, SourceFormat, Subset, SubsetKind, TestCell, Trigger, View, Visibility,
 };
 use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
@@ -141,6 +141,10 @@ struct ModelDoc {
     // serializes byte-identically to the pre-6A format.
     #[serde(default, rename = "sandbox", skip_serializing_if = "Vec::is_empty")]
     sandboxes: Vec<SandboxDoc>,
+    // Jobs are optional and skipped when empty, so a model without any serializes
+    // byte-identically to the pre-8B format.
+    #[serde(default, rename = "job", skip_serializing_if = "Vec::is_empty")]
+    jobs: Vec<JobDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -612,6 +616,40 @@ fn build_connection(doc: &ConnectionDoc) -> Connection {
     }
 }
 
+/// A scheduled job (ADR-0013) as model-as-code. The trigger is flattened to its
+/// scalar fields (only `Interval` exists in the Phase 8 cut), mirroring how the
+/// connection block flattens its single kind.
+#[derive(Serialize, Deserialize)]
+struct JobDoc {
+    name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    steps: Vec<String>,
+    /// The interval trigger period in milliseconds.
+    every_millis: u64,
+    enabled: bool,
+}
+
+fn job_doc(job: &Job) -> JobDoc {
+    let Trigger::Interval { every_millis } = job.trigger;
+    JobDoc {
+        name: job.name.clone(),
+        steps: job.steps.clone(),
+        every_millis,
+        enabled: job.enabled,
+    }
+}
+
+fn build_job(doc: &JobDoc) -> Job {
+    Job {
+        name: doc.name.clone(),
+        steps: doc.steps.clone(),
+        trigger: Trigger::Interval {
+            every_millis: doc.every_millis,
+        },
+        enabled: doc.enabled,
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct SandboxCellDoc {
     coord: Vec<String>,
@@ -861,6 +899,7 @@ fn build_model_doc(
     flow_tests: Vec<FlowTestDoc>,
     connections: Vec<ConnectionDoc>,
     sandboxes: Vec<SandboxDoc>,
+    jobs: Vec<JobDoc>,
 ) -> ModelDoc {
     let dimensions: Vec<DimDoc> = cube.dimensions().iter().map(dim_doc).collect();
 
@@ -924,6 +963,7 @@ fn build_model_doc(
         flow_tests,
         connections,
         sandboxes,
+        jobs,
     }
 }
 
@@ -981,6 +1021,7 @@ impl Model {
             .values()
             .map(|sb| sandbox_doc(&self.cube, sb))
             .collect();
+        let jobs: Vec<JobDoc> = self.jobs.values().map(job_doc).collect();
         let doc = build_model_doc(
             &self.cube,
             subsets,
@@ -991,6 +1032,7 @@ impl Model {
             flow_tests,
             connections,
             sandboxes,
+            jobs,
         );
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
@@ -1040,6 +1082,10 @@ impl Model {
         for sd in &doc.sandboxes {
             sandboxes.insert(sd.name.clone(), build_sandbox(&cube, &doc.cube.name, sd)?);
         }
+        let mut jobs = BTreeMap::new();
+        for jd in &doc.jobs {
+            jobs.insert(jd.name.clone(), build_job(jd));
+        }
         Ok(Model {
             cube,
             subsets,
@@ -1050,6 +1096,7 @@ impl Model {
             flow_tests,
             connections,
             sandboxes,
+            jobs,
         })
     }
 
@@ -1074,6 +1121,7 @@ impl Cube {
             Vec::new(),
             Vec::new(),
             None,
+            Vec::new(),
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1500,5 +1548,48 @@ mod tests {
         assert_eq!(cmd.format, SourceFormat::Json);
         assert_eq!(cmd.json_path.as_deref(), Some("data.rows"));
         assert_eq!(cmd.timeout_ms, 30_000);
+    }
+
+    #[test]
+    fn model_round_trips_jobs() {
+        use crate::{Job, Trigger};
+
+        let mut model = Model::new(sample_cube());
+        model.jobs.insert(
+            "nightly".to_string(),
+            Job {
+                name: "nightly".to_string(),
+                steps: vec!["load".to_string(), "rollup".to_string()],
+                trigger: Trigger::Interval {
+                    every_millis: 86_400_000,
+                },
+                enabled: true,
+            },
+        );
+
+        let text1 = model.to_model_text().unwrap();
+        let model2 = Model::from_model_text(&text1).unwrap();
+        let text2 = model2.to_model_text().unwrap();
+        assert_eq!(text1, text2, "jobs must round-trip byte-identically");
+        assert_eq!(model2.jobs.len(), 1);
+        let job = &model2.jobs["nightly"];
+        assert_eq!(job.steps, vec!["load".to_string(), "rollup".to_string()]);
+        assert_eq!(
+            job.trigger,
+            Trigger::Interval {
+                every_millis: 86_400_000
+            }
+        );
+        assert!(job.enabled);
+    }
+
+    #[test]
+    fn interval_next_due_is_pure_millis_arithmetic() {
+        use crate::Trigger;
+        let t = Trigger::Interval { every_millis: 1000 };
+        // Never fired: due immediately (fires on the first reconcile tick).
+        assert_eq!(t.next_due(None), 0);
+        // After firing at 5000, next due is 6000.
+        assert_eq!(t.next_due(Some(5000)), 6000);
     }
 }

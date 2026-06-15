@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use epiphany_core::{
-    CellResolver, Connection, Cube, EdgeSpec, ElementMask, ElementSpec, Fixed, Flow, FlowTest,
+    CellResolver, Connection, Cube, EdgeSpec, ElementMask, ElementSpec, Fixed, Flow, FlowTest, Job,
     Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox, Subset, View,
 };
 use epiphany_determinism::IdGen;
@@ -406,6 +406,36 @@ impl Engine {
             } else {
                 Err(PersistError::Query(QueryError::Calc {
                     message: format!("no flow '{name}'"),
+                }))
+            }
+        })
+    }
+
+    /// Define (create or replace) a scheduled job (ADR-0013) and publish a new
+    /// version. The caller validates the job's step flows first.
+    pub fn define_job(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        job: Job,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| store.define_job(job))
+    }
+
+    /// Delete a job by name and publish a new version. A missing job returns
+    /// [`BatchError::Invalid`].
+    pub fn delete_job(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        name: &str,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            if store.delete_job(name)? {
+                Ok(())
+            } else {
+                Err(PersistError::Query(QueryError::Calc {
+                    message: format!("no job '{name}'"),
                 }))
             }
         })

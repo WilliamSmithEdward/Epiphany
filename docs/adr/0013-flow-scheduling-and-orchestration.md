@@ -1,7 +1,7 @@
 # ADR-0013: Flow scheduling and orchestration
 
-- **Status:** Proposed
-- **Date:** 2026-06-14
+- **Status:** Accepted (the minimal Phase 8 cut is realized in increments 8B-8I; the deferred triggers and retry config remain future increments)
+- **Date:** 2026-06-14 (accepted 2026-06-15)
 - **Deciders:** Epiphany maintainers
 - **Phase:** 8 (scheduling and hardening)
 

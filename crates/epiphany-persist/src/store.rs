@@ -24,7 +24,8 @@ use std::path::{Path, PathBuf};
 
 use epiphany_core::{
     validate_subset, validate_view, Connection, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest,
-    LoadError, Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox, SaveError, Subset, View,
+    Job, LoadError, Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox, SaveError, Subset,
+    View,
 };
 
 use crate::wal::{self, Record};
@@ -443,6 +444,24 @@ impl Store {
     /// only when something changed.
     pub fn delete_connection(&mut self, name: &str) -> Result<bool, PersistError> {
         let removed = self.model.connections.remove(name).is_some();
+        if removed {
+            self.checkpoint()?;
+        }
+        Ok(removed)
+    }
+
+    /// Define (create or replace) a scheduled job (ADR-0013), then checkpoint. The
+    /// job is desired state persisted in the model snapshot; its step flows are
+    /// validated at the API boundary (the store stays scheduler-free).
+    pub fn define_job(&mut self, job: Job) -> Result<(), PersistError> {
+        self.model.jobs.insert(job.name.clone(), job);
+        self.checkpoint()
+    }
+
+    /// Delete a job by name. Returns whether one was removed; checkpoints only
+    /// when something changed.
+    pub fn delete_job(&mut self, name: &str) -> Result<bool, PersistError> {
+        let removed = self.model.jobs.remove(name).is_some();
         if removed {
             self.checkpoint()?;
         }
