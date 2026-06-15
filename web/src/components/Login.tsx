@@ -1,6 +1,7 @@
-import { useState } from 'react'
-import type { FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { login } from '../api/client'
+import { Button, Field, Input } from '../ui'
+import ThemeToggle from '../ui/ThemeToggle'
 
 export default function Login({
   onLoggedIn,
@@ -28,24 +29,47 @@ export default function Login({
 
   return (
     <div className="login">
-      <form className="card" onSubmit={(event) => void submit(event)}>
-        <h1>Epiphany</h1>
-        <label>
-          Username
-          <input value={username} onChange={(event) => setUsername(event.target.value)} autoFocus />
-        </label>
-        <label>
-          Password
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-          />
-        </label>
-        {error ? <p className="error">{error}</p> : null}
-        <button type="submit" disabled={busy}>
-          {busy ? 'Signing in...' : 'Sign in'}
-        </button>
+      <div className="login__corner">
+        <ThemeToggle />
+      </div>
+      <form className="login__card" onSubmit={(event) => void submit(event)}>
+        <div className="login__brand">
+          <div className="login__logo" aria-hidden="true">
+            ◆
+          </div>
+          <h1 className="login__title">Epiphany</h1>
+          <p className="login__tagline">Multidimensional planning &amp; analytics</p>
+        </div>
+        <Field label="Username">
+          {(id) => (
+            <Input
+              id={id}
+              value={username}
+              autoComplete="username"
+              autoFocus
+              onChange={(e) => setUsername(e.target.value)}
+            />
+          )}
+        </Field>
+        <Field label="Password">
+          {(id) => (
+            <Input
+              id={id}
+              type="password"
+              value={password}
+              autoComplete="current-password"
+              onChange={(e) => setPassword(e.target.value)}
+            />
+          )}
+        </Field>
+        {error ? (
+          <p className="field__msg field__msg--error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <Button variant="primary" type="submit" disabled={busy} className="login__submit">
+          {busy ? 'Signing in…' : 'Sign in'}
+        </Button>
       </form>
     </div>
   )

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import Login from './components/Login'
 import CubeApp from './components/CubeApp'
+import { TooltipProvider } from './ui'
 
 interface Session {
   username: string
@@ -10,14 +11,17 @@ interface Session {
 export default function App() {
   const [session, setSession] = useState<Session | null>(null)
 
-  if (!session) {
-    return <Login onLoggedIn={(username, isAdmin) => setSession({ username, isAdmin })} />
-  }
   return (
-    <CubeApp
-      username={session.username}
-      isAdmin={session.isAdmin}
-      onLogout={() => setSession(null)}
-    />
+    <TooltipProvider>
+      {!session ? (
+        <Login onLoggedIn={(username, isAdmin) => setSession({ username, isAdmin })} />
+      ) : (
+        <CubeApp
+          username={session.username}
+          isAdmin={session.isAdmin}
+          onLogout={() => setSession(null)}
+        />
+      )}
+    </TooltipProvider>
   )
 }
