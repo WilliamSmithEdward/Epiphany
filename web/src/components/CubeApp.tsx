@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { connectWs, listCubes, logout, type CubeSummary } from '../api/client'
+import DimensionsWorkspace from './DimensionsWorkspace'
 import FlowsWorkspace from './FlowsWorkspace'
 import JobsWorkspace from './JobsWorkspace'
 import ModelWorkspace from './ModelWorkspace'
@@ -24,7 +25,7 @@ import {
   type Command,
 } from '../ui'
 
-type Section = 'data' | 'model' | 'views' | 'rules' | 'flows' | 'jobs' | 'admin'
+type Section = 'data' | 'model' | 'dimensions' | 'views' | 'rules' | 'flows' | 'jobs' | 'admin'
 
 interface NavItem {
   id: Section
@@ -37,6 +38,7 @@ interface NavItem {
 const NAV: NavItem[] = [
   { id: 'data', label: 'Data', glyph: '▦', group: 'Workspace' },
   { id: 'model', label: 'Model', glyph: '◳', group: 'Workspace' },
+  { id: 'dimensions', label: 'Dimensions', glyph: '⬡', group: 'Workspace' },
   { id: 'views', label: 'Views', glyph: '◫', group: 'Workspace' },
   { id: 'rules', label: 'Rules', glyph: 'Σ', group: 'Workspace' },
   { id: 'flows', label: 'Flows', glyph: '⇄', group: 'Workspace' },
@@ -145,6 +147,8 @@ export default function CubeApp({
         <nav className="crumbs" aria-label="Breadcrumb">
           {section === 'admin' ? (
             <span className="crumbs__seg">Administration</span>
+          ) : section === 'dimensions' ? (
+            <span className="crumbs__seg">Library</span>
           ) : selected ? (
             <span className="crumbs__seg">{selected}</span>
           ) : null}
@@ -236,6 +240,8 @@ export default function CubeApp({
           {error ? <p className="error">{error}</p> : null}
           {section === 'admin' && isAdmin ? (
             <SecurityWorkspace />
+          ) : section === 'dimensions' ? (
+            <DimensionsWorkspace reloadSignal={reload} />
           ) : selected ? (
             <>
               {section === 'data' || section === 'views' ? (

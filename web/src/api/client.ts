@@ -769,11 +769,15 @@ export interface NewEdge {
   weight?: number
 }
 
-/** A dimension to declare when creating a cube: name, initial members, edges. */
+/** A dimension to declare when creating a cube: either an inline definition
+ * (name + members + edges) or a reference to a registered shared dimension
+ * (`ref` = its id; name/elements/edges are then ignored). (ADR-0021, ADR-0024) */
 export interface NewDimension {
   name: string
   elements?: NewElement[]
   edges?: NewEdge[]
+  /** Reference a shared dimension by id; the cube materializes a copy of it. */
+  ref?: number
 }
 
 /** The result of a model-editing commit. */
@@ -835,6 +839,58 @@ export async function setAttributeValues(
     )}/attributes/${encodeURIComponent(attribute)}/values`,
     { values },
   )
+}
+
+// ---- shared dimension library (ADR-0024) ----
+
+/** A shared dimension as summarized in the library listing. */
+export interface SharedDimensionSummary {
+  id: number
+  name: string
+  generation: number
+  element_count: number
+  references: string[]
+}
+
+/** A shared dimension's full definition. */
+export interface SharedDimensionDetail {
+  id: number
+  name: string
+  generation: number
+  references: string[]
+  elements: ElementDto[]
+  edges: EdgeDto[]
+}
+
+export async function listDimensions(): Promise<SharedDimensionSummary[]> {
+  return request<SharedDimensionSummary[]>('GET', '/api/v1/dimensions')
+}
+
+export async function getDimension(id: number): Promise<SharedDimensionDetail> {
+  return request<SharedDimensionDetail>('GET', `/api/v1/dimensions/${id}`)
+}
+
+/** Register a reusable shared dimension; resolves with its new id and generation. */
+export async function registerDimension(def: {
+  name: string
+  elements?: NewElement[]
+  edges?: NewEdge[]
+}): Promise<{ id: number; name: string; generation: number }> {
+  return request('POST', '/api/v1/dimensions', def)
+}
+
+/** Append members/edges to a shared dimension; fans out to referencing cubes. */
+export async function growDimension(
+  id: number,
+  elements: NewElement[],
+  edges: NewEdge[] = [],
+): Promise<{ id: number; generation: number; fanned_out_to: string[] }> {
+  return request('POST', `/api/v1/dimensions/${id}/elements`, { elements, edges })
+}
+
+/** Delete an unreferenced shared dimension (409 if any cube still references it). */
+export async function deleteDimension(id: number): Promise<void> {
+  return request<void>('DELETE', `/api/v1/dimensions/${id}`)
 }
 
 // ---- security administration (Phase 7, ADR-0015 + ADR-0010, admin only) ----

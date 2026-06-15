@@ -4,12 +4,14 @@ import {
   createCube,
   defineAttribute,
   getCube,
+  listDimensions,
   setAttributeValues,
   type AttributeKind,
   type CubeDetail,
   type DimensionDto,
   type ElementKind,
   type NewDimension,
+  type SharedDimensionSummary,
 } from '../api/client'
 import { Badge, Button, Card, Dialog, EmptyState, Field, Input, Select, Switch, Textarea } from '../ui'
 
@@ -415,11 +417,19 @@ function DimensionEditor({
 // ---- new-cube wizard ----
 
 interface DraftDimension {
+  /** Inline (define members here) or a reference to a shared dimension. */
+  source: 'inline' | 'reference'
+  /** Chosen shared-dimension id when `source` is `reference`. */
+  ref: number | null
   name: string
   /** Member names, one per line. */
   members: string
   /** Add a consolidated "Total" that sums every member. */
   total: boolean
+}
+
+function newDraft(): DraftDimension {
+  return { source: 'inline', ref: null, name: '', members: '', total: true }
 }
 
 function NewCubeDialog({
@@ -430,9 +440,20 @@ function NewCubeDialog({
   onCreated: (name: string) => void
 }) {
   const [name, setName] = useState('')
-  const [dims, setDims] = useState<DraftDimension[]>([{ name: '', members: '', total: true }])
+  const [dims, setDims] = useState<DraftDimension[]>([newDraft()])
+  const [library, setLibrary] = useState<SharedDimensionSummary[]>([])
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+
+  // Load the shared dimension library so dimensions can be added by reference.
+  // A failure (e.g. no Dimension read access) just leaves inline-only.
+  useEffect(() => {
+    listDimensions()
+      .then(setLibrary)
+      .catch(() => setLibrary([]))
+  }, [])
+
+  const libraryOptions = library.map((d) => ({ value: String(d.id), label: d.name }))
 
   function update(index: number, patch: Partial<DraftDimension>) {
     setDims((ds) => ds.map((d, i) => (i === index ? { ...d, ...patch } : d)))
@@ -446,6 +467,15 @@ function NewCubeDialog({
     }
     const dimensions: NewDimension[] = []
     for (const d of dims) {
+      if (d.source === 'reference') {
+        if (d.ref === null) {
+          setError('Pick a shared dimension, or switch it to define inline.')
+          return
+        }
+        const shared = library.find((s) => s.id === d.ref)
+        dimensions.push({ name: shared?.name ?? `#${d.ref}`, ref: d.ref })
+        continue
+      }
       const dn = d.name.trim()
       if (dn === '') {
         setError('Every dimension needs a name.')
@@ -512,12 +542,35 @@ function NewCubeDialog({
           {dims.map((d, i) => (
             <div className="new-cube__dim" key={i}>
               <div className="new-cube__dim-head">
-                <Input
-                  value={d.name}
-                  onChange={(e) => update(i, { name: e.target.value })}
-                  placeholder={`Dimension ${i + 1} name (e.g. Region)`}
-                  aria-label={`Dimension ${i + 1} name`}
-                />
+                {library.length > 0 ? (
+                  <Select
+                    value={d.source}
+                    onValueChange={(v) =>
+                      update(i, { source: v as DraftDimension['source'] })
+                    }
+                    options={[
+                      { value: 'inline', label: 'Define here' },
+                      { value: 'reference', label: 'Reuse shared dimension' },
+                    ]}
+                    ariaLabel={`Dimension ${i + 1} source`}
+                  />
+                ) : null}
+                {d.source === 'inline' ? (
+                  <Input
+                    value={d.name}
+                    onChange={(e) => update(i, { name: e.target.value })}
+                    placeholder={`Dimension ${i + 1} name (e.g. Region)`}
+                    aria-label={`Dimension ${i + 1} name`}
+                  />
+                ) : (
+                  <Select
+                    value={d.ref !== null ? String(d.ref) : undefined}
+                    onValueChange={(v) => update(i, { ref: Number(v) })}
+                    options={libraryOptions}
+                    placeholder="Pick a shared dimension…"
+                    ariaLabel={`Dimension ${i + 1} shared dimension`}
+                  />
+                )}
                 {dims.length > 1 ? (
                   <button
                     type="button"
@@ -529,26 +582,35 @@ function NewCubeDialog({
                   </button>
                 ) : null}
               </div>
-              <Textarea
-                value={d.members}
-                onChange={(e) => update(i, { members: e.target.value })}
-                placeholder={'Members, one per line\nNorth\nSouth'}
-                aria-label={`Dimension ${i + 1} members`}
-                rows={3}
-              />
-              <Switch
-                checked={d.total}
-                onCheckedChange={(v) => update(i, { total: v })}
-                label="Add a Total"
-                description="Creates a Total member that sums every member of this dimension."
-              />
+              {d.source === 'inline' ? (
+                <>
+                  <Textarea
+                    value={d.members}
+                    onChange={(e) => update(i, { members: e.target.value })}
+                    placeholder={'Members, one per line\nNorth\nSouth'}
+                    aria-label={`Dimension ${i + 1} members`}
+                    rows={3}
+                  />
+                  <Switch
+                    checked={d.total}
+                    onCheckedChange={(v) => update(i, { total: v })}
+                    label="Add a Total"
+                    description="Creates a Total member that sums every member of this dimension."
+                  />
+                </>
+              ) : (
+                <p className="field__msg field__msg--hint">
+                  This dimension reuses a shared definition from the library. Editing it later in the
+                  library updates every cube that references it.
+                </p>
+              )}
             </div>
           ))}
           <Button
             size="sm"
             variant="ghost"
             icon="+"
-            onClick={() => setDims((ds) => [...ds, { name: '', members: '', total: true }])}
+            onClick={() => setDims((ds) => [...ds, newDraft()])}
           >
             Add dimension
           </Button>
