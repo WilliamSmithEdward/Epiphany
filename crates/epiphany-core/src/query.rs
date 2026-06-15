@@ -161,6 +161,10 @@ pub enum QueryError {
         /// The calc failure rendered as text.
         message: String,
     },
+    /// The caller is not permitted to read this coordinate: it directly names, or
+    /// rolls up, an element denied to them (ADR-0015 element security). Carries no
+    /// member identity (RG-13).
+    AccessDenied,
     /// An underlying core model error.
     Model(ModelError),
 }
@@ -192,6 +196,7 @@ impl fmt::Display for QueryError {
             }
             QueryError::DynamicEval { message } => write!(f, "{message}"),
             QueryError::Calc { message } => write!(f, "{message}"),
+            QueryError::AccessDenied => write!(f, "access denied"),
             QueryError::Model(e) => write!(f, "{e}"),
         }
     }
@@ -415,11 +420,12 @@ pub fn execute_view<'a>(
     cells: &dyn CellResolver,
     subset_lookup: &dyn Fn(&str, &str) -> Option<&'a Subset>,
     eval: &dyn SetEvaluator,
+    mask: Option<&crate::ElementMask>,
 ) -> Result<Cellset, QueryError> {
     validate_coverage(cube, view)?;
 
-    let (row_dimensions, row_tuples_idx) = resolve_axis(cube, &view.rows, subset_lookup, eval)?;
-    let (column_dimensions, column_tuples_idx) =
+    let (row_dimensions, mut row_tuples_idx) = resolve_axis(cube, &view.rows, subset_lookup, eval)?;
+    let (column_dimensions, mut column_tuples_idx) =
         resolve_axis(cube, &view.columns, subset_lookup, eval)?;
 
     // Map every dimension name to its position in the cube coordinate.
@@ -441,6 +447,13 @@ pub fn execute_view<'a>(
                 dimension: dim_name.clone(),
                 member: member.clone(),
             })?;
+        // A pinned context member the caller may not see denies the whole result:
+        // every cell is fixed at that member (ADR-0015 element security).
+        if let Some(mask) = mask {
+            if mask.denies_member(cube, ci, idx) {
+                return Err(QueryError::AccessDenied);
+            }
+        }
         base_coord[ci] = idx;
     }
     let row_ci: Vec<usize> = row_dimensions
@@ -451,6 +464,23 @@ pub fn execute_view<'a>(
         .iter()
         .map(|d| dim_index[d.as_str()])
         .collect();
+
+    // Suppress denied members from each axis (ADR-0015): a member the caller may
+    // not see, or that rolls up a denied leaf, is omitted like zero-suppression.
+    // It is dropped silently (never reported in the suppressed lists) so the
+    // member's existence does not leak.
+    if let Some(mask) = mask {
+        row_tuples_idx.retain(|t| {
+            !t.iter()
+                .enumerate()
+                .any(|(k, &m)| mask.denies_member(cube, row_ci[k], m))
+        });
+        column_tuples_idx.retain(|t| {
+            !t.iter()
+                .enumerate()
+                .any(|(k, &m)| mask.denies_member(cube, col_ci[k], m))
+        });
+    }
 
     // Dense value matrix over all (row, column) tuples.
     let nrows = row_tuples_idx.len();
@@ -897,8 +927,16 @@ impl Model {
         view: &View,
         cells: &dyn CellResolver,
         eval: &dyn SetEvaluator,
+        mask: Option<&crate::ElementMask>,
     ) -> Result<Cellset, QueryError> {
-        execute_view(&self.cube, view, cells, &|d, n| self.subset(d, n), eval)
+        execute_view(
+            &self.cube,
+            view,
+            cells,
+            &|d, n| self.subset(d, n),
+            eval,
+            mask,
+        )
     }
 }
 
@@ -1099,8 +1137,15 @@ mod tests {
             &[("Product", "Widget")],
             false,
         );
-        let cs =
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
+        let cs = execute_view(
+            &cube,
+            &v,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             cs.row_tuples,
             vec![vec!["North"], vec!["South"], vec!["Total"]]
@@ -1113,7 +1158,15 @@ mod tests {
         assert_eq!(cs.cells, fixed(&[100, 60, 40, 200, 150, 50, 300, 210, 90]));
         // Determinism.
         assert_eq!(
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap(),
+            execute_view(
+                &cube,
+                &v,
+                &StoredCells(&cube),
+                &no_subsets,
+                &NoSetEvaluator,
+                None
+            )
+            .unwrap(),
             cs
         );
     }
@@ -1130,8 +1183,15 @@ mod tests {
             &[],
             false,
         );
-        let cs =
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
+        let cs = execute_view(
+            &cube,
+            &v,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap();
         assert_eq!(cs.row_dimensions, vec!["Region", "Product"]);
         assert_eq!(
             cs.row_tuples,
@@ -1158,8 +1218,15 @@ mod tests {
             &[],
             true,
         );
-        let cs =
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
+        let cs = execute_view(
+            &cube,
+            &v,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap();
         // North/Gadget is all zero -> dropped and reported; South/Gadget is
         // partially zero (50,50,0) -> kept.
         assert_eq!(
@@ -1184,8 +1251,15 @@ mod tests {
             &[("Measure", "Sales")],
             true,
         );
-        let cs =
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
+        let cs = execute_view(
+            &cube,
+            &v,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap();
         assert_eq!(cs.column_tuples, vec![vec!["Widget"]]);
         assert_eq!(cs.suppressed_column_tuples, vec![vec!["Gadget"]]);
         assert_eq!(cs.cells, fixed(&[100]));
@@ -1203,8 +1277,15 @@ mod tests {
             &[],
             false,
         );
-        let cs =
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
+        let cs = execute_view(
+            &cube,
+            &v,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap();
         let ri = |n: &str| cube.dimension(0).resolve(n).unwrap();
         let pi = |n: &str| cube.dimension(1).resolve(n).unwrap();
         let mi = |n: &str| cube.dimension(2).resolve(n).unwrap();
@@ -1232,7 +1313,14 @@ mod tests {
             false,
         );
         assert!(matches!(
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator),
+            execute_view(
+                &cube,
+                &v,
+                &StoredCells(&cube),
+                &no_subsets,
+                &NoSetEvaluator,
+                None
+            ),
             Err(QueryError::DimensionCoverage { .. })
         ));
     }
@@ -1248,7 +1336,14 @@ mod tests {
             false,
         );
         assert!(matches!(
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator),
+            execute_view(
+                &cube,
+                &v,
+                &StoredCells(&cube),
+                &no_subsets,
+                &NoSetEvaluator,
+                None
+            ),
             Err(QueryError::DimensionCoverage { .. })
         ));
     }
@@ -1267,7 +1362,14 @@ mod tests {
             false,
         );
         assert!(matches!(
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator),
+            execute_view(
+                &cube,
+                &v,
+                &StoredCells(&cube),
+                &no_subsets,
+                &NoSetEvaluator,
+                None
+            ),
             Err(QueryError::UnknownSubset { .. })
         ));
 
@@ -1292,7 +1394,14 @@ mod tests {
             false,
         );
         assert!(matches!(
-            execute_view(&cube, &v2, &StoredCells(&cube), &lookup, &NoSetEvaluator),
+            execute_view(
+                &cube,
+                &v2,
+                &StoredCells(&cube),
+                &lookup,
+                &NoSetEvaluator,
+                None
+            ),
             Err(QueryError::SubsetDimensionMismatch { .. })
         ));
     }
@@ -1307,8 +1416,15 @@ mod tests {
             &[("Product", "Widget")],
             false,
         );
-        let cs =
-            execute_view(&cube, &v, &StoredCells(&cube), &no_subsets, &NoSetEvaluator).unwrap();
+        let cs = execute_view(
+            &cube,
+            &v,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap();
         assert!(cs.row_tuples.is_empty());
         assert!(cs.cells.is_empty());
         assert_eq!(cs.column_tuples, vec![vec!["Sales"]]);

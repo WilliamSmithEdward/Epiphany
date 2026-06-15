@@ -13,6 +13,7 @@
 
 mod cube;
 mod dimension;
+mod element_mask;
 mod error;
 mod query;
 mod text;
@@ -20,6 +21,7 @@ mod value;
 
 pub use cube::{Coord, Cube, EdgeSpec, ElementSpec};
 pub use dimension::{AttributeDef, AttributeKind, AttributeValue, Dimension, Element, ElementKind};
+pub use element_mask::ElementMask;
 pub use error::ModelError;
 pub use query::{
     execute_view, resolve_subset, validate_subset, validate_view, Axis, AxisSpec, CellResolver,

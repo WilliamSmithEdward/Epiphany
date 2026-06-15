@@ -18,7 +18,7 @@ use epiphany_engine::ReadSnapshot;
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef, Principal};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_cube_access};
+use crate::authz::{audit, element_mask, require_cube_access};
 use crate::dto::{
     AxisMemberDto, AxisSpecBody, AxisSpecDto, CellsetCellDto, CellsetDto, ContextEntryDto,
     MdxPreviewRequest, MemberDto, MembersResponse, SubsetBody, SubsetDto, SubsetListResponse,
@@ -600,9 +600,14 @@ pub(crate) async fn execute_saved_view(
     let sandbox = sandbox_name
         .as_deref()
         .and_then(|n| snap.model().sandbox(n));
-    // Values come through the injected resolver (rule-aware in the server).
-    let resolver = state.cells.resolver_with(&snap, sandbox);
-    let cellset = snap.model().execute(view, &*resolver, state.evaluator())?;
+    // Values come through the injected resolver (rule-aware in the server),
+    // carrying the caller's element deny mask (ADR-0015): denied members are
+    // suppressed from the axes and a cell rolling up a denied leaf is denied.
+    let mask = element_mask(&state, &auth, &snap);
+    let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
+    let cellset = snap
+        .model()
+        .execute(view, &*resolver, state.evaluator(), mask.as_ref())?;
     Ok(Json(cellset_dto(
         snap.cube(),
         cellset,
@@ -626,13 +631,15 @@ pub(crate) async fn execute_adhoc(
     let sandbox = sandbox_name
         .as_deref()
         .and_then(|n| snap.model().sandbox(n));
-    let resolver = state.cells.resolver_with(&snap, sandbox);
+    let mask = element_mask(&state, &auth, &snap);
+    let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
     let cellset = execute_view(
         snap.cube(),
         &view,
         &*resolver,
         &|d, n| snap.subset(d, n),
         state.evaluator(),
+        mask.as_ref(),
     )?;
     Ok(Json(cellset_dto(
         snap.cube(),

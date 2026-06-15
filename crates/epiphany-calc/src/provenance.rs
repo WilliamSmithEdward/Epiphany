@@ -7,7 +7,7 @@
 //! tracing cost. The trace value always agrees with the evaluator, and inputs are
 //! ordered deterministically.
 
-use epiphany_core::{CellTrace, Cube, ExplainDepth, Fixed, TraceKind};
+use epiphany_core::{CellTrace, Cube, ElementMask, ExplainDepth, Fixed, TraceKind};
 
 use crate::compiled::AddrSlot;
 use crate::eval::{CalcEngine, CalcError, EvalRegistry, SandboxOverlay};
@@ -24,17 +24,20 @@ pub fn explain(
     coord: &[u32],
     depth: ExplainDepth,
 ) -> Result<CellTrace, CalcError> {
-    explain_with(registry, ordinal, coord, depth, None)
+    explain_with(registry, ordinal, coord, depth, None, None)
 }
 
 /// Explain a value, optionally overlaying a sandbox's what-if leaves (ADR-0014)
-/// so the provenance matches a sandboxed read rather than base.
+/// so the provenance matches a sandboxed read rather than base, and optionally
+/// applying the caller's element deny mask (ADR-0015) so explaining a denied cell
+/// fails with `AccessDenied` rather than revealing its provenance.
 pub fn explain_with(
     registry: &dyn EvalRegistry,
     ordinal: u32,
     coord: &[u32],
     depth: ExplainDepth,
     overlay: Option<&dyn SandboxOverlay>,
+    mask: Option<&ElementMask>,
 ) -> Result<CellTrace, CalcError> {
     // `levels` is the recursion budget: a node expands its inputs while the
     // budget exceeds 1, so 1 = the cell alone, 2 = the cell plus one input level.
@@ -46,7 +49,8 @@ pub fn explain_with(
     let engine = match overlay {
         Some(ov) => CalcEngine::with_overlay(registry, ov),
         None => CalcEngine::new(registry),
-    };
+    }
+    .with_mask(mask, ordinal);
     explain_node(&engine, registry, ordinal, coord, levels)
 }
 

@@ -7,9 +7,12 @@
 //! shared, best-effort emit helper. Centralizing both keeps every handler's
 //! denial shape and audit trail uniform.
 
+use epiphany_core::ElementMask;
+use epiphany_engine::ReadSnapshot;
 use epiphany_security::{AccessLevel, AuditAction, ObjectRef};
 
 use crate::auth::AuthPrincipal;
+use crate::dto::CoordMap;
 use crate::{ApiError, AppState};
 
 /// Emit one audit record (ADR-0010). Best-effort on the write path: a failed
@@ -95,6 +98,82 @@ pub(crate) fn require_cube_access(
         );
         Err(ApiError::forbidden("you do not have access to this cube"))
     }
+}
+
+/// Build the caller's element deny mask for a cube snapshot (ADR-0015 decision
+/// 5), resolved once under a single security lock. Returns `None` -- the common,
+/// zero-cost case -- when the caller is an admin (bypass), unknown, or no element
+/// ACL denies them any element of this cube, so the hot path skips the check
+/// entirely. The mask is leaf-centric: denying a leaf taints every rollup that
+/// includes it (deny-the-rollup); a denied consolidated member is honored only
+/// when directly addressed or enumerated on an axis.
+pub(crate) fn element_mask(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    snapshot: &ReadSnapshot,
+) -> Option<ElementMask> {
+    let security = state.security.lock().expect("security mutex");
+    let principal = security.principal(&auth.principal.username)?;
+    if principal.is_admin {
+        return None;
+    }
+    let cube = snapshot.cube();
+    let cube_name = cube.name();
+    let mut counts = Vec::with_capacity(cube.rank());
+    let mut denied: Vec<Vec<u32>> = Vec::with_capacity(cube.rank());
+    let mut any = false;
+    for d in 0..cube.rank() {
+        let dim = cube.dimension(d);
+        counts.push(dim.len());
+        let mut dim_denied = Vec::new();
+        if security.has_element_acls(cube_name, dim.name()) {
+            for (idx, el) in dim.iter_elements().enumerate() {
+                if !security.element_readable(&principal, cube_name, dim.name(), &el.name) {
+                    dim_denied.push(idx as u32);
+                    any = true;
+                }
+            }
+        }
+        denied.push(dim_denied);
+    }
+    if !any {
+        return None;
+    }
+    Some(ElementMask::from_denied(&counts, &denied))
+}
+
+/// Gate a write on element-level access (ADR-0015): a write to a coordinate whose
+/// every component the caller may not write is rejected with 403. A write targets
+/// a leaf, so each component is checked directly (no rollup). On denial emits an
+/// `AccessDenied` audit record. An admin (or any cube with no element ACLs)
+/// passes.
+pub(crate) fn require_element_write(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    cube: &str,
+    coord: &CoordMap,
+) -> Result<(), ApiError> {
+    let denied = {
+        let security = state.security.lock().expect("security mutex");
+        match security.principal(&auth.principal.username) {
+            Some(p) if p.is_admin => false,
+            Some(p) => coord
+                .iter()
+                .any(|(dim, element)| !security.element_writable(&p, cube, dim, element)),
+            None => true,
+        }
+    };
+    if denied {
+        audit(
+            state,
+            &auth.principal.username,
+            AuditAction::AccessDenied,
+            Some(&ObjectRef::cube(cube)),
+            false,
+        );
+        return Err(ApiError::forbidden("you do not have access to this cell"));
+    }
+    Ok(())
 }
 
 /// Gate a request on object access (ADR-0015). `owner`/`public` are the object's

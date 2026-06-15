@@ -13,7 +13,7 @@ use epiphany_calc::{
     compile, rules, CalcEngine, CompileError, CompiledModel, CubeRegistry, EvalRegistry,
     SandboxOverlay,
 };
-use epiphany_core::{CellResolver, Cube, Fixed, QueryError, Sandbox};
+use epiphany_core::{CellResolver, Cube, ElementMask, Fixed, QueryError, Sandbox};
 use epiphany_engine::{CellResolverFactory, Engine, ReadSnapshot};
 
 /// Why validating a rule source against the live model failed.
@@ -165,6 +165,9 @@ struct CalcCellResolver {
     registry: PinnedRegistry,
     target: u32,
     overlay: Option<OwnedOverlay>,
+    /// The caller's element deny mask for the target cube (ADR-0015), or `None`
+    /// when no element ACLs apply.
+    mask: Option<ElementMask>,
 }
 
 impl CellResolver for CalcCellResolver {
@@ -172,7 +175,8 @@ impl CellResolver for CalcCellResolver {
         let engine = match &self.overlay {
             Some(overlay) => CalcEngine::with_overlay(&self.registry, overlay),
             None => CalcEngine::new(&self.registry),
-        };
+        }
+        .with_mask(self.mask.as_ref(), self.target);
         Ok(engine.value(self.target, coord)?)
     }
 
@@ -183,6 +187,12 @@ impl CellResolver for CalcCellResolver {
             .ok_or_else(|| QueryError::Calc {
                 message: "unknown target cube".to_string(),
             })?;
+        // String cells carry no rules; enforce the element mask directly.
+        if let Some(mask) = &self.mask {
+            if mask.denies(cube, coord) {
+                return Err(QueryError::AccessDenied);
+            }
+        }
         Ok(cube.get_string(coord)?.map(str::to_string))
     }
 }
@@ -202,13 +212,14 @@ impl CalcFactory {
 
 impl CellResolverFactory for CalcFactory {
     fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver> {
-        self.resolver_with(snapshot, None)
+        self.resolver_with(snapshot, None, None)
     }
 
     fn resolver_with(
         &self,
         snapshot: &ReadSnapshot,
         sandbox: Option<&Sandbox>,
+        mask: Option<&ElementMask>,
     ) -> Box<dyn CellResolver> {
         let registry = PinnedRegistry::build(&self.engine);
         let target = registry.ordinal_of(snapshot.cube().name()).unwrap_or(0);
@@ -218,6 +229,7 @@ impl CellResolverFactory for CalcFactory {
             registry,
             target,
             overlay,
+            mask: mask.cloned(),
         })
     }
 }

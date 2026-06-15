@@ -12,7 +12,7 @@ use epiphany_engine::{BatchError, CellWrite};
 use epiphany_security::AccessLevel;
 
 use crate::auth::AuthPrincipal;
-use crate::authz::require_cube_access;
+use crate::authz::{element_mask, require_cube_access, require_element_write};
 use crate::dto::{
     BatchWriteRequest, BatchWriteResponse, CellDto, CoordMap, CubeDetailDto, DimensionDto, EdgeDto,
     ElementDto, ReadCellsRequest, ReadCellsResponse, WriteCellRequest,
@@ -88,8 +88,11 @@ pub(crate) async fn read_cells(
         .as_deref()
         .and_then(|n| snap.model().sandbox(n));
     // Values come through the injected resolver (rule-aware in the server,
-    // stored-only in no-rules deployments and tests).
-    let resolver = state.cells.resolver_with(&snap, sandbox);
+    // stored-only in no-rules deployments and tests), carrying the caller's
+    // element deny mask (ADR-0015): a directly-addressed denied coordinate (or a
+    // rollup of a denied leaf) returns 403.
+    let mask = element_mask(&state, &auth, &snap);
+    let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
     let mut cells = Vec::with_capacity(req.coords.len());
     for coord in &req.coords {
         let resolved = resolve(cube_ref, coord)?;
@@ -111,6 +114,9 @@ pub(crate) async fn write_cell(
     Json(req): Json<WriteCellRequest>,
 ) -> Result<Json<CellDto>, ApiError> {
     require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    // Element security (ADR-0015): a write to a coordinate the caller may not
+    // write is rejected before anything is staged.
+    require_element_write(&state, &auth, &cube, &req.coord)?;
     let (write, sandbox_name) = {
         let snap = state
             .engine
@@ -147,7 +153,8 @@ pub(crate) async fn write_cell(
     let sandbox = sandbox_name
         .as_deref()
         .and_then(|n| snap.model().sandbox(n));
-    let resolver = state.cells.resolver_with(&snap, sandbox);
+    let mask = element_mask(&state, &auth, &snap);
+    let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
     let resolved = resolve(snap.cube(), &req.coord)?;
     let overlaid = sandbox.is_some_and(|sb| sb.cells.contains_key(&resolved.indices));
     Ok(Json(read_one(&*resolver, &req.coord, &resolved, overlaid)?))
@@ -162,6 +169,11 @@ pub(crate) async fn batch_write(
     Json(req): Json<BatchWriteRequest>,
 ) -> Result<Json<BatchWriteResponse>, ApiError> {
     require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    // Element security (ADR-0015): if any write targets a coordinate the caller
+    // may not write, the whole batch is rejected before anything is staged.
+    for w in &req.writes {
+        require_element_write(&state, &auth, &cube, &w.coord)?;
+    }
     let (writes, sandbox_name) = {
         let snap = state
             .engine

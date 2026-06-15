@@ -104,6 +104,13 @@ impl From<QueryError> for ApiError {
                 ApiError::unprocessable("MDX_ERROR", message)
             }
             QueryError::Calc { .. } => ApiError::unprocessable("CALC_ERROR", message),
+            // Element security (ADR-0015): a directly-addressed denied coordinate
+            // is 403. The message carries no member identity (RG-13).
+            QueryError::AccessDenied => ApiError::new(
+                StatusCode::FORBIDDEN,
+                "FORBIDDEN",
+                "you do not have access to this cell",
+            ),
             QueryError::Model(_) => ApiError::unprocessable("MODEL_ERROR", message),
         }
     }

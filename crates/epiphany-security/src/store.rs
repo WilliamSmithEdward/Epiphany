@@ -892,6 +892,9 @@ mod tests {
     #[test]
     fn resolve_access_composes_grants_owner_and_public() {
         let mut store = SecurityStore::with_admin("admin", "pw", true);
+        // ann is a real (authenticated) user; "ghost" below never exists, so it
+        // is denied even on a public object (ADR-0015 decision 3).
+        store.create_user("ann", "pw", false).unwrap();
         let view = ObjectRef::in_cube(ObjectKind::View, "Sales", "Grid");
 
         // A non-owner non-grantee on a private object: no access.
@@ -935,6 +938,8 @@ mod tests {
     #[test]
     fn cube_access_is_open_until_restricted() {
         let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store.create_user("ann", "pw", false).unwrap();
+        store.create_user("bob", "pw", false).unwrap();
         // Unmanaged: any authenticated user gets Write, but not Admin.
         assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::Write);
         assert_eq!(store.cube_access("admin", "Sales"), AccessLevel::Admin);

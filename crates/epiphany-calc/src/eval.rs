@@ -15,7 +15,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
 
-use epiphany_core::{AttributeValue, CellResolver, Cube, Fixed, ModelError, QueryError, SCALE};
+use epiphany_core::{
+    AttributeValue, CellResolver, Cube, ElementMask, Fixed, ModelError, QueryError, SCALE,
+};
 
 use crate::compiled::{AddrSlot, CCell, CCond, CExpr, CompiledModel};
 use crate::rules::{ArithOp, CmpOp};
@@ -64,6 +66,10 @@ pub enum CalcError {
     Overflow,
     /// A referenced cube ordinal was not in the registry.
     UnknownCube(u32),
+    /// The caller may not read a cell this evaluation depends on: it names, or
+    /// rolls up, an element denied to them (ADR-0015 element security). Carries no
+    /// member identity (RG-13).
+    AccessDenied,
     /// An underlying core model error.
     Model(ModelError),
 }
@@ -77,6 +83,7 @@ impl fmt::Display for CalcError {
             CalcError::DivByZero => write!(f, "division by zero in a rule"),
             CalcError::Overflow => write!(f, "fixed-point overflow in a rule"),
             CalcError::UnknownCube(o) => write!(f, "unknown cube ordinal {o}"),
+            CalcError::AccessDenied => write!(f, "access denied"),
             CalcError::Model(e) => write!(f, "{e}"),
         }
     }
@@ -92,8 +99,13 @@ impl From<ModelError> for CalcError {
 
 impl From<CalcError> for QueryError {
     fn from(e: CalcError) -> Self {
-        QueryError::Calc {
-            message: e.to_string(),
+        match e {
+            // Preserve the access-denied signal so the API renders it as 403
+            // (suppress on an axis), not a generic calc 422.
+            CalcError::AccessDenied => QueryError::AccessDenied,
+            _ => QueryError::Calc {
+                message: e.to_string(),
+            },
         }
     }
 }
@@ -115,6 +127,10 @@ pub struct CalcEngine<'a> {
     registry: &'a dyn EvalRegistry,
     overlay: Option<&'a dyn SandboxOverlay>,
     scope_id: u64,
+    /// The per-request element deny mask (ADR-0015) and the cube ordinal it
+    /// applies to. Absent (the common case) means no element check at all.
+    mask: Option<&'a ElementMask>,
+    mask_target: u32,
     memo: RefCell<Memo>,
 }
 
@@ -134,6 +150,8 @@ impl<'a> CalcEngine<'a> {
             registry,
             overlay: None,
             scope_id: 0,
+            mask: None,
+            mask_target: 0,
             memo: RefCell::new(HashMap::new()),
         }
     }
@@ -147,8 +165,22 @@ impl<'a> CalcEngine<'a> {
             registry,
             overlay: Some(overlay),
             scope_id,
+            mask: None,
+            mask_target: 0,
             memo: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Attach a per-request element deny mask for cube ordinal `target`
+    /// (ADR-0015). Every value the evaluation touches in that cube -- a direct
+    /// read, a consolidation contribution, or a rule reference -- is checked at
+    /// the cell terminal, so a denied leaf taints every rollup it feeds
+    /// (deny-the-rollup). A `None` mask is a no-op.
+    #[must_use]
+    pub fn with_mask(mut self, mask: Option<&'a ElementMask>, target: u32) -> Self {
+        self.mask = mask;
+        self.mask_target = target;
+        self
     }
 
     /// A [`CellResolver`] view bound to one cube ordinal (for `execute_view` /
@@ -197,6 +229,19 @@ impl<'a> CalcEngine<'a> {
     }
 
     fn compute(&self, ordinal: u32, coord: &[u32]) -> Result<Fixed, CalcError> {
+        // Element security (ADR-0015): deny before any value is produced. Every
+        // cell -- a direct read, a leaf pulled into a consolidation, or a rule
+        // reference -- reaches `compute`, so checking the queried element indices
+        // here (a cheap per-component lookup, no expansion) denies a directly
+        // named member and, via the consolidation recursion, every rollup that
+        // includes a denied leaf. Scoped to the mask's target cube.
+        if ordinal == self.mask_target {
+            if let Some(mask) = self.mask {
+                if mask.denies_leaf(coord) {
+                    return Err(CalcError::AccessDenied);
+                }
+            }
+        }
         let cube = self
             .registry
             .cube(ordinal)

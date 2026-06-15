@@ -19,8 +19,8 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use epiphany_core::{
-    CellResolver, Connection, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest, Model,
-    ModelError, QueryError, RuleSet, RuleTest, Sandbox, Subset, View,
+    CellResolver, Connection, Cube, EdgeSpec, ElementMask, ElementSpec, Fixed, Flow, FlowTest,
+    Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox, Subset, View,
 };
 use epiphany_determinism::IdGen;
 use epiphany_persist::{PersistError, Store};
@@ -630,16 +630,19 @@ pub trait CellResolverFactory: Send + Sync {
     fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver>;
 
     /// Build a resolver that overlays a sandbox's what-if values beneath the
-    /// rules (ADR-0014). The default ignores the sandbox (no overlay), so a
-    /// factory that does not support what-if -- and a `None` sandbox -- behaves
-    /// exactly like [`resolver`](Self::resolver). The rule-aware factory the
-    /// server injects overrides this.
+    /// rules (ADR-0014) and enforces a caller's element deny mask (ADR-0015): a
+    /// read of a coordinate that names, or rolls up, a denied element returns
+    /// [`QueryError::AccessDenied`]. The default ignores both, so a factory that
+    /// supports neither -- and a `None` sandbox/mask -- behaves exactly like
+    /// [`resolver`](Self::resolver). The rule-aware factory the server injects,
+    /// and [`StoredCellsFactory`], override this.
     fn resolver_with(
         &self,
         snapshot: &ReadSnapshot,
         sandbox: Option<&epiphany_core::Sandbox>,
+        mask: Option<&ElementMask>,
     ) -> Box<dyn CellResolver> {
-        let _ = sandbox;
+        let _ = (sandbox, mask);
         self.resolver(snapshot)
     }
 }
@@ -653,22 +656,57 @@ impl CellResolverFactory for StoredCellsFactory {
     fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver> {
         Box::new(StoredResolver {
             snapshot: snapshot.clone(),
+            mask: None,
+        })
+    }
+
+    /// The stored-cell path has no rules or what-if, so the sandbox is ignored,
+    /// but the element deny mask (ADR-0015) is honored: a no-rules deployment is
+    /// still least-privilege. The check expands consolidated coordinates to their
+    /// contributing leaves (`Cube::get` consolidates internally), so a rollup of
+    /// a denied leaf is denied.
+    fn resolver_with(
+        &self,
+        snapshot: &ReadSnapshot,
+        sandbox: Option<&epiphany_core::Sandbox>,
+        mask: Option<&ElementMask>,
+    ) -> Box<dyn CellResolver> {
+        let _ = sandbox;
+        Box::new(StoredResolver {
+            snapshot: snapshot.clone(),
+            mask: mask.cloned(),
         })
     }
 }
 
-/// A [`CellResolver`] that owns a pinned snapshot and reads stored values.
+/// A [`CellResolver`] that owns a pinned snapshot and reads stored values,
+/// optionally enforcing an element deny mask (ADR-0015).
 #[derive(Debug)]
 struct StoredResolver {
     snapshot: ReadSnapshot,
+    mask: Option<ElementMask>,
+}
+
+impl StoredResolver {
+    /// Deny a read that names, or rolls up, an element the caller may not see.
+    fn check(&self, coord: &[u32]) -> Result<(), QueryError> {
+        if let Some(mask) = &self.mask {
+            if mask.denies(self.snapshot.cube(), coord) {
+                return Err(QueryError::AccessDenied);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl CellResolver for StoredResolver {
     fn value(&self, coord: &[u32]) -> Result<Fixed, QueryError> {
+        self.check(coord)?;
         Ok(self.snapshot.cube().get(coord)?)
     }
 
     fn string_value(&self, coord: &[u32]) -> Result<Option<String>, QueryError> {
+        self.check(coord)?;
         Ok(self.snapshot.cube().get_string(coord)?.map(str::to_string))
     }
 }

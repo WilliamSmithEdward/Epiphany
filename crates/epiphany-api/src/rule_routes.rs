@@ -10,14 +10,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use epiphany_calc::{
-    explain_with, infer_feeders, run_rule_tests, validate_feeders, EvalRegistry, SandboxOverlay,
+    explain_with, infer_feeders, run_rule_tests, validate_feeders, CalcError, EvalRegistry,
+    SandboxOverlay,
 };
 use epiphany_core::{CellTrace, Cube, ExplainDepth, RuleTest, TestCell, TraceKind};
 use epiphany_engine::ReadSnapshot;
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_cube_access};
+use crate::authz::{audit, element_mask, require_cube_access};
 use crate::calc_factory::{compile_source, OwnedOverlay, PinnedRegistry, ValidateError};
 use crate::dto::CoordMap;
 use crate::resolve::resolve;
@@ -241,14 +242,21 @@ pub(crate) async fn explain_cell(
         .as_deref()
         .and_then(|n| snap.model().sandbox(n))
         .map(|sb| OwnedOverlay::new(ordinal, sb));
+    // Explaining a denied cell (or one rolling up a denied leaf) is itself a
+    // direct read: it returns 403, not a provenance trace (ADR-0015).
+    let mask = element_mask(&state, &auth, &snap);
     let trace = explain_with(
         &registry,
         ordinal,
         &resolved.indices,
         depth,
         overlay.as_ref().map(|o| o as &dyn SandboxOverlay),
+        mask.as_ref(),
     )
-    .map_err(|e| ApiError::unprocessable("CALC_ERROR", e.to_string()))?;
+    .map_err(|e| match e {
+        CalcError::AccessDenied => ApiError::forbidden("you do not have access to this cell"),
+        other => ApiError::unprocessable("CALC_ERROR", other.to_string()),
+    })?;
     Ok(Json(trace_dto(trace)))
 }
 
