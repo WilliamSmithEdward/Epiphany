@@ -149,6 +149,44 @@ Split the single `snapshot.model` into:
 cubes. Attribute *values* are shared (set once, visible to all referencing cubes -
 the intuitive "edit propagates" behavior).
 
+## Realization note (v1): materialized references
+
+The pure-reference model above (a cube holds only `DimensionRef`s and resolves
+element identity from a pinned registry on every read) is the destination, but
+its cost is the read-path rewrite the adversarial review flagged as dominant -
+every `Cube` method, `ReadSnapshot`, calc, MDX, and the element mask must thread a
+resolved registry. That is a large, workspace-wide, non-additive change.
+
+**v1 ships the same user-facing capability with materialized references**, which
+needs no read-path change:
+
+- The registry is the **source of truth** for a shared dimension's identity, and
+  the canonical copy is persisted in the registry (`<data_dir>/dimensions.model`)
+  with its **reverse index** (which cubes reference each dimension).
+- A cube created against a registry dimension **materializes a copy** of it (via
+  the existing `Cube::build`) and the registry records the back-reference. The
+  cube keeps owning its `Vec<Dimension>` exactly as today, so reads, calc, MDX,
+  and the layout are **unchanged**.
+- **Edit propagation = fan-out.** Growing a shared dimension in the registry is
+  the atomic durable event; the engine then applies the same append to every
+  referencing cube through the existing `define_elements` path, matched by
+  dimension name (append-only and idempotent, so it is safe and convergent). On
+  reload the registry loads first and any cube behind its generation is
+  re-grown forward.
+- **No divergence:** a cube-local element edit on a dimension that is
+  registry-backed is rejected and routed to the dimension library, so the only
+  way to change a shared dimension is through the registry (which fans out).
+
+Trade-off vs. pure references: each cube still stores its own copy of the
+dimension's element list (a modest memory cost, since element lists are small
+relative to cells), and there is no `Arc`-sharing of identity. Pure references
+(the read-path rewrite, for the memory/elegance win) remain the documented future
+optimization; they change no user-visible behavior, so they can land later behind
+the same registry without another migration. The phasing below is unchanged in
+intent; Phase 1 implements the materialized realization, and the "pinned registry
+through reads" work is folded into the later (optional) pure-reference
+optimization rather than being a prerequisite for the capability.
+
 ## Phasing
 
 - **Phase 0 - registry skeleton (no behavior change):** `DimensionId`,

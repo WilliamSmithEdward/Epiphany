@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use epiphany_core::{Dimension, EdgeSpec, ElementKind, ElementSpec, ModelError};
+use epiphany_core::{Dimension, DimensionDef, EdgeSpec, ElementKind, ElementSpec, ModelError};
 
 /// A server-unique dimension identifier, minted from the engine's `IdGen`. It is
 /// stable for the life of the dimension and is never a positional index.
@@ -35,6 +35,32 @@ impl SharedDimension {
             id,
             generation: 0,
             dimension,
+        }
+    }
+
+    /// A `DimensionDef` capturing this dimension's current elements and edges, so
+    /// a cube can materialize a copy of it at attach time (ADR-0024 v1).
+    pub fn to_dimension_def(&self) -> DimensionDef {
+        let d = &self.dimension;
+        let elements = d
+            .iter_elements()
+            .map(|el| (el.name.clone(), el.kind))
+            .collect();
+        let edges = d
+            .edges()
+            .into_iter()
+            .map(|(parent, child, weight)| {
+                (
+                    d.element(parent).expect("valid index").name.clone(),
+                    d.element(child).expect("valid index").name.clone(),
+                    weight,
+                )
+            })
+            .collect();
+        DimensionDef {
+            name: d.name().to_string(),
+            elements,
+            edges,
         }
     }
 

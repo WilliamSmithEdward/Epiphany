@@ -266,8 +266,26 @@ impl Engine {
         id
     }
 
-    /// Append elements/edges to a registered shared dimension and publish the new
-    /// generation, returning it. A rejected change leaves the registry untouched.
+    /// Record that `cube` references shared dimension `id` (ADR-0024 v1): the cube
+    /// has materialized a copy of it, and a later grow fans out to the cube.
+    pub fn attach_dimension(&self, id: DimensionId, cube: &str) {
+        let _topo = self
+            .dim_topology
+            .lock()
+            .expect("dim_topology mutex poisoned");
+        let mut next = (**self.dimensions.load()).clone();
+        next.attach(id, cube);
+        self.dimensions.store(Arc::new(next));
+    }
+
+    /// Append elements/edges to a registered shared dimension, publish the new
+    /// generation, and **fan the same append out to every referencing cube**
+    /// (ADR-0024 v1: materialized references). The registry grow is the
+    /// authoritative event; per-cube application reuses the append-only,
+    /// idempotent `define_elements` path keyed by the dimension's name, so every
+    /// referencing cube converges to the grown dimension. A rejected change leaves
+    /// the registry untouched. Holds `dim_topology` across the per-cube writer
+    /// locks (the `dim_topology` -> `writer` order, never the reverse).
     pub fn grow_dimension(
         &self,
         id: DimensionId,
@@ -278,7 +296,8 @@ impl Engine {
             .dim_topology
             .lock()
             .expect("dim_topology mutex poisoned");
-        let current = self.dimensions.load().get(id).cloned().ok_or_else(|| {
+        let snapshot = self.dimensions.load_full();
+        let current = snapshot.get(id).cloned().ok_or_else(|| {
             BatchError::Invalid(QueryError::Model(ModelError::UnknownDimension {
                 cube: "registry".to_string(),
                 dimension: format!("#{}", id.0),
@@ -288,9 +307,37 @@ impl Engine {
             .grown(elements, edges)
             .map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
         let generation = grown.generation;
+        let dim_name = grown.dimension.name().to_string();
+
+        // Publish the new registry generation (the authoritative event).
         let mut next = (**self.dimensions.load()).clone();
         next.put(Arc::new(grown));
         self.dimensions.store(Arc::new(next));
+
+        // Fan out to every referencing cube, re-stamping the dimension name so the
+        // append targets each cube's materialized copy of this dimension.
+        let els: Vec<ElementSpec> = elements
+            .iter()
+            .map(|e| ElementSpec {
+                dimension: dim_name.clone(),
+                name: e.name.clone(),
+                kind: e.kind,
+            })
+            .collect();
+        let edgs: Vec<EdgeSpec> = edges
+            .iter()
+            .map(|e| EdgeSpec {
+                dimension: dim_name.clone(),
+                parent: e.parent.clone(),
+                child: e.child.clone(),
+                weight: e.weight,
+            })
+            .collect();
+        for cube in snapshot.referencing(id) {
+            if self.has_cube(&cube) {
+                self.define_elements(&cube, None, &els, &edgs)?;
+            }
+        }
         Ok(generation)
     }
 
@@ -1595,5 +1642,64 @@ mod tests {
             .engine
             .grow_dimension(DimensionId(999_999), &[], &[])
             .is_err());
+    }
+
+    #[test]
+    fn shared_dimension_grow_fans_out_to_referencing_cubes() {
+        let engine = editable_engine("dim-fanout");
+
+        // A shared Product dimension with one member.
+        let mut product = Dimension::new("Product");
+        product.add_leaf("Widget");
+        let id = engine.register_dimension(product);
+        let product_def = engine
+            .dimension_registry()
+            .get(id)
+            .unwrap()
+            .to_dimension_def();
+
+        let measure = || DimensionDef {
+            name: "Measure".into(),
+            elements: vec![("Amount".into(), ElementKind::Leaf)],
+            edges: vec![],
+        };
+
+        // Two cubes each materialize a copy of Product and record the reference.
+        for cube in ["CubeA", "CubeB"] {
+            engine
+                .create_cube(cube, &[product_def.clone(), measure()])
+                .unwrap();
+            engine.attach_dimension(id, cube);
+        }
+
+        // Growing the shared dimension fans out to both cubes.
+        let generation = engine
+            .grow_dimension(
+                id,
+                &[ElementSpec {
+                    dimension: "Product".into(),
+                    name: "Gadget".into(),
+                    kind: ElementKind::Leaf,
+                }],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(generation, 1);
+
+        for cube in ["CubeA", "CubeB"] {
+            let snap = engine.snapshot(cube).unwrap();
+            let product = snap
+                .cube()
+                .dimensions()
+                .iter()
+                .find(|d| d.name() == "Product")
+                .unwrap();
+            assert!(
+                product.index_of("Gadget").is_some(),
+                "{cube} should have received the fanned-out member"
+            );
+        }
+        // The registry itself is at the new generation.
+        assert_eq!(engine.dimension_registry().get(id).unwrap().generation, 1);
     }
 }
