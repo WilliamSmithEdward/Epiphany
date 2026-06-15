@@ -12,7 +12,10 @@
 
 use std::sync::{Arc, Mutex};
 
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
+use axum::http::{header, HeaderValue};
+use axum::middleware::map_response;
+use axum::response::Response;
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde::Serialize;
@@ -103,6 +106,44 @@ impl std::fmt::Debug for AppState {
             .field("engine", &self.engine)
             .finish_non_exhaustive()
     }
+}
+
+/// An explicit cap on the request body size (ADR-0018), bounding per-request
+/// memory while staying generous for batch writes and flow imports.
+const MAX_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// The Content-Security-Policy applied to every response (ADR-0018). Same-origin
+/// only: the embedded single-page UI loads its own bundle and talks only to this
+/// origin (REST and the same-origin WebSocket), so a strict policy holds without
+/// inline scripts. `style-src` allows inline styles, which the UI injects at
+/// runtime. Operators fronting the app differently can relax it.
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; \
+     style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
+     frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
+
+/// Add defensive headers to every response (ADR-0018): disable MIME sniffing,
+/// forbid framing (anti-clickjacking), minimize referrer leakage, keep HTTPS
+/// clients on HTTPS, and a same-origin Content-Security-Policy.
+async fn security_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::STRICT_TRANSPORT_SECURITY,
+        HeaderValue::from_static("max-age=31536000"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CONTENT_SECURITY_POLICY),
+    );
+    response
 }
 
 /// Build the application router. Used by both the server binary and tests, so
@@ -307,6 +348,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(protected)
         .fallback(not_found)
         .with_state(state)
+        // Defensive HTTP-surface hardening (ADR-0018), applied to every route so
+        // the server and tests share it: security headers and a body-size cap.
+        .layer(map_response(security_headers))
+        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
 }
 
 #[derive(Serialize)]

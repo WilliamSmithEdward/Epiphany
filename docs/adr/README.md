@@ -21,5 +21,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0015](0015-object-and-element-security.md) | Object and element security model | Accepted | 7 |
 | [0016](0016-global-cube-grants-and-explicit-deny.md) | Global cube grants and explicit deny | Accepted | 7 (m8.2) |
 | [0017](0017-authentication-and-credential-hardening.md) | Authentication and credential hardening | Accepted | 8 (m8.3) |
+| [0018](0018-http-surface-hardening.md) | HTTP-surface hardening (security headers, body-size limit) | Accepted | 8 (m8.5) |
 
-> All originally-reserved ADR numbers are allocated; later decisions continue from 0017.
+> All originally-reserved ADR numbers are allocated; later decisions continue from 0018.
