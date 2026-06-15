@@ -39,6 +39,22 @@ pub struct Config {
     /// Login lockout cooldown in milliseconds (ADR-0017). Default 15 minutes;
     /// `0` disables the lockout.
     pub login_lockout_millis: u64,
+    /// Serve a self-signed certificate generated into the data directory
+    /// (ADR-0019): the zero-config HTTPS path (`EPIPHANY_TLS=on`).
+    pub tls_self_signed: bool,
+    /// Path to a PEM certificate (chain) for HTTPS; with [`tls_key`] this serves
+    /// the operator's own certificate and takes precedence over self-signed.
+    pub tls_cert: Option<PathBuf>,
+    /// Path to the PEM private key paired with [`tls_cert`].
+    pub tls_key: Option<PathBuf>,
+}
+
+impl Config {
+    /// Whether HTTPS should be served: an operator certificate (both cert and
+    /// key) is set, or self-signed is requested (ADR-0019).
+    pub fn wants_tls(&self) -> bool {
+        self.tls_self_signed || (self.tls_cert.is_some() && self.tls_key.is_some())
+    }
 }
 
 impl Default for Config {
@@ -56,6 +72,9 @@ impl Default for Config {
             default_cube_open: false,
             login_max_failures: 5,
             login_lockout_millis: 15 * 60 * 1000,
+            tls_self_signed: false,
+            tls_cert: None,
+            tls_key: None,
         }
     }
 }
@@ -133,6 +152,16 @@ impl Config {
         {
             config.login_lockout_millis = secs.saturating_mul(1000);
         }
+        // TLS (ADR-0019). `EPIPHANY_TLS=on` (or self-signed/1/true/yes) serves a
+        // generated self-signed cert; an explicit cert+key takes precedence.
+        if let Some(v) = vars.get("EPIPHANY_TLS") {
+            config.tls_self_signed = matches!(
+                v.to_ascii_lowercase().as_str(),
+                "on" | "self-signed" | "1" | "true" | "yes"
+            );
+        }
+        config.tls_cert = vars.get("EPIPHANY_TLS_CERT").map(PathBuf::from);
+        config.tls_key = vars.get("EPIPHANY_TLS_KEY").map(PathBuf::from);
         config
     }
 }
@@ -174,6 +203,38 @@ mod tests {
         let c = Config::from_map(&vars);
         assert_eq!(c.login_max_failures, 3);
         assert_eq!(c.login_lockout_millis, 60_000);
+    }
+
+    #[test]
+    fn tls_is_off_by_default_and_configurable() {
+        // Off out of the box (ADR-0019).
+        assert!(!Config::default().wants_tls());
+        // One variable enables self-signed HTTPS.
+        let mut vars = BTreeMap::new();
+        vars.insert("EPIPHANY_TLS".to_string(), "on".to_string());
+        let c = Config::from_map(&vars);
+        assert!(c.tls_self_signed);
+        assert!(c.wants_tls());
+        // An operator certificate is picked up from cert+key paths.
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "EPIPHANY_TLS_CERT".to_string(),
+            "/etc/epi/cert.pem".to_string(),
+        );
+        vars.insert(
+            "EPIPHANY_TLS_KEY".to_string(),
+            "/etc/epi/key.pem".to_string(),
+        );
+        let c = Config::from_map(&vars);
+        assert!(c.wants_tls());
+        assert_eq!(c.tls_cert.unwrap(), PathBuf::from("/etc/epi/cert.pem"));
+        // A cert without a key is not enough to enable TLS.
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "EPIPHANY_TLS_CERT".to_string(),
+            "/etc/epi/cert.pem".to_string(),
+        );
+        assert!(!Config::from_map(&vars).wants_tls());
     }
 
     #[test]

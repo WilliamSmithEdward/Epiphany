@@ -22,5 +22,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0016](0016-global-cube-grants-and-explicit-deny.md) | Global cube grants and explicit deny | Accepted | 7 (m8.2) |
 | [0017](0017-authentication-and-credential-hardening.md) | Authentication and credential hardening | Accepted | 8 (m8.3) |
 | [0018](0018-http-surface-hardening.md) | HTTP-surface hardening (security headers, body-size limit) | Accepted | 8 (m8.5) |
+| [0019](0019-optional-tls.md) | Optional TLS (HTTPS), simple to enable | Accepted | 8 (m8.6) |
 
-> All originally-reserved ADR numbers are allocated; later decisions continue from 0018.
+> All originally-reserved ADR numbers are allocated; later decisions continue from 0019.

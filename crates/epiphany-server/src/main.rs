@@ -10,6 +10,8 @@ mod config;
 mod demo;
 mod observability;
 mod shutdown;
+#[cfg(feature = "tls")]
+mod tls;
 #[cfg(feature = "embed-ui")]
 mod ui;
 
@@ -162,6 +164,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "embed-ui")]
     let router = router.fallback(ui::fallback);
     let app = router.layer(tower_http::trace::TraceLayer::new_for_http());
+
+    // Optional HTTPS (ADR-0019): serve TLS when configured and the `tls` feature
+    // is built in; otherwise plain HTTP. The default is unchanged (HTTP).
+    if config.wants_tls() {
+        #[cfg(feature = "tls")]
+        {
+            if config.open_browser {
+                tracing::info!("open https://{}/ in your browser", config.bind_addr);
+            }
+            tls::serve_https(
+                config.bind_addr,
+                app,
+                config.tls_cert.clone(),
+                config.tls_key.clone(),
+                &config.data_dir,
+            )
+            .await?;
+            tracing::info!("shut down cleanly");
+            return Ok(());
+        }
+        #[cfg(not(feature = "tls"))]
+        tracing::warn!(
+            "TLS was requested (EPIPHANY_TLS*) but this build lacks the `tls` feature; serving plain HTTP"
+        );
+    }
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     let addr = listener.local_addr()?;

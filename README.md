@@ -131,8 +131,31 @@ environment variables. The most useful:
 |---|---|---|
 | `EPIPHANY_BIND` | Listen address | `127.0.0.1:8080` (loopback) |
 | `EPIPHANY_DATA_DIR` | Durable data directory | `./data` |
+| `EPIPHANY_TLS` | `on` serves HTTPS with an auto-generated self-signed certificate | off (HTTP) |
+| `EPIPHANY_TLS_CERT` / `EPIPHANY_TLS_KEY` | PEM cert + key to serve a real certificate (takes precedence) | none |
 | `EPIPHANY_DEFAULT_CUBE_ACCESS` | `open` opts an ungranted cube into trusted-org write access | closed (secure) |
 | `EPIPHANY_ENABLE_COMMAND_CONNECTORS` | Allow admin-defined programs as flow data sources | off |
+
+### HTTPS / TLS
+
+HTTPS is optional and off by default. The easiest way to turn it on is one
+variable:
+
+```sh
+EPIPHANY_TLS=on ./epiphany-server-linux-x86_64   # serves https://127.0.0.1:8080/
+```
+
+That generates a self-signed certificate into the data directory on first run
+(browsers will show a self-signed warning, which is expected for local and
+internal use). For a real certificate, point at your PEM files instead:
+
+```sh
+EPIPHANY_TLS_CERT=/path/cert.pem EPIPHANY_TLS_KEY=/path/key.pem ./epiphany-server-...
+```
+
+TLS serves on the same `EPIPHANY_BIND` address. The prebuilt release binaries
+include TLS; a from-source build needs `--features tls` (and the platform's C
+toolchain, since the crypto is compiled).
 
 See [AGENTS.md](AGENTS.md) for the full configuration surface and the supported
 platforms.

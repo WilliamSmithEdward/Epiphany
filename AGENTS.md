@@ -29,6 +29,7 @@ Rust (from the repo root):
 - Format check: `cargo fmt --all -- --check` (fix with `cargo fmt --all`)
 - Lint: `cargo clippy --workspace --all-targets -- -D warnings`
 - Run the server: `cargo run -p epiphany-server`
+- Optional HTTPS (ADR-0019): add `--features tls` (the release binaries are built with `embed-ui,tls`). It compiles a pure-Rust crypto stack (rustls + ring), so it needs the platform C toolchain; enable at runtime with `EPIPHANY_TLS=on` (self-signed) or `EPIPHANY_TLS_CERT`/`EPIPHANY_TLS_KEY`.
 
 Web (from `web/`):
 - Install: `npm ci` (first time: `npm install`)
@@ -46,7 +47,7 @@ CI (`.github/workflows/ci.yml`) runs all of the above and gates merges.
   export PATH="/c/Development/tools/mingw64/bin:$PATH"
   export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$HOME/.rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/self-contained/x86_64-w64-mingw32-gcc.exe"
   ```
-  CI builds on Linux, so this is a local-Windows-only requirement.
+  CI builds on Linux, so this is a local-Windows-only requirement. **C-compiling crates (the `tls` feature: rustls + ring) need a full GCC, not the binutils-only extract** at `C:\Development\tools\mingw64` (it lacks `cc1`). Install the full WinLibs UCRT GCC (`winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT`) and prepend its bin (`%LOCALAPPDATA%\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_*\mingw64\bin`) before the binutils dir on PATH; keep the forced linker. Then `cargo build -p epiphany-server --features tls` and `cargo deny` build locally.
 - **Node:** managed by fnm, with the version pinned in `.node-version`. In a fresh PowerShell, expose `node` and `npm` with:
   ```powershell
   fnm env --shell powershell | Out-String | Invoke-Expression; fnm use

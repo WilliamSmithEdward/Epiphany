@@ -15,6 +15,10 @@ workspace = true
 # and in CI (the Rust job builds without web/dist); enable for release packaging
 # after `npm run build`.
 embed-ui = ["dep:rust-embed"]
+# Optional HTTPS/TLS (ADR-0019). Off by default to keep the core build lean; the
+# release binaries enable it. Pure-Rust (rustls with the ring provider, rcgen for
+# self-signed generation) so the single static binary holds.
+tls = ["dep:axum-server", "dep:rustls", "dep:rcgen"]
 
 [dependencies]
 epiphany-api = { path = "../epiphany-api" }
@@ -30,3 +34,8 @@ tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 rust-embed = { version = "8", optional = true }
+# TLS (feature = "tls"): pure-Rust serving + self-signed generation, pinned to
+# the ring crypto provider (builds on the GNU toolchain; permissive licenses).
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"], optional = true }
