@@ -64,14 +64,56 @@ fn document() -> Value {
                 "requestBody": json_body("#/components/schemas/ChangePasswordRequest"),
                 "responses": { "204": { "description": "Password changed" } }
             }},
-            "/api/v1/cubes": { "get": {
-                "summary": "List cubes", "security": bearer(),
-                "responses": ok("The cubes and their cell counts")
-            }},
+            "/api/v1/cubes": {
+                "get": {
+                    "summary": "List cubes", "security": bearer(),
+                    "responses": ok("The cubes and their cell counts")
+                },
+                "post": {
+                    "summary": "Create a cube with its dimensions and initial members (admin; ADR-0021)",
+                    "security": bearer(),
+                    "requestBody": json_body("#/components/schemas/NewCubeRequest"),
+                    "responses": {
+                        "200": { "description": "The new cube's commit version" },
+                        "409": { "description": "A cube with that name already exists", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+                        "422": { "description": "Invalid structure (bad name, duplicate dimension, cycle, ...)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                    }
+                }
+            },
             "/api/v1/cubes/{cube}": { "get": {
                 "summary": "A cube with its dimensions and elements", "security": bearer(),
                 "parameters": [cube_param()],
                 "responses": ok("The cube detail")
+            }},
+            "/api/v1/cubes/{cube}/elements": { "post": {
+                "summary": "Add elements and consolidation edges to existing dimensions (ADR-0021)",
+                "security": bearer(),
+                "parameters": [cube_param()],
+                "requestBody": json_body("#/components/schemas/AddElementsRequest"),
+                "responses": {
+                    "200": { "description": "The commit version and number of new elements" },
+                    "422": { "description": "Unknown dimension, kind conflict, non-consolidated parent, or cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
+            }},
+            "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}": { "put": {
+                "summary": "Define an attribute on a dimension (text, numeric, or alias; ADR-0021)",
+                "security": bearer(),
+                "parameters": [cube_param(), dim_param(), attr_param()],
+                "requestBody": json_body("#/components/schemas/AttributeRequest"),
+                "responses": {
+                    "200": { "description": "The commit version" },
+                    "422": { "description": "Unknown dimension or a kind conflict", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
+            }},
+            "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}/values": { "put": {
+                "summary": "Set an attribute's value for one or more elements (ADR-0021)",
+                "security": bearer(),
+                "parameters": [cube_param(), dim_param(), attr_param()],
+                "requestBody": json_body("#/components/schemas/AttributeValuesRequest"),
+                "responses": {
+                    "200": { "description": "The commit version" },
+                    "422": { "description": "Unknown element, kind mismatch, or alias collision", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
             }},
             "/api/v1/cubes/{cube}/cells/read": { "post": {
                 "summary": "Read cell values (consolidation-aware)", "security": bearer(),
@@ -536,6 +578,37 @@ fn document() -> Value {
                         "required": ["coord", "value"] } },
                     "base_version": { "type": "integer", "format": "int64" } },
                     "required": ["writes"] },
+                "NewCubeRequest": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "dimensions": { "type": "array", "items": { "type": "object", "properties": {
+                        "name": { "type": "string" },
+                        "elements": { "type": "array", "items": { "type": "object", "properties": {
+                            "name": { "type": "string" },
+                            "kind": { "type": "string", "enum": ["numeric", "string", "consolidated"] } },
+                            "required": ["name", "kind"] } },
+                        "edges": { "type": "array", "items": { "type": "object", "properties": {
+                            "parent": { "type": "string" }, "child": { "type": "string" },
+                            "weight": { "type": "integer", "format": "int64" } },
+                            "required": ["parent", "child"] } } },
+                        "required": ["name"] } } },
+                    "required": ["name", "dimensions"] },
+                "AddElementsRequest": { "type": "object", "properties": {
+                    "elements": { "type": "array", "items": { "type": "object", "properties": {
+                        "dimension": { "type": "string" }, "name": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["numeric", "string", "consolidated"] } },
+                        "required": ["dimension", "name", "kind"] } },
+                    "edges": { "type": "array", "items": { "type": "object", "properties": {
+                        "dimension": { "type": "string" }, "parent": { "type": "string" },
+                        "child": { "type": "string" }, "weight": { "type": "integer", "format": "int64" } },
+                        "required": ["dimension", "parent", "child"] } } } },
+                "AttributeRequest": { "type": "object", "properties": {
+                    "kind": { "type": "string", "enum": ["text", "numeric", "alias"] } },
+                    "required": ["kind"] },
+                "AttributeValuesRequest": { "type": "object", "properties": {
+                    "values": { "type": "array", "items": { "type": "object", "properties": {
+                        "element": { "type": "string" }, "value": { "type": "string" } },
+                        "required": ["element", "value"] } } },
+                    "required": ["values"] },
                 "SubsetBody": { "type": "object", "properties": {
                     "name": { "type": "string", "description": "Required to create; ignored on replace/preview" },
                     "visibility": { "type": "string", "enum": ["public", "private"] },
@@ -673,6 +746,13 @@ fn dim_param() -> Value {
     })
 }
 
+fn attr_param() -> Value {
+    json!({
+        "name": "attr", "in": "path", "required": true,
+        "schema": { "type": "string" }
+    })
+}
+
 fn name_param() -> Value {
     json!({
         "name": "name", "in": "path", "required": true,
@@ -711,6 +791,9 @@ mod tests {
         "/api/v1/cubes/{cube}/cells/read",
         "/api/v1/cubes/{cube}/cell",
         "/api/v1/cubes/{cube}/cells/batch",
+        "/api/v1/cubes/{cube}/elements",
+        "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}",
+        "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}/values",
         "/api/v1/cubes/{cube}/dimensions/{dim}/subsets",
         "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/preview",
         "/api/v1/cubes/{cube}/dimensions/{dim}/mdx/preview",

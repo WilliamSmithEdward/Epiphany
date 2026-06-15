@@ -35,6 +35,7 @@ mod error;
 mod flow_routes;
 mod job_routes;
 mod login_guard;
+mod model_routes;
 mod openapi;
 mod query_routes;
 mod resolve;
@@ -151,8 +152,24 @@ async fn security_headers(mut response: Response) -> Response {
 pub fn build_router(state: AppState) -> Router {
     // Protected routes require a valid session via the AuthPrincipal extractor.
     let protected = Router::new()
-        .route("/api/v1/cubes", get(list_cubes))
+        .route(
+            "/api/v1/cubes",
+            get(list_cubes).post(model_routes::create_cube),
+        )
         .route("/api/v1/cubes/{cube}", get(routes::get_cube))
+        // Model editing (ADR-0021): add members/edges and define/set attributes.
+        .route(
+            "/api/v1/cubes/{cube}/elements",
+            post(model_routes::add_elements),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}",
+            put(model_routes::define_attribute),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}/values",
+            put(model_routes::set_attribute_values),
+        )
         .route("/api/v1/cubes/{cube}/cells/read", post(routes::read_cells))
         .route("/api/v1/cubes/{cube}/cell", put(routes::write_cell))
         .route(
