@@ -40,6 +40,8 @@ fn broadcast(state: &AppState, cube: &str) {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct JobDto {
+    /// Ignored on `PUT` (the name comes from the path); always set on responses.
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub steps: Vec<String>,

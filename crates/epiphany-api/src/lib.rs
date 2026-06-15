@@ -43,7 +43,7 @@ mod session;
 mod ws;
 
 pub use calc_factory::CalcFactory;
-pub use epiphany_flow::RunLedger;
+pub use epiphany_flow::{RunLedger, RunRecord, RunState};
 pub use error::ApiError;
 pub use scheduler::Scheduler;
 pub use session::SessionStore;
