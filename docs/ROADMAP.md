@@ -338,9 +338,9 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Dimensions, elements (N/C/S) | 1 | [x] |
 | Single hierarchy with alternate rollups, weighted consolidations | 1 | [x] |
 | Element attributes and aliases | 1 | [x] |
-| Model-as-code (canonical text, Git round-trip) | 1+ | [~] |
-| Runtime persistence, crash recovery, full-persist | 1, 8 | [~] |
-| REST API (CRUD, cells, OpenAPI) | 2 | [~] |
+| Model-as-code (canonical text, Git round-trip) | 1+ | [x] |
+| Runtime persistence, crash recovery, full-persist | 1, 8 | [x] |
+| REST API (CRUD, cells, OpenAPI) | 2 | [x] |
 | Atomic multi-cell write (transactional batch) | 2 | [x] |
 | Native auth, users and groups | 2, 7 | [x] |
 | Web pivot grid with write-back | 2 | [x] |
@@ -357,8 +357,8 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Model testing framework (rule and flow unit tests) | 4, 5 | [x] |
 | Sandboxes (what-if) | 6 | [x] |
 | Object and element security | 7 | [x] |
-| Audit / user-action logging | 7, 8 | [~] |
-| Scheduled jobs | 8 | [ ] |
+| Audit / user-action logging | 7, 8 | [x] |
+| Scheduled jobs | 8 | [x] |
 | Web editors (rules, flows, subsets, views) | 3 to 5 | [x] |
 
 ---
@@ -415,8 +415,9 @@ graph LR
 4. **M4, "It calculates"** (end of Phase 4) - **achieved**: rules plus auto-inferred feeds produce correct results on a cross-cube model, with working "explain". The defining milestone. Gated by `epiphany-api/tests/m4_acceptance.rs`.
 5. **M5, "It plans"** (end of Phase 6) - **achieved**: sandboxed what-if recalculates over rules and consolidations without touching base data, then commits or discards. Gated by `epiphany-api/tests/m6_acceptance.rs`.
 6. **M6, "It's multi-user"** (end of Phase 7) - **achieved**: a non-admin sees and edits only permitted cubes and elements (object and element security, including deny-the-rollup), an admin manages access and reviews the audit log from the UI and REST, and audited actions are append-only, deterministic-timestamp, survive a restart, and carry no secrets. Gated by `epiphany-api/tests/m7_acceptance.rs`.
+7. **M7, "It runs unattended"** (end of Phase 8) - **achieved**: a scheduled job runs flows on an interval without a human, recovers cleanly from a kill (a crashed run re-derives as due; scheduled writes survive a restart), keeps an append-only run ledger and a bounded (retained and rotated) audit log, and meets the performance and memory budgets on the representative fixtures. Gated by `epiphany-api/tests/m8_acceptance.rs`.
 
-> Release tags follow phase numbers (`m1`..`m8`), not these demo-milestone labels: Phase 5 (Flows) shipped as tag `m5`, Phase 6 ("It plans") as `m6`, and Phase 7 ("It's multi-user") as `m7`.
+> Release tags follow phase numbers (`m1`..`m8`), not these demo-milestone labels: Phase 5 (Flows) shipped as tag `m5`, Phase 6 ("It plans") as `m6`, Phase 7 ("It's multi-user") as `m7`, and Phase 8 ("It runs unattended") as `m8`.
 
 **Each milestone is gated by an automated, deterministic acceptance suite.** The DoD is executable, not a judgment call. A green suite in CI (deterministic mode) means the milestone is met; red or flaky means it is not done.
 

@@ -16,14 +16,34 @@
 //! is the injected clock value frozen at firing (ADR-0013 decision 0), so the
 //! ledger carries no wall-clock reads of its own.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const RUN_MAGIC: [u8; 6] = *b"EPIRUN";
 const RUN_VERSION: u16 = 1;
 const HEADER_LEN: u64 = 8;
+
+/// How many runs the ledger retains (ADR-0013, Phase 8). The ledger is bounded so
+/// a frequently-firing job cannot grow it without limit: once it holds more than
+/// twice `max_runs` distinct runs (or accumulates superseded state-transition
+/// records), it compacts to the retained set -- the newest `max_runs` runs, plus
+/// each job's latest *successful* run so `last_succeeded_fire` never regresses and
+/// re-fires a job whose history was trimmed. Compaction rewrites the file via a
+/// temp-then-rename, so a crash leaves the prior file intact.
+#[derive(Debug, Clone, Copy)]
+pub struct RunRetention {
+    /// Keep at most this many runs (`0` = unbounded).
+    pub max_runs: usize,
+}
+
+impl Default for RunRetention {
+    /// Unbounded.
+    fn default() -> Self {
+        Self { max_runs: 0 }
+    }
+}
 
 /// The lifecycle state of a run (ADR-0013 decision 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +140,10 @@ pub struct RunRecord {
 #[derive(Debug)]
 pub struct RunLedger {
     file: Option<File>,
+    /// The backing path, kept so the ledger can be compacted in place (`None` for
+    /// an in-memory ledger).
+    path: Option<PathBuf>,
+    policy: RunRetention,
     /// Full append history, in order.
     records: Vec<RunRecord>,
     /// Run id -> index of its latest record in `records`.
@@ -132,6 +156,13 @@ impl RunLedger {
     /// Non-gating: a torn tail is truncated and a missing/corrupt-header file is
     /// re-initialized, never erroring out of startup.
     pub fn open(path: PathBuf) -> io::Result<Self> {
+        Self::open_with_policy(path, RunRetention::default())
+    }
+
+    /// Open the ledger with a retention `policy` (ADR-0013, Phase 8), enforced
+    /// after recovery so reopening with a tighter bound compacts an oversized
+    /// ledger on startup.
+    pub fn open_with_policy(path: PathBuf, policy: RunRetention) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -162,6 +193,8 @@ impl RunLedger {
         };
         let mut ledger = RunLedger {
             file: Some(file),
+            path: Some(path),
+            policy,
             records: Vec::new(),
             latest: HashMap::new(),
         };
@@ -169,6 +202,7 @@ impl RunLedger {
             ledger.index(record);
         }
         ledger.recover_interrupted()?;
+        ledger.enforce_retention()?;
         Ok(ledger)
     }
 
@@ -176,6 +210,8 @@ impl RunLedger {
     pub fn in_memory() -> Self {
         RunLedger {
             file: None,
+            path: None,
+            policy: RunRetention::default(),
             records: Vec::new(),
             latest: HashMap::new(),
         }
@@ -188,13 +224,94 @@ impl RunLedger {
         self.latest.insert(id, self.records.len() - 1);
     }
 
-    /// Append a run record (a new run or a state transition), fsync'd.
+    /// Append a run record (a new run or a state transition), fsync'd. Enforces
+    /// the retention policy afterward (a no-op when unbounded or within bounds).
     pub fn append(&mut self, record: RunRecord) -> io::Result<()> {
         if let Some(file) = &mut self.file {
             file.write_all(&encode(&record))?;
             file.sync_data()?;
         }
         self.index(record);
+        self.enforce_retention()?;
+        Ok(())
+    }
+
+    /// Enforce the retention policy: compact to the retained set when the ledger
+    /// grows past twice the cap in distinct runs, or accumulates many superseded
+    /// state-transition records. Retains the newest `max_runs` runs plus each
+    /// job's latest successful run (so `last_succeeded_fire` never regresses).
+    fn enforce_retention(&mut self) -> io::Result<()> {
+        let max = self.policy.max_runs;
+        if max == 0 {
+            return Ok(());
+        }
+        let distinct = self.latest.len();
+        let over_distinct = distinct >= max.saturating_mul(2);
+        // Many superseded records (each run keeps Queued/Running/terminal): compact
+        // once the history is well past the distinct-run count.
+        let over_history =
+            self.records.len() >= distinct.saturating_mul(2).max(max.saturating_mul(2));
+        if !over_distinct && !over_history {
+            return Ok(());
+        }
+
+        // The latest record of every distinct run.
+        let mut latest: Vec<RunRecord> = self
+            .latest
+            .values()
+            .map(|&i| self.records[i].clone())
+            .collect();
+
+        // Always keep each job's latest *successful* run, so a trimmed history
+        // never makes a job look unfired and re-derive prematurely.
+        let mut keep: HashSet<String> = HashSet::new();
+        let mut best_success: HashMap<(String, String), (u64, String)> = HashMap::new();
+        for r in &latest {
+            if r.is_job && r.state == RunState::Succeeded {
+                let entry = best_success
+                    .entry((r.cube.clone(), r.target.clone()))
+                    .or_insert((0, String::new()));
+                if r.fire_millis >= entry.0 {
+                    *entry = (r.fire_millis, r.id.clone());
+                }
+            }
+        }
+        for (_, id) in best_success.values() {
+            keep.insert(id.clone());
+        }
+        // Plus the newest `max_runs` runs (for the recent-runs query).
+        latest.sort_by(|a, b| {
+            b.fire_millis
+                .cmp(&a.fire_millis)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        for r in latest.iter().take(max) {
+            keep.insert(r.id.clone());
+        }
+
+        // Nothing to drop (only superseded intermediates collapse): still worth a
+        // rewrite if the file holds more than the distinct latest records.
+        let mut retained: Vec<RunRecord> = latest
+            .into_iter()
+            .filter(|r| keep.contains(&r.id))
+            .collect();
+        if retained.len() == self.records.len() {
+            return Ok(());
+        }
+        // Canonical order: oldest fire first, id breaking ties.
+        retained.sort_by(|a, b| {
+            a.fire_millis
+                .cmp(&b.fire_millis)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        if let Some(path) = self.path.clone() {
+            self.file = Some(rewrite_file(&path, &retained)?);
+        }
+        self.records.clear();
+        self.latest.clear();
+        for record in retained {
+            self.index(record);
+        }
         Ok(())
     }
 
@@ -298,6 +415,35 @@ fn header() -> [u8; 8] {
     h[..6].copy_from_slice(&RUN_MAGIC);
     h[6..].copy_from_slice(&RUN_VERSION.to_le_bytes());
     h
+}
+
+/// Rewrite the ledger file to exactly `records` (a compaction), crash-safely:
+/// write a sibling temp file (header + framed records), fsync, rename over the
+/// path, and return a fresh append-positioned handle. A crash before the rename
+/// leaves the original file intact.
+fn rewrite_file(path: &Path, records: &[RunRecord]) -> io::Result<File> {
+    let tmp = path.with_extension("compact");
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        f.write_all(&header())?;
+        for record in records {
+            f.write_all(&encode(record))?;
+        }
+        f.sync_data()?;
+    }
+    fs::rename(&tmp, path)?;
+    let mut f = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    f.seek(SeekFrom::End(0))?;
+    Ok(f)
 }
 
 fn write_str(payload: &mut Vec<u8>, s: &str) {
@@ -511,6 +657,28 @@ mod tests {
         assert_eq!(l.len(), 1);
         assert_eq!(l.get("r1").unwrap().state, RunState::Succeeded);
         assert_eq!(std::fs::metadata(&path).unwrap().len() as usize, intact);
+    }
+
+    #[test]
+    fn retention_bounds_growth_but_keeps_each_jobs_latest_success() {
+        let path = scratch("retain");
+        let policy = RunRetention { max_runs: 4 };
+        let mut l = RunLedger::open_with_policy(path, policy).unwrap();
+        // One early success for job "a", then many runs of job "b" that push past
+        // the cap. Job "a"'s success must be retained so it does not re-fire.
+        l.append(run("a@1", "a", 1, RunState::Succeeded)).unwrap();
+        for i in 0..20 {
+            let id = format!("b@{i}");
+            l.append(run(&id, "b", 100 + i, RunState::Succeeded))
+                .unwrap();
+        }
+        // Bounded near the cap (compaction is amortized at 2x), well under the
+        // unbounded count of 21.
+        assert!(l.len() <= 2 * 4 + 1, "ledger stays bounded: {}", l.len());
+        // Job "a"'s last success is preserved despite the flood of "b" runs.
+        assert_eq!(l.last_succeeded_fire("Sales", "a"), Some(1));
+        // Job "b"'s latest success is the newest.
+        assert_eq!(l.last_succeeded_fire("Sales", "b"), Some(119));
     }
 
     #[test]

@@ -19,11 +19,20 @@ use epiphany_core::Job;
 use epiphany_flow::{due_firings, run_flow, Firing, FlowError, RunRecord, RunState};
 use epiphany_security::{AuditAction, ObjectKind, ObjectRef};
 
-use crate::authz::audit;
+use crate::authz::audit_at;
 use crate::flow_routes::apply_outcome;
 use crate::AppState;
 
 /// The service principal recorded for timer-fired runs (ADR-0013 decision 9).
+///
+/// A scheduled run is a *system* action over an admin/modeler-defined job (a
+/// secured cube object that took cube `Write` to create, enable, or delete), not
+/// a user impersonation, so the reconcile loop does not re-resolve a user's
+/// access per firing -- exactly as a rule or flow, once defined, is evaluated by
+/// the system for everyone. Control over a job is its `enabled` flag and its
+/// lifecycle (both cube-`Write`-gated, ADR-0015 decision 2a): to stop a job, an
+/// admin disables or deletes it. A per-run user-authz model (and whose access it
+/// would check) is deferred with the other scheduler extensions in ADR-0013.
 pub(crate) const SCHEDULER_PRINCIPAL: &str = "scheduler";
 
 /// The reconcile-loop driver over an [`AppState`].
@@ -176,10 +185,11 @@ impl Scheduler {
     }
 
     /// Audit a job firing (ADR-0010): target by identity (`Job` in its cube), no
-    /// secrets. The timestamp is the injected clock, which equals the frozen
-    /// `fire_millis` during a tick.
+    /// secrets, timestamped with the frozen `fire_millis` (never a fresh clock
+    /// read) so the record is reproducible under a `ManualClock` (ADR-0013
+    /// decisions 0 and 9).
     fn audit_job(&self, firing: &Firing, allowed: bool) {
-        audit(
+        audit_at(
             &self.state,
             SCHEDULER_PRINCIPAL,
             AuditAction::JobExec,
@@ -189,6 +199,7 @@ impl Scheduler {
                 &firing.job,
             )),
             allowed,
+            firing.fire_millis,
         );
     }
 

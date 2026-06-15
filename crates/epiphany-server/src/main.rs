@@ -16,7 +16,7 @@ mod ui;
 use std::sync::{Arc, Mutex};
 
 use config::Config;
-use epiphany_api::{build_router, AppState, RunLedger, Scheduler, SessionStore};
+use epiphany_api::{build_router, AppState, RunLedger, RunRetention, Scheduler, SessionStore};
 use epiphany_determinism::SystemClock;
 use epiphany_security::{AuditLog, RetentionPolicy, SecurityStore};
 
@@ -60,7 +60,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // is non-gating and re-records any run in flight at a crash as interrupted,
     // so the reconcile loop re-derives its firing as due.
     let runs_path = config.data_dir.join("server").join("runs.log");
-    let runs = RunLedger::open(runs_path)?;
+    let runs = RunLedger::open_with_policy(
+        runs_path,
+        RunRetention {
+            max_runs: config.run_ledger_max_runs,
+        },
+    )?;
 
     let (events, _) = tokio::sync::broadcast::channel(256);
     // Inject the real MDX evaluator (dynamic subsets) and the rule-aware cell

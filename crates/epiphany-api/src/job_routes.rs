@@ -226,7 +226,13 @@ pub(crate) async fn run_job(
         run_id: run_id.clone(),
         coalesced: false,
     };
-    Scheduler::new(state.clone()).execute(&firing, &auth.principal.username);
+    // The flow engine (boa) is blocking, so run the job off the async worker
+    // threads, mirroring the scheduler loop (ADR-0013 decision 4).
+    let principal = auth.principal.username.clone();
+    let exec_state = state.clone();
+    tokio::task::spawn_blocking(move || Scheduler::new(exec_state).execute(&firing, &principal))
+        .await
+        .map_err(|_| ApiError::internal())?;
     let record = state
         .runs
         .lock()

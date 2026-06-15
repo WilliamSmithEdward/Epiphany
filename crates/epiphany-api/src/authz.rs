@@ -15,9 +15,9 @@ use crate::auth::AuthPrincipal;
 use crate::dto::CoordMap;
 use crate::{ApiError, AppState};
 
-/// Emit one audit record (ADR-0010). Best-effort on the write path: a failed
-/// append is swallowed so it can never fail the request (a full disk must not
-/// lock the server out). The timestamp comes from the injected clock (ADR-0009).
+/// Emit one audit record (ADR-0010) timestamped from the injected clock
+/// (ADR-0009). The request path uses this; the scheduler uses [`audit_at`] with
+/// the frozen fire time instead.
 pub(crate) fn audit(
     state: &AppState,
     actor: &str,
@@ -25,10 +25,26 @@ pub(crate) fn audit(
     obj: Option<&ObjectRef>,
     allowed: bool,
 ) {
-    let ts = state.clock.now_millis();
+    audit_at(state, actor, action, obj, allowed, state.clock.now_millis());
+}
+
+/// Emit one audit record at a caller-supplied timestamp. The reconcile loop
+/// passes the frozen `fire_millis` so a scheduled firing's audit timestamp is the
+/// recorded fire time, never a fresh clock read (ADR-0013 decisions 0 and 9), so
+/// it is reproducible under a `ManualClock`. Best-effort: a failed append is
+/// swallowed so it can never fail the operation (a full disk must not lock the
+/// server out).
+pub(crate) fn audit_at(
+    state: &AppState,
+    actor: &str,
+    action: AuditAction,
+    obj: Option<&ObjectRef>,
+    allowed: bool,
+    timestamp_millis: u64,
+) {
     let (kind, target) = obj.map(audit_ref).unwrap_or_default();
     if let Ok(mut log) = state.audit.lock() {
-        let _ = log.append(ts, actor, action, kind, target, allowed);
+        let _ = log.append(timestamp_millis, actor, action, kind, target, allowed);
     }
 }
 

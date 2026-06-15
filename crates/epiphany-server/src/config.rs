@@ -25,6 +25,9 @@ pub struct Config {
     pub audit_max_records: usize,
     /// The audit log's retention window in milliseconds (`None` = no age limit).
     pub audit_retention_millis: Option<u64>,
+    /// The run ledger's retained-run cap (ADR-0013). Default 50_000; `0` keeps
+    /// everything.
+    pub run_ledger_max_runs: usize,
 }
 
 impl Default for Config {
@@ -38,6 +41,7 @@ impl Default for Config {
             scheduler_tick_millis: 1000,
             audit_max_records: 100_000,
             audit_retention_millis: None,
+            run_ledger_max_runs: 50_000,
         }
     }
 }
@@ -91,6 +95,12 @@ impl Config {
             .filter(|d| *d > 0)
         {
             config.audit_retention_millis = Some(days.saturating_mul(24 * 60 * 60 * 1000));
+        }
+        if let Some(max) = vars
+            .get("EPIPHANY_RUN_LEDGER_MAX_RUNS")
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            config.run_ledger_max_runs = max;
         }
         config
     }
