@@ -16,6 +16,13 @@ use epiphany_core::{Cube, Fixed};
 
 use crate::compiled::{AddrSlot, CCell, CExpr, CompiledArea, CompiledModel, DimPredicate, RuleId};
 use crate::eval::{CalcEngine, CalcError, EvalRegistry};
+use crate::rules::ArithOp;
+
+/// Cap on the cartesian expansion of one consolidated input. Beyond this the
+/// input is conservatively assumed potent (feed the target) rather than fully
+/// enumerated, bounding the cost of `input_potent` on a pathological hierarchy.
+/// Over-feeding is a warning, never an under-feed, so the cap stays sound.
+const INPUT_EXPANSION_CAP: usize = 4096;
 
 /// Approximate bytes a fed cell costs (index slot plus the rule evaluation it
 /// enables), used to estimate the waste of over-feeding (ROADMAP section 8).
@@ -80,11 +87,51 @@ pub struct FeederInference {
     pub opaque: Vec<OpaqueRule>,
 }
 
-/// One analyzable rule: its target leaf coordinates and the same-cube input
-/// cells whose population drives the feed.
+/// One analyzable rule: its target leaf coordinates, the same-cube input cells
+/// whose population drives the feed, and whether the rule has a base
+/// contribution (a term that can be non-zero even when every same-cube input is
+/// zero, so the whole target area must be fed).
 struct Analyzable<'a> {
     targets: Vec<Vec<u32>>,
     inputs: Vec<&'a CCell>,
+    base_potent: bool,
+}
+
+/// Whether `expr` has a *localizable* base contribution: a term that can be
+/// non-zero when every cell it reads is zero, so the rule is non-zero across its
+/// whole target area regardless of which inputs are populated (a non-zero
+/// constant, an attribute, or such a term inside a conditional branch). Such a
+/// rule feeds its entire area. A conservative-but-sound static analysis: it may
+/// answer `true` when the real value happens to be zero (a harmless over-feed),
+/// but never `false` when a constant/attribute term can be non-zero.
+///
+/// Cells are deliberately *not* base contributions: a same-cube cell is zeroed by
+/// definition, and a cross-cube cell is a non-localizable input handled by the
+/// opaque path (a cross-cube-only rule is reported, not fed), per ADR-0005.
+fn base_potent(expr: &CExpr) -> bool {
+    match expr {
+        CExpr::Num(n) => *n != Fixed::ZERO,
+        // An attribute value can be non-zero on its own.
+        CExpr::AttrNum { .. } => true,
+        CExpr::Cell(_) => false,
+        CExpr::Undef => false,
+        CExpr::Neg(e) => base_potent(e),
+        CExpr::Bin { op, left, right } => match op {
+            // A sum/difference is non-zero if either side can be.
+            ArithOp::Add | ArithOp::Sub => base_potent(left) || base_potent(right),
+            // A product is non-zero only if both sides can be.
+            ArithOp::Mul => base_potent(left) && base_potent(right),
+            // A quotient is non-zero only if the numerator can be.
+            ArithOp::Div => base_potent(left),
+        },
+        // The value is one of the branches; the condition does not contribute a
+        // magnitude. A missing else branch is zero.
+        CExpr::If {
+            cond: _,
+            then,
+            otherwise,
+        } => base_potent(then) || otherwise.as_ref().is_some_and(|o| base_potent(o)),
+    }
 }
 
 /// Infer feeders for a cube's compiled rules (ADR-0005).
@@ -97,11 +144,13 @@ struct Analyzable<'a> {
 /// It is a sound over-approximation: it never under-feeds an analyzable rule, and
 /// at worst over-feeds a target whose inputs turn out to be zero (a warning).
 ///
-/// `target_ordinal` is the cube's own ordinal. Cross-cube inputs cannot be
-/// localized from this cube's data, so a rule whose only inputs are cross-cube
-/// (or constant) is reported opaque rather than guessed at. A rule whose area
-/// selects no leaf coordinates is a pure consolidation override and needs no leaf
-/// feeder.
+/// A rule with a base contribution (a non-zero constant or attribute term, see
+/// [`base_potent`]) feeds its whole target area, since it is non-zero everywhere
+/// regardless of input population. `target_ordinal` is the cube's own ordinal;
+/// cross-cube inputs cannot be localized from this cube's data, so a rule whose
+/// only inputs are cross-cube is reported opaque rather than guessed at. A rule
+/// whose area selects no leaf coordinates is a pure consolidation override and
+/// needs no leaf feeder.
 pub fn infer_feeders(cube: &Cube, model: &CompiledModel, target_ordinal: u32) -> FeederInference {
     let mut result = FeederInference::default();
 
@@ -116,17 +165,30 @@ pub fn infer_feeders(cube: &Cube, model: &CompiledModel, target_ordinal: u32) ->
         let mut cells = Vec::new();
         collect_cells(&rule.expr, &mut cells);
         let inputs: Vec<&CCell> = cells
-            .into_iter()
+            .iter()
+            .copied()
             .filter(|c| c.cube == target_ordinal)
             .collect();
-        if inputs.is_empty() {
+        let bp = base_potent(&rule.expr);
+        if bp || !inputs.is_empty() {
+            // Analyzable: a base term feeds the whole area, and/or same-cube inputs
+            // localize the feed via the fixpoint.
+            analyzable.push(Analyzable {
+                targets,
+                inputs,
+                base_potent: bp,
+            });
+        } else if !cells.is_empty() {
+            // The only inputs are cross-cube (or otherwise not same-cube): the feed
+            // cannot be localized from this cube. Report it rather than guess
+            // (ADR-0005), so it can be manually fed or diagnosed.
             result.opaque.push(OpaqueRule {
                 rule: RuleId(i),
-                reason: "no same-cube input to localize feeders".to_string(),
+                reason: "only cross-cube inputs; feeders cannot be localized".to_string(),
             });
-            continue;
         }
-        analyzable.push(Analyzable { targets, inputs });
+        // Otherwise the rule has no cells and no base term: identically zero over
+        // its area, so there is nothing to feed and nothing to report.
     }
 
     // Fixpoint: a leaf is "potent" (potentially non-zero) if it is stored or has
@@ -142,10 +204,13 @@ pub fn infer_feeders(cube: &Cube, model: &CompiledModel, target_ordinal: u32) ->
                 if result.index.contains(target) {
                     continue;
                 }
-                if a.inputs
-                    .iter()
-                    .any(|cell| input_potent(cube, cell, target, &potent))
-                {
+                // A base-potent rule is non-zero across its whole area, so feed
+                // every target; otherwise feed where a same-cube input is potent.
+                let feed = a.base_potent
+                    || a.inputs
+                        .iter()
+                        .any(|cell| input_potent(cube, cell, target, &potent));
+                if feed {
                     result.index.insert(target);
                     potent.insert(target.clone());
                     changed = true;
@@ -304,6 +369,9 @@ fn input_potent(cube: &Cube, cell: &CCell, target: &[u32], potent: &BTreeSet<Vec
     for (d, slot) in cell.addr.iter().enumerate() {
         let element = match slot {
             AddrSlot::Pinned(pin) => *pin,
+            // `cell.addr` is in the referenced cube's dimension order; for a
+            // same-cube reference (the only kind that uses `FromTarget`) that
+            // matches the target's order, so the copied member is `target[d]`.
             AddrSlot::FromTarget(_) => target[d],
         };
         // Expand to the contributing leaves under `element` (a leaf yields itself;
@@ -316,6 +384,12 @@ fn input_potent(cube: &Cube, cell: &CCell, target: &[u32], potent: &BTreeSet<Vec
             return false;
         }
         per_dim.push(leaves);
+    }
+    // Bound the work on a pathological hierarchy: a huge consolidated input is
+    // conservatively treated as potent (a sound over-feed) rather than enumerated.
+    let total: usize = per_dim.iter().map(|v| v.len()).product();
+    if total > INPUT_EXPANSION_CAP {
+        return true;
     }
     cartesian_any(&per_dim, |coord| potent.contains(coord))
 }
@@ -458,9 +532,10 @@ mod tests {
     }
 
     #[test]
-    fn rule_with_no_same_cube_input_is_opaque() {
+    fn constant_rule_is_base_potent_and_feeds_its_whole_area() {
         let cube = sales_cube();
-        // A constant rule has no input to localize feeders.
+        // A non-zero constant is non-zero across the whole target area, so every
+        // target leaf is fed (and the rule is not opaque: it is fully analyzed).
         let model = compile(
             &cube,
             &SingleCube::new(&cube),
@@ -469,8 +544,66 @@ mod tests {
         )
         .unwrap();
         let inf = infer_feeders(&cube, &model, 0);
-        assert_eq!(inf.opaque.len(), 1);
-        assert!(inf.index.is_empty());
+        assert!(inf.opaque.is_empty());
+        let margin = cube.dimension(1).resolve("Margin").unwrap();
+        let (n, s) = (
+            cube.dimension(0).resolve("North").unwrap(),
+            cube.dimension(0).resolve("South").unwrap(),
+        );
+        assert!(inf.index.contains(&[n, margin]));
+        assert!(inf.index.contains(&[s, margin]));
+    }
+
+    #[test]
+    fn additive_constant_feeds_targets_with_empty_inputs() {
+        // Margin = Sales + 5 is non-zero even where Sales is empty (it is 5), so
+        // both regions must be fed -- the base-potent case the per-input fixpoint
+        // alone would under-feed.
+        let mut cube = sales_cube();
+        let n = cube.dimension(0).resolve("North").unwrap();
+        let sales = cube.dimension(1).resolve("Sales").unwrap();
+        cube.set_leaf(&[n, sales], Fixed::from(100)).unwrap();
+        let model = compile(
+            &cube,
+            &SingleCube::new(&cube),
+            &parse("['Measure':'Margin'] = value['Measure':'Sales'] + 5;").unwrap(),
+            1,
+        )
+        .unwrap();
+        let inf = infer_feeders(&cube, &model, 0);
+        let margin = cube.dimension(1).resolve("Margin").unwrap();
+        let s = cube.dimension(0).resolve("South").unwrap();
+        assert!(inf.index.contains(&[n, margin]));
+        assert!(
+            inf.index.contains(&[s, margin]),
+            "South is fed even though its Sales input is empty (Margin = 5 there)"
+        );
+    }
+
+    #[test]
+    fn conditional_with_constant_branch_is_base_potent() {
+        // The else branch is a non-zero constant, so the rule can be non-zero
+        // anywhere: every target is fed regardless of the input population.
+        let mut cube = sales_cube();
+        let n = cube.dimension(0).resolve("North").unwrap();
+        let sales = cube.dimension(1).resolve("Sales").unwrap();
+        cube.set_leaf(&[n, sales], Fixed::from(100)).unwrap();
+        let model = compile(
+            &cube,
+            &SingleCube::new(&cube),
+            &parse(
+                "['Measure':'Margin'] = if value['Measure':'Sales'] > 100 \
+                 then value['Measure':'Sales'] else 50;",
+            )
+            .unwrap(),
+            1,
+        )
+        .unwrap();
+        let inf = infer_feeders(&cube, &model, 0);
+        let margin = cube.dimension(1).resolve("Margin").unwrap();
+        let s = cube.dimension(0).resolve("South").unwrap();
+        assert!(inf.index.contains(&[n, margin]));
+        assert!(inf.index.contains(&[s, margin]));
     }
 
     /// Build the Margin model populated for the given regions, returning the

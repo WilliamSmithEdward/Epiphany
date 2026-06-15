@@ -47,9 +47,17 @@ round feeds a rule that reads it. This makes inference complete for the patterns
 the original cut missed: chained rules (a rule reading another rule's derived
 output), consolidated inputs, and multi-element target areas with a pinned input
 (each target leaf is considered independently, so a pinned input no longer forces
-a single-member target). It remains a sound over-approximation: it never
-under-feeds an analyzable rule, and at worst over-feeds a target whose inputs turn
-out to be zero (a warning). The fed set is a sorted `BTreeSet`, the target and
+a single-member target). A rule with a **base contribution** (a term that can be
+non-zero when every cell it reads is zero: a non-zero constant or attribute,
+including such a term inside a conditional branch, decided by a sound static
+analysis of the formula) feeds its *whole* target area, since it is non-zero
+there regardless of which inputs are populated; this closes the
+constant/conditional under-feed. Cross-cube inputs remain non-localizable and a
+cross-cube-only rule is still reported opaque (decision 3), unchanged. It remains a sound over-approximation: it never under-feeds an
+analyzable rule, and at worst over-feeds a target whose inputs turn out to be
+zero (a warning). One consolidated input's leaf expansion is bounded by a cap,
+beyond which it is conservatively assumed potent, so inference cost stays bounded
+on a pathological hierarchy. The fed set is a sorted `BTreeSet`, the target and
 input expansions are walked in index order, and the fixpoint only ever adds
 feeders over a finite leaf space, so the result is deterministic and terminates.
 
