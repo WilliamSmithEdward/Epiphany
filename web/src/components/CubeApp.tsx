@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { connectWs, listCubes, logout, type CubeSummary } from '../api/client'
 import FlowsWorkspace from './FlowsWorkspace'
 import PivotGrid from './PivotGrid'
@@ -6,10 +6,39 @@ import RulesWorkspace from './RulesWorkspace'
 import SandboxBar from './SandboxBar'
 import SecurityWorkspace from './SecurityWorkspace'
 import ViewWorkspace from './ViewWorkspace'
-import ThemeToggle from '../ui/ThemeToggle'
+import {
+  Badge,
+  Button,
+  CommandPalette,
+  EmptyState,
+  Menu,
+  MenuItem,
+  MenuLabel,
+  MenuSeparator,
+  Select,
+  ThemeToggle,
+  Tooltip,
+  useCommandPalette,
+  type Command,
+} from '../ui'
 
-type Mode = 'grid' | 'views' | 'rules' | 'flows'
-type View = 'cubes' | 'admin'
+type Section = 'data' | 'views' | 'rules' | 'flows' | 'admin'
+
+interface NavItem {
+  id: Section
+  label: string
+  glyph: string
+  group: string
+  admin?: boolean
+}
+
+const NAV: NavItem[] = [
+  { id: 'data', label: 'Data', glyph: '▦', group: 'Workspace' },
+  { id: 'views', label: 'Views', glyph: '◫', group: 'Workspace' },
+  { id: 'rules', label: 'Rules', glyph: 'Σ', group: 'Workspace' },
+  { id: 'flows', label: 'Flows', glyph: '⇄', group: 'Workspace' },
+  { id: 'admin', label: 'Security & audit', glyph: '⚿', group: 'Administration', admin: true },
+]
 
 export default function CubeApp({
   username,
@@ -22,13 +51,11 @@ export default function CubeApp({
 }) {
   const [cubes, setCubes] = useState<CubeSummary[]>([])
   const [selected, setSelected] = useState<string | null>(null)
+  const [section, setSection] = useState<Section>('data')
   const [error, setError] = useState<string | null>(null)
   const [live, setLive] = useState(false)
   const [reload, setReload] = useState(0)
-  const [mode, setMode] = useState<Mode>('grid')
-  // The server-global admin console is a top-level view, separate from the
-  // per-cube workspaces (it is not scoped to a cube). Admins only.
-  const [view, setView] = useState<View>('cubes')
+  const palette = useCommandPalette()
 
   useEffect(() => {
     listCubes()
@@ -58,98 +85,173 @@ export default function CubeApp({
       .finally(onLogout)
   }, [onLogout])
 
-  // Stable identity: an inline callback here would change every render and make
-  // SandboxBar's reset effect (and its load->apply->onChange chain) re-fire in a
-  // loop. Memoizing it keeps that effect keyed to cube changes only.
   const bumpReload = useCallback(() => setReload((n) => n + 1), [])
 
+  const visibleNav = NAV.filter((n) => !n.admin || isAdmin)
+
+  // Command palette: switch cube, jump to a section, sign out.
+  const commands = useMemo<Command[]>(() => {
+    const list: Command[] = []
+    for (const cube of cubes) {
+      list.push({
+        id: `cube:${cube.name}`,
+        label: `Open cube: ${cube.name}`,
+        group: 'Cube',
+        keywords: 'switch select',
+        run: () => {
+          setSelected(cube.name)
+          if (section === 'admin') setSection('data')
+        },
+      })
+    }
+    for (const n of visibleNav) {
+      list.push({
+        id: `go:${n.id}`,
+        label: `Go to ${n.label}`,
+        group: 'Navigate',
+        run: () => setSection(n.id),
+      })
+    }
+    list.push({ id: 'signout', label: 'Sign out', group: 'Account', run: signOut })
+    return list
+    // visibleNav is derived from isAdmin (stable); cubes/section drive the set.
+  }, [cubes, section, signOut, visibleNav])
+
+  const sectionLabel = NAV.find((n) => n.id === section)?.label ?? ''
+
   return (
-    <div className="app">
-      <header className="topbar">
-        <strong>Epiphany</strong>
-        <span
-          className={`dot ${live ? 'on' : 'off'}`}
-          title={live ? 'Live updates on' : 'Offline'}
-        />
-        {isAdmin ? (
-          <span className="modes">
-            <button
-              className={view === 'cubes' ? 'active' : ''}
-              onClick={() => setView('cubes')}
-            >
-              Cubes
-            </button>
-            <button
-              className={view === 'admin' ? 'active' : ''}
-              onClick={() => setView('admin')}
-            >
-              Admin
-            </button>
+    <div className="shell">
+      <header className="appbar">
+        <div className="appbar__brand">
+          <span className="appbar__logo" aria-hidden="true">
+            ◆
           </span>
-        ) : null}
-        <span className="spacer" />
+          <span className="appbar__name">Epiphany</span>
+        </div>
+        <nav className="crumbs" aria-label="Breadcrumb">
+          {section === 'admin' ? (
+            <span className="crumbs__seg">Administration</span>
+          ) : selected ? (
+            <span className="crumbs__seg">{selected}</span>
+          ) : null}
+          <span className="crumbs__sep" aria-hidden="true">
+            ›
+          </span>
+          <span className="crumbs__seg crumbs__seg--current">{sectionLabel}</span>
+        </nav>
+        <span className="appbar__spacer" />
+        <Button
+          variant="ghost"
+          size="sm"
+          className="appbar__search"
+          onClick={() => palette.setOpen(true)}
+        >
+          Search<kbd className="kbd">⌘K</kbd>
+        </Button>
+        <Tooltip content={live ? 'Live updates connected' : 'Offline - reconnecting'}>
+          <span>
+            <Badge tone={live ? 'success' : 'neutral'} dot>
+              {live ? 'Live' : 'Offline'}
+            </Badge>
+          </span>
+        </Tooltip>
         <ThemeToggle />
-        <span className="user">{username}</span>
-        <button onClick={signOut}>Sign out</button>
+        <Menu
+          trigger={
+            <button type="button" className="appbar__user">
+              <span className="appbar__avatar" aria-hidden="true">
+                {username.slice(0, 1).toUpperCase()}
+              </span>
+              {username}
+            </button>
+          }
+        >
+          <MenuLabel>Signed in as {username}</MenuLabel>
+          {isAdmin ? <MenuLabel>Administrator</MenuLabel> : null}
+          <MenuSeparator />
+          <MenuItem danger onSelect={signOut}>
+            Sign out
+          </MenuItem>
+        </Menu>
       </header>
-      {view === 'admin' && isAdmin ? (
-        <main className="content">
-          <SecurityWorkspace />
-        </main>
-      ) : (
-        <div className="body">
-          <nav className="sidebar">
-            <h2>Cubes</h2>
-            <ul>
-              {cubes.map((cube) => (
-                <li key={cube.name}>
+
+      <div className="shell__body">
+        <nav className="nav" aria-label="Sections">
+          <div className="nav__cube">
+            <span className="nav__cube-label">Cube</span>
+            {cubes.length > 0 ? (
+              <Select
+                value={selected ?? undefined}
+                onValueChange={(v) => {
+                  setSelected(v)
+                  if (section === 'admin') setSection('data')
+                }}
+                options={cubes.map((c) => ({ value: c.name, label: c.name }))}
+                ariaLabel="Select cube"
+                className="nav__cube-select"
+              />
+            ) : (
+              <span className="muted">No cubes</span>
+            )}
+          </div>
+          {['Workspace', 'Administration'].map((group) => {
+            const items = visibleNav.filter((n) => n.group === group)
+            if (items.length === 0) return null
+            return (
+              <div className="nav__group" key={group}>
+                <div className="nav__group-title">{group}</div>
+                {items.map((n) => (
                   <button
-                    className={cube.name === selected ? 'active' : ''}
-                    onClick={() => setSelected(cube.name)}
+                    key={n.id}
+                    type="button"
+                    className={section === n.id ? 'nav__item is-active' : 'nav__item'}
+                    onClick={() => setSection(n.id)}
                   >
-                    {cube.name} <small>{cube.cell_count} cells</small>
+                    <span className="nav__glyph" aria-hidden="true">
+                      {n.glyph}
+                    </span>
+                    {n.label}
                   </button>
-                </li>
-              ))}
-            </ul>
-          </nav>
-          <main className="content">
-            {error ? <p className="error">{error}</p> : null}
-            {selected ? (
+                ))}
+              </div>
+            )
+          })}
+        </nav>
+
+        <main className="content">
+          {error ? <p className="error">{error}</p> : null}
+          {section === 'admin' && isAdmin ? (
+            <SecurityWorkspace />
+          ) : selected ? (
             <>
-              {mode === 'grid' || mode === 'views' ? (
+              {section === 'data' || section === 'views' ? (
                 <SandboxBar key={selected} cube={selected} onChange={bumpReload} />
               ) : null}
-              <div className="modes">
-                <button className={mode === 'grid' ? 'active' : ''} onClick={() => setMode('grid')}>
-                  Grid
-                </button>
-                <button className={mode === 'views' ? 'active' : ''} onClick={() => setMode('views')}>
-                  Views
-                </button>
-                <button className={mode === 'rules' ? 'active' : ''} onClick={() => setMode('rules')}>
-                  Rules
-                </button>
-                <button className={mode === 'flows' ? 'active' : ''} onClick={() => setMode('flows')}>
-                  Flows
-                </button>
-              </div>
-              {mode === 'grid' ? (
+              {section === 'data' ? (
                 <PivotGrid cube={selected} reloadSignal={reload} />
-              ) : mode === 'views' ? (
+              ) : section === 'views' ? (
                 <ViewWorkspace cube={selected} reloadSignal={reload} />
-              ) : mode === 'rules' ? (
+              ) : section === 'rules' ? (
                 <RulesWorkspace cube={selected} reloadSignal={reload} />
-                ) : (
+              ) : (
                 <FlowsWorkspace cube={selected} reloadSignal={reload} />
               )}
-              </>
-            ) : (
-              <p>No cube selected.</p>
-            )}
-          </main>
-        </div>
-      )}
+            </>
+          ) : (
+            <EmptyState icon="▦" title="No cube selected">
+              {cubes.length === 0
+                ? 'No cubes are available yet. Define a model or load the demo data to get started.'
+                : 'Pick a cube from the sidebar to begin.'}
+            </EmptyState>
+          )}
+        </main>
+      </div>
+
+      <CommandPalette
+        open={palette.open}
+        onOpenChange={palette.setOpen}
+        commands={commands}
+      />
     </div>
   )
 }
