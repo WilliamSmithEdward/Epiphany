@@ -35,6 +35,7 @@ pub fn parse(src: &str) -> Result<SetExpr, MdxParseError> {
         toks,
         pos: 0,
         end: src.len(),
+        depth: 0,
     };
     let expr = parser.parse_set()?;
     if parser.pos < parser.toks.len() {
@@ -46,10 +47,20 @@ pub fn parse(src: &str) -> Result<SetExpr, MdxParseError> {
     Ok(expr)
 }
 
+/// Maximum nesting depth for set and predicate expressions. A stack-exhaustion
+/// guard, not a real limit: hand-authored queries nest a handful of levels deep,
+/// far below this. Deliberately a constant (not env-configurable) since it is a
+/// fixed safety backstop, not an operational tuning knob.
+const MAX_PARSE_DEPTH: usize = 128;
+
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
     end: usize,
+    /// Current recursion depth across `parse_set`/`parse_predicate`, bracketed by
+    /// [`enter`](Parser::enter)/[`leave`](Parser::leave) so siblings (a wide set
+    /// literal) stay shallow and only true nesting accumulates.
+    depth: usize,
 }
 
 impl Parser {
@@ -112,9 +123,35 @@ impl Parser {
         }
     }
 
+    // --- recursion-depth guard (stack-exhaustion backstop) ---
+
+    /// Enter one level of recursion; error if it would exceed [`MAX_PARSE_DEPTH`].
+    fn enter(&mut self) -> Result<(), MdxParseError> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            return Err(MdxParseError::new(
+                ParseErrorKind::TooDeep,
+                self.here_span(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Leave one level of recursion (bracketed with [`enter`](Parser::enter)).
+    fn leave(&mut self) {
+        self.depth -= 1;
+    }
+
     // --- set expressions ---
 
     fn parse_set(&mut self) -> Result<SetExpr, MdxParseError> {
+        self.enter()?;
+        let result = self.parse_set_inner();
+        self.leave();
+        result
+    }
+
+    fn parse_set_inner(&mut self) -> Result<SetExpr, MdxParseError> {
         let mut left = self.parse_primary()?;
         while self.peek() == Some(&Tok::Star) {
             self.bump();
@@ -299,6 +336,13 @@ impl Parser {
     }
 
     fn parse_not(&mut self) -> Result<Predicate, MdxParseError> {
+        self.enter()?;
+        let result = self.parse_not_inner();
+        self.leave();
+        result
+    }
+
+    fn parse_not_inner(&mut self) -> Result<Predicate, MdxParseError> {
         if self.peek_keyword("not") {
             self.bump();
             Ok(Predicate::Not(Box::new(self.parse_not()?)))
@@ -605,5 +649,15 @@ mod tests {
     fn parse_is_deterministic() {
         let src = "Filter(Crossjoin([A].Members, [B].[T].Children), Properties(\"x\") <= 3)";
         assert_eq!(parse(src).unwrap(), parse(src).unwrap());
+    }
+
+    #[test]
+    fn deeply_nested_sets_are_rejected_not_overflowed() {
+        // A moderate nesting parses fine; an extreme one is a clean TooDeep error
+        // (a stack-exhaustion guard), never a crash.
+        let ok = format!("{}{}", "{".repeat(100), "}".repeat(100));
+        assert!(parse(&ok).is_ok());
+        let deep = format!("{}{}", "{".repeat(300), "}".repeat(300));
+        assert_eq!(parse(&deep).unwrap_err().kind, ParseErrorKind::TooDeep);
     }
 }

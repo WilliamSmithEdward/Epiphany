@@ -46,6 +46,9 @@ pub enum ParseErrorKind {
     DuplicateDimension(String),
     /// A function call named a word that is not in the allow-list.
     UnknownFunction(String),
+    /// The expression nests deeper than the parser allows (a stack-exhaustion
+    /// guard, not a real limit on any hand-authored rule).
+    TooDeep,
 }
 
 impl fmt::Display for RuleParseError {
@@ -65,6 +68,7 @@ impl fmt::Display for RuleParseError {
                 write!(f, "dimension '{d}' appears more than once in the area")
             }
             ParseErrorKind::UnknownFunction(name) => write!(f, "unknown function '{name}'"),
+            ParseErrorKind::TooDeep => write!(f, "expression nests too deeply"),
         }
     }
 }

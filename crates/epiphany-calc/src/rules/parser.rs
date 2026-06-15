@@ -43,6 +43,7 @@ pub fn parse(src: &str) -> Result<RuleDoc, RuleParseError> {
         toks,
         pos: 0,
         end: src.len(),
+        depth: 0,
     };
     let mut rules = Vec::new();
     while parser.pos < parser.toks.len() {
@@ -58,6 +59,7 @@ pub fn parse_rule(src: &str) -> Result<Rule, RuleParseError> {
         toks,
         pos: 0,
         end: src.len(),
+        depth: 0,
     };
     let rule = parser.parse_rule()?;
     if parser.pos < parser.toks.len() {
@@ -69,13 +71,39 @@ pub fn parse_rule(src: &str) -> Result<Rule, RuleParseError> {
     Ok(rule)
 }
 
+/// Maximum nesting depth for expressions and conditions. A stack-exhaustion
+/// guard, not a real limit: hand-authored rules nest a handful of levels deep,
+/// far below this. A fixed safety backstop, not an operational tuning knob.
+const MAX_PARSE_DEPTH: usize = 128;
+
 struct Parser {
     toks: Vec<Token>,
     pos: usize,
     end: usize,
+    /// Current recursion depth, bracketed by [`enter`](Parser::enter)/[`leave`](Parser::leave)
+    /// across `parse_expr`/`parse_unary`/`parse_not` so siblings stay shallow and
+    /// only true nesting accumulates.
+    depth: usize,
 }
 
 impl Parser {
+    /// Enter one level of recursion; error if it would exceed [`MAX_PARSE_DEPTH`].
+    fn enter(&mut self) -> Result<(), RuleParseError> {
+        self.depth += 1;
+        if self.depth > MAX_PARSE_DEPTH {
+            return Err(RuleParseError::new(
+                ParseErrorKind::TooDeep,
+                self.here_span(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Leave one level of recursion (bracketed with [`enter`](Parser::enter)).
+    fn leave(&mut self) {
+        self.depth -= 1;
+    }
+
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos).map(|t| &t.tok)
     }
@@ -293,6 +321,9 @@ impl Parser {
     // --- value expressions ---
 
     fn parse_expr(&mut self) -> Result<Expr, RuleParseError> {
+        // Depth is bracketed in parse_unary (every expression flows through it,
+        // covering both parenthesis nesting and unary chains) and in the condition
+        // parse_not, so parse_expr itself does not double-count.
         self.parse_add()
     }
 
@@ -335,6 +366,13 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Result<Expr, RuleParseError> {
+        self.enter()?;
+        let result = self.parse_unary_inner();
+        self.leave();
+        result
+    }
+
+    fn parse_unary_inner(&mut self) -> Result<Expr, RuleParseError> {
         if self.peek() == Some(&Tok::Minus) {
             self.bump();
             Ok(Expr::Neg(Box::new(self.parse_unary()?)))
@@ -557,6 +595,13 @@ impl Parser {
     }
 
     fn parse_not(&mut self) -> Result<Condition, RuleParseError> {
+        self.enter()?;
+        let result = self.parse_not_inner();
+        self.leave();
+        result
+    }
+
+    fn parse_not_inner(&mut self) -> Result<Condition, RuleParseError> {
         if self.eat_word("not") {
             Ok(Condition::Not(Box::new(self.parse_not()?)))
         } else {
@@ -575,6 +620,16 @@ mod tests {
 
     fn canon(src: &str) -> String {
         parse(src).unwrap().to_string()
+    }
+
+    #[test]
+    fn deeply_nested_expr_is_rejected_not_overflowed() {
+        // Moderate parenthesis nesting parses; an extreme depth is a clean
+        // TooDeep error (a stack-exhaustion guard), never a crash.
+        let ok = format!("['m':'a'] = {}0{};", "(".repeat(100), ")".repeat(100));
+        assert!(parse(&ok).is_ok());
+        let deep = format!("['m':'a'] = {}0{};", "(".repeat(300), ")".repeat(300));
+        assert_eq!(parse(&deep).unwrap_err().kind, ParseErrorKind::TooDeep);
     }
 
     #[test]

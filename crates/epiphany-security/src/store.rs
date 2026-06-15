@@ -118,7 +118,17 @@ pub struct SecurityStore {
     grants: BTreeMap<(Scope, ObjectKind), AccessList>,
     path: Option<PathBuf>,
     fast_kdf: bool,
+    /// A precomputed Argon2 hash of a fixed non-secret string, verified on the
+    /// login path when a username does NOT exist so an unknown user costs the same
+    /// one Argon2 verify as a known user with a wrong password — closing the
+    /// user-enumeration timing channel (ADR-0017). Computed at the store's own KDF
+    /// cost so the dummy verify matches the real verify in both test and prod.
+    dummy_hash: String,
 }
+
+/// The fixed input hashed into [`SecurityStore::dummy_hash`]. Not a secret and
+/// never a valid password (it is never inserted as a user's hash).
+const DUMMY_HASH_INPUT: &str = "epiphany::no-such-user::timing-equalizer";
 
 impl SecurityStore {
     /// Open the store at `path`, or create it on first run with an `admin` user.
@@ -143,6 +153,7 @@ impl SecurityStore {
             grants: BTreeMap::new(),
             path: Some(path),
             fast_kdf,
+            dummy_hash: hash_password(DUMMY_HASH_INPUT, fast_kdf)?,
         };
         store.groups.insert(ADMINS_GROUP.to_string());
         let password = admin_override
@@ -165,6 +176,7 @@ impl SecurityStore {
             grants: BTreeMap::new(),
             path: None,
             fast_kdf: true,
+            dummy_hash: hash_password(DUMMY_HASH_INPUT, true).expect("dummy hash"),
         };
         store
             .insert_user(username, password, is_admin, false, &[])
@@ -207,9 +219,16 @@ impl SecurityStore {
         self.save()
     }
 
-    /// Verify credentials, returning the principal on success.
+    /// Verify credentials, returning the principal on success. When the username
+    /// does not exist, a verify against [`dummy_hash`](Self::dummy_hash) still
+    /// runs so an unknown user costs the same one Argon2 verify as a known user
+    /// with a wrong password (no user-enumeration timing channel, ADR-0017).
     pub fn authenticate(&self, username: &str, password: &str) -> Option<Principal> {
-        let user = self.users.get(username)?;
+        let Some(user) = self.users.get(username) else {
+            // Equalize timing: run one verify on the not-found path, then deny.
+            let _ = verify_password(password, &self.dummy_hash);
+            return None;
+        };
         verify_password(password, &user.password_hash).then(|| Principal {
             username: username.to_string(),
             is_admin: user.is_admin,
@@ -672,6 +691,7 @@ impl SecurityStore {
             grants,
             path: None,
             fast_kdf,
+            dummy_hash: hash_password(DUMMY_HASH_INPUT, fast_kdf)?,
         })
     }
 

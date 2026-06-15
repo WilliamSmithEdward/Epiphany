@@ -45,6 +45,9 @@ pub enum ParseErrorKind {
     UnexpectedChar(char),
     /// Tokens remained after an otherwise complete set expression.
     TrailingInput,
+    /// The expression nests deeper than the parser allows (a stack-exhaustion
+    /// guard, not a real limit on any hand-authored query).
+    TooDeep,
 }
 
 impl fmt::Display for MdxParseError {
@@ -60,6 +63,7 @@ impl fmt::Display for MdxParseError {
             ParseErrorKind::UnterminatedString => write!(f, "unterminated string"),
             ParseErrorKind::UnexpectedChar(c) => write!(f, "unexpected character `{c}`"),
             ParseErrorKind::TrailingInput => write!(f, "unexpected trailing input"),
+            ParseErrorKind::TooDeep => write!(f, "expression nests too deeply"),
         }
     }
 }
