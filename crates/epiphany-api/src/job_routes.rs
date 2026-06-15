@@ -227,6 +227,20 @@ pub(crate) async fn run_job(
         Some(&cube),
         AccessLevel::Write,
     )?;
+    // A manual kick runs the job's flow steps immediately as the caller, so the
+    // caller must also be able to make the changes those flows could make (a kick
+    // is never a privilege-escalation path; ADR-0023). The scheduler applies the
+    // steps internally, so we require, conservatively, the writes any flow effect
+    // could need on this cube: cell write and structure (dimension) edit. The
+    // unattended scheduler remains a trusted system actor (ADR-0013).
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Dimension,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     {
         let snap = snapshot(&state, &cube)?;
         if snap.model().job(&name).is_none() {

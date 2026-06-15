@@ -86,6 +86,16 @@ fn app(tag: &str) -> Router {
         AccessLevel::Write,
     )
     .unwrap();
+    // Job author: Job:Write but no cube/dimension write, so they may define jobs
+    // but cannot manually kick one into writing the cube.
+    sec.create_user("jobber", "pw", false).unwrap();
+    sec.set_grant(
+        &Subject::User("jobber".into()),
+        Scope::Global,
+        ObjectKind::Job,
+        AccessLevel::Write,
+    )
+    .unwrap();
 
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())).with_cubes_dir(dir),
@@ -335,6 +345,63 @@ async fn flow_run_cannot_exceed_runners_data_access() {
             "/api/v1/cubes/Sales/flows/wflow/run",
             &power,
             Some(json!({ "input": "" }))
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn manual_job_kick_cannot_exceed_runners_access() {
+    let app = app("jobkick");
+    let admin = login(&app, "admin").await;
+    let jobber = login(&app, "jobber").await; // Job:Write only, no cube write
+
+    // Admin defines a flow and a job that runs it.
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            "/api/v1/cubes/Sales/flows/load",
+            &admin,
+            Some(json!({ "name": "load", "source": FLOW_SRC }))
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            "/api/v1/cubes/Sales/jobs/nightly",
+            &admin,
+            Some(json!({ "name": "nightly", "steps": ["load"], "every_millis": 3_600_000, "enabled": false })),
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    // The job author can edit jobs (Job:Write) but a manual kick is denied: it
+    // would run flows as them, and they lack cube/dimension write.
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/api/v1/cubes/Sales/jobs/nightly/run",
+            &jobber,
+            None
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+    // Admin can kick it.
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/api/v1/cubes/Sales/jobs/nightly/run",
+            &admin,
+            None
         )
         .await,
         StatusCode::OK
