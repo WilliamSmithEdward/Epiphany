@@ -681,6 +681,66 @@ export async function runFlowTests(cube: string): Promise<TestReportDto> {
   return request<TestReportDto>('POST', `${flowBase(cube)}/tests/run`)
 }
 
+// ---- scheduled jobs + run history (Phase 8, ADR-0013) ----
+
+/** A scheduled job: an ordered list of flow steps run on a fixed interval. */
+export interface JobDto {
+  name: string
+  /** Flow names, run in order each firing. */
+  steps: string[]
+  /** Interval between firings, in milliseconds. */
+  every_millis: number
+  enabled: boolean
+}
+
+/** One execution of a job or flow, as recorded in the durable run ledger. */
+export interface RunDto {
+  id: string
+  cube: string
+  /** The job name (when is_job) or flow name. */
+  target: string
+  is_job: boolean
+  fire_millis: number
+  state: 'pending' | 'running' | 'succeeded' | 'failed' | string
+  rows_read: number
+  cells_written: number
+  elements_added: number
+  error?: string
+  principal: string
+}
+
+function jobBase(cube: string): string {
+  return `/api/v1/cubes/${encodeURIComponent(cube)}/jobs`
+}
+
+export async function listJobs(cube: string): Promise<JobDto[]> {
+  const result = await request<{ jobs: JobDto[] }>('GET', jobBase(cube))
+  return result.jobs
+}
+
+/** Create or replace a job. Each step must name an existing flow of the cube. */
+export async function putJob(cube: string, job: JobDto): Promise<JobDto> {
+  return request<JobDto>('PUT', `${jobBase(cube)}/${encodeURIComponent(job.name)}`, job)
+}
+
+export async function deleteJob(cube: string, name: string): Promise<void> {
+  await request<void>('DELETE', `${jobBase(cube)}/${encodeURIComponent(name)}`)
+}
+
+/** Run a job now (manual kick); resolves with the resulting run record. */
+export async function runJob(cube: string, name: string): Promise<RunDto> {
+  return request<RunDto>('POST', `${jobBase(cube)}/${encodeURIComponent(name)}/run`)
+}
+
+/** Recent runs for the cube, newest first. */
+export async function listRuns(cube: string): Promise<RunDto[]> {
+  const result = await request<{ runs: RunDto[] }>(
+    'GET',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/runs`,
+  )
+  return result.runs
+}
+
 // ---- security administration (Phase 7, ADR-0015 + ADR-0010, admin only) ----
 
 export type AccessLevel = 'none' | 'read' | 'write' | 'admin'

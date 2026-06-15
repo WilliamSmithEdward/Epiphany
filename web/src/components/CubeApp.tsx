@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { connectWs, listCubes, logout, type CubeSummary } from '../api/client'
 import FlowsWorkspace from './FlowsWorkspace'
+import JobsWorkspace from './JobsWorkspace'
 import PivotGrid from './PivotGrid'
 import RulesWorkspace from './RulesWorkspace'
 import SandboxBar from './SandboxBar'
@@ -22,7 +23,7 @@ import {
   type Command,
 } from '../ui'
 
-type Section = 'data' | 'views' | 'rules' | 'flows' | 'admin'
+type Section = 'data' | 'views' | 'rules' | 'flows' | 'jobs' | 'admin'
 
 interface NavItem {
   id: Section
@@ -37,6 +38,7 @@ const NAV: NavItem[] = [
   { id: 'views', label: 'Views', glyph: '◫', group: 'Workspace' },
   { id: 'rules', label: 'Rules', glyph: 'Σ', group: 'Workspace' },
   { id: 'flows', label: 'Flows', glyph: '⇄', group: 'Workspace' },
+  { id: 'jobs', label: 'Schedules', glyph: '⏱', group: 'Workspace' },
   { id: 'admin', label: 'Security & audit', glyph: '⚿', group: 'Administration', admin: true },
 ]
 
@@ -233,8 +235,10 @@ export default function CubeApp({
                 <ViewWorkspace cube={selected} reloadSignal={reload} />
               ) : section === 'rules' ? (
                 <RulesWorkspace cube={selected} reloadSignal={reload} />
-              ) : (
+              ) : section === 'flows' ? (
                 <FlowsWorkspace cube={selected} reloadSignal={reload} />
+              ) : (
+                <JobsWorkspace cube={selected} reloadSignal={reload} />
               )}
             </>
           ) : (
