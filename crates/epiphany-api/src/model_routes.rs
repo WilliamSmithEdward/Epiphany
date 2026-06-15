@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use epiphany_core::{
     AttributeKind, AttributeValue, DimensionDef, EdgeSpec, ElementKind, ElementSpec, Fixed,
 };
+use epiphany_engine::{CubeDimensionSpec, DimensionId};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
@@ -39,20 +40,25 @@ struct NewDimensionDto {
     elements: Vec<ElementMemberDto>,
     #[serde(default)]
     edges: Vec<LocalEdgeDto>,
+    /// When set, this dimension is a reference to a registered shared dimension
+    /// (ADR-0024); the cube materializes a copy of it and `name`/`elements`/`edges`
+    /// are ignored.
+    #[serde(default, rename = "ref")]
+    reference: Option<u64>,
 }
 
 #[derive(Deserialize)]
-struct ElementMemberDto {
-    name: String,
-    kind: String,
+pub(crate) struct ElementMemberDto {
+    pub(crate) name: String,
+    pub(crate) kind: String,
 }
 
 #[derive(Deserialize)]
-struct LocalEdgeDto {
-    parent: String,
-    child: String,
+pub(crate) struct LocalEdgeDto {
+    pub(crate) parent: String,
+    pub(crate) child: String,
     #[serde(default = "one")]
-    weight: i64,
+    pub(crate) weight: i64,
 }
 
 #[derive(Deserialize)]
@@ -118,7 +124,7 @@ fn broadcast(state: &AppState, cube: &str) {
     }
 }
 
-fn parse_element_kind(s: &str) -> Result<ElementKind, ApiError> {
+pub(crate) fn parse_element_kind(s: &str) -> Result<ElementKind, ApiError> {
     match s {
         "numeric" | "leaf" => Ok(ElementKind::Leaf),
         "string" => Ok(ElementKind::String),
@@ -144,7 +150,7 @@ fn parse_attribute_kind(s: &str) -> Result<AttributeKind, ApiError> {
 
 /// A cube/dimension/element/attribute name must be a non-empty, trimmed token
 /// without the separators the model-as-code format and coordinates rely on.
-fn validate_name(kind: &str, name: &str) -> Result<(), ApiError> {
+pub(crate) fn validate_name(kind: &str, name: &str) -> Result<(), ApiError> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err(ApiError::unprocessable(
@@ -170,6 +176,31 @@ fn validate_name(kind: &str, name: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
+/// Validate and assemble a [`DimensionDef`] from request DTOs (name, members,
+/// edges). Shared by inline cube creation and shared-dimension registration so
+/// both apply identical name and kind validation.
+pub(crate) fn build_dimension_def(
+    name: &str,
+    elements: &[ElementMemberDto],
+    edges: &[LocalEdgeDto],
+) -> Result<DimensionDef, ApiError> {
+    validate_name("dimension", name)?;
+    let mut els = Vec::with_capacity(elements.len());
+    for e in elements {
+        validate_name("element", &e.name)?;
+        els.push((e.name.clone(), parse_element_kind(&e.kind)?));
+    }
+    let edges = edges
+        .iter()
+        .map(|edge| (edge.parent.clone(), edge.child.clone(), edge.weight))
+        .collect();
+    Ok(DimensionDef {
+        name: name.to_string(),
+        elements: els,
+        edges,
+    })
+}
+
 // ---- handlers ----
 
 /// `POST /api/v1/cubes` -> create a new cube with its dimensions and initial
@@ -189,29 +220,23 @@ pub(crate) async fn create_cube(
         ));
     }
 
+    // Each dimension is either a reference to a registered shared dimension
+    // (materialized at create time, ADR-0024) or an inline definition.
     let mut dims = Vec::with_capacity(body.dimensions.len());
     for d in &body.dimensions {
-        validate_name("dimension", &d.name)?;
-        let mut elements = Vec::with_capacity(d.elements.len());
-        for e in &d.elements {
-            validate_name("element", &e.name)?;
-            elements.push((e.name.clone(), parse_element_kind(&e.kind)?));
+        match d.reference {
+            Some(id) => dims.push(CubeDimensionSpec::Ref(DimensionId(id))),
+            None => dims.push(CubeDimensionSpec::Inline(build_dimension_def(
+                &d.name,
+                &d.elements,
+                &d.edges,
+            )?)),
         }
-        let edges = d
-            .edges
-            .iter()
-            .map(|edge| (edge.parent.clone(), edge.child.clone(), edge.weight))
-            .collect();
-        dims.push(DimensionDef {
-            name: d.name.clone(),
-            elements,
-            edges,
-        });
     }
 
     let outcome = state
         .engine
-        .create_cube(&body.name, &dims)
+        .create_cube_with_refs(&body.name, &dims)
         .map_err(map_batch_error)?;
     audit(
         &state,
@@ -262,6 +287,25 @@ pub(crate) async fn add_elements(
             weight: edge.weight,
         })
         .collect();
+
+    // Divergence guard (ADR-0024 v1): a cube-local edit to a dimension that is a
+    // materialized reference to a shared dimension would let one cube's copy
+    // drift from the library and every other referencing cube. Block it and
+    // direct the caller to grow the shared dimension instead, which fans out to
+    // all referencing cubes.
+    for dim in elements
+        .iter()
+        .map(|e| e.dimension.as_str())
+        .chain(edges.iter().map(|e| e.dimension.as_str()))
+    {
+        if let Some(id) = state.engine.dimension_backing(&cube, dim) {
+            return Err(ApiError::conflict(format!(
+                "dimension '{dim}' in cube '{cube}' is a shared dimension (#{}); edit it in the \
+                 dimension library so every referencing cube stays consistent",
+                id.0
+            )));
+        }
+    }
 
     let (outcome, added) = state
         .engine

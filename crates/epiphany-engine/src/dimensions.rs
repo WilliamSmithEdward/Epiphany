@@ -166,6 +166,13 @@ impl DimensionRegistry {
         self.refs.entry(id).or_default();
     }
 
+    /// Remove a shared dimension and its reference set (callers must verify it is
+    /// unreferenced first; cubes keep their own materialized copies).
+    pub fn remove(&mut self, id: DimensionId) {
+        self.by_id.remove(&id);
+        self.refs.remove(&id);
+    }
+
     /// Record that `cube` references `id`.
     pub fn attach(&mut self, id: DimensionId, cube: &str) {
         self.refs.entry(id).or_default().insert(cube.to_string());

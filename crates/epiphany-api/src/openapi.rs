@@ -85,6 +85,46 @@ fn document() -> Value {
                 "parameters": [cube_param()],
                 "responses": ok("The cube detail")
             }},
+            "/api/v1/dimensions": {
+                "get": {
+                    "summary": "List the shared dimension library (ADR-0024)", "security": bearer(),
+                    "responses": ok("The registered shared dimensions")
+                },
+                "post": {
+                    "summary": "Register a reusable shared dimension (needs global Dimension Write; ADR-0024)",
+                    "security": bearer(),
+                    "requestBody": json_body("#/components/schemas/NewSharedDimensionRequest"),
+                    "responses": {
+                        "200": { "description": "The new dimension's id and generation" },
+                        "422": { "description": "Invalid structure (bad name, kind conflict, cycle, ...)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                    }
+                }
+            },
+            "/api/v1/dimensions/{id}": {
+                "get": {
+                    "summary": "A shared dimension's full definition", "security": bearer(),
+                    "parameters": [id_param()],
+                    "responses": ok("The shared dimension")
+                },
+                "delete": {
+                    "summary": "Delete an unreferenced shared dimension (ADR-0024)", "security": bearer(),
+                    "parameters": [id_param()],
+                    "responses": {
+                        "200": { "description": "Deleted" },
+                        "409": { "description": "Still referenced by one or more cubes", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                    }
+                }
+            },
+            "/api/v1/dimensions/{id}/elements": { "post": {
+                "summary": "Append members/edges to a shared dimension; fans out to every referencing cube (ADR-0024)",
+                "security": bearer(),
+                "parameters": [id_param()],
+                "requestBody": json_body("#/components/schemas/GrowDimensionRequest"),
+                "responses": {
+                    "200": { "description": "The new generation and the cubes the change fanned out to" },
+                    "422": { "description": "Kind conflict, non-consolidated parent, or cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
+            }},
             "/api/v1/cubes/{cube}/elements": { "post": {
                 "summary": "Add elements and consolidation edges to existing dimensions (ADR-0021)",
                 "security": bearer(),
@@ -595,6 +635,7 @@ fn document() -> Value {
                     "name": { "type": "string" },
                     "dimensions": { "type": "array", "items": { "type": "object", "properties": {
                         "name": { "type": "string" },
+                        "ref": { "type": "integer", "format": "int64", "description": "Reference a registered shared dimension by id; when set, name/elements/edges are ignored and a copy is materialized (ADR-0024)" },
                         "elements": { "type": "array", "items": { "type": "object", "properties": {
                             "name": { "type": "string" },
                             "kind": { "type": "string", "enum": ["numeric", "string", "consolidated"] } },
@@ -605,6 +646,26 @@ fn document() -> Value {
                             "required": ["parent", "child"] } } },
                         "required": ["name"] } } },
                     "required": ["name", "dimensions"] },
+                "NewSharedDimensionRequest": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "elements": { "type": "array", "items": { "type": "object", "properties": {
+                        "name": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["numeric", "string", "consolidated"] } },
+                        "required": ["name", "kind"] } },
+                    "edges": { "type": "array", "items": { "type": "object", "properties": {
+                        "parent": { "type": "string" }, "child": { "type": "string" },
+                        "weight": { "type": "integer", "format": "int64" } },
+                        "required": ["parent", "child"] } } },
+                    "required": ["name"] },
+                "GrowDimensionRequest": { "type": "object", "properties": {
+                    "elements": { "type": "array", "items": { "type": "object", "properties": {
+                        "name": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["numeric", "string", "consolidated"] } },
+                        "required": ["name", "kind"] } },
+                    "edges": { "type": "array", "items": { "type": "object", "properties": {
+                        "parent": { "type": "string" }, "child": { "type": "string" },
+                        "weight": { "type": "integer", "format": "int64" } },
+                        "required": ["parent", "child"] } } } },
                 "AddElementsRequest": { "type": "object", "properties": {
                     "elements": { "type": "array", "items": { "type": "object", "properties": {
                         "dimension": { "type": "string" }, "name": { "type": "string" },
@@ -809,6 +870,9 @@ mod tests {
         "/api/v1/auth/password",
         "/api/v1/cubes",
         "/api/v1/cubes/{cube}",
+        "/api/v1/dimensions",
+        "/api/v1/dimensions/{id}",
+        "/api/v1/dimensions/{id}/elements",
         "/api/v1/cubes/{cube}/cells/read",
         "/api/v1/cubes/{cube}/cell",
         "/api/v1/cubes/{cube}/cells/batch",

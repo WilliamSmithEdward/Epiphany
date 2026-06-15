@@ -30,6 +30,7 @@ mod auth;
 mod authz;
 mod calc_factory;
 mod connection_routes;
+mod dimension_routes;
 mod dto;
 mod error;
 mod flow_routes;
@@ -157,6 +158,20 @@ pub fn build_router(state: AppState) -> Router {
             get(list_cubes).post(model_routes::create_cube),
         )
         .route("/api/v1/cubes/{cube}", get(routes::get_cube))
+        // Shared dimension library (ADR-0024): reusable dimensions referenced by
+        // cubes; growing one fans out to every cube that references it.
+        .route(
+            "/api/v1/dimensions",
+            get(dimension_routes::list_dimensions).post(dimension_routes::register_dimension),
+        )
+        .route(
+            "/api/v1/dimensions/{id}",
+            get(dimension_routes::get_dimension).delete(dimension_routes::delete_dimension),
+        )
+        .route(
+            "/api/v1/dimensions/{id}/elements",
+            post(dimension_routes::grow_dimension),
+        )
         // Model editing (ADR-0021): add members/edges and define/set attributes.
         .route(
             "/api/v1/cubes/{cube}/elements",

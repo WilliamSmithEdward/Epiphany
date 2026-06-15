@@ -90,6 +90,42 @@ impl std::fmt::Display for BatchError {
 
 impl std::error::Error for BatchError {}
 
+/// One dimension of a cube being created: either an inline definition or a
+/// reference to a registered shared dimension materialized at create time
+/// (ADR-0024 v1).
+#[derive(Debug, Clone)]
+pub enum CubeDimensionSpec {
+    /// A cube-local dimension defined inline.
+    Inline(DimensionDef),
+    /// A reference to a registered shared dimension, by id.
+    Ref(DimensionId),
+}
+
+/// Why a shared-dimension library operation failed.
+#[derive(Debug)]
+pub enum DimensionError {
+    /// No registered dimension by that id.
+    Unknown(DimensionId),
+    /// The dimension is still referenced by these cubes, so it cannot be deleted.
+    Referenced(Vec<String>),
+}
+
+impl std::fmt::Display for DimensionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DimensionError::Unknown(id) => write!(f, "unknown shared dimension #{}", id.0),
+            DimensionError::Referenced(cubes) => write!(
+                f,
+                "shared dimension is referenced by {} cube(s): {}",
+                cubes.len(),
+                cubes.join(", ")
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DimensionError {}
+
 /// Flatten a `DimensionDef` into the `ElementSpec`/`EdgeSpec` lists `define_elements`
 /// expects, stamping each with the dimension's name (ADR-0024 fan-out/reconcile).
 fn def_to_specs(def: &DimensionDef) -> (Vec<ElementSpec>, Vec<EdgeSpec>) {
@@ -343,6 +379,18 @@ impl Engine {
         id
     }
 
+    /// Build a shared dimension from a [`DimensionDef`] through the same validated
+    /// element/edge path used to grow one (kind conflicts, parent-must-be-
+    /// consolidated, edge-weight conflicts, no cycles), then register it. A
+    /// rejected definition returns the model error without touching the registry.
+    pub fn register_dimension_def(&self, def: &DimensionDef) -> Result<DimensionId, BatchError> {
+        let (elements, edges) = def_to_specs(def);
+        let built = SharedDimension::new(DimensionId(0), Dimension::new(&def.name))
+            .grown(&elements, &edges)
+            .map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
+        Ok(self.register_dimension(built.dimension))
+    }
+
     /// Record that `cube` references shared dimension `id` (ADR-0024 v1): the cube
     /// has materialized a copy of it, and a later grow fans out to the cube.
     pub fn attach_dimension(&self, id: DimensionId, cube: &str) {
@@ -439,6 +487,104 @@ impl Engine {
             }
         }
         Ok(generation)
+    }
+
+    /// Create a cube whose dimensions mix inline definitions and references to
+    /// registered shared dimensions (ADR-0024 v1). Each [`CubeDimensionSpec::Ref`]
+    /// is materialized from the registry at its current generation, and the new
+    /// cube is recorded as a referrer so a later [`grow_dimension`](Self::grow_dimension)
+    /// fans out to it. Atomic against a concurrent grow: it holds `dim_topology`
+    /// across the materialize, the create, and the reference attach. An unknown
+    /// referenced id (or any cube-build/registration error) leaves the registry
+    /// untouched.
+    pub fn create_cube_with_refs(
+        &self,
+        name: &str,
+        dims: &[CubeDimensionSpec],
+    ) -> Result<CommitOutcome, BatchError> {
+        let _topo = self
+            .dim_topology
+            .lock()
+            .expect("dim_topology mutex poisoned");
+        let registry = self.dimensions.load_full();
+
+        // Resolve every reference to a materialized def before creating anything,
+        // so an unknown id fails the whole create with the registry untouched.
+        let mut defs = Vec::with_capacity(dims.len());
+        let mut refs = Vec::new();
+        for spec in dims {
+            match spec {
+                CubeDimensionSpec::Inline(def) => defs.push(def.clone()),
+                CubeDimensionSpec::Ref(id) => {
+                    let shared = registry.get(*id).ok_or_else(|| {
+                        BatchError::Invalid(QueryError::Model(ModelError::UnknownDimension {
+                            cube: name.to_string(),
+                            dimension: format!("#{}", id.0),
+                        }))
+                    })?;
+                    defs.push(shared.to_dimension_def());
+                    refs.push(*id);
+                }
+            }
+        }
+
+        // create_cube takes `topology` (order: dim_topology -> topology, never the
+        // reverse), validates, persists, and publishes the cube.
+        let outcome = self.create_cube(name, &defs)?;
+
+        // Record the cube as a referrer of each shared dimension it materialized.
+        if !refs.is_empty() {
+            let mut next = (**self.dimensions.load()).clone();
+            for id in &refs {
+                next.attach(*id, name);
+            }
+            self.dimensions.store(Arc::new(next));
+            self.persist_registry();
+        }
+        Ok(outcome)
+    }
+
+    /// Delete a shared dimension from the registry. Fail-closed: a dimension still
+    /// referenced by any cube cannot be deleted (the cubes keep their materialized
+    /// copies; only the library entry would vanish). Holds `dim_topology` so the
+    /// reference check and removal are atomic against a concurrent attach.
+    pub fn delete_dimension(&self, id: DimensionId) -> Result<(), DimensionError> {
+        let _topo = self
+            .dim_topology
+            .lock()
+            .expect("dim_topology mutex poisoned");
+        let registry = self.dimensions.load();
+        if registry.get(id).is_none() {
+            return Err(DimensionError::Unknown(id));
+        }
+        let referencing = registry.referencing(id);
+        if !referencing.is_empty() {
+            return Err(DimensionError::Referenced(referencing));
+        }
+        let mut next = (**registry).clone();
+        next.remove(id);
+        self.dimensions.store(Arc::new(next));
+        self.persist_registry();
+        Ok(())
+    }
+
+    /// If `cube`'s dimension named `dim_name` is a materialized reference to a
+    /// registered shared dimension, return that dimension's id (ADR-0024 v1). A
+    /// cube has at most one dimension of a given name, so the (cube, name) pair
+    /// resolves to at most one backing shared dimension. Used to block cube-local
+    /// edits to a shared dimension (they must go through the library so every
+    /// referencing cube stays consistent).
+    pub fn dimension_backing(&self, cube: &str, dim_name: &str) -> Option<DimensionId> {
+        let registry = self.dimensions.load();
+        registry.all().into_iter().find_map(|shared| {
+            if shared.dimension.name() == dim_name
+                && registry.referencing(shared.id).iter().any(|c| c == cube)
+            {
+                Some(shared.id)
+            } else {
+                None
+            }
+        })
     }
 
     /// The cube names, in deterministic sorted order.
