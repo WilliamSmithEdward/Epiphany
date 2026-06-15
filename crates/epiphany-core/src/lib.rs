@@ -19,7 +19,7 @@ mod query;
 mod text;
 mod value;
 
-pub use cube::{Coord, Cube, EdgeSpec, ElementSpec};
+pub use cube::{Coord, Cube, DimensionDef, EdgeSpec, ElementSpec};
 pub use dimension::{AttributeDef, AttributeKind, AttributeValue, Dimension, Element, ElementKind};
 pub use element_mask::ElementMask;
 pub use error::ModelError;

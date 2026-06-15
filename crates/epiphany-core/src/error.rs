@@ -41,6 +41,11 @@ pub enum ModelError {
         dimension: String,
         attribute: String,
     },
+    /// An attribute was re-declared with a different kind.
+    AttributeKindConflict {
+        dimension: String,
+        attribute: String,
+    },
     /// Two elements were given the same alias within one dimension.
     AliasConflict { dimension: String, alias: String },
     /// Attempted to write a numeric value to a string-typed leaf.
@@ -49,6 +54,8 @@ pub enum ModelError {
     StringCellRequiresStringElement { cube: String },
     /// A schema change named a dimension the cube does not have.
     UnknownDimension { cube: String, dimension: String },
+    /// A new cube declared the same dimension name more than once.
+    DuplicateDimension { dimension: String },
     /// A schema change re-declared an existing element with a different kind.
     ElementKindConflict { dimension: String, element: String },
     /// A schema change re-declared an existing edge with a different weight.
@@ -110,6 +117,13 @@ impl fmt::Display for ModelError {
                 f,
                 "value for attribute '{attribute}' on dimension '{dimension}' does not match its kind"
             ),
+            ModelError::AttributeKindConflict {
+                dimension,
+                attribute,
+            } => write!(
+                f,
+                "attribute '{attribute}' already exists on dimension '{dimension}' with a different kind"
+            ),
             ModelError::AliasConflict { dimension, alias } => write!(
                 f,
                 "alias '{alias}' is assigned to more than one element in dimension '{dimension}'"
@@ -125,6 +139,10 @@ impl fmt::Display for ModelError {
             ModelError::UnknownDimension { cube, dimension } => write!(
                 f,
                 "cube '{cube}' has no dimension '{dimension}'"
+            ),
+            ModelError::DuplicateDimension { dimension } => write!(
+                f,
+                "dimension '{dimension}' is declared more than once"
             ),
             ModelError::ElementKindConflict { dimension, element } => write!(
                 f,

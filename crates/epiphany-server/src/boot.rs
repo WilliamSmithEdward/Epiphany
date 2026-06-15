@@ -40,7 +40,9 @@ pub fn load_or_init(data_dir: &Path) -> Result<Engine, Box<dyn std::error::Error
         tracing::info!("materialized the bundled demo model");
     }
 
-    Ok(Engine::from_stores(stores, Arc::new(IdGen::default())))
+    // Tell the engine where to create new cube stores so runtime cube creation
+    // (ADR-0021) persists under the same layout it boots from.
+    Ok(Engine::from_stores(stores, Arc::new(IdGen::default())).with_cubes_dir(cubes_dir))
 }
 
 #[cfg(test)]

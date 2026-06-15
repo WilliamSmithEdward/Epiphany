@@ -23,9 +23,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use epiphany_core::{
-    validate_subset, validate_view, Connection, Cube, EdgeSpec, ElementSpec, Fixed, Flow, FlowTest,
-    Job, LoadError, Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox, SaveError, Subset,
-    View,
+    validate_subset, validate_view, AttributeKind, AttributeValue, Connection, Cube, EdgeSpec,
+    ElementSpec, Fixed, Flow, FlowTest, Job, LoadError, Model, ModelError, QueryError, RuleSet,
+    RuleTest, Sandbox, SaveError, Subset, View,
 };
 
 use crate::wal::{self, Record};
@@ -599,6 +599,35 @@ impl Store {
         let added = self.model.cube.extend_schema(elements, edges)?;
         self.checkpoint()?;
         Ok(added)
+    }
+
+    /// Define an attribute on a dimension (ADR-0021), then checkpoint. Idempotent
+    /// for the same kind; re-declaring with a different kind is a conflict and
+    /// leaves the model and snapshot untouched.
+    pub fn define_attribute(
+        &mut self,
+        dimension: &str,
+        name: &str,
+        kind: AttributeKind,
+    ) -> Result<(), PersistError> {
+        self.model.cube.define_attribute(dimension, name, kind)?;
+        self.checkpoint()
+    }
+
+    /// Set an attribute's value for one or more elements (ADR-0021), then
+    /// checkpoint. The core operation is transactional, so a rejected value
+    /// (unknown element, kind mismatch, alias collision) leaves the model and
+    /// snapshot untouched.
+    pub fn set_attribute_values(
+        &mut self,
+        dimension: &str,
+        attribute: &str,
+        values: &[(String, AttributeValue)],
+    ) -> Result<(), PersistError> {
+        self.model
+            .cube
+            .set_attribute_values(dimension, attribute, values)?;
+        self.checkpoint()
     }
 
     /// Flush and fsync the WAL. Useful when [`set_sync`](Self::set_sync) is off.

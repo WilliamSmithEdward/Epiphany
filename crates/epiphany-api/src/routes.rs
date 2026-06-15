@@ -291,6 +291,10 @@ pub(crate) fn map_batch_error(error: BatchError) -> ApiError {
         // A structurally invalid definition carries a typed QueryError with its
         // own status and code (404 for a missing object, 422 otherwise).
         BatchError::Invalid(e) => ApiError::from(e),
+        BatchError::AlreadyExists(name) => {
+            ApiError::conflict(format!("cube '{name}' already exists"))
+        }
+        BatchError::Unsupported(what) => ApiError::unprocessable("UNSUPPORTED", what),
         BatchError::Persist(_) => ApiError::internal(),
     }
 }

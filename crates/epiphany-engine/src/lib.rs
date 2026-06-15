@@ -15,12 +15,14 @@
 //! live cube keeps its packed layout (ADR-0006).
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use epiphany_core::{
-    CellResolver, Connection, Cube, EdgeSpec, ElementMask, ElementSpec, Fixed, Flow, FlowTest, Job,
-    Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox, Subset, View,
+    AttributeKind, AttributeValue, CellResolver, Connection, Cube, DimensionDef, EdgeSpec,
+    ElementMask, ElementSpec, Fixed, Flow, FlowTest, Job, Model, ModelError, QueryError, RuleSet,
+    RuleTest, Sandbox, Subset, View,
 };
 use epiphany_determinism::IdGen;
 use epiphany_persist::{PersistError, Store};
@@ -54,6 +56,11 @@ pub enum BatchError {
     Rejected { index: usize, source: ModelError },
     /// A subset/view definition was structurally invalid; nothing was changed.
     Invalid(QueryError),
+    /// A create named a cube that already exists (ADR-0021); nothing was changed.
+    AlreadyExists(String),
+    /// The operation is not available on this engine (e.g. cube creation when no
+    /// on-disk root was configured); nothing was changed.
+    Unsupported(String),
     /// Durably logging the batch failed.
     Persist(PersistError),
 }
@@ -70,6 +77,8 @@ impl std::fmt::Display for BatchError {
                 write!(f, "batch write {index} rejected: {source}")
             }
             BatchError::Invalid(e) => write!(f, "invalid definition: {e}"),
+            BatchError::AlreadyExists(name) => write!(f, "cube '{name}' already exists"),
+            BatchError::Unsupported(what) => write!(f, "operation not supported: {what}"),
             BatchError::Persist(e) => write!(f, "could not persist batch: {e}"),
         }
     }
@@ -151,10 +160,21 @@ struct CubeState {
 /// The engine: a set of named, durably-backed cubes with snapshot-isolation reads
 /// and atomic batch commits. Cheap to clone (shares one inner state) and
 /// `Send + Sync` for sharing across request handlers.
+///
+/// The cube *set* is itself an immutable `BTreeMap` behind an `ArcSwap`
+/// (ADR-0021 extends ADR-0001): reads do one lock-free atomic load, and creating
+/// a cube swaps in a copy-on-write map under the coarse `topology` lock without
+/// blocking reads or per-cube commits.
 #[derive(Clone)]
 pub struct Engine {
-    cubes: Arc<BTreeMap<String, CubeState>>,
+    cubes: Arc<ArcSwap<BTreeMap<String, Arc<CubeState>>>>,
     ids: Arc<IdGen>,
+    /// On-disk root (`<data_dir>/cubes`) for new cube stores. `None` disables
+    /// cube creation (e.g. embedded/test engines built without a directory).
+    cubes_dir: Option<PathBuf>,
+    /// Serializes cube create/registration so concurrent creates cannot lose a
+    /// cube. Per-cube commits never take this lock.
+    topology: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -169,40 +189,56 @@ impl Engine {
     /// Build an engine from already-opened stores, sharing one id generator so
     /// commit versions are globally ordered across cubes.
     pub fn from_stores(stores: BTreeMap<String, Store>, ids: Arc<IdGen>) -> Self {
-        let cubes = stores
+        let cubes: BTreeMap<String, Arc<CubeState>> = stores
             .into_iter()
             .map(|(name, store)| {
                 let published = ArcSwap::from_pointee(Published {
                     version: 0,
                     model: store.model().clone(),
                 });
-                let state = CubeState {
+                let state = Arc::new(CubeState {
                     writer: Mutex::new(Writer { store, version: 0 }),
                     published,
-                };
+                });
                 (name, state)
             })
             .collect();
         Engine {
-            cubes: Arc::new(cubes),
+            cubes: Arc::new(ArcSwap::from_pointee(cubes)),
             ids,
+            cubes_dir: None,
+            topology: Arc::new(Mutex::new(())),
         }
+    }
+
+    /// Enable runtime cube creation by telling the engine where to create new
+    /// cube stores on disk (ADR-0021). The directory matches the boot layout
+    /// (`<data_dir>/cubes/<name>/`), so a created cube reloads on restart.
+    pub fn with_cubes_dir(mut self, cubes_dir: impl Into<PathBuf>) -> Self {
+        self.cubes_dir = Some(cubes_dir.into());
+        self
+    }
+
+    /// Look up a cube's shared state, cloning the `Arc` so callers can drop the
+    /// map guard before doing work (and so per-cube commits never pin the map).
+    fn state(&self, cube: &str) -> Option<Arc<CubeState>> {
+        self.cubes.load().get(cube).cloned()
     }
 
     /// The cube names, in deterministic sorted order.
     pub fn cube_names(&self) -> Vec<String> {
-        self.cubes.keys().cloned().collect()
+        self.cubes.load().keys().cloned().collect()
     }
 
     /// Whether a cube exists.
     pub fn has_cube(&self, cube: &str) -> bool {
-        self.cubes.contains_key(cube)
+        self.cubes.load().contains_key(cube)
     }
 
     /// Take a lock-free read snapshot of a cube. Never blocks and is never blocked
     /// by writers; the returned snapshot is a consistent whole-cube version.
     pub fn snapshot(&self, cube: &str) -> Option<ReadSnapshot> {
-        let state = self.cubes.get(cube)?;
+        let state = self.state(cube)?;
         Some(ReadSnapshot {
             inner: state.published.load_full(),
         })
@@ -210,7 +246,7 @@ impl Engine {
 
     /// The current committed version of a cube.
     pub fn version(&self, cube: &str) -> Option<Version> {
-        self.cubes.get(cube).map(|s| s.published.load().version)
+        self.state(cube).map(|s| s.published.load().version)
     }
 
     /// Apply a batch of writes atomically. With `base = Some(v)` the commit
@@ -225,8 +261,7 @@ impl Engine {
         writes: &[CellWrite],
     ) -> Result<CommitOutcome, BatchError> {
         let state = self
-            .cubes
-            .get(cube)
+            .state(cube)
             .ok_or_else(|| BatchError::UnknownCube(cube.to_string()))?;
         let mut writer = state.writer.lock().expect("writer mutex poisoned");
 
@@ -585,6 +620,84 @@ impl Engine {
         self.define_with(cube, base, |store| store.extend_schema(elements, edges))
     }
 
+    /// Define an attribute on a dimension (ADR-0021) and publish a new version.
+    /// Idempotent for the same kind; a different kind is a conflict
+    /// ([`BatchError::Invalid`]) and changes nothing.
+    pub fn define_attribute(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        dimension: &str,
+        name: &str,
+        kind: AttributeKind,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            store.define_attribute(dimension, name, kind)
+        })
+    }
+
+    /// Set an attribute's value for one or more elements by name (ADR-0021) and
+    /// publish a new version. Transactional: a rejected value (unknown element,
+    /// kind mismatch, alias collision) returns [`BatchError::Invalid`] and changes
+    /// nothing.
+    pub fn set_attribute_values(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        dimension: &str,
+        attribute: &str,
+        values: &[(String, AttributeValue)],
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define(cube, base, |store| {
+            store.set_attribute_values(dimension, attribute, values)
+        })
+    }
+
+    /// Create a brand-new cube from dimension definitions (ADR-0021), persist it
+    /// on disk, and register it in the live cube set. Requires the engine to have
+    /// an on-disk root ([`with_cubes_dir`](Self::with_cubes_dir)); otherwise
+    /// returns [`BatchError::Unsupported`]. A duplicate name returns
+    /// [`BatchError::AlreadyExists`]; an invalid structure returns
+    /// [`BatchError::Invalid`]. On success the new cube is durable and visible to
+    /// readers, and existing cubes are untouched.
+    pub fn create_cube(
+        &self,
+        name: &str,
+        dims: &[DimensionDef],
+    ) -> Result<CommitOutcome, BatchError> {
+        let cubes_dir = self.cubes_dir.clone().ok_or_else(|| {
+            BatchError::Unsupported("cube creation is not enabled on this server".to_string())
+        })?;
+
+        // Build and validate the cube before taking any lock or touching disk.
+        let cube =
+            Cube::build(name, dims).map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
+
+        // Serialize registration so two concurrent creates cannot lose a cube.
+        let _topo = self.topology.lock().expect("topology mutex poisoned");
+        if self.cubes.load().contains_key(name) {
+            return Err(BatchError::AlreadyExists(name.to_string()));
+        }
+
+        // Persist on disk in the boot layout so the cube reloads on restart.
+        let store = Store::create(cubes_dir.join(name), cube).map_err(BatchError::Persist)?;
+        let version = self.ids.next_id();
+        let state = Arc::new(CubeState {
+            published: ArcSwap::from_pointee(Published {
+                version,
+                model: store.model().clone(),
+            }),
+            writer: Mutex::new(Writer { store, version }),
+        });
+
+        // Copy-on-write swap: clone the map (Arc values are cheap to clone), add
+        // the new cube, and publish atomically. In-flight reads keep their map.
+        let mut next = (**self.cubes.load()).clone();
+        next.insert(name.to_string(), state);
+        self.cubes.store(Arc::new(next));
+        Ok(CommitOutcome { version })
+    }
+
     /// Shared commit path for definition changes: take the writer lock, check the
     /// optional base version, run `op` against the store (which validates and
     /// checkpoints), then publish the new immutable model version.
@@ -607,8 +720,7 @@ impl Engine {
         op: impl FnOnce(&mut Store) -> Result<T, PersistError>,
     ) -> Result<(CommitOutcome, T), BatchError> {
         let state = self
-            .cubes
-            .get(cube)
+            .state(cube)
             .ok_or_else(|| BatchError::UnknownCube(cube.to_string()))?;
         let mut writer = state.writer.lock().expect("writer mutex poisoned");
 
@@ -627,6 +739,10 @@ impl Engine {
                 return Err(BatchError::Rejected { index, source })
             }
             Err(PersistError::Query(e)) => return Err(BatchError::Invalid(e)),
+            // A bare model rejection from a definition op (e.g. unknown dimension,
+            // kind conflict, alias collision) is a client-correctable error, not a
+            // durability failure, so it surfaces as Invalid (422), not Persist.
+            Err(PersistError::Model(e)) => return Err(BatchError::Invalid(QueryError::Model(e))),
             Err(e) => return Err(BatchError::Persist(e)),
         };
 
@@ -642,8 +758,7 @@ impl Engine {
     /// Force a checkpoint (full-persist) of a cube.
     pub fn checkpoint(&self, cube: &str) -> Result<(), BatchError> {
         let state = self
-            .cubes
-            .get(cube)
+            .state(cube)
             .ok_or_else(|| BatchError::UnknownCube(cube.to_string()))?;
         let mut writer = state.writer.lock().expect("writer mutex poisoned");
         writer.store.checkpoint().map_err(BatchError::Persist)
@@ -1253,5 +1368,127 @@ mod tests {
             resolver.value(&coord).unwrap(),
             snap.cube().get(&coord).unwrap()
         );
+    }
+
+    // ---- model editing (ADR-0021) ----
+
+    /// An engine with one cube and an on-disk root, so `create_cube` is enabled.
+    fn editable_engine(name: &str) -> Engine {
+        let root = scratch(name);
+        std::fs::create_dir_all(&root).unwrap();
+        let (region, _t, _r) = sum_dim("R", 2);
+        let cube = Cube::new("Sales", vec![region]).unwrap();
+        let store = Store::create(root.join("Sales"), cube).unwrap();
+        let mut stores = BTreeMap::new();
+        stores.insert("Sales".to_string(), store);
+        Engine::from_stores(stores, Arc::new(IdGen::default())).with_cubes_dir(root)
+    }
+
+    #[test]
+    fn create_cube_registers_persists_and_leaves_others_intact() {
+        let engine = editable_engine("create-cube");
+        assert!(!engine.has_cube("Budget"));
+
+        let outcome = engine
+            .create_cube(
+                "Budget",
+                &[
+                    DimensionDef {
+                        name: "Account".into(),
+                        elements: vec![
+                            ("Sales".into(), ElementKind::Leaf),
+                            ("Costs".into(), ElementKind::Leaf),
+                            ("Profit".into(), ElementKind::Consolidated),
+                        ],
+                        edges: vec![
+                            ("Profit".into(), "Sales".into(), 1),
+                            ("Profit".into(), "Costs".into(), -1),
+                        ],
+                    },
+                    DimensionDef {
+                        name: "Period".into(),
+                        elements: vec![("Jan".into(), ElementKind::Leaf)],
+                        edges: vec![],
+                    },
+                ],
+            )
+            .unwrap();
+        assert!(outcome.version > 0);
+
+        // Visible to readers immediately, and the existing cube is untouched.
+        assert!(engine.has_cube("Budget"));
+        assert!(engine.has_cube("Sales"));
+        let snap = engine.snapshot("Budget").unwrap();
+        assert_eq!(snap.cube().rank(), 2);
+
+        // Writing the leaves rolls up under the weighted consolidation.
+        let acct = snap.cube().dimension(0);
+        let (sales, costs, profit) = (
+            acct.index_of("Sales").unwrap(),
+            acct.index_of("Costs").unwrap(),
+            acct.index_of("Profit").unwrap(),
+        );
+        let jan = snap.cube().dimension(1).index_of("Jan").unwrap();
+        drop(snap);
+        engine
+            .apply_batch(
+                "Budget",
+                None,
+                &[leaf(vec![sales, jan], 100), leaf(vec![costs, jan], 30)],
+            )
+            .unwrap();
+        let snap = engine.snapshot("Budget").unwrap();
+        assert_eq!(snap.cube().get(&[profit, jan]).unwrap(), Fixed::from(70));
+    }
+
+    #[test]
+    fn create_cube_rejects_duplicate_and_disabled() {
+        let engine = editable_engine("create-dup");
+        let dims = [DimensionDef {
+            name: "D".into(),
+            elements: vec![("a".into(), ElementKind::Leaf)],
+            edges: vec![],
+        }];
+        assert!(matches!(
+            engine.create_cube("Sales", &dims),
+            Err(BatchError::AlreadyExists(_))
+        ));
+
+        // An engine with no on-disk root cannot create cubes.
+        let f = fixture("create-disabled");
+        assert!(matches!(
+            f.engine.create_cube("New", &dims),
+            Err(BatchError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    fn define_and_set_attributes_commit() {
+        let f = fixture("attrs");
+        f.engine
+            .define_attribute("Sales", None, "R", "Currency", AttributeKind::Text)
+            .unwrap();
+        f.engine
+            .set_attribute_values(
+                "Sales",
+                None,
+                "R",
+                "Currency",
+                &[("R0".into(), AttributeValue::Text("USD".into()))],
+            )
+            .unwrap();
+        let snap = f.engine.snapshot("Sales").unwrap();
+        let r0 = snap.cube().dimension(0).index_of("R0").unwrap();
+        assert_eq!(
+            snap.cube().dimension(0).attribute(r0, "Currency"),
+            Some(&AttributeValue::Text("USD".into()))
+        );
+
+        // A kind conflict is rejected and changes nothing.
+        assert!(matches!(
+            f.engine
+                .define_attribute("Sales", None, "R", "Currency", AttributeKind::Numeric),
+            Err(BatchError::Invalid(_))
+        ));
     }
 }

@@ -3,7 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
 
-use crate::{Dimension, ElementKind, Fixed, ModelError};
+use crate::{AttributeKind, AttributeValue, Dimension, ElementKind, Fixed, ModelError};
 
 /// A cube coordinate: one element index per dimension, in dimension order.
 pub type Coord = Box<[u32]>;
@@ -287,8 +287,66 @@ pub struct EdgeSpec {
     pub weight: i64,
 }
 
+/// A dimension definition used to build a brand-new cube (ADR-0021): a name, its
+/// initial elements as `(name, kind)`, and its consolidation edges as
+/// `(parent, child, weight)`. Elements and edges are validated together when the
+/// cube is built.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DimensionDef {
+    /// The dimension name.
+    pub name: String,
+    /// Initial elements, in declaration order.
+    pub elements: Vec<(String, ElementKind)>,
+    /// Initial consolidation edges as `(parent, child, weight)`.
+    pub edges: Vec<(String, String, i64)>,
+}
+
 impl Cube {
     /// Create a cube from an ordered, non-empty list of dimensions.
+    /// Build a brand-new cube from dimension definitions (ADR-0021), with full
+    /// validation: at least one dimension, no duplicate dimension names, and the
+    /// same element/edge checks as [`extend_schema`](Self::extend_schema)
+    /// (element-kind conflicts, parent-must-be-consolidated, no cycles, edge
+    /// weights). The cube starts with no cell data.
+    pub fn build(name: impl Into<String>, dims: &[DimensionDef]) -> Result<Self, ModelError> {
+        if dims.is_empty() {
+            return Err(ModelError::EmptyCube);
+        }
+        let mut seen = HashSet::new();
+        for d in dims {
+            if !seen.insert(d.name.as_str()) {
+                return Err(ModelError::DuplicateDimension {
+                    dimension: d.name.clone(),
+                });
+            }
+        }
+        // Start from empty dimensions, then grow through extend_schema so element
+        // and edge validation is the single, shared, well-tested path.
+        let empty: Vec<Dimension> = dims.iter().map(|d| Dimension::new(&d.name)).collect();
+        let mut cube = Cube::new(name, empty)?;
+        let mut elements = Vec::new();
+        let mut edges = Vec::new();
+        for d in dims {
+            for (el_name, kind) in &d.elements {
+                elements.push(ElementSpec {
+                    dimension: d.name.clone(),
+                    name: el_name.clone(),
+                    kind: *kind,
+                });
+            }
+            for (parent, child, weight) in &d.edges {
+                edges.push(EdgeSpec {
+                    dimension: d.name.clone(),
+                    parent: parent.clone(),
+                    child: child.clone(),
+                    weight: *weight,
+                });
+            }
+        }
+        cube.extend_schema(&elements, &edges)?;
+        Ok(cube)
+    }
+
     pub fn new(name: impl Into<String>, dimensions: Vec<Dimension>) -> Result<Self, ModelError> {
         if dimensions.is_empty() {
             return Err(ModelError::EmptyCube);
@@ -348,6 +406,55 @@ impl Cube {
         let added = next.apply_growth(elements, edges)?;
         *self = next;
         Ok(added)
+    }
+
+    /// Define an attribute on a dimension (idempotent by name). Re-declaring an
+    /// existing attribute with the same kind is a no-op; a different kind is a
+    /// conflict. An error leaves the cube untouched.
+    pub fn define_attribute(
+        &mut self,
+        dimension: &str,
+        name: &str,
+        kind: AttributeKind,
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let dim = &mut self.dimensions[d];
+        if let Some(existing) = dim.attribute_index(name) {
+            if dim.attribute_defs()[existing as usize].kind != kind {
+                return Err(ModelError::AttributeKindConflict {
+                    dimension: dimension.to_string(),
+                    attribute: name.to_string(),
+                });
+            }
+            return Ok(());
+        }
+        dim.add_attribute(name.to_string(), kind);
+        Ok(())
+    }
+
+    /// Set an attribute's value for one or more elements (by element name).
+    /// Transactional: it stages on a clone of the dimension, so any rejected
+    /// value (unknown element, kind mismatch, alias collision) leaves the cube
+    /// untouched.
+    pub fn set_attribute_values(
+        &mut self,
+        dimension: &str,
+        attribute: &str,
+        values: &[(String, AttributeValue)],
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.dimensions[d].clone();
+        for (element_name, value) in values {
+            let element =
+                next.index_of(element_name)
+                    .ok_or_else(|| ModelError::ElementNotFound {
+                        dimension: dimension.to_string(),
+                        element: element_name.clone(),
+                    })?;
+            next.set_attribute(element, attribute, value.clone())?;
+        }
+        self.dimensions[d] = next;
+        Ok(())
     }
 
     /// Apply element/edge additions in place (not transactional; callers go
@@ -785,6 +892,142 @@ mod tests {
             d.add_child(total, leaf, 1).unwrap();
         }
         (d, total, leaves)
+    }
+
+    #[test]
+    fn build_constructs_dimensions_elements_and_consolidations() {
+        let cube = Cube::build(
+            "Sales",
+            &[
+                DimensionDef {
+                    name: "Region".into(),
+                    elements: vec![
+                        ("North".into(), ElementKind::Leaf),
+                        ("South".into(), ElementKind::Leaf),
+                        ("Total".into(), ElementKind::Consolidated),
+                    ],
+                    edges: vec![
+                        ("Total".into(), "North".into(), 1),
+                        ("Total".into(), "South".into(), 1),
+                    ],
+                },
+                DimensionDef {
+                    name: "Measure".into(),
+                    elements: vec![("Amount".into(), ElementKind::Leaf)],
+                    edges: vec![],
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(cube.rank(), 2);
+        assert_eq!(cube.dimension(0).name(), "Region");
+        assert_eq!(cube.dimension(0).len(), 3);
+        assert_eq!(cube.dimension(1).len(), 1);
+        // The consolidation is live: writing leaves rolls up under Total.
+        let mut cube = cube;
+        let north = cube.dimension(0).index_of("North").unwrap();
+        let south = cube.dimension(0).index_of("South").unwrap();
+        let amount = cube.dimension(1).index_of("Amount").unwrap();
+        cube.set_leaf(&[north, amount], fix(10)).unwrap();
+        cube.set_leaf(&[south, amount], fix(15)).unwrap();
+        let total = cube.dimension(0).index_of("Total").unwrap();
+        assert_eq!(cube.get(&[total, amount]).unwrap(), fix(25));
+    }
+
+    #[test]
+    fn build_rejects_empty_duplicate_and_bad_edges() {
+        assert_eq!(Cube::build("X", &[]).unwrap_err(), ModelError::EmptyCube);
+
+        let dup = Cube::build(
+            "X",
+            &[
+                DimensionDef {
+                    name: "D".into(),
+                    elements: vec![("a".into(), ElementKind::Leaf)],
+                    edges: vec![],
+                },
+                DimensionDef {
+                    name: "D".into(),
+                    elements: vec![("b".into(), ElementKind::Leaf)],
+                    edges: vec![],
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(matches!(dup, ModelError::DuplicateDimension { .. }));
+
+        // A leaf parent cannot have children.
+        let bad_parent = Cube::build(
+            "X",
+            &[DimensionDef {
+                name: "D".into(),
+                elements: vec![
+                    ("p".into(), ElementKind::Leaf),
+                    ("c".into(), ElementKind::Leaf),
+                ],
+                edges: vec![("p".into(), "c".into(), 1)],
+            }],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            bad_parent,
+            ModelError::ParentNotConsolidated { .. }
+        ));
+    }
+
+    #[test]
+    fn define_and_set_attributes() {
+        let mut cube = Cube::build(
+            "Sales",
+            &[DimensionDef {
+                name: "Region".into(),
+                elements: vec![("North".into(), ElementKind::Leaf)],
+                edges: vec![],
+            }],
+        )
+        .unwrap();
+
+        cube.define_attribute("Region", "Currency", AttributeKind::Text)
+            .unwrap();
+        // Idempotent for the same kind, conflict for a different kind.
+        cube.define_attribute("Region", "Currency", AttributeKind::Text)
+            .unwrap();
+        assert!(matches!(
+            cube.define_attribute("Region", "Currency", AttributeKind::Numeric),
+            Err(ModelError::AttributeKindConflict { .. })
+        ));
+
+        cube.set_attribute_values(
+            "Region",
+            "Currency",
+            &[("North".into(), AttributeValue::Text("USD".into()))],
+        )
+        .unwrap();
+        let north = cube.dimension(0).index_of("North").unwrap();
+        assert_eq!(
+            cube.dimension(0).attribute(north, "Currency"),
+            Some(&AttributeValue::Text("USD".into()))
+        );
+
+        // An unknown element rolls the whole change back (transactional).
+        let before = cube.dimension(0).attribute_values().len();
+        let err = cube
+            .set_attribute_values(
+                "Region",
+                "Currency",
+                &[
+                    ("North".into(), AttributeValue::Text("EUR".into())),
+                    ("Nowhere".into(), AttributeValue::Text("GBP".into())),
+                ],
+            )
+            .unwrap_err();
+        assert!(matches!(err, ModelError::ElementNotFound { .. }));
+        assert_eq!(cube.dimension(0).attribute_values().len(), before);
+        assert_eq!(
+            cube.dimension(0).attribute(north, "Currency"),
+            Some(&AttributeValue::Text("USD".into())),
+            "the rolled-back batch left the prior value intact"
+        );
     }
 
     #[test]
