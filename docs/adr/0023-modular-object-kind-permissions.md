@@ -78,10 +78,15 @@ re-login), as today.
 - **Write cell data** -> `Cube:Write`.
 - **Edit a model object of kind K** (create/update/delete a rule, flow, view,
   subset, job, or dimension members/attributes) -> `K:Write` (or `Cube:Admin`).
-- **Run a flow** -> `Flow:Write`. The flow is the unit of trust, so a flow author
-  can run flows (which write cells and add members) without holding `Cube:Write`;
-  the existing element-restriction guard on flow runs is retained so element ACLs
-  are not bypassed.
+- **Run a flow** -> `Flow:Write` to launch it, **and the flow's effects are
+  authorized as the runner** (a flow is never a privilege-escalation path). After
+  the flow produces its staged outcome, before anything is applied: if it adds
+  elements/edges it requires `Dimension:Write` on the cube; if it writes cells it
+  requires cube write and that every target cell is element-writable by the
+  runner. So `Flow:Write` lets a user author and launch flows, but a flow can only
+  ever edit a cube or dimension the runner could edit by hand. The same check
+  governs the guided CSV import. (The scheduler runs admin-defined jobs as a
+  trusted system actor, ADR-0013; a manual job kick is gated by `Job:Write`.)
 - **Create a cube** -> `Cube:Admin` at `Global`. **Delete a cube** -> `Cube:Admin`
   at `Global` or on that cube. (The delete operation and its hard-vs-archive
   semantics are designed separately; this ADR only fixes who is allowed.)

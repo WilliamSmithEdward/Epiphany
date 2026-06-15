@@ -22,7 +22,10 @@ use epiphany_flow::{
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, deny_if_element_restricted, require_cube_access, require_kind_access};
+use crate::authz::{
+    audit, deny_if_element_restricted, require_cube_access, require_element_write,
+    require_kind_access,
+};
 use crate::dto::CoordMap;
 use crate::routes::{build_write, map_batch_error};
 use crate::ws::ChangeEvent;
@@ -98,6 +101,40 @@ pub(crate) fn apply_outcome(
             .map_err(map_batch_error)?;
     }
     Ok((elements_added, cells_written))
+}
+
+/// Authorize a flow/import outcome AS THE RUNNER (ADR-0023): a flow is never a
+/// privilege-escalation path, so every effect it stages must be something the
+/// runner could do directly. Structure changes (new elements/edges) require
+/// `Dimension:Write` on the cube; cell writes require `Cube:Write` and that every
+/// target cell is element-writable by the runner. Holding only `Flow:Write` lets
+/// a user author and launch flows, but never edit a cube or dimension they lack
+/// access to.
+pub(crate) fn authorize_outcome(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    cube: &str,
+    outcome: &FlowOutcome,
+) -> Result<(), ApiError> {
+    if !outcome.elements.is_empty() || !outcome.edges.is_empty() {
+        require_kind_access(
+            state,
+            auth,
+            ObjectKind::Dimension,
+            Some(cube),
+            AccessLevel::Write,
+        )?;
+    }
+    if !outcome.cells.is_empty() {
+        // Cell writes use the same gate as the direct cell-write endpoint (the
+        // cube-level grant during the migration), plus per-cell element access, so
+        // a flow can write exactly what the runner could write by hand.
+        require_cube_access(state, auth, cube, AccessLevel::Write)?;
+        for cell in &outcome.cells {
+            require_element_write(state, auth, cube, &cell.coord)?;
+        }
+    }
+    Ok(())
 }
 
 // ---- flow CRUD ----
@@ -327,6 +364,10 @@ pub(crate) async fn run_flow_handler(
     let now = state.clock.now_millis();
     let outcome = run_flow(&source, &cube, rows, &body.params, now).map_err(map_flow_error)?;
 
+    // A flow runs as the caller: it may only make changes the caller could make
+    // directly (ADR-0023). Authorize the staged effects before applying them, so
+    // Flow:Write alone can never edit a cube or dimension the runner lacks.
+    authorize_outcome(&state, &auth, &cube, &outcome)?;
     let (elements_added, cells_written) = apply_outcome(&state, &cube, &outcome)?;
     audit(
         &state,
@@ -369,10 +410,13 @@ pub(crate) async fn import_csv(
     Path(cube): Path<String>,
     Json(body): Json<ImportBody>,
 ) -> Result<Json<RunReport>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let rows = parse_csv(&body.csv)
         .map_err(|e| ApiError::unprocessable("FLOW_INPUT_ERROR", e.to_string()))?;
     let outcome = plan_import(&rows, &body)?;
+    // Authorize the import's effects as the caller (ADR-0023): a CSV import builds
+    // members (Dimension:Write) and writes cells (Cube:Write + element write), so
+    // it can never load past the caller's own access.
+    authorize_outcome(&state, &auth, &cube, &outcome)?;
     let (elements_added, cells_written) = apply_outcome(&state, &cube, &outcome)?;
     audit(
         &state,

@@ -70,6 +70,22 @@ fn app(tag: &str) -> Router {
         AccessLevel::Write,
     )
     .unwrap();
+    // Power user: a flow author who ALSO has cube Write, so running a
+    // cell-writing flow is within their own access.
+    sec.create_user("power", "pw", false).unwrap();
+    sec.set_grant(
+        &Subject::User("power".into()),
+        Scope::Global,
+        ObjectKind::Flow,
+        AccessLevel::Write,
+    )
+    .unwrap();
+    sec.set_cube_allow(
+        Some("Sales"),
+        &Subject::User("power".into()),
+        AccessLevel::Write,
+    )
+    .unwrap();
 
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())).with_cubes_dir(dir),
@@ -133,6 +149,10 @@ async fn send(
 }
 
 const FLOW_SRC: &str = "function rows(ctx) {}\n";
+// A flow that writes a cell regardless of input (used to prove a flow cannot
+// exceed the runner's own data access).
+const WRITING_FLOW: &str =
+    "function rows(ctx) { ctx.writeCells([{ coord: { Region: \"North\", Measure: \"Amount\" }, value: \"7\" }]); }\n";
 
 #[tokio::test]
 async fn per_kind_gates_separate_modeler_from_data_entry() {
@@ -268,6 +288,56 @@ async fn per_kind_gates_separate_modeler_from_data_entry() {
         )
         .await,
         StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn flow_run_cannot_exceed_runners_data_access() {
+    let app = app("nuance");
+    let admin = login(&app, "admin").await;
+    let fa = login(&app, "fa").await; // Flow:Write, NO cube write
+    let power = login(&app, "power").await; // Flow:Write AND cube write
+
+    // Store a flow that writes a cell (admin can).
+    let writing = json!({ "name": "w", "source": WRITING_FLOW });
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            "/api/v1/cubes/Sales/flows/wflow",
+            &admin,
+            Some(writing)
+        )
+        .await,
+        StatusCode::OK
+    );
+
+    // The flow author can run flows in general, but running THIS one is denied:
+    // it would write a cell they cannot write directly (no cube Write).
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/api/v1/cubes/Sales/flows/wflow/run",
+            &fa,
+            Some(json!({ "input": "" }))
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+
+    // The power user (flow author WITH cube Write) can run it - the effect is
+    // within their own access.
+    assert_eq!(
+        send(
+            &app,
+            "POST",
+            "/api/v1/cubes/Sales/flows/wflow/run",
+            &power,
+            Some(json!({ "input": "" }))
+        )
+        .await,
+        StatusCode::OK
     );
 }
 
