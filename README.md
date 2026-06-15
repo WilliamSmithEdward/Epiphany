@@ -16,6 +16,9 @@ single static binary with a clean JSON REST API and a React + TypeScript web UI.
 - Cubes over dimensions with numeric, consolidated, and string elements,
   **alternate rollups** and **weighted consolidations**, plus attributes and
   aliases.
+- **Build the model from the UI** (or REST): create a cube, add members, build
+  consolidation hierarchies, and define attributes from the web client's Data
+  Model workspace, no model-file editing required (ADR-0021).
 - **Model-as-code**: the entire model is canonical, human-readable text and is
   the Git source of truth; the binary snapshot is only a runtime cache.
 - Sparse, packed-key cell storage tuned for memory (about 17 bytes per numeric
@@ -45,6 +48,11 @@ single static binary with a clean JSON REST API and a React + TypeScript web UI.
   pull).
 - **Scheduled jobs**: ordered flow sequences on an in-process scheduler with a
   durable run ledger and convergent crash recovery.
+- **Excel add-in** (a single Excel-DNA `.xll`): pull live cube values with
+  `=EPIPHANY.READ(...)`, sign in through an embedded WebView2 screen that reuses
+  the server login (token stored encrypted, never in the workbook), and write an
+  edited table back in one transaction (ADR-0022, see
+  [`excel-addin/`](excel-addin/README.md)).
 
 **What-if and collaboration**
 - Per-user, per-cube **sandboxes**: copy-on-write overlays where rules and
@@ -174,6 +182,9 @@ A Rust Cargo workspace of focused crates plus a React/Vite web client:
 - Layering is strict: the engine and calculation core carry no security or I/O
   dependencies; cross-cutting concerns reach them through injected seams. This is
   what keeps the system deterministic and directly testable at every layer.
+- Clients are thin and live alongside the workspace: the React + TypeScript web
+  client in [`web/`](web/) and the Excel-DNA add-in in
+  [`excel-addin/`](excel-addin/); both call the REST API and hold no model logic.
 
 ## Documentation
 
