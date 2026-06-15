@@ -7,15 +7,16 @@ use std::str::FromStr;
 use axum::extract::{Path, State};
 use axum::Json;
 
-use epiphany_core::{CellResolver, Cube, ElementMask, Fixed};
+use epiphany_core::{AttributeKind, AttributeValue, CellResolver, Cube, ElementMask, Fixed};
 use epiphany_engine::{BatchError, CellWrite};
 use epiphany_security::AccessLevel;
 
 use crate::auth::AuthPrincipal;
 use crate::authz::{element_mask, require_cube_access, require_element_write};
 use crate::dto::{
-    BatchWriteRequest, BatchWriteResponse, CellDto, CoordMap, CubeDetailDto, DimensionDto, EdgeDto,
-    ElementDto, ReadCellsRequest, ReadCellsResponse, WriteCellRequest,
+    AttributeDto, AttributeValueDto, BatchWriteRequest, BatchWriteResponse, CellDto, CoordMap,
+    CubeDetailDto, DimensionDto, EdgeDto, ElementDto, ReadCellsRequest, ReadCellsResponse,
+    WriteCellRequest,
 };
 use crate::resolve::{kind_str, resolve, Resolved};
 use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
@@ -68,6 +69,7 @@ fn cube_detail(cube: &Cube, mask: Option<&ElementMask>) -> CubeDetailDto {
                         weight,
                     })
                     .collect(),
+                attributes: dimension_attributes(dim, &denied),
             }
         })
         .collect();
@@ -75,6 +77,46 @@ fn cube_detail(cube: &Cube, mask: Option<&ElementMask>) -> CubeDetailDto {
         name: cube.name().to_string(),
         dimensions,
     }
+}
+
+fn attr_kind_str(kind: AttributeKind) -> &'static str {
+    match kind {
+        AttributeKind::Text => "text",
+        AttributeKind::Numeric => "numeric",
+        AttributeKind::Alias => "alias",
+    }
+}
+
+/// Build the attribute DTOs for one dimension, suppressing values whose element
+/// the caller may not see (element security).
+fn dimension_attributes(
+    dim: &epiphany_core::Dimension,
+    denied: &impl Fn(u32) -> bool,
+) -> Vec<AttributeDto> {
+    let defs = dim.attribute_defs();
+    let mut per_attr: Vec<Vec<AttributeValueDto>> = (0..defs.len()).map(|_| Vec::new()).collect();
+    for (element, attr_index, value) in dim.attribute_values() {
+        if denied(element) {
+            continue;
+        }
+        let element_name = dim.element(element).expect("valid index").name.clone();
+        let text = match value {
+            AttributeValue::Text(t) => t,
+            AttributeValue::Numeric(n) => n.to_string(),
+        };
+        per_attr[attr_index as usize].push(AttributeValueDto {
+            element: element_name,
+            value: text,
+        });
+    }
+    defs.iter()
+        .zip(per_attr)
+        .map(|(def, values)| AttributeDto {
+            name: def.name.clone(),
+            kind: attr_kind_str(def.kind),
+            values,
+        })
+        .collect()
 }
 
 /// `POST /api/v1/cubes/{cube}/cells/read` -> values for a set of coordinates

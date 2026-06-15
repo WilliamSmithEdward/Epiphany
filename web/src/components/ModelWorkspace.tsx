@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   addElements,
   createCube,
+  defineAttribute,
   getCube,
+  setAttributeValues,
+  type AttributeKind,
   type CubeDetail,
   type DimensionDto,
   type ElementKind,
@@ -14,6 +17,12 @@ const KIND_OPTIONS = [
   { value: 'numeric', label: 'Number (input cell)' },
   { value: 'string', label: 'Text (input cell)' },
   { value: 'consolidated', label: 'Total (rolls up children)' },
+]
+
+const ATTR_KIND_OPTIONS = [
+  { value: 'text', label: 'Text' },
+  { value: 'numeric', label: 'Number' },
+  { value: 'alias', label: 'Alias (alternate name)' },
 ]
 
 function kindBadge(kind: ElementKind) {
@@ -136,12 +145,19 @@ function DimensionEditor({
   const [parent, setParent] = useState('')
   const [child, setChild] = useState('')
   const [weight, setWeight] = useState('1')
+  const [attrName, setAttrName] = useState('')
+  const [attrKind, setAttrKind] = useState<AttributeKind>('text')
+  const [valAttr, setValAttr] = useState('')
+  const [valElement, setValElement] = useState('')
+  const [valText, setValText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
   const consolidated = dimension.elements.filter((e) => e.kind === 'consolidated')
   const elementOptions = dimension.elements.map((e) => ({ value: e.name, label: e.name }))
   const parentOptions = consolidated.map((e) => ({ value: e.name, label: e.name }))
+  const attributes = dimension.attributes ?? []
+  const attrOptions = attributes.map((a) => ({ value: a.name, label: a.name }))
 
   async function addMember() {
     const name = memberName.trim()
@@ -184,6 +200,45 @@ function DimensionEditor({
       onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not add the rollup')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function addAttribute() {
+    const name = attrName.trim()
+    if (name === '') {
+      setError('Name the attribute.')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await defineAttribute(cube, dimension.name, name, attrKind)
+      setAttrName('')
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not add the attribute')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function setValue() {
+    if (valAttr === '' || valElement === '') {
+      setError('Pick an attribute and a member.')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await setAttributeValues(cube, dimension.name, valAttr, [
+        { element: valElement, value: valText },
+      ])
+      setValText('')
+      onChanged()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not set the value')
     } finally {
       setBusy(false)
     }
@@ -281,6 +336,74 @@ function DimensionEditor({
               </div>
             </>
           )}
+        </section>
+
+        <section>
+          <h4 className="model-editor__h">Attributes</h4>
+          <p className="field__msg field__msg--hint">
+            Attributes label members with extra data, like a currency code, a display alias, or a
+            numeric weight.
+          </p>
+          {attributes.length > 0 ? (
+            <ul className="model-edges">
+              {attributes.map((a) => (
+                <li key={a.name}>
+                  <strong>{a.name}</strong> <Badge tone="neutral">{a.kind}</Badge>
+                  {a.values.length > 0 ? (
+                    <span className="model-edge__w"> · {a.values.length} set</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="muted">No attributes yet.</p>
+          )}
+          <div className="model-add-row">
+            <Input
+              value={attrName}
+              onChange={(e) => setAttrName(e.target.value)}
+              placeholder="New attribute name"
+              aria-label="New attribute name"
+            />
+            <Select
+              value={attrKind}
+              onValueChange={(v) => setAttrKind(v as AttributeKind)}
+              options={ATTR_KIND_OPTIONS}
+              ariaLabel="Attribute kind"
+            />
+            <Button size="sm" variant="secondary" disabled={busy} onClick={() => void addAttribute()}>
+              Add attribute
+            </Button>
+          </div>
+          {attributes.length > 0 ? (
+            <div className="model-add-row">
+              <Select
+                value={valAttr}
+                onValueChange={setValAttr}
+                options={attrOptions}
+                placeholder="Attribute…"
+                ariaLabel="Attribute to set"
+              />
+              <span className="muted">of</span>
+              <Select
+                value={valElement}
+                onValueChange={setValElement}
+                options={elementOptions}
+                placeholder="Member…"
+                ariaLabel="Member"
+              />
+              <span className="muted">=</span>
+              <Input
+                value={valText}
+                onChange={(e) => setValText(e.target.value)}
+                placeholder="value"
+                aria-label="Attribute value"
+              />
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void setValue()}>
+                Set value
+              </Button>
+            </div>
+          ) : null}
         </section>
 
         {error ? <p className="error">{error}</p> : null}

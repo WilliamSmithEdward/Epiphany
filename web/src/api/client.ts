@@ -21,6 +21,19 @@ export interface DimensionDto {
   name: string
   elements: ElementDto[]
   edges: EdgeDto[]
+  /** Attributes defined on this dimension (ADR-0021). Absent on older servers. */
+  attributes?: AttributeDto[]
+}
+
+export interface AttributeValueDto {
+  element: string
+  value: string
+}
+
+export interface AttributeDto {
+  name: string
+  kind: AttributeKind
+  values: AttributeValueDto[]
 }
 
 export interface CubeDetail {

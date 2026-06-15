@@ -26,12 +26,30 @@ pub struct EdgeDto {
     pub weight: i64,
 }
 
-/// A dimension with its elements and hierarchy edges.
+/// One element's value for an attribute.
+#[derive(Debug, Serialize)]
+pub struct AttributeValueDto {
+    pub element: String,
+    pub value: String,
+}
+
+/// An attribute defined on a dimension, with the values set so far.
+#[derive(Debug, Serialize)]
+pub struct AttributeDto {
+    pub name: String,
+    /// `text`, `numeric`, or `alias`.
+    pub kind: &'static str,
+    pub values: Vec<AttributeValueDto>,
+}
+
+/// A dimension with its elements, hierarchy edges, and attributes.
 #[derive(Debug, Serialize)]
 pub struct DimensionDto {
     pub name: String,
     pub elements: Vec<ElementDto>,
     pub edges: Vec<EdgeDto>,
+    #[serde(default)]
+    pub attributes: Vec<AttributeDto>,
 }
 
 /// A cube and its dimensions (the object browser and grid data source).
