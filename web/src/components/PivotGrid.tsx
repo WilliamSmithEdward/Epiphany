@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
+  explainCell,
   getCube,
   readCells,
   writeCell,
   type CellDto,
   type Coord,
   type CubeDetail,
+  type TraceDto,
 } from '../api/client'
-import { Button, Select } from '../ui'
+import { Button, Dialog, Select } from '../ui'
+import { TraceView } from './TraceView'
 
 function cellKey(row: string, col: string): string {
   return `${row} ${col}`
@@ -20,6 +23,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
   const [context, setContext] = useState<Record<string, string>>({})
   const [cells, setCells] = useState<Map<string, CellDto>>(new Map())
   const [error, setError] = useState<string | null>(null)
+  const [drill, setDrill] = useState<{ label: string; trace: TraceDto | null } | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -102,6 +106,22 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     [cube, coordFor, refresh],
   )
 
+  /** Open the provenance drill-down for a calculated cell. */
+  const drillInto = useCallback(
+    async (rowMember: string, colMember: string) => {
+      const label = `${rowMember} / ${colMember}`
+      setDrill({ label, trace: null })
+      try {
+        const trace = await explainCell(cube, coordFor(rowMember, colMember), 'full')
+        setDrill({ label, trace })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not explain this cell')
+        setDrill(null)
+      }
+    },
+    [cube, coordFor],
+  )
+
   /** Move focus to the editable cell input at (r, c), if one exists. */
   const focusCell = useCallback((r: number, c: number) => {
     const target = gridRef.current?.querySelector<HTMLInputElement>(
@@ -178,6 +198,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
                       c={ci}
                       onCommit={(next) => void commit(r.name, c.name, cell?.value ?? '', next)}
                       onNav={focusCell}
+                      onDrill={() => void drillInto(r.name, c.name)}
                     />
                   )
                 })}
@@ -186,6 +207,25 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
           </tbody>
         </table>
       </div>
+      {drill ? (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setDrill(null)
+          }}
+          title={`How “${drill.label}” is calculated`}
+          description="The value, and the stored inputs, rules, and totals it comes from."
+          size="md"
+        >
+          {drill.trace ? (
+            <div className="trace">
+              <TraceView node={drill.trace} />
+            </div>
+          ) : (
+            <p className="muted">Loading provenance…</p>
+          )}
+        </Dialog>
+      ) : null}
     </div>
   )
 }
@@ -196,20 +236,29 @@ function CellView({
   c,
   onCommit,
   onNav,
+  onDrill,
 }: {
   cell: CellDto | undefined
   r: number
   c: number
   onCommit: (next: string) => void
   onNav: (r: number, c: number) => void
+  onDrill: () => void
 }) {
   if (!cell || !cell.editable) {
+    const hasValue = cell?.value != null && cell.value !== ''
     return (
       <td
         className={cell?.overlaid ? 'cell calc overlaid' : 'cell calc'}
-        title="Calculated value — read-only (rolls up from input cells)"
+        title="Calculated value — click to see how it is calculated"
       >
-        {cell?.value ?? ''}
+        {hasValue ? (
+          <button type="button" className="cell-drill" onClick={onDrill}>
+            {cell?.value}
+          </button>
+        ) : (
+          (cell?.value ?? '')
+        )}
       </td>
     )
   }

@@ -842,3 +842,24 @@
 .cell.editable:hover::after {
   opacity: 0.6;
 }
+.cell.calc {
+  cursor: default;
+}
+.cell-drill {
+  width: 100%;
+  font: inherit;
+  text-align: right;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.cell-drill:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.cell.calc:has(.cell-drill) {
+  padding: 0;
+}
