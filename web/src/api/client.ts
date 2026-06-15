@@ -741,6 +741,89 @@ export async function listRuns(cube: string): Promise<RunDto[]> {
   return result.runs
 }
 
+// ---- model editing (ADR-0021) ----
+
+/** An element to add: a name and its kind. */
+export interface NewElement {
+  name: string
+  kind: ElementKind
+}
+
+/** A consolidation edge: a consolidated parent rolls up a child with a weight. */
+export interface NewEdge {
+  parent: string
+  child: string
+  weight?: number
+}
+
+/** A dimension to declare when creating a cube: name, initial members, edges. */
+export interface NewDimension {
+  name: string
+  elements?: NewElement[]
+  edges?: NewEdge[]
+}
+
+/** The result of a model-editing commit. */
+export interface CommitResult {
+  version: number
+  /** Newly-created element count (element adds only). */
+  elements_added?: number
+}
+
+/** Create a new cube with its dimensions and initial members (admin only). */
+export async function createCube(
+  name: string,
+  dimensions: NewDimension[],
+): Promise<CommitResult> {
+  return request<CommitResult>('POST', '/api/v1/cubes', { name, dimensions })
+}
+
+/** Add elements and consolidation edges to existing dimensions (append-only). */
+export async function addElements(
+  cube: string,
+  elements: { dimension: string; name: string; kind: ElementKind }[],
+  edges: { dimension: string; parent: string; child: string; weight?: number }[] = [],
+): Promise<CommitResult> {
+  return request<CommitResult>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/elements`, {
+    elements,
+    edges,
+  })
+}
+
+export type AttributeKind = 'text' | 'numeric' | 'alias'
+
+/** Define an attribute on a dimension. */
+export async function defineAttribute(
+  cube: string,
+  dimension: string,
+  attribute: string,
+  kind: AttributeKind,
+): Promise<CommitResult> {
+  return request<CommitResult>(
+    'PUT',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/dimensions/${encodeURIComponent(
+      dimension,
+    )}/attributes/${encodeURIComponent(attribute)}`,
+    { kind },
+  )
+}
+
+/** Set an attribute's value for one or more elements. */
+export async function setAttributeValues(
+  cube: string,
+  dimension: string,
+  attribute: string,
+  values: { element: string; value: string }[],
+): Promise<CommitResult> {
+  return request<CommitResult>(
+    'PUT',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/dimensions/${encodeURIComponent(
+      dimension,
+    )}/attributes/${encodeURIComponent(attribute)}/values`,
+    { values },
+  )
+}
+
 // ---- security administration (Phase 7, ADR-0015 + ADR-0010, admin only) ----
 
 export type AccessLevel = 'none' | 'read' | 'write' | 'admin'

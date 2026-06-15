@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { connectWs, listCubes, logout, type CubeSummary } from '../api/client'
 import FlowsWorkspace from './FlowsWorkspace'
 import JobsWorkspace from './JobsWorkspace'
+import ModelWorkspace from './ModelWorkspace'
 import PivotGrid from './PivotGrid'
 import RulesWorkspace from './RulesWorkspace'
 import SandboxBar from './SandboxBar'
@@ -23,7 +24,7 @@ import {
   type Command,
 } from '../ui'
 
-type Section = 'data' | 'views' | 'rules' | 'flows' | 'jobs' | 'admin'
+type Section = 'data' | 'model' | 'views' | 'rules' | 'flows' | 'jobs' | 'admin'
 
 interface NavItem {
   id: Section
@@ -35,6 +36,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { id: 'data', label: 'Data', glyph: '▦', group: 'Workspace' },
+  { id: 'model', label: 'Model', glyph: '◳', group: 'Workspace' },
   { id: 'views', label: 'Views', glyph: '◫', group: 'Workspace' },
   { id: 'rules', label: 'Rules', glyph: 'Σ', group: 'Workspace' },
   { id: 'flows', label: 'Flows', glyph: '⇄', group: 'Workspace' },
@@ -59,16 +61,26 @@ export default function CubeApp({
   const [reload, setReload] = useState(0)
   const palette = useCommandPalette()
 
-  useEffect(() => {
+  const loadCubes = useCallback((select?: string) => {
     listCubes()
       .then((list) => {
         setCubes(list)
-        setSelected((current) => current ?? list[0]?.name ?? null)
+        setSelected((current) => select ?? current ?? list[0]?.name ?? null)
       })
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : 'Failed to load cubes'),
       )
   }, [])
+
+  useEffect(() => {
+    loadCubes()
+  }, [loadCubes])
+
+  // After a cube is created, refresh the list and jump to its model.
+  const onCubeCreated = useCallback((name: string) => {
+    loadCubes(name)
+    setSection('model')
+  }, [loadCubes])
 
   useEffect(() => {
     const socket = connectWs((event) => {
@@ -231,6 +243,13 @@ export default function CubeApp({
               ) : null}
               {section === 'data' ? (
                 <PivotGrid cube={selected} reloadSignal={reload} />
+              ) : section === 'model' ? (
+                <ModelWorkspace
+                  cube={selected}
+                  reloadSignal={reload}
+                  isAdmin={isAdmin}
+                  onCubeCreated={onCubeCreated}
+                />
               ) : section === 'views' ? (
                 <ViewWorkspace cube={selected} reloadSignal={reload} />
               ) : section === 'rules' ? (

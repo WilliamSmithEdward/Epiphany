@@ -1077,3 +1077,116 @@
   color: var(--color-text-muted);
   white-space: nowrap;
 }
+
+/* ---- Data Model workspace ---- */
+.model-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  max-width: 880px;
+}
+.model-dims {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.model-dim {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  cursor: pointer;
+  min-width: 120px;
+  text-align: left;
+}
+.model-dim.is-active {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+.model-dim__name {
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+.model-dim__count {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.model-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+.model-editor__h {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+.model-members {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.model-member {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-2);
+}
+.model-member__name {
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+.model-edges {
+  list-style: none;
+  margin: var(--space-2) 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+}
+.model-edge__w {
+  color: var(--color-text-muted);
+}
+.model-add-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.model-weight {
+  width: 4.5rem;
+}
+.new-cube {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.new-cube__dim {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+}
+.new-cube__dim-head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+.new-cube__dim-head .input {
+  flex: 1;
+}
