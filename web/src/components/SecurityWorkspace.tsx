@@ -4,14 +4,18 @@ import {
   createUser,
   deleteGroup,
   deleteUser,
+  listCubeGrants,
   listElementAcls,
   listGroups,
   listObjectAcls,
   listUsers,
   patchUser,
+  putCubeGrant,
   putElementAcl,
   putObjectAcl,
   type AccessLevel,
+  type CubeGrantDto,
+  type CubeGrantLevel,
   type ElementGrantDto,
   type ObjectGrantDto,
   type SubjectKind,
@@ -19,7 +23,7 @@ import {
 } from '../api/client'
 import AuditViewer from './AuditViewer'
 
-type Tab = 'users' | 'groups' | 'objects' | 'elements' | 'audit'
+type Tab = 'users' | 'groups' | 'cube-grants' | 'objects' | 'elements' | 'audit'
 
 const OBJECT_KINDS = [
   'cube',
@@ -32,6 +36,7 @@ const OBJECT_KINDS = [
   'sandbox',
 ]
 const LEVELS: AccessLevel[] = ['read', 'write', 'admin']
+const CUBE_GRANT_LEVELS: CubeGrantLevel[] = ['read', 'write', 'admin', 'deny']
 
 // The server-global security console (ADR-0015 + ADR-0010): users, groups,
 // object and element access, and the audit log. Admin only; the topbar hides the
@@ -47,6 +52,12 @@ export default function SecurityWorkspace() {
         <button className={tab === 'groups' ? 'active' : ''} onClick={() => setTab('groups')}>
           Groups
         </button>
+        <button
+          className={tab === 'cube-grants' ? 'active' : ''}
+          onClick={() => setTab('cube-grants')}
+        >
+          Cube grants
+        </button>
         <button className={tab === 'objects' ? 'active' : ''} onClick={() => setTab('objects')}>
           Object access
         </button>
@@ -59,6 +70,7 @@ export default function SecurityWorkspace() {
       </div>
       {tab === 'users' ? <UsersTab /> : null}
       {tab === 'groups' ? <GroupsTab /> : null}
+      {tab === 'cube-grants' ? <CubeGrantsTab /> : null}
       {tab === 'objects' ? <ObjectAclTab /> : null}
       {tab === 'elements' ? <ElementAclTab /> : null}
       {tab === 'audit' ? <AuditViewer /> : null}
@@ -271,6 +283,123 @@ function GroupsTab() {
   )
 }
 
+function CubeGrantsTab() {
+  const [grants, setGrants] = useState<CubeGrantDto[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [scope, setScope] = useState('')
+  const [subjectKind, setSubjectKind] = useState<SubjectKind>('group')
+  const [subject, setSubject] = useState('')
+  const [level, setLevel] = useState<CubeGrantLevel>('read')
+
+  const load = useCallback(() => {
+    listCubeGrants()
+      .then(setGrants)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load cube grants'))
+  }, [])
+  useEffect(load, [load])
+  const act = useAction(load, setError)
+
+  return (
+    <div>
+      <h3>Cube grants</h3>
+      <p className="muted">
+        Broad access across all cubes plus per-cube exceptions (ADR-0016). The most specific grant
+        wins (a per-cube grant overrides a global one), an explicit <em>deny</em> overrides an allow,
+        and an admin always has full access. Leave <em>Scope</em> blank for all cubes.
+      </p>
+      {error ? <p className="error">{error}</p> : null}
+      <table className="placements">
+        <thead>
+          <tr>
+            <th>Scope</th>
+            <th>Subject</th>
+            <th>Access</th>
+            <th />
+          </tr>
+        </thead>
+        <tbody>
+          {grants.map((g, i) => (
+            <tr key={`${g.scope ?? '*'}/${g.subject_kind}/${g.subject}/${g.effect}/${i}`}>
+              <td>{g.scope ?? <em>all cubes</em>}</td>
+              <td>
+                {g.subject_kind}: {g.subject}
+              </td>
+              <td>{g.effect === 'deny' ? <strong>deny</strong> : g.level}</td>
+              <td>
+                <button
+                  onClick={() =>
+                    act(() =>
+                      putCubeGrant({
+                        scope: g.scope,
+                        subject_kind: g.subject_kind,
+                        subject: g.subject,
+                        level: 'none',
+                      }),
+                    )
+                  }
+                >
+                  Revoke
+                </button>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <h3>Set cube grant</h3>
+      <div className="field-row">
+        <label>
+          Scope (blank for all cubes)
+          <input value={scope} onChange={(e) => setScope(e.target.value)} />
+        </label>
+        <label>
+          Subject
+          <select
+            value={subjectKind}
+            onChange={(e) => setSubjectKind(e.target.value as SubjectKind)}
+          >
+            <option value="user">user</option>
+            <option value="group">group</option>
+          </select>
+        </label>
+        <label>
+          Subject name
+          <input value={subject} onChange={(e) => setSubject(e.target.value)} />
+        </label>
+        <label>
+          Access
+          <select value={level} onChange={(e) => setLevel(e.target.value as CubeGrantLevel)}>
+            {CUBE_GRANT_LEVELS.map((l) => (
+              <option key={l} value={l}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="actions">
+        <button
+          className="primary"
+          disabled={!subject.trim()}
+          onClick={() =>
+            act(async () => {
+              await putCubeGrant({
+                scope: scope.trim() || undefined,
+                subject_kind: subjectKind,
+                subject: subject.trim(),
+                level,
+              })
+              setSubject('')
+            })
+          }
+        >
+          Apply
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function ObjectAclTab() {
   const [grants, setGrants] = useState<ObjectGrantDto[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -293,8 +422,9 @@ function ObjectAclTab() {
     <div>
       <h3>Object access</h3>
       <p className="muted">
-        A cube with no grants is open to all authenticated users; the first grant makes it managed.
-        Set a level of <em>none</em> by revoking.
+        Grants on individual objects (rules, flows, views, subsets, connections, sandboxes) and
+        specific-cube allows. For broad cross-cube access and denies, use <em>Cube grants</em>.
+        Revoke to set a level of <em>none</em>.
       </p>
       {error ? <p className="error">{error}</p> : null}
       <table className="placements">
