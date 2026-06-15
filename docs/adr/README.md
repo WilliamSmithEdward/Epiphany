@@ -24,5 +24,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0018](0018-http-surface-hardening.md) | HTTP-surface hardening (security headers, body-size limit) | Accepted | 8 (m8.5) |
 | [0019](0019-optional-tls.md) | Optional TLS (HTTPS), simple to enable | Accepted | 8 (m8.6) |
 | [0020](0020-web-ui-design-system-and-information-architecture.md) | Web UI design system and information architecture | Accepted | UI overhaul |
+| [0021](0021-model-editing-api.md) | Model-editing API (create cubes, build dimensions, edit attributes) | Accepted | UI overhaul (W-API) |
 
 > All originally-reserved ADR numbers are allocated; later decisions continue from 0020.
