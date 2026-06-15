@@ -23,6 +23,8 @@ fn map_security_err(e: SecurityError) -> ApiError {
     match e {
         SecurityError::UserExists(_) => ApiError::conflict(e.to_string()),
         SecurityError::UserNotFound(_) => ApiError::not_found(e.to_string()),
+        // The strength-policy reason is client-safe (no password material).
+        SecurityError::WeakPassword(_) => ApiError::bad_request(e.to_string()),
         _ => ApiError::internal(),
     }
 }

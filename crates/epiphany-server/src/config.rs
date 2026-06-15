@@ -34,6 +34,10 @@ pub struct Config {
     /// Login lockout cooldown in milliseconds (ADR-0017). Default 15 minutes;
     /// `0` disables the lockout.
     pub login_lockout_millis: u64,
+    /// Minimum length for a user-set password (ADR-0017). Default 12.
+    pub password_min_length: usize,
+    /// Reject common/guessable passwords (ADR-0017). Default true.
+    pub password_reject_common: bool,
     /// Serve a self-signed certificate generated into the data directory
     /// (ADR-0019): the zero-config HTTPS path (`EPIPHANY_TLS=on`).
     pub tls_self_signed: bool,
@@ -66,6 +70,8 @@ impl Default for Config {
             run_ledger_max_runs: 50_000,
             login_max_failures: 5,
             login_lockout_millis: 15 * 60 * 1000,
+            password_min_length: 12,
+            password_reject_common: true,
             tls_self_signed: false,
             tls_cert: None,
             tls_key: None,
@@ -140,6 +146,19 @@ impl Config {
             .and_then(|v| v.parse::<u64>().ok())
         {
             config.login_lockout_millis = secs.saturating_mul(1000);
+        }
+        if let Some(n) = vars
+            .get("EPIPHANY_PASSWORD_MIN_LENGTH")
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            config.password_min_length = n;
+        }
+        if let Some(v) = vars.get("EPIPHANY_PASSWORD_REJECT_COMMON") {
+            // Any explicit off-ish value disables the common-password reject list.
+            config.password_reject_common = !matches!(
+                v.to_ascii_lowercase().as_str(),
+                "off" | "0" | "false" | "no"
+            );
         }
         // TLS (ADR-0019). `EPIPHANY_TLS=on` (or self-signed/1/true/yes) serves a
         // generated self-signed cert; an explicit cert+key takes precedence.

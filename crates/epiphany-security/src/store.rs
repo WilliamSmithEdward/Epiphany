@@ -12,6 +12,7 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use crate::acl::{AccessLevel, AccessList, ObjectKind, Scope, Subject};
+use crate::password::PasswordPolicy;
 
 const FORMAT_TAG: &str = "epiphany-security/v0";
 const ADMIN_USERNAME: &str = "admin";
@@ -58,6 +59,9 @@ pub enum SecurityError {
     Io(std::io::Error),
     /// The security artifact could not be parsed.
     Format(String),
+    /// A new password did not meet the strength policy (ADR-0017). The string is
+    /// a client-safe reason (never echoes the password).
+    WeakPassword(String),
 }
 
 impl std::fmt::Display for SecurityError {
@@ -69,6 +73,7 @@ impl std::fmt::Display for SecurityError {
             SecurityError::Hashing(e) => write!(f, "password hashing failed: {e}"),
             SecurityError::Io(e) => write!(f, "security artifact I/O error: {e}"),
             SecurityError::Format(m) => write!(f, "invalid security artifact: {m}"),
+            SecurityError::WeakPassword(why) => write!(f, "{why}"),
         }
     }
 }
@@ -124,6 +129,12 @@ pub struct SecurityStore {
     /// user-enumeration timing channel (ADR-0017). Computed at the store's own KDF
     /// cost so the dummy verify matches the real verify in both test and prod.
     dummy_hash: String,
+    /// Strength policy enforced on user-set passwords (create/change/reset).
+    /// Secure default in production; permissive in the test seam so fixtures may
+    /// use short passwords. Not enforced on bootstrap/`insert_user` (the generated
+    /// admin password is strong by construction; an operator override is their own
+    /// explicit choice).
+    password_policy: PasswordPolicy,
 }
 
 /// The fixed input hashed into [`SecurityStore::dummy_hash`]. Not a secret and
@@ -154,6 +165,7 @@ impl SecurityStore {
             path: Some(path),
             fast_kdf,
             dummy_hash: hash_password(DUMMY_HASH_INPUT, fast_kdf)?,
+            password_policy: PasswordPolicy::default(),
         };
         store.groups.insert(ADMINS_GROUP.to_string());
         let password = admin_override
@@ -177,11 +189,20 @@ impl SecurityStore {
             path: None,
             fast_kdf: true,
             dummy_hash: hash_password(DUMMY_HASH_INPUT, true).expect("dummy hash"),
+            // Permissive in the hermetic test seam so fixtures may use short
+            // passwords; the real server uses the secure default.
+            password_policy: PasswordPolicy::permissive(),
         };
         store
             .insert_user(username, password, is_admin, false, &[])
             .expect("fresh store accepts the first user");
         store
+    }
+
+    /// Set the password-strength policy (the composition root applies it from
+    /// configuration after opening the store).
+    pub fn set_password_policy(&mut self, policy: PasswordPolicy) {
+        self.password_policy = policy;
     }
 
     fn insert_user(
@@ -215,8 +236,16 @@ impl SecurityStore {
         password: &str,
         is_admin: bool,
     ) -> Result<(), SecurityError> {
+        self.check_password(password)?;
         self.insert_user(username, password, is_admin, false, &[])?;
         self.save()
+    }
+
+    /// Enforce the password-strength policy on a user-set password (ADR-0017).
+    fn check_password(&self, password: &str) -> Result<(), SecurityError> {
+        self.password_policy
+            .check(password)
+            .map_err(SecurityError::WeakPassword)
     }
 
     /// Verify credentials, returning the principal on success. When the username
@@ -257,6 +286,7 @@ impl SecurityStore {
         if !verify_password(current, &user.password_hash) {
             return Err(SecurityError::IncorrectPassword);
         }
+        self.check_password(new)?;
         let new_hash = hash_password(new, self.fast_kdf)?;
         let user = self.users.get_mut(username).expect("user present");
         user.password_hash = new_hash;
@@ -291,6 +321,7 @@ impl SecurityStore {
         is_admin: bool,
         groups: &[String],
     ) -> Result<(), SecurityError> {
+        self.check_password(password)?;
         let refs: Vec<&str> = groups.iter().map(String::as_str).collect();
         self.insert_user(username, password, is_admin, false, &refs)?;
         for g in groups {
@@ -338,6 +369,7 @@ impl SecurityStore {
 
     /// Reset a user's password (admin operation), persisting.
     pub fn reset_password(&mut self, username: &str, new: &str) -> Result<(), SecurityError> {
+        self.check_password(new)?;
         let new_hash = hash_password(new, self.fast_kdf)?;
         let user = self
             .users
@@ -692,6 +724,7 @@ impl SecurityStore {
             path: None,
             fast_kdf,
             dummy_hash: hash_password(DUMMY_HASH_INPUT, fast_kdf)?,
+            password_policy: PasswordPolicy::default(),
         })
     }
 
@@ -870,6 +903,40 @@ mod tests {
         store.change_password("alice", "old", "new").unwrap();
         assert!(store.authenticate("alice", "new").is_some());
         assert!(store.authenticate("alice", "old").is_none());
+    }
+
+    #[test]
+    fn password_policy_gates_create_change_and_reset() {
+        // The test seam is permissive; apply the secure default to exercise it.
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store.set_password_policy(PasswordPolicy::default());
+
+        // Too-short and common passwords are rejected on create.
+        assert!(matches!(
+            store.create_user("u", "short", false),
+            Err(SecurityError::WeakPassword(_))
+        ));
+        assert!(matches!(
+            store.create_user("u", "password1234", false),
+            Err(SecurityError::WeakPassword(_))
+        ));
+        // A strong password is accepted.
+        store.create_user("u", "a-strong-pass-1", false).unwrap();
+
+        // change_password and reset_password enforce it too.
+        assert!(matches!(
+            store.change_password("u", "a-strong-pass-1", "weak"),
+            Err(SecurityError::WeakPassword(_))
+        ));
+        store
+            .change_password("u", "a-strong-pass-1", "another-strong-1")
+            .unwrap();
+        assert!(matches!(
+            store.reset_password("u", "x"),
+            Err(SecurityError::WeakPassword(_))
+        ));
+        store.reset_password("u", "reset-strong-pass-1").unwrap();
+        assert!(store.authenticate("u", "reset-strong-pass-1").is_some());
     }
 
     #[test]

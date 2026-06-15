@@ -104,11 +104,16 @@ where
     // Users and password hashes, persisted separately from the cube model.
     let security_path = config.data_dir.join("server").join("security.model");
     let admin_override = std::env::var("EPIPHANY_ADMIN_PASSWORD").ok();
-    let (security, generated) =
+    let (mut security, generated) =
         SecurityStore::open_or_bootstrap(security_path, false, admin_override.as_deref())?;
     // Authorization is fail-closed (ADR-0023): a cube is accessible only to a
     // server admin or the holder of a matching Cube grant; there is no open
     // default posture.
+    // Apply the password-strength policy (ADR-0017) from configuration.
+    security.set_password_policy(epiphany_security::PasswordPolicy {
+        min_length: config.password_min_length,
+        reject_common: config.password_reject_common,
+    });
     if let Some(password) = &generated {
         // Deliver the one-time admin password via an owner-only file, never
         // stdout or the structured log (ADR-0017, RG-13). The operator reads it

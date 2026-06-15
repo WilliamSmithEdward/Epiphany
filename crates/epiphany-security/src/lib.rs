@@ -8,10 +8,12 @@
 
 mod acl;
 mod audit;
+mod password;
 mod store;
 
 pub use acl::{AccessLevel, AccessList, ObjectKind, ObjectRef, Scope, Subject};
 pub use audit::{AuditAction, AuditFilter, AuditLog, AuditRecord, RetentionPolicy};
+pub use password::PasswordPolicy;
 pub use store::{GeneratedAdminPassword, Principal, SecurityError, SecurityStore, UserView};
 
 /// Stable crate identifier, reported by the server's wiring banner.

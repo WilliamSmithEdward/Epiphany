@@ -234,6 +234,8 @@ pub async fn change_password(
             SecurityError::IncorrectPassword => {
                 ApiError::unauthorized("current password is incorrect")
             }
+            // The strength-policy reason is client-safe (no password material).
+            SecurityError::WeakPassword(_) => ApiError::bad_request(e.to_string()),
             _ => ApiError::internal(),
         })?;
     audit(
