@@ -1,0 +1,44 @@
+# systemd unit for the Epiphany OLAP server (Linux).
+#
+# Install:
+#   sudo useradd --system --home /var/lib/epiphany epiphany   # if not present
+#   sudo cp epiphany-server /usr/local/bin/
+#   sudo cp deploy/epiphany.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now epiphany
+#
+# The server drains in-flight requests on SIGTERM, so `systemctl stop` is clean.
+# Configuration is via EPIPHANY_* environment (see docs/DEPLOYMENT.md).
+
+[Unit]
+Description=Epiphany OLAP server
+Documentation=https://github.com/WilliamSmithEdward/Epiphany
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=epiphany
+Group=epiphany
+ExecStart=/usr/local/bin/epiphany-server
+Environment=EPIPHANY_BIND=0.0.0.0:8080
+Environment=EPIPHANY_DATA_DIR=/var/lib/epiphany
+# HTTPS with an auto-generated self-signed cert (ADR-0019); or set
+# EPIPHANY_TLS_CERT / EPIPHANY_TLS_KEY to your own PEM files.
+# Environment=EPIPHANY_TLS=on
+
+# systemd's default stop signal is SIGTERM, which the server handles.
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+RestartSec=2
+
+# Hardening: the server only needs its own state directory.
+StateDirectory=epiphany
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/epiphany
+
+[Install]
+WantedBy=multi-user.target

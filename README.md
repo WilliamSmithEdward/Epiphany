@@ -191,6 +191,7 @@ A Rust Cargo workspace of focused crates plus a React/Vite web client:
 - Architecture, conventions, and commands: [AGENTS.md](AGENTS.md)
 - Plan of record and scope: [docs/ROADMAP.md](docs/ROADMAP.md)
 - Performance budgets and methodology: [docs/PERFORMANCE.md](docs/PERFORMANCE.md)
+- Running as a service (systemd, Docker, launchd, Windows): [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 - Architecture decision records: [docs/adr/](docs/adr/)
 - Engineering practices: [docs/agentic_ai_programming_best_practices.md](docs/agentic_ai_programming_best_practices.md)
 - API reference: the server serves its OpenAPI document at

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd daemon for the Epiphany OLAP server (macOS).
+  Install:
+    sudo cp epiphany-server /usr/local/bin/
+    sudo cp deploy/com.epiphany.server.plist /Library/LaunchDaemons/
+    sudo launchctl load /Library/LaunchDaemons/com.epiphany.server.plist
+  launchd stops the job with SIGTERM, which the server drains cleanly.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.epiphany.server</string>
+  <key>ProgramArguments</key>
+  <array><string>/usr/local/bin/epiphany-server</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>EPIPHANY_BIND</key><string>127.0.0.1:8080</string>
+    <key>EPIPHANY_DATA_DIR</key><string>/usr/local/var/epiphany</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/usr/local/var/log/epiphany.log</string>
+  <key>StandardErrorPath</key><string>/usr/local/var/log/epiphany.log</string>
+</dict>
+</plist>
