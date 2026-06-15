@@ -238,6 +238,15 @@ pub async fn change_password(
             SecurityError::WeakPassword(_) => ApiError::bad_request(e.to_string()),
             _ => ApiError::internal(),
         })?;
+    // Revoke this user's OTHER sessions (ADR-0017): a password change invalidates
+    // every token issued before it, so a stolen session elsewhere cannot outlive
+    // the change. The caller's current session is kept (it just proved the correct
+    // current password), so the change does not log them out of this device.
+    state
+        .sessions
+        .lock()
+        .expect("session mutex")
+        .revoke_user_except(&auth.principal.username, &auth.token);
     audit(
         &state,
         &auth.principal.username,

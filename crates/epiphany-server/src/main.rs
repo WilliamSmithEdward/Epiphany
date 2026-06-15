@@ -176,7 +176,10 @@ where
         engine,
         clock: Arc::new(SystemClock),
         security: Arc::new(Mutex::new(security)),
-        sessions: Arc::new(Mutex::new(SessionStore::new(config.session_ttl_millis))),
+        sessions: Arc::new(Mutex::new(
+            SessionStore::new(config.session_ttl_millis)
+                .with_idle_timeout(config.session_idle_millis),
+        )),
         login_guard: Arc::new(Mutex::new(epiphany_api::LoginGuard::new(
             config.login_max_failures,
             config.login_lockout_millis,

@@ -164,6 +164,64 @@ async fn a_successful_login_resets_the_failure_counter() {
 }
 
 #[tokio::test]
+async fn password_change_revokes_other_sessions_but_keeps_current() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let security = SecurityStore::with_admin("admin", "pw", true);
+    let app = app_with(
+        security,
+        clock,
+        LoginGuard::new(5, 900_000),
+        "revoke-sessions",
+    );
+
+    // Two independent sessions for the same user.
+    let (_, a) = login_full(&app, "admin", "pw").await;
+    let token_a = a["token"].as_str().unwrap().to_string();
+    let (_, b) = login_full(&app, "admin", "pw").await;
+    let token_b = b["token"].as_str().unwrap().to_string();
+
+    let me = |token: String| {
+        let app = app.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/auth/me")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+
+    // Change the password using session B.
+    let changed = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/password")
+                .header("authorization", format!("Bearer {token_b}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "current_password": "pw", "new_password": "a-strong-pass-1" })
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::NO_CONTENT);
+
+    // Session A (the other session) is revoked; session B (current) survives.
+    assert_eq!(me(token_a).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(me(token_b).await, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn must_change_password_blocks_data_routes_until_changed() {
     let clock = Arc::new(ManualClock::new(1_000));
     // A bootstrap admin is created with must_change_password = true.

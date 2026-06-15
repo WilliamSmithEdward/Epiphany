@@ -17,6 +17,10 @@ pub struct Config {
     pub open_browser: bool,
     /// Session lifetime in milliseconds. Default 8 hours.
     pub session_ttl_millis: u64,
+    /// Idle-timeout window in milliseconds (ADR-0017): a session with no activity
+    /// for this long expires before its absolute TTL. `None` disables idle expiry.
+    /// Default 30 minutes.
+    pub session_idle_millis: Option<u64>,
     /// The scheduler reconcile-tick period in milliseconds (ADR-0013). Default
     /// 1000 (1s); `0` disables the scheduler loop entirely.
     pub scheduler_tick_millis: u64,
@@ -64,6 +68,7 @@ impl Default for Config {
             log_filter: "info".to_string(),
             open_browser: false,
             session_ttl_millis: 8 * 60 * 60 * 1000,
+            session_idle_millis: Some(30 * 60 * 1000),
             scheduler_tick_millis: 1000,
             audit_max_records: 100_000,
             audit_retention_millis: None,
@@ -109,6 +114,13 @@ impl Config {
             .and_then(|v| v.parse::<u64>().ok())
         {
             config.session_ttl_millis = secs.saturating_mul(1000);
+        }
+        if let Some(secs) = vars
+            .get("EPIPHANY_SESSION_IDLE_SECS")
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            // 0 disables the idle timeout (absolute TTL still applies).
+            config.session_idle_millis = (secs > 0).then(|| secs.saturating_mul(1000));
         }
         if let Some(secs) = vars
             .get("EPIPHANY_SCHEDULER_TICK_SECS")
