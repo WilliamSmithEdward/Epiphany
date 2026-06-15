@@ -479,6 +479,19 @@ fn document() -> Value {
                     "responses": { "204": { "description": "Applied" } }
                 }
             },
+            "/api/v1/acl/cube-grants": {
+                "get": {
+                    "summary": "List the complete cube-access picture: allows and denies, global and per-cube (admin)",
+                    "security": bearer(),
+                    "responses": ok("The cube grants")
+                },
+                "put": {
+                    "summary": "Set a cube grant (admin). level: none|read|write|admin|deny; scope null = all cubes (ADR-0016)",
+                    "security": bearer(),
+                    "requestBody": json_body("#/components/schemas/CubeGrant"),
+                    "responses": { "204": { "description": "Applied" } }
+                }
+            },
             "/api/v1/audit": { "get": {
                 "summary": "Query the audit log (admin)", "security": bearer(),
                 "parameters": [
@@ -634,7 +647,13 @@ fn document() -> Value {
                     "subject_kind": { "type": "string", "enum": ["user", "group"] },
                     "subject": { "type": "string" },
                     "level": { "type": "string", "enum": ["none", "read", "write", "admin"], "description": "'none' revokes the grant" } },
-                    "required": ["cube", "dimension", "element", "subject_kind", "subject", "level"] }
+                    "required": ["cube", "dimension", "element", "subject_kind", "subject", "level"] },
+                "CubeGrant": { "type": "object", "properties": {
+                    "scope": { "type": "string", "description": "Cube name; omit or null for the global scope (all cubes)" },
+                    "subject_kind": { "type": "string", "enum": ["user", "group"] },
+                    "subject": { "type": "string" },
+                    "level": { "type": "string", "enum": ["none", "read", "write", "admin", "deny"], "description": "Single knob: 'none' revokes any grant, read/write/admin allow, 'deny' explicitly denies (ADR-0016)" } },
+                    "required": ["subject_kind", "subject", "level"] }
             }
         }
     })
@@ -733,6 +752,7 @@ mod tests {
         "/api/v1/groups/{name}",
         "/api/v1/acl/objects",
         "/api/v1/acl/elements",
+        "/api/v1/acl/cube-grants",
         "/api/v1/audit",
     ];
 

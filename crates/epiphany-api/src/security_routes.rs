@@ -447,6 +447,198 @@ pub(crate) async fn put_element_acl(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ---- cube grants: global scope and explicit deny (ADR-0016) ----
+
+#[derive(Serialize)]
+pub(crate) struct CubeGrantDto {
+    /// The cube name, or omitted for the global scope (all cubes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+    subject_kind: String,
+    subject: String,
+    /// `allow` or `deny`.
+    effect: String,
+    /// Present for an allow; omitted for a deny.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    level: Option<String>,
+}
+
+#[derive(Serialize)]
+pub(crate) struct CubeGrantListDto {
+    grants: Vec<CubeGrantDto>,
+}
+
+/// `GET /api/v1/acl/cube-grants` -> the complete cube-access picture (admin):
+/// specific-cube allows, global allows, and all denies (global and per-cube).
+pub(crate) async fn list_cube_grants(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+) -> Result<Json<CubeGrantListDto>, ApiError> {
+    require_admin(&state, &auth)?;
+    let security = state.security.lock().expect("security mutex");
+    let mut grants = Vec::new();
+    // Specific-cube allows (kind == Cube in the object ACLs).
+    for (obj, list) in security.object_acls() {
+        if obj.kind != ObjectKind::Cube {
+            continue;
+        }
+        for (subject, level) in &list.users {
+            grants.push(CubeGrantDto {
+                scope: Some(obj.name.clone()),
+                subject_kind: "user".to_string(),
+                subject: subject.clone(),
+                effect: "allow".to_string(),
+                level: Some(level.as_str().to_string()),
+            });
+        }
+        for (subject, level) in &list.groups {
+            grants.push(CubeGrantDto {
+                scope: Some(obj.name.clone()),
+                subject_kind: "group".to_string(),
+                subject: subject.clone(),
+                effect: "allow".to_string(),
+                level: Some(level.as_str().to_string()),
+            });
+        }
+    }
+    // Global allows.
+    for (subject, level) in &security.global_cube_allow().users {
+        grants.push(CubeGrantDto {
+            scope: None,
+            subject_kind: "user".to_string(),
+            subject: subject.clone(),
+            effect: "allow".to_string(),
+            level: Some(level.as_str().to_string()),
+        });
+    }
+    for (subject, level) in &security.global_cube_allow().groups {
+        grants.push(CubeGrantDto {
+            scope: None,
+            subject_kind: "group".to_string(),
+            subject: subject.clone(),
+            effect: "allow".to_string(),
+            level: Some(level.as_str().to_string()),
+        });
+    }
+    // Global denies.
+    for subject in &security.global_cube_deny().users {
+        grants.push(CubeGrantDto {
+            scope: None,
+            subject_kind: "user".to_string(),
+            subject: subject.clone(),
+            effect: "deny".to_string(),
+            level: None,
+        });
+    }
+    for subject in &security.global_cube_deny().groups {
+        grants.push(CubeGrantDto {
+            scope: None,
+            subject_kind: "group".to_string(),
+            subject: subject.clone(),
+            effect: "deny".to_string(),
+            level: None,
+        });
+    }
+    // Per-cube denies.
+    for (cube, deny) in security.cube_denies() {
+        for subject in &deny.users {
+            grants.push(CubeGrantDto {
+                scope: Some(cube.clone()),
+                subject_kind: "user".to_string(),
+                subject: subject.clone(),
+                effect: "deny".to_string(),
+                level: None,
+            });
+        }
+        for subject in &deny.groups {
+            grants.push(CubeGrantDto {
+                scope: Some(cube.clone()),
+                subject_kind: "group".to_string(),
+                subject: subject.clone(),
+                effect: "deny".to_string(),
+                level: None,
+            });
+        }
+    }
+    Ok(Json(CubeGrantListDto { grants }))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct CubeGrantBody {
+    /// The cube name, or null/omitted for the global scope (all cubes).
+    #[serde(default)]
+    scope: Option<String>,
+    subject_kind: String,
+    subject: String,
+    /// One of `none` (revoke any grant), `read`/`write`/`admin` (allow at that
+    /// level), or `deny` (explicit deny). A single knob per (scope, subject).
+    level: String,
+}
+
+/// `PUT /api/v1/acl/cube-grants` -> set a cube grant (admin). `level` is the
+/// single knob: `none` revokes any allow and any deny for the (scope, subject);
+/// `read`/`write`/`admin` set an allow (clearing any deny); `deny` sets an
+/// explicit deny (clearing any allow). `scope` null = global (all cubes).
+pub(crate) async fn put_cube_grant(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Json(body): Json<CubeGrantBody>,
+) -> Result<StatusCode, ApiError> {
+    require_admin(&state, &auth)?;
+    let subject = parse_subject(&body.subject_kind, &body.subject)?;
+    let scope = body.scope.as_deref();
+    if scope.is_some_and(|c| c.trim().is_empty()) {
+        return Err(ApiError::bad_request("scope cube name must not be empty"));
+    }
+    {
+        let mut security = state.security.lock().expect("security mutex");
+        match body.level.as_str() {
+            "deny" => {
+                // Deny wins; clear any allow at this scope to keep one knob.
+                security
+                    .set_cube_allow(scope, &subject, AccessLevel::None)
+                    .map_err(map_security_err)?;
+                security
+                    .set_cube_deny(scope, &subject, true)
+                    .map_err(map_security_err)?;
+            }
+            "none" => {
+                security
+                    .set_cube_allow(scope, &subject, AccessLevel::None)
+                    .map_err(map_security_err)?;
+                security
+                    .set_cube_deny(scope, &subject, false)
+                    .map_err(map_security_err)?;
+            }
+            other => {
+                let level = parse_level(other)?;
+                if level == AccessLevel::None {
+                    // Defensive: "none" is handled above; reject a stray empty.
+                    return Err(ApiError::bad_request(
+                        "level must be none/read/write/admin/deny",
+                    ));
+                }
+                security
+                    .set_cube_deny(scope, &subject, false)
+                    .map_err(map_security_err)?;
+                security
+                    .set_cube_allow(scope, &subject, level)
+                    .map_err(map_security_err)?;
+            }
+        }
+    }
+    // Audit target: the named cube, or "*" for the global scope.
+    let target = ObjectRef::cube(scope.unwrap_or("*"));
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&target),
+        true,
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---- audit query ----
 
 #[derive(Deserialize)]

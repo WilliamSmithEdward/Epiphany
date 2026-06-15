@@ -11,7 +11,7 @@ use base64::Engine as _;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
-use crate::acl::{AccessLevel, AccessList, ObjectKind, ObjectRef, Subject};
+use crate::acl::{AccessLevel, AccessList, DenyList, GrantEffect, ObjectKind, ObjectRef, Subject};
 
 const FORMAT_TAG: &str = "epiphany-security/v0";
 const ADMIN_USERNAME: &str = "admin";
@@ -111,6 +111,15 @@ pub struct SecurityStore {
     groups: BTreeSet<String>,
     object_acls: BTreeMap<ObjectRef, AccessList>,
     element_acls: BTreeMap<ElementKey, AccessList>,
+    /// Global cube allows (ADR-0016): a baseline level applied to every cube,
+    /// below any per-cube grant. Empty when unused.
+    global_cube_allow: AccessList,
+    /// Global cube denies (ADR-0016): subjects denied across all cubes, below a
+    /// per-cube grant but above the default posture. Empty when unused.
+    global_cube_deny: DenyList,
+    /// Per-cube denies (ADR-0016): subjects denied on a specific cube; the most
+    /// specific tier, overriding any allow. Empty when unused.
+    cube_deny: BTreeMap<String, DenyList>,
     path: Option<PathBuf>,
     fast_kdf: bool,
     /// Deployment posture for an ungranted cube (ADR-0015 decision 2a): when
@@ -142,6 +151,9 @@ impl SecurityStore {
             groups: BTreeSet::new(),
             object_acls: BTreeMap::new(),
             element_acls: BTreeMap::new(),
+            global_cube_allow: AccessList::default(),
+            global_cube_deny: DenyList::default(),
+            cube_deny: BTreeMap::new(),
             path: Some(path),
             fast_kdf,
             default_cube_open: false,
@@ -165,6 +177,9 @@ impl SecurityStore {
             groups: BTreeSet::new(),
             object_acls: BTreeMap::new(),
             element_acls: BTreeMap::new(),
+            global_cube_allow: AccessList::default(),
+            global_cube_deny: DenyList::default(),
+            cube_deny: BTreeMap::new(),
             path: None,
             fast_kdf: true,
             default_cube_open: false,
@@ -420,13 +435,21 @@ impl SecurityStore {
         level
     }
 
-    /// Effective access to a cube for object-level gating (ADR-0015, decision
-    /// 2a). Once an admin adds any grant the cube is "managed" and access is
-    /// exactly the grants (plus admin bypass). A cube with no grants is
-    /// "unmanaged": closed to non-admins by default (secure, fail-closed), or
-    /// open to any authenticated user at `Write` when the deployment opts into the
-    /// trusted-single-org posture via [`set_default_cube_open`]. An unmanaged cube
-    /// is never `Admin`; an unknown user always gets `None`.
+    /// Effective access to a cube for object-level gating (ADR-0015 decision 2a,
+    /// extended by ADR-0016). Admin bypass is absolute (an admin is always
+    /// `Admin`, and a deny never applies to an admin); an unknown user always
+    /// gets `None`. For a non-admin, the most-specific tier wins and a deny wins
+    /// within its tier:
+    ///
+    /// 1. **Specific cube.** A deny on this cube -> `None`; else the per-cube
+    ///    allow grant, if any.
+    /// 2. **Global.** A deny across all cubes -> `None`; else the global allow
+    ///    grant, if any.
+    /// 3. **Default posture.** `Write` if the deployment opted cubes open via
+    ///    [`set_default_cube_open`], else `None` (the secure default).
+    ///
+    /// Deleting a cube and managing its grants stay admin-only regardless of any
+    /// grant (enforced at the API boundary).
     pub fn cube_access(&self, username: &str, cube: &str) -> AccessLevel {
         let Some(p) = self.principal(username) else {
             return AccessLevel::None;
@@ -434,10 +457,37 @@ impl SecurityStore {
         if p.is_admin {
             return AccessLevel::Admin;
         }
-        match self.object_acls.get(&ObjectRef::cube(cube)) {
-            Some(list) => list.level_for(&p.username, &p.groups),
-            None if self.default_cube_open => AccessLevel::Write,
-            None => AccessLevel::None,
+        // Tier 1: the specific cube (deny wins, then allow).
+        if self
+            .cube_deny
+            .get(cube)
+            .is_some_and(|d| d.denies(&p.username, &p.groups))
+        {
+            return AccessLevel::None;
+        }
+        // A specific allow grant marks the cube "managed" (ADR-0015 2a): the open
+        // default posture no longer leaks Write to a user without a grant.
+        let specific = self.object_acls.get(&ObjectRef::cube(cube));
+        if let Some(list) = specific {
+            let level = list.level_for(&p.username, &p.groups);
+            if level > AccessLevel::None {
+                return level;
+            }
+        }
+        // Tier 2: the global scope (deny wins, then allow).
+        if self.global_cube_deny.denies(&p.username, &p.groups) {
+            return AccessLevel::None;
+        }
+        let global = self.global_cube_allow.level_for(&p.username, &p.groups);
+        if global > AccessLevel::None {
+            return global;
+        }
+        // Tier 3: the deployment default posture, only for a wholly unmanaged cube
+        // (no specific allow). A managed cube without a matching grant is denied.
+        if self.default_cube_open && specific.is_none() {
+            AccessLevel::Write
+        } else {
+            AccessLevel::None
         }
     }
 
@@ -538,6 +588,69 @@ impl SecurityStore {
         &self.element_acls
     }
 
+    // ---- global cube grants and explicit deny (ADR-0016) ----
+
+    /// Set (or, with `AccessLevel::None`, remove) a cube **allow** grant for a
+    /// subject, persisting the change. `scope = None` is the global scope (all
+    /// cubes); `scope = Some(cube)` is a specific cube (the existing per-cube
+    /// allow path, kept identical so callers and stored files are unaffected).
+    pub fn set_cube_allow(
+        &mut self,
+        scope: Option<&str>,
+        subject: &Subject,
+        level: AccessLevel,
+    ) -> Result<(), SecurityError> {
+        match scope {
+            None => self.global_cube_allow.set(subject, level),
+            Some(cube) => {
+                let obj = ObjectRef::cube(cube);
+                let list = self.object_acls.entry(obj.clone()).or_default();
+                list.set(subject, level);
+                if list.is_empty() {
+                    self.object_acls.remove(&obj);
+                }
+            }
+        }
+        self.save()
+    }
+
+    /// Set (`denied = true`) or clear (`denied = false`) a cube **deny** for a
+    /// subject, persisting the change. `scope = None` denies across all cubes;
+    /// `scope = Some(cube)` denies on that specific cube.
+    pub fn set_cube_deny(
+        &mut self,
+        scope: Option<&str>,
+        subject: &Subject,
+        denied: bool,
+    ) -> Result<(), SecurityError> {
+        match scope {
+            None => self.global_cube_deny.set(subject, denied),
+            Some(cube) => {
+                let entry = self.cube_deny.entry(cube.to_string()).or_default();
+                entry.set(subject, denied);
+                if entry.is_empty() {
+                    self.cube_deny.remove(cube);
+                }
+            }
+        }
+        self.save()
+    }
+
+    /// Global cube allow grants (ADR-0016), for the admin listing surface.
+    pub fn global_cube_allow(&self) -> &AccessList {
+        &self.global_cube_allow
+    }
+
+    /// Global cube denies (ADR-0016), for the admin listing surface.
+    pub fn global_cube_deny(&self) -> &DenyList {
+        &self.global_cube_deny
+    }
+
+    /// Per-cube denies (ADR-0016), for the admin listing surface.
+    pub fn cube_denies(&self) -> &BTreeMap<String, DenyList> {
+        &self.cube_deny
+    }
+
     /// Serialize to the canonical security model-as-code text (hashes only).
     /// Grants are flattened to one sorted row per (object/element, subject), so
     /// the output is byte-stable.
@@ -588,6 +701,30 @@ impl SecurityStore {
                 });
             }
         }
+        // Global cube allows and all denies (ADR-0016). Specific-cube allows are
+        // not duplicated here; they stay in object_acls above. Built in a fixed
+        // order over sorted maps/sets so the output is byte-stable.
+        let mut cube_grants = Vec::new();
+        for (user, level) in &self.global_cube_allow.users {
+            cube_grants.push(CubeGrantDoc::allow(None, "user", user, *level));
+        }
+        for (group, level) in &self.global_cube_allow.groups {
+            cube_grants.push(CubeGrantDoc::allow(None, "group", group, *level));
+        }
+        for user in &self.global_cube_deny.users {
+            cube_grants.push(CubeGrantDoc::deny(None, "user", user));
+        }
+        for group in &self.global_cube_deny.groups {
+            cube_grants.push(CubeGrantDoc::deny(None, "group", group));
+        }
+        for (cube, deny) in &self.cube_deny {
+            for user in &deny.users {
+                cube_grants.push(CubeGrantDoc::deny(Some(cube.clone()), "user", user));
+            }
+            for group in &deny.groups {
+                cube_grants.push(CubeGrantDoc::deny(Some(cube.clone()), "group", group));
+            }
+        }
         let doc = SecurityDoc {
             format: FORMAT_TAG.to_string(),
             users: self
@@ -604,6 +741,7 @@ impl SecurityStore {
             groups: self.groups.iter().cloned().collect(),
             object_acls,
             element_acls,
+            cube_grants,
         };
         toml::to_string(&doc).expect("security document serializes")
     }
@@ -664,11 +802,45 @@ impl SecurityStore {
                     .set(&subject, level);
             }
         }
+        // Global cube allows and all denies (ADR-0016). Loading is total: an
+        // unrecognized subject kind, level, or effect skips the row.
+        let mut global_cube_allow = AccessList::default();
+        let mut global_cube_deny = DenyList::default();
+        let mut cube_deny: BTreeMap<String, DenyList> = BTreeMap::new();
+        for row in doc.cube_grants {
+            let Some(subject) = subject_from(&row.subject_kind, &row.subject) else {
+                continue;
+            };
+            match GrantEffect::parse(&row.effect).unwrap_or(GrantEffect::Allow) {
+                GrantEffect::Allow => {
+                    let Some(level) = row.level.as_deref().and_then(AccessLevel::parse) else {
+                        continue;
+                    };
+                    match row.cube {
+                        None => global_cube_allow.set(&subject, level),
+                        // A per-cube allow expressed as a cube_grant is tolerated
+                        // and routed to the per-cube allow store, the same place
+                        // [[object_acl]] cube rows land.
+                        Some(cube) => object_acls
+                            .entry(ObjectRef::cube(cube))
+                            .or_default()
+                            .set(&subject, level),
+                    }
+                }
+                GrantEffect::Deny => match row.cube {
+                    None => global_cube_deny.set(&subject, true),
+                    Some(cube) => cube_deny.entry(cube).or_default().set(&subject, true),
+                },
+            }
+        }
         Ok(SecurityStore {
             users,
             groups: doc.groups.into_iter().collect(),
             object_acls,
             element_acls,
+            global_cube_allow,
+            global_cube_deny,
+            cube_deny,
             path: None,
             fast_kdf,
             default_cube_open: false,
@@ -742,6 +914,10 @@ struct SecurityDoc {
     object_acls: Vec<ObjectAclDoc>,
     #[serde(default, rename = "element_acl", skip_serializing_if = "Vec::is_empty")]
     element_acls: Vec<ElementAclDoc>,
+    // Global cube allows and all denies (ADR-0016); additive and skipped when
+    // empty, so pre-m8.2 files load and re-serialize byte-identically.
+    #[serde(default, rename = "cube_grant", skip_serializing_if = "Vec::is_empty")]
+    cube_grants: Vec<CubeGrantDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -763,6 +939,46 @@ struct ElementAclDoc {
     subject_kind: String,
     subject: String,
     level: String,
+}
+
+/// A serialized cube grant (ADR-0016): a global allow, a global deny, or a
+/// per-cube deny. `cube` absent means the global scope (all cubes).
+#[derive(Serialize, Deserialize)]
+struct CubeGrantDoc {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cube: Option<String>,
+    subject_kind: String,
+    subject: String,
+    #[serde(default = "default_effect")]
+    effect: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    level: Option<String>,
+}
+
+impl CubeGrantDoc {
+    fn allow(cube: Option<String>, subject_kind: &str, subject: &str, level: AccessLevel) -> Self {
+        CubeGrantDoc {
+            cube,
+            subject_kind: subject_kind.to_string(),
+            subject: subject.to_string(),
+            effect: GrantEffect::Allow.as_str().to_string(),
+            level: Some(level.as_str().to_string()),
+        }
+    }
+
+    fn deny(cube: Option<String>, subject_kind: &str, subject: &str) -> Self {
+        CubeGrantDoc {
+            cube,
+            subject_kind: subject_kind.to_string(),
+            subject: subject.to_string(),
+            effect: GrantEffect::Deny.as_str().to_string(),
+            level: None,
+        }
+    }
+}
+
+fn default_effect() -> String {
+    GrantEffect::Allow.as_str().to_string()
 }
 
 /// Build a `Subject` from a serialized `(subject_kind, subject)`; `None` for an
@@ -1084,5 +1300,137 @@ mod tests {
         assert_eq!(store.user_count(), 1);
         assert!(store.object_acls().is_empty());
         assert!(store.element_acls().is_empty());
+        // ADR-0016 state is empty for a pre-m8.2 artifact, so behavior is
+        // identical to before global grants existed.
+        assert!(store.global_cube_allow().is_empty());
+        assert!(store.global_cube_deny().is_empty());
+        assert!(store.cube_denies().is_empty());
+    }
+
+    #[test]
+    fn global_allow_with_per_cube_deny_and_write_override() {
+        // The motivating ADR-0016 scenario, for a group, under the secure
+        // (closed) default: a broad Read baseline, Write on one cube, and a deny
+        // on another. Specificity wins; admin bypass is absolute.
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store.set_default_cube_open(false);
+        store
+            .create_user_with_groups("ann", "pw", false, &["analysts".to_string()])
+            .unwrap();
+        let analysts = || Subject::Group("analysts".into());
+
+        store
+            .set_cube_allow(None, &analysts(), AccessLevel::Read)
+            .unwrap();
+        store
+            .set_cube_allow(Some("Budget"), &analysts(), AccessLevel::Write)
+            .unwrap();
+        store
+            .set_cube_deny(Some("Salaries"), &analysts(), true)
+            .unwrap();
+
+        assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::Read); // global baseline
+        assert_eq!(store.cube_access("ann", "Budget"), AccessLevel::Write); // per-cube allow
+        assert_eq!(store.cube_access("ann", "Salaries"), AccessLevel::None); // per-cube deny
+                                                                             // Admin bypass is absolute, even on the denied cube.
+        assert_eq!(store.cube_access("admin", "Salaries"), AccessLevel::Admin);
+    }
+
+    #[test]
+    fn cube_specific_allow_overrides_global_deny() {
+        // Specificity beats effect across tiers: a per-cube allow wins over a
+        // global deny ("deny everywhere except this cube").
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store.create_user("bob", "pw", false).unwrap();
+        store
+            .set_cube_deny(None, &Subject::User("bob".into()), true)
+            .unwrap();
+        store
+            .set_cube_allow(
+                Some("Public"),
+                &Subject::User("bob".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        assert_eq!(store.cube_access("bob", "Sales"), AccessLevel::None); // global deny
+        assert_eq!(store.cube_access("bob", "Public"), AccessLevel::Read); // specific allow wins
+    }
+
+    #[test]
+    fn cube_deny_wins_over_allow_within_the_same_tier() {
+        // Within a tier, an explicit deny beats an allow: a direct global allow
+        // is overridden by a global deny on the user's group.
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store
+            .create_user_with_groups("carol", "pw", false, &["blocked".to_string()])
+            .unwrap();
+        store
+            .set_cube_allow(None, &Subject::User("carol".into()), AccessLevel::Write)
+            .unwrap();
+        store
+            .set_cube_deny(None, &Subject::Group("blocked".into()), true)
+            .unwrap();
+        assert_eq!(store.cube_access("carol", "Sales"), AccessLevel::None);
+    }
+
+    #[test]
+    fn global_grants_do_not_disturb_the_closed_default_for_others() {
+        // A global grant for one group leaves an unrelated user on the secure
+        // closed default (no access), confirming global grants are additive.
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store
+            .create_user_with_groups("ann", "pw", false, &["analysts".to_string()])
+            .unwrap();
+        store.create_user("dave", "pw", false).unwrap();
+        store
+            .set_cube_allow(None, &Subject::Group("analysts".into()), AccessLevel::Read)
+            .unwrap();
+        assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::Read);
+        assert_eq!(store.cube_access("dave", "Sales"), AccessLevel::None);
+    }
+
+    #[test]
+    fn cube_grants_round_trip_byte_identical() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store.create_user("ann", "pw", false).unwrap();
+        store
+            .set_cube_allow(None, &Subject::Group("analysts".into()), AccessLevel::Read)
+            .unwrap();
+        store
+            .set_cube_deny(None, &Subject::User("mallory".into()), true)
+            .unwrap();
+        store
+            .set_cube_deny(
+                Some("Salaries"),
+                &Subject::Group("contractors".into()),
+                true,
+            )
+            .unwrap();
+        store
+            .set_cube_allow(
+                Some("Budget"),
+                &Subject::User("ann".into()),
+                AccessLevel::Write,
+            )
+            .unwrap();
+
+        let text1 = store.to_model_text();
+        let store2 = SecurityStore::from_model_text(&text1, true).unwrap();
+        assert_eq!(
+            text1,
+            store2.to_model_text(),
+            "cube grants must round-trip byte-identically"
+        );
+
+        assert!(store2.global_cube_allow().groups.contains_key("analysts"));
+        assert!(store2.global_cube_deny().users.contains("mallory"));
+        assert!(store2
+            .cube_denies()
+            .get("Salaries")
+            .unwrap()
+            .groups
+            .contains("contractors"));
+        // The per-cube allow stays in object_acls (not duplicated as a cube_grant).
+        assert_eq!(store2.cube_access("ann", "Budget"), AccessLevel::Write);
     }
 }
