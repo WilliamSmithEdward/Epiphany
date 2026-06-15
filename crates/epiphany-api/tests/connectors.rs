@@ -51,12 +51,14 @@ fn router_for(dir: &Path, is_admin: bool, commands: bool) -> Router {
     };
     let mut stores = BTreeMap::new();
     stores.insert("Sales".to_string(), store);
+    let mut sec = SecurityStore::with_admin("admin", "pw", is_admin);
+    // The redaction test reads connections as a non-admin, so the cube must be
+    // reachable: run the opt-in open posture.
+    sec.set_default_cube_open(true);
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
         clock: Arc::new(ManualClock::new(1_000)),
-        security: Arc::new(Mutex::new(SecurityStore::with_admin(
-            "admin", "pw", is_admin,
-        ))),
+        security: Arc::new(Mutex::new(sec)),
         sessions: Arc::new(Mutex::new(SessionStore::new(60_000))),
         events: tokio::sync::broadcast::channel(16).0,
         mdx: Arc::new(MdxEvaluator::new()),

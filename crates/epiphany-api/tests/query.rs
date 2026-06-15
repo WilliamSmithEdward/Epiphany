@@ -66,6 +66,8 @@ fn router(name: &str) -> Router {
     stores.insert("Sales".to_string(), store);
     let mut security = SecurityStore::with_admin("admin", "pw", true);
     security.create_user("bob", "pw", false).unwrap();
+    // Subset-visibility tests use a non-admin over an open cube.
+    security.set_default_cube_open(true);
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
         clock: Arc::new(ManualClock::new(1_000)),

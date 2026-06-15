@@ -1,7 +1,8 @@
-//! Object-security gating acceptance (ADR-0015): a cube is open to authenticated
-//! users until an admin adds a grant, after which only grantees (and admins) may
-//! reach it, at their granted level. Grants are set directly on the kept security
-//! handle (the admin REST surface is 7F).
+//! Default cube-access posture (ADR-0015 decision 2a). The secure default is
+//! fail-closed: an ungranted cube is denied to non-admins, and access is opened
+//! only by an explicit grant. A deployment may opt into the trusted-single-org
+//! "open" posture, in which an ungranted cube is writable by any authenticated
+//! user; this is exercised too so both branches are covered.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -33,18 +34,17 @@ struct Harness {
     security: Arc<Mutex<SecurityStore>>,
 }
 
-fn harness() -> Harness {
-    let dir = std::env::temp_dir().join(format!("epiphany-objsec-{}", std::process::id()));
+/// Build a harness with the given ungranted-cube posture (`open = false` is the
+/// secure default).
+fn harness(name: &str, open: bool) -> Harness {
+    let dir = std::env::temp_dir().join(format!("epiphany-cubedef-{}-{name}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     let store = Store::create(dir, sales_cube()).unwrap();
     let mut stores = BTreeMap::new();
     stores.insert("Sales".to_string(), store);
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
-    sec.create_user("bob", "pw", false).unwrap();
-    // This suite exercises the opt-in open posture (cube open until the first
-    // grant restricts it); the secure closed default is covered separately.
-    sec.set_default_cube_open(true);
+    sec.set_default_cube_open(open);
     let security = Arc::new(Mutex::new(sec));
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
@@ -65,20 +65,23 @@ fn harness() -> Harness {
 }
 
 async fn login(app: &Router, user: &str) -> String {
-    let body = json!({ "username": user, "password": "pw" }).to_string();
     let resp = app
         .clone()
         .oneshot(
             Request::post("/api/v1/auth/login")
                 .header("content-type", "application/json")
-                .body(Body::from(body))
+                .body(Body::from(
+                    json!({ "username": user, "password": "pw" }).to_string(),
+                ))
                 .unwrap(),
         )
         .await
         .unwrap();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    let v: Value = serde_json::from_slice(&bytes).unwrap();
-    v["token"].as_str().unwrap().to_string()
+    serde_json::from_slice::<Value>(&bytes).unwrap()["token"]
+        .as_str()
+        .unwrap()
+        .to_string()
 }
 
 async fn read_status(app: &Router, token: &str) -> StatusCode {
@@ -119,34 +122,37 @@ async fn write_status(app: &Router, token: &str) -> StatusCode {
 }
 
 #[tokio::test]
-async fn cube_is_open_until_restricted_then_grants_govern() {
-    let h = harness();
+async fn ungranted_cube_is_closed_to_non_admins_by_default() {
+    let h = harness("closed", false);
     let admin = login(&h.app, "admin").await;
     let ann = login(&h.app, "ann").await;
-    let bob = login(&h.app, "bob").await;
 
-    // Unmanaged cube: any authenticated user may read and write.
-    assert_eq!(read_status(&h.app, &ann).await, StatusCode::OK);
-    assert_eq!(write_status(&h.app, &ann).await, StatusCode::OK);
+    // Secure default: a non-admin is denied an ungranted cube; the admin is not.
+    assert_eq!(read_status(&h.app, &ann).await, StatusCode::FORBIDDEN);
+    assert_eq!(write_status(&h.app, &ann).await, StatusCode::FORBIDDEN);
+    assert_eq!(read_status(&h.app, &admin).await, StatusCode::OK);
 
-    // An admin restricts the cube by granting bob Read.
+    // Access is opened only by an explicit grant.
     h.security
         .lock()
         .unwrap()
         .set_object_access(
             ObjectRef::cube("Sales"),
-            &Subject::User("bob".into()),
+            &Subject::User("ann".into()),
             AccessLevel::Read,
         )
         .unwrap();
-
-    // Now ann (no grant) is denied both read and write.
-    assert_eq!(read_status(&h.app, &ann).await, StatusCode::FORBIDDEN);
+    assert_eq!(read_status(&h.app, &ann).await, StatusCode::OK);
+    // The grant was Read only, so a write is still denied.
     assert_eq!(write_status(&h.app, &ann).await, StatusCode::FORBIDDEN);
-    // bob may read but not write (granted Read only).
-    assert_eq!(read_status(&h.app, &bob).await, StatusCode::OK);
-    assert_eq!(write_status(&h.app, &bob).await, StatusCode::FORBIDDEN);
-    // The admin keeps full access by bypass.
-    assert_eq!(read_status(&h.app, &admin).await, StatusCode::OK);
-    assert_eq!(write_status(&h.app, &admin).await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn open_posture_is_opt_in() {
+    let h = harness("open", true);
+    let ann = login(&h.app, "ann").await;
+    // With the opt-in open posture an ungranted cube is writable by any
+    // authenticated user.
+    assert_eq!(read_status(&h.app, &ann).await, StatusCode::OK);
+    assert_eq!(write_status(&h.app, &ann).await, StatusCode::OK);
 }

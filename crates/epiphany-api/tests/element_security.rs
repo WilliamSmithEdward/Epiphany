@@ -85,6 +85,10 @@ fn harness(name: &str) -> Harness {
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
     sec.create_user("bob", "pw", false).unwrap();
+    // Element security is exercised over an open cube (the secure closed default is
+    // covered by tests/cube_default_access.rs); here the cube is reachable so the
+    // element ACLs are what gate access.
+    sec.set_default_cube_open(true);
     let security = Arc::new(Mutex::new(sec));
 
     let state = AppState {

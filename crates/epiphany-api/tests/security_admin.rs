@@ -35,6 +35,8 @@ fn harness(name: &str) -> Router {
     stores.insert("Sales".to_string(), store);
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
+    // The object-grant test starts from an open cube; run the opt-in open posture.
+    sec.set_default_cube_open(true);
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
         clock: Arc::new(ManualClock::new(1_000)),

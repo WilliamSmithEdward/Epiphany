@@ -44,6 +44,9 @@ fn router(dir: &Path) -> Router {
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
     sec.create_user("bob", "pw", false).unwrap();
+    // Sandbox tests use non-admin owners over an open cube (the closed default is
+    // covered by tests/cube_default_access.rs).
+    sec.set_default_cube_open(true);
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
         clock: Arc::new(ManualClock::new(1_000)),
@@ -165,6 +168,7 @@ fn router_calc(dir: &Path) -> (Router, Engine) {
     let engine = Engine::from_stores(stores, Arc::new(IdGen::default()));
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
+    sec.set_default_cube_open(true);
     let state = AppState {
         engine: engine.clone(),
         clock: Arc::new(ManualClock::new(1_000)),

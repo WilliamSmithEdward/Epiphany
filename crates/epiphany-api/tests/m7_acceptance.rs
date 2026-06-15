@@ -69,6 +69,10 @@ fn harness(dir: &Path, audit_path: std::path::PathBuf) -> Harness {
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
     sec.create_user("bob", "pw", false).unwrap();
+    // The DoD narrative starts from an open cube and then restricts it, so this
+    // acceptance runs the opt-in open posture (the closed default is the secure
+    // out-of-box behavior, covered by tests/cube_default_access.rs).
+    sec.set_default_cube_open(true);
 
     let audit = AuditLog::open(audit_path).unwrap();
     let state = AppState {

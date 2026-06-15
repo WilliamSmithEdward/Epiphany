@@ -66,20 +66,34 @@ locks "admin always wins, grants only add"; an explicit-deny facility, if ever
 needed, is a future ADR. (Element security in decision 4 is the one scoped place
 a deny-style mask appears.)
 
-**2a. Cubes are open until restricted (no-regression default).** A cube object
-carries no owner or visibility, so the grant-only rule of decision 2 would deny
-every non-admin on a fresh cube, a regression from the pre-Phase-7 behavior where
-any authenticated user could read and write any cube. The cube default is
-therefore: a cube with no object grants is "unmanaged" and open to any
-authenticated user at Write (read and write cells, define rules/flows/subsets/
-views under it), but never Admin (deleting the cube and managing its grants stay
-admin-only). The moment an admin adds any grant to that cube it becomes
+**2a. Ungranted cubes: closed by default, open by opt-in (amended 2026-06-15).**
+A cube object carries no owner or visibility, so the grant-only rule of decision
+2 gives a non-admin no access to a cube with no grants. Two postures are
+supported, selected by deployment configuration (`EPIPHANY_DEFAULT_CUBE_ACCESS`,
+the secure default):
+
+- **Closed (default, fail-closed).** An ungranted cube is denied to non-admins;
+  access is opened only by an explicit grant. This is secure-by-default and is
+  the right posture for multi-tenant or least-privilege deployments. It is the
+  behavior an operator gets out of the box.
+- **Open (opt-in, trusted single org).** An ungranted cube is open to any
+  authenticated user at Write (read and write cells, define rules/flows/subsets/
+  views under it), but never Admin. This preserves the pre-Phase-7 convenience
+  where any logged-in user could use any cube, for deployments that knowingly
+  want zero per-cube grant friction inside one trusted organization.
+
+In both postures the admin always bypasses, deleting a cube and managing its
+grants stay admin-only, and the moment an admin adds any grant the cube becomes
 "managed" and access is exactly the grants (plus admin bypass), so granting one
 user Read restricts everyone else. Rules, flows, and cells are cube-scoped and
 inherit the cube's level (Write on the cube governs its rules and flows; there is
 no separate per-rule owner in the model). Subsets, views, and sandboxes keep
-their own owner/visibility model (decision 2). This makes "least privilege"
-opt-in per cube while keeping every existing path working with no grants defined.
+their own owner/visibility model (decision 2).
+
+The original Phase 7 cut shipped open-by-default to avoid changing the
+pre-security behavior; that prioritized migration continuity over fail-closed,
+which is the wrong default for the phase that adds least privilege. The default
+is now closed; the open posture remains available for deployments that choose it.
 
 **3. Access decisions re-resolve per request against the live store.** The check
 re-reads the principal's current groups and admin flag from `SecurityStore` by

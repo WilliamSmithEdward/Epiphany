@@ -113,6 +113,12 @@ pub struct SecurityStore {
     element_acls: BTreeMap<ElementKey, AccessList>,
     path: Option<PathBuf>,
     fast_kdf: bool,
+    /// Deployment posture for an ungranted cube (ADR-0015 decision 2a): when
+    /// `false` (the secure default), an ungranted cube is closed to non-admins;
+    /// when `true`, it is open to any authenticated user at `Write` (the
+    /// trusted-single-org convenience). Not persisted in the artifact; the
+    /// composition root sets it from configuration.
+    default_cube_open: bool,
 }
 
 impl SecurityStore {
@@ -138,6 +144,7 @@ impl SecurityStore {
             element_acls: BTreeMap::new(),
             path: Some(path),
             fast_kdf,
+            default_cube_open: false,
         };
         store.groups.insert(ADMINS_GROUP.to_string());
         let password = admin_override
@@ -160,11 +167,18 @@ impl SecurityStore {
             element_acls: BTreeMap::new(),
             path: None,
             fast_kdf: true,
+            default_cube_open: false,
         };
         store
             .insert_user(username, password, is_admin, false, &[])
             .expect("fresh store accepts the first user");
         store
+    }
+
+    /// Set the ungranted-cube posture (ADR-0015 decision 2a). The composition
+    /// root calls this from configuration; the secure default is closed.
+    pub fn set_default_cube_open(&mut self, open: bool) {
+        self.default_cube_open = open;
     }
 
     fn insert_user(
@@ -407,10 +421,12 @@ impl SecurityStore {
     }
 
     /// Effective access to a cube for object-level gating (ADR-0015, decision
-    /// 2a). A cube with no object grants is "unmanaged" and open to any
-    /// authenticated user at `Write` (preserving pre-Phase-7 behavior), but never
-    /// `Admin`; once an admin adds any grant the cube is "managed" and access is
-    /// exactly the grants. An unknown user gets `None`.
+    /// 2a). Once an admin adds any grant the cube is "managed" and access is
+    /// exactly the grants (plus admin bypass). A cube with no grants is
+    /// "unmanaged": closed to non-admins by default (secure, fail-closed), or
+    /// open to any authenticated user at `Write` when the deployment opts into the
+    /// trusted-single-org posture via [`set_default_cube_open`]. An unmanaged cube
+    /// is never `Admin`; an unknown user always gets `None`.
     pub fn cube_access(&self, username: &str, cube: &str) -> AccessLevel {
         let Some(p) = self.principal(username) else {
             return AccessLevel::None;
@@ -420,7 +436,8 @@ impl SecurityStore {
         }
         match self.object_acls.get(&ObjectRef::cube(cube)) {
             Some(list) => list.level_for(&p.username, &p.groups),
-            None => AccessLevel::Write,
+            None if self.default_cube_open => AccessLevel::Write,
+            None => AccessLevel::None,
         }
     }
 
@@ -654,6 +671,7 @@ impl SecurityStore {
             element_acls,
             path: None,
             fast_kdf,
+            default_cube_open: false,
         })
     }
 
@@ -936,14 +954,15 @@ mod tests {
     }
 
     #[test]
-    fn cube_access_is_open_until_restricted() {
+    fn cube_access_is_closed_by_default_and_governed_by_grants() {
         let mut store = SecurityStore::with_admin("admin", "pw", true);
         store.create_user("ann", "pw", false).unwrap();
         store.create_user("bob", "pw", false).unwrap();
-        // Unmanaged: any authenticated user gets Write, but not Admin.
-        assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::Write);
+        // Secure default (fail-closed): an ungranted cube denies a non-admin; the
+        // admin still bypasses.
+        assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::None);
         assert_eq!(store.cube_access("admin", "Sales"), AccessLevel::Admin);
-        // Granting one user makes the cube managed: everyone else drops to None.
+        // Granting one user governs the cube exactly by its grants.
         store
             .set_object_access(
                 ObjectRef::cube("Sales"),
@@ -954,7 +973,28 @@ mod tests {
         assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::Read);
         assert_eq!(store.cube_access("bob", "Sales"), AccessLevel::None);
         assert_eq!(store.cube_access("admin", "Sales"), AccessLevel::Admin);
-        // A different, ungranted cube stays open.
+    }
+
+    #[test]
+    fn cube_access_open_posture_is_opt_in() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store.create_user("ann", "pw", false).unwrap();
+        // Opt into the trusted-single-org posture: an ungranted cube is open at
+        // Write to any authenticated user, but never Admin.
+        store.set_default_cube_open(true);
+        assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::Write);
+        // The first grant still makes the cube managed (grants govern exactly).
+        store
+            .set_object_access(
+                ObjectRef::cube("Sales"),
+                &Subject::User("ann".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        store.create_user("bob", "pw", false).unwrap();
+        assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::Read);
+        assert_eq!(store.cube_access("bob", "Sales"), AccessLevel::None);
+        // A different, still-ungranted cube remains open under this posture.
         assert_eq!(store.cube_access("bob", "Other"), AccessLevel::Write);
     }
 
