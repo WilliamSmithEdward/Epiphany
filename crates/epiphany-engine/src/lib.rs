@@ -16,6 +16,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
@@ -25,7 +26,7 @@ use epiphany_core::{
     RuleSet, RuleTest, Sandbox, Subset, View,
 };
 use epiphany_determinism::IdGen;
-use epiphany_persist::{PersistError, Store};
+use epiphany_persist::{load_registry, save_registry, PersistError, RegistryEntry, Store};
 
 pub use epiphany_persist::CellWrite;
 
@@ -88,6 +89,31 @@ impl std::fmt::Display for BatchError {
 }
 
 impl std::error::Error for BatchError {}
+
+/// Flatten a `DimensionDef` into the `ElementSpec`/`EdgeSpec` lists `define_elements`
+/// expects, stamping each with the dimension's name (ADR-0024 fan-out/reconcile).
+fn def_to_specs(def: &DimensionDef) -> (Vec<ElementSpec>, Vec<EdgeSpec>) {
+    let elements = def
+        .elements
+        .iter()
+        .map(|(name, kind)| ElementSpec {
+            dimension: def.name.clone(),
+            name: name.clone(),
+            kind: *kind,
+        })
+        .collect();
+    let edges = def
+        .edges
+        .iter()
+        .map(|(parent, child, weight)| EdgeSpec {
+            dimension: def.name.clone(),
+            parent: parent.clone(),
+            child: child.clone(),
+            weight: *weight,
+        })
+        .collect();
+    (elements, edges)
+}
 
 /// One published, immutable model version (cube plus its subsets and views).
 #[derive(Debug)]
@@ -186,6 +212,13 @@ pub struct Engine {
     /// Serializes registry mutations. The lock order is `dim_topology` before any
     /// per-cube `writer` (ADR-0024) to preclude an AB/BA deadlock.
     dim_topology: Arc<Mutex<()>>,
+    /// On-disk root (`<data_dir>/dimensions`) for the durable registry. `None`
+    /// keeps the registry in memory only (e.g. tests without a directory).
+    dimensions_dir: Option<PathBuf>,
+    /// Stable, monotonic source of `DimensionId`s, seeded past the max loaded id
+    /// on `with_dimensions_dir` so ids never collide across restarts (the commit
+    /// `IdGen` restarts each boot, so dimension ids use this separate counter).
+    next_dim_id: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -221,7 +254,49 @@ impl Engine {
             topology: Arc::new(Mutex::new(())),
             dimensions: Arc::new(ArcSwap::from_pointee(DimensionRegistry::default())),
             dim_topology: Arc::new(Mutex::new(())),
+            dimensions_dir: None,
+            next_dim_id: Arc::new(AtomicU64::new(1)),
         }
+    }
+
+    /// Enable durable shared dimensions by loading the registry from `dir`
+    /// (`<data_dir>/dimensions`) and persisting future mutations there (ADR-0024,
+    /// SD-2). On load it seeds the dimension-id counter past the max stored id (so
+    /// new ids never collide across restarts) and reconciles every referencing
+    /// cube forward to the loaded dimension (idempotent append), so a cube that
+    /// missed a fan-out before a crash catches up.
+    pub fn with_dimensions_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        let entries = load_registry(&dir).unwrap_or_default();
+        let mut registry = DimensionRegistry::default();
+        let mut max_id = 0u64;
+        let mut reconcile: Vec<(String, Vec<ElementSpec>, Vec<EdgeSpec>)> = Vec::new();
+        for entry in entries {
+            max_id = max_id.max(entry.id);
+            let shared = Arc::new(SharedDimension {
+                id: DimensionId(entry.id),
+                generation: entry.generation,
+                dimension: entry.dimension,
+            });
+            // Stage the fan-out reconcile inputs while we still hold the entry.
+            let def = shared.to_dimension_def();
+            let (els, edgs) = def_to_specs(&def);
+            registry.put(shared);
+            for cube in &entry.references {
+                registry.attach(DimensionId(entry.id), cube);
+                reconcile.push((cube.clone(), els.clone(), edgs.clone()));
+            }
+        }
+        self.next_dim_id.store(max_id + 1, Ordering::SeqCst);
+        self.dimensions.store(Arc::new(registry));
+        self.dimensions_dir = Some(dir);
+        // Bring any cube that lagged a fan-out forward (idempotent, append-only).
+        for (cube, els, edgs) in reconcile {
+            if self.has_cube(&cube) {
+                let _ = self.define_elements(&cube, None, &els, &edgs);
+            }
+        }
+        self
     }
 
     /// Enable runtime cube creation by telling the engine where to create new
@@ -250,19 +325,21 @@ impl Engine {
         self.dimensions.load_full()
     }
 
-    /// Register a new shared dimension and return its server-unique id. Mints the
-    /// id from the shared `IdGen`, then copy-on-write swaps it into the registry
-    /// under `dim_topology`. Not yet referenced by any cube.
+    /// Register a new shared dimension and return its server-unique, restart-stable
+    /// id. Mints the id from the dedicated dimension counter, copy-on-write swaps
+    /// it into the registry under `dim_topology`, and persists. Not yet referenced
+    /// by any cube.
     pub fn register_dimension(&self, dimension: Dimension) -> DimensionId {
         let _topo = self
             .dim_topology
             .lock()
             .expect("dim_topology mutex poisoned");
-        let id = DimensionId(self.ids.next_id());
+        let id = DimensionId(self.next_dim_id.fetch_add(1, Ordering::SeqCst));
         let shared = Arc::new(SharedDimension::new(id, dimension));
         let mut next = (**self.dimensions.load()).clone();
         next.put(shared);
         self.dimensions.store(Arc::new(next));
+        self.persist_registry();
         id
     }
 
@@ -276,6 +353,28 @@ impl Engine {
         let mut next = (**self.dimensions.load()).clone();
         next.attach(id, cube);
         self.dimensions.store(Arc::new(next));
+        self.persist_registry();
+    }
+
+    /// Persist the current registry to `dimensions_dir`, if durable. Best-effort:
+    /// a write failure is not fatal because every referencing cube already holds
+    /// its own durable copy of the dimension (the registry reconciles on reload).
+    fn persist_registry(&self) {
+        let Some(dir) = self.dimensions_dir.as_ref() else {
+            return;
+        };
+        let registry = self.dimensions.load();
+        let entries: Vec<RegistryEntry> = registry
+            .all()
+            .into_iter()
+            .map(|shared| RegistryEntry {
+                id: shared.id.0,
+                generation: shared.generation,
+                references: registry.referencing(shared.id),
+                dimension: shared.dimension.clone(),
+            })
+            .collect();
+        let _ = save_registry(dir, &entries);
     }
 
     /// Append elements/edges to a registered shared dimension, publish the new
@@ -333,6 +432,7 @@ impl Engine {
                 weight: e.weight,
             })
             .collect();
+        self.persist_registry();
         for cube in snapshot.referencing(id) {
             if self.has_cube(&cube) {
                 self.define_elements(&cube, None, &els, &edgs)?;
@@ -1701,5 +1801,67 @@ mod tests {
         }
         // The registry itself is at the new generation.
         assert_eq!(engine.dimension_registry().get(id).unwrap().generation, 1);
+    }
+
+    #[test]
+    fn registry_persists_and_reloads_across_restart() {
+        let root = scratch("dim-reload");
+        std::fs::create_dir_all(&root).unwrap();
+        let dims_dir = root.join("dimensions");
+
+        // First boot: a durable engine registers a shared dimension, materializes
+        // it into a referencing cube, records the reference (plus a second cube),
+        // and grows it once (fanning out to the materialized cube).
+        let id = {
+            let mut product = Dimension::new("Product");
+            product.add_leaf("Widget");
+            let mut measure = Dimension::new("Measure");
+            measure.add_leaf("Amount");
+            // The Sales cube materializes a copy of Product (ADR-0024 v1).
+            let cube = Cube::new("Sales", vec![product.clone(), measure]).unwrap();
+            let store = Store::create(root.join("Sales"), cube).unwrap();
+            let mut stores = BTreeMap::new();
+            stores.insert("Sales".to_string(), store);
+            let engine = Engine::from_stores(stores, Arc::new(IdGen::default()))
+                .with_cubes_dir(root.clone())
+                .with_dimensions_dir(dims_dir.clone());
+
+            let id = engine.register_dimension(product);
+            engine.attach_dimension(id, "Sales");
+            engine.attach_dimension(id, "Budget");
+            engine
+                .grow_dimension(
+                    id,
+                    &[ElementSpec {
+                        dimension: "Product".into(),
+                        name: "Gadget".into(),
+                        kind: ElementKind::Leaf,
+                    }],
+                    &[],
+                )
+                .unwrap();
+            id
+        };
+
+        // Second boot: a fresh engine loading the same dimensions dir recovers the
+        // registry at the grown generation, with stable indices and both refs.
+        let engine = Engine::from_stores(BTreeMap::new(), Arc::new(IdGen::default()))
+            .with_dimensions_dir(dims_dir);
+        let reg = engine.dimension_registry();
+        let shared = reg.get(id).expect("dimension reloaded");
+        assert_eq!(shared.generation, 1);
+        assert_eq!(shared.dimension.index_of("Widget"), Some(0));
+        assert_eq!(shared.dimension.index_of("Gadget"), Some(1));
+        assert_eq!(
+            reg.referencing(id),
+            vec!["Budget".to_string(), "Sales".to_string()]
+        );
+
+        // The id counter is seeded past the reloaded max, so a new registration
+        // never collides with a restored id.
+        let mut other = Dimension::new("Other");
+        other.add_leaf("X");
+        let new_id = engine.register_dimension(other);
+        assert!(new_id.0 > id.0);
     }
 }

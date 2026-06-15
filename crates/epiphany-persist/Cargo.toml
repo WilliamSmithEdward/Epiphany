@@ -13,3 +13,5 @@ workspace = true
 [dependencies]
 epiphany-core = { path = "../epiphany-core" }
 epiphany-determinism = { path = "../epiphany-determinism" }
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "1.1.2"

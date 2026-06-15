@@ -1113,6 +1113,22 @@ impl Model {
     }
 }
 
+impl Dimension {
+    /// Serialize this dimension (elements, edges, attributes) to canonical TOML.
+    /// Used to persist a shared, registry-owned dimension (ADR-0024); the cube
+    /// snapshot keeps embedding its dimensions via [`Cube::to_model_text`].
+    pub fn to_model_text(&self) -> Result<String, SaveError> {
+        toml::to_string(&dim_doc(self)).map_err(SaveError::Toml)
+    }
+
+    /// Parse a dimension from the TOML produced by
+    /// [`to_model_text`](Self::to_model_text).
+    pub fn from_model_text(text: &str) -> Result<Dimension, LoadError> {
+        let doc: DimDoc = toml::from_str(text).map_err(LoadError::Toml)?;
+        build_dimension(&doc)
+    }
+}
+
 impl Cube {
     /// Serialize this cube and its dimensions to canonical model-as-code TOML.
     pub fn to_model_text(&self) -> Result<String, SaveError> {

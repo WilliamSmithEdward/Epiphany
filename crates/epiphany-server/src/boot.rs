@@ -41,8 +41,12 @@ pub fn load_or_init(data_dir: &Path) -> Result<Engine, Box<dyn std::error::Error
     }
 
     // Tell the engine where to create new cube stores so runtime cube creation
-    // (ADR-0021) persists under the same layout it boots from.
-    Ok(Engine::from_stores(stores, Arc::new(IdGen::default())).with_cubes_dir(cubes_dir))
+    // (ADR-0021) persists under the same layout it boots from, and where the
+    // shared-dimension registry lives so dimension-library mutations are durable
+    // and referencing cubes reconcile forward on restart (ADR-0024).
+    Ok(Engine::from_stores(stores, Arc::new(IdGen::default()))
+        .with_cubes_dir(cubes_dir)
+        .with_dimensions_dir(data_dir.join("dimensions")))
 }
 
 #[cfg(test)]

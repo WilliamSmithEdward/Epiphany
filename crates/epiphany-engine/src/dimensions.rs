@@ -193,6 +193,11 @@ impl DimensionRegistry {
         self.by_id.keys().copied().collect()
     }
 
+    /// All shared dimensions, in id order (for persistence).
+    pub fn all(&self) -> Vec<Arc<SharedDimension>> {
+        self.by_id.values().cloned().collect()
+    }
+
     pub fn len(&self) -> usize {
         self.by_id.len()
     }

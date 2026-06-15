@@ -553,6 +553,8 @@ version = "0.0.0"
 dependencies = [
  "epiphany-core",
  "epiphany-determinism",
+ "serde",
+ "toml",
 ]
 
 [[package]]

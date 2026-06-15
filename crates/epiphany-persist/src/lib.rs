@@ -11,9 +11,11 @@
 //! it rewrites the snapshot and clears the WAL. The text model remains the
 //! source of truth; this layer is a derived cache for fast, crash-safe restart.
 
+mod registry;
 mod store;
 mod wal;
 
+pub use registry::{load_registry, save_registry, RegistryEntry};
 pub use store::{CellWrite, PersistError, Store};
 
 /// Stable crate identifier, reported by the server's wiring banner.
