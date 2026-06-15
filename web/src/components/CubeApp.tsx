@@ -6,6 +6,7 @@ import RulesWorkspace from './RulesWorkspace'
 import SandboxBar from './SandboxBar'
 import SecurityWorkspace from './SecurityWorkspace'
 import ViewWorkspace from './ViewWorkspace'
+import ThemeToggle from '../ui/ThemeToggle'
 
 type Mode = 'grid' | 'views' | 'rules' | 'flows'
 type View = 'cubes' | 'admin'
@@ -87,6 +88,7 @@ export default function CubeApp({
           </span>
         ) : null}
         <span className="spacer" />
+        <ThemeToggle />
         <span className="user">{username}</span>
         <button onClick={signOut}>Sign out</button>
       </header>
