@@ -967,6 +967,40 @@ export async function putCubeGrant(grant: CubeGrantBody): Promise<void> {
   return request<void>('PUT', '/api/v1/acl/cube-grants', grant)
 }
 
+// ---- modular per-object-kind grants / roles (ADR-0023) ----
+
+/** A securable object kind that can be granted per-scope. */
+export type GrantKind =
+  | 'cube'
+  | 'dimension'
+  | 'rule'
+  | 'flow'
+  | 'view'
+  | 'subset'
+  | 'job'
+  | 'connection'
+  | 'sandbox'
+
+/** One modular grant: a subject's level on a kind within a scope. */
+export interface GrantDto {
+  subject_kind: SubjectKind
+  subject: string
+  scope: 'global' | 'cube'
+  cube?: string
+  kind: GrantKind
+  level: AccessLevel
+}
+
+export async function listGrants(): Promise<GrantDto[]> {
+  const result = await request<{ grants: GrantDto[] }>('GET', '/api/v1/acl/grants')
+  return result.grants
+}
+
+/** Set (or, with level `none`, revoke) a per-kind grant for a user or group. */
+export async function setGrant(grant: GrantDto): Promise<void> {
+  return request<void>('PUT', '/api/v1/acl/grants', grant)
+}
+
 /** Audit-query filters; omitted fields are not constrained. */
 export interface AuditQuery {
   actor?: string
