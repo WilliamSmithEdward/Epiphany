@@ -12,7 +12,8 @@ use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
 use crate::acl::{
-    AccessLevel, AccessList, CubeGrant, DenyList, GrantEffect, ObjectKind, ObjectRef, Subject,
+    AccessLevel, AccessList, CubeGrant, DenyList, GrantEffect, ObjectKind, ObjectRef, Scope,
+    Subject,
 };
 
 const FORMAT_TAG: &str = "epiphany-security/v0";
@@ -113,6 +114,10 @@ pub struct SecurityStore {
     groups: BTreeSet<String>,
     object_acls: BTreeMap<ObjectRef, AccessList>,
     element_acls: BTreeMap<ElementKey, AccessList>,
+    /// Modular per-object-kind grants (ADR-0023): `(scope, kind) -> who has what`.
+    /// The unified scheme that supersedes object_acls + the cube-grant tables;
+    /// added alongside them during the migration.
+    grants: BTreeMap<(Scope, ObjectKind), AccessList>,
     /// Global cube allows (ADR-0016): a baseline level applied to every cube,
     /// below any per-cube grant. Empty when unused.
     global_cube_allow: AccessList,
@@ -153,6 +158,7 @@ impl SecurityStore {
             groups: BTreeSet::new(),
             object_acls: BTreeMap::new(),
             element_acls: BTreeMap::new(),
+            grants: BTreeMap::new(),
             global_cube_allow: AccessList::default(),
             global_cube_deny: DenyList::default(),
             cube_deny: BTreeMap::new(),
@@ -179,6 +185,7 @@ impl SecurityStore {
             groups: BTreeSet::new(),
             object_acls: BTreeMap::new(),
             element_acls: BTreeMap::new(),
+            grants: BTreeMap::new(),
             global_cube_allow: AccessList::default(),
             global_cube_deny: DenyList::default(),
             cube_deny: BTreeMap::new(),
@@ -590,6 +597,77 @@ impl SecurityStore {
         &self.element_acls
     }
 
+    // ---- modular per-object-kind grants (ADR-0023) ----
+
+    /// All modular grants, keyed by `(scope, kind)`.
+    pub fn grants(&self) -> &BTreeMap<(Scope, ObjectKind), AccessList> {
+        &self.grants
+    }
+
+    /// Set (or, with `AccessLevel::None`, remove) a subject's grant on a
+    /// `(scope, kind)`, then persist.
+    pub fn set_grant(
+        &mut self,
+        subject: &Subject,
+        scope: Scope,
+        kind: ObjectKind,
+        level: AccessLevel,
+    ) -> Result<(), SecurityError> {
+        let key = (scope, kind);
+        let list = self.grants.entry(key.clone()).or_default();
+        list.set(subject, level);
+        if list.is_empty() {
+            self.grants.remove(&key);
+        }
+        self.save()
+    }
+
+    /// The level a principal holds for `(scope, kind)` from the modular grants.
+    fn grant_level(&self, principal: &Principal, scope: Scope, kind: ObjectKind) -> AccessLevel {
+        self.grants
+            .get(&(scope, kind))
+            .map(|list| list.level_for(&principal.username, &principal.groups))
+            .unwrap_or(AccessLevel::None)
+    }
+
+    /// The effective access a principal has to objects of `kind` in `cube`
+    /// (ADR-0023): a server admin bypasses to `Admin`; otherwise the max over the
+    /// principal's global and per-cube grants for that kind, with `Cube:Admin`
+    /// over the cube conferring `Write` on its cube-scoped kinds. Fail-closed: no
+    /// grant means `None`.
+    pub fn effective(
+        &self,
+        principal: &Principal,
+        kind: ObjectKind,
+        cube: Option<&str>,
+    ) -> AccessLevel {
+        if principal.is_admin {
+            return AccessLevel::Admin;
+        }
+        let mut level = self.grant_level(principal, Scope::Global, kind);
+        if let Some(c) = cube {
+            level = level.max(self.grant_level(principal, Scope::Cube(c.to_string()), kind));
+        }
+        if is_cube_scoped(kind) {
+            if let Some(c) = cube {
+                let cube_admin = self
+                    .grant_level(principal, Scope::Global, ObjectKind::Cube)
+                    .max(self.grant_level(principal, Scope::Cube(c.to_string()), ObjectKind::Cube));
+                if cube_admin >= AccessLevel::Admin {
+                    level = level.max(AccessLevel::Write);
+                }
+            }
+        }
+        level
+    }
+
+    /// Whether a principal may create or delete cubes (ADR-0023): a server admin,
+    /// or the holder of a global `Cube:Admin` grant.
+    pub fn can_manage_cubes(&self, principal: &Principal) -> bool {
+        principal.is_admin
+            || self.grant_level(principal, Scope::Global, ObjectKind::Cube) >= AccessLevel::Admin
+    }
+
     // ---- global cube grants and explicit deny (ADR-0016) ----
 
     /// In-memory only: set/clear a cube allow grant. The public setters and the
@@ -769,6 +847,35 @@ impl SecurityStore {
                 cube_grants.push(CubeGrantDoc::deny(Some(cube.clone()), "group", group));
             }
         }
+        // Modular per-kind grants (ADR-0023), in sorted (scope, kind) then sorted
+        // subject order so the output is byte-stable.
+        let mut grants = Vec::new();
+        for ((scope, kind), list) in &self.grants {
+            let (scope_tag, cube) = match scope {
+                Scope::Global => ("global", None),
+                Scope::Cube(c) => ("cube", Some(c.clone())),
+            };
+            for (user, level) in &list.users {
+                grants.push(GrantDoc {
+                    subject_kind: "user".to_string(),
+                    subject: user.clone(),
+                    scope: scope_tag.to_string(),
+                    cube: cube.clone(),
+                    kind: kind.as_str().to_string(),
+                    level: level.as_str().to_string(),
+                });
+            }
+            for (group, level) in &list.groups {
+                grants.push(GrantDoc {
+                    subject_kind: "group".to_string(),
+                    subject: group.clone(),
+                    scope: scope_tag.to_string(),
+                    cube: cube.clone(),
+                    kind: kind.as_str().to_string(),
+                    level: level.as_str().to_string(),
+                });
+            }
+        }
         let doc = SecurityDoc {
             format: FORMAT_TAG.to_string(),
             users: self
@@ -786,6 +893,7 @@ impl SecurityStore {
             object_acls,
             element_acls,
             cube_grants,
+            grants,
         };
         toml::to_string(&doc).expect("security document serializes")
     }
@@ -890,11 +998,38 @@ impl SecurityStore {
                 }
             }
         }
+        // Modular per-kind grants (ADR-0023). Tolerant load: a row whose subject,
+        // scope, kind, or level does not parse is skipped, never guessed at.
+        let mut grants: BTreeMap<(Scope, ObjectKind), AccessList> = BTreeMap::new();
+        for row in doc.grants {
+            let Some(subject) = subject_from(&row.subject_kind, &row.subject) else {
+                continue;
+            };
+            let Some(kind) = ObjectKind::parse(&row.kind) else {
+                continue;
+            };
+            let Some(level) = AccessLevel::parse(&row.level) else {
+                continue;
+            };
+            let scope = match row.scope.as_str() {
+                "global" => Scope::Global,
+                "cube" => match row.cube {
+                    Some(cube) => Scope::Cube(cube),
+                    None => continue,
+                },
+                _ => continue,
+            };
+            grants
+                .entry((scope, kind))
+                .or_default()
+                .set(&subject, level);
+        }
         Ok(SecurityStore {
             users,
             groups: doc.groups.into_iter().collect(),
             object_acls,
             element_acls,
+            grants,
             global_cube_allow,
             global_cube_deny,
             cube_deny,
@@ -977,6 +1112,21 @@ struct SecurityDoc {
     // empty, so pre-m8.2 files load and re-serialize byte-identically.
     #[serde(default, rename = "cube_grant", skip_serializing_if = "Vec::is_empty")]
     cube_grants: Vec<CubeGrantDoc>,
+    // Modular per-object-kind grants (ADR-0023); additive and skipped when empty.
+    #[serde(default, rename = "grant", skip_serializing_if = "Vec::is_empty")]
+    grants: Vec<GrantDoc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct GrantDoc {
+    subject_kind: String,
+    subject: String,
+    /// `global` or `cube`.
+    scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cube: Option<String>,
+    kind: String,
+    level: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1048,6 +1198,22 @@ fn subject_from(kind: &str, name: &str) -> Option<Subject> {
         "group" => Some(Subject::Group(name.to_string())),
         _ => None,
     }
+}
+
+/// Whether a kind lives inside a cube, so a `Cube:Admin` grant over that cube
+/// confers `Write` on it (ADR-0023). Cube, Connection, User, Group are not
+/// cube-scoped.
+fn is_cube_scoped(kind: ObjectKind) -> bool {
+    matches!(
+        kind,
+        ObjectKind::Dimension
+            | ObjectKind::Rule
+            | ObjectKind::Flow
+            | ObjectKind::View
+            | ObjectKind::Subset
+            | ObjectKind::Job
+            | ObjectKind::Sandbox
+    )
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1545,5 +1711,191 @@ mod tests {
         assert!(!store.global_cube_deny().groups.contains("sneaky"));
         // The well-formed deny applied.
         assert!(store.global_cube_deny().groups.contains("blocked"));
+    }
+
+    // ---- modular per-object-kind grants (ADR-0023) ----
+
+    #[test]
+    fn modular_grants_resolve_per_kind() {
+        let mut store = SecurityStore::with_admin("root", "pw", true);
+        let entry = principal("entry", false, &[]);
+        let flow = principal("fa", false, &["flow_authors"]);
+        let modeler = principal("mod", false, &[]);
+        let cadmin = principal("ca", false, &[]);
+        let root = principal("root", true, &[]);
+
+        // Data-entry user: write cells on Sales, nothing structural.
+        store
+            .set_grant(
+                &Subject::User("entry".into()),
+                Scope::Cube("Sales".into()),
+                ObjectKind::Cube,
+                AccessLevel::Write,
+            )
+            .unwrap();
+        // Flow author role: a group with Flow:Write everywhere.
+        store
+            .set_grant(
+                &Subject::Group("flow_authors".into()),
+                Scope::Global,
+                ObjectKind::Flow,
+                AccessLevel::Write,
+            )
+            .unwrap();
+        // Modeler: Dimension + Rule Write on Sales only.
+        store
+            .set_grant(
+                &Subject::User("mod".into()),
+                Scope::Cube("Sales".into()),
+                ObjectKind::Dimension,
+                AccessLevel::Write,
+            )
+            .unwrap();
+        store
+            .set_grant(
+                &Subject::User("mod".into()),
+                Scope::Cube("Sales".into()),
+                ObjectKind::Rule,
+                AccessLevel::Write,
+            )
+            .unwrap();
+        // Cube admin of Sales.
+        store
+            .set_grant(
+                &Subject::User("ca".into()),
+                Scope::Cube("Sales".into()),
+                ObjectKind::Cube,
+                AccessLevel::Admin,
+            )
+            .unwrap();
+
+        // Data-entry: cube Write (cells) but no model editing.
+        assert_eq!(
+            store.effective(&entry, ObjectKind::Cube, Some("Sales")),
+            AccessLevel::Write
+        );
+        assert_eq!(
+            store.effective(&entry, ObjectKind::Flow, Some("Sales")),
+            AccessLevel::None
+        );
+        assert_eq!(
+            store.effective(&entry, ObjectKind::Dimension, Some("Sales")),
+            AccessLevel::None
+        );
+
+        // Flow author: Flow:Write on any cube; nothing else, no cube data write.
+        assert_eq!(
+            store.effective(&flow, ObjectKind::Flow, Some("Sales")),
+            AccessLevel::Write
+        );
+        assert_eq!(
+            store.effective(&flow, ObjectKind::Flow, Some("Budget")),
+            AccessLevel::Write
+        );
+        assert_eq!(
+            store.effective(&flow, ObjectKind::Cube, Some("Sales")),
+            AccessLevel::None
+        );
+        assert_eq!(
+            store.effective(&flow, ObjectKind::Dimension, Some("Sales")),
+            AccessLevel::None
+        );
+
+        // Modeler: Dimension/Rule Write on Sales only.
+        assert_eq!(
+            store.effective(&modeler, ObjectKind::Dimension, Some("Sales")),
+            AccessLevel::Write
+        );
+        assert_eq!(
+            store.effective(&modeler, ObjectKind::Rule, Some("Sales")),
+            AccessLevel::Write
+        );
+        assert_eq!(
+            store.effective(&modeler, ObjectKind::Flow, Some("Sales")),
+            AccessLevel::None
+        );
+        assert_eq!(
+            store.effective(&modeler, ObjectKind::Dimension, Some("Budget")),
+            AccessLevel::None
+        );
+
+        // Cube admin of Sales: Admin on the cube, Write on its cube-scoped kinds,
+        // but only on Sales, and cannot create cubes (needs global Cube:Admin).
+        assert_eq!(
+            store.effective(&cadmin, ObjectKind::Cube, Some("Sales")),
+            AccessLevel::Admin
+        );
+        assert_eq!(
+            store.effective(&cadmin, ObjectKind::Flow, Some("Sales")),
+            AccessLevel::Write
+        );
+        assert_eq!(
+            store.effective(&cadmin, ObjectKind::Dimension, Some("Sales")),
+            AccessLevel::Write
+        );
+        assert_eq!(
+            store.effective(&cadmin, ObjectKind::Flow, Some("Budget")),
+            AccessLevel::None
+        );
+        assert!(!store.can_manage_cubes(&cadmin));
+
+        // Server admin bypasses everything.
+        assert_eq!(
+            store.effective(&root, ObjectKind::Dimension, Some("Anything")),
+            AccessLevel::Admin
+        );
+        assert!(store.can_manage_cubes(&root));
+    }
+
+    #[test]
+    fn global_cube_admin_manages_cubes_and_their_contents() {
+        let mut store = SecurityStore::with_admin("root", "pw", true);
+        let mgr = principal("mgr", false, &["cube_mgrs"]);
+        store
+            .set_grant(
+                &Subject::Group("cube_mgrs".into()),
+                Scope::Global,
+                ObjectKind::Cube,
+                AccessLevel::Admin,
+            )
+            .unwrap();
+        assert!(store.can_manage_cubes(&mgr));
+        // global Cube:Admin also confers Write on cube-scoped kinds in any cube.
+        assert_eq!(
+            store.effective(&mgr, ObjectKind::Flow, Some("Whatever")),
+            AccessLevel::Write
+        );
+    }
+
+    #[test]
+    fn grants_round_trip_byte_identical() {
+        let mut store = SecurityStore::with_admin("root", "pw", true);
+        store
+            .set_grant(
+                &Subject::Group("flow_authors".into()),
+                Scope::Global,
+                ObjectKind::Flow,
+                AccessLevel::Write,
+            )
+            .unwrap();
+        store
+            .set_grant(
+                &Subject::User("mod".into()),
+                Scope::Cube("Sales".into()),
+                ObjectKind::Dimension,
+                AccessLevel::Write,
+            )
+            .unwrap();
+        let text = store.to_model_text();
+        let reloaded = SecurityStore::from_model_text(&text, true).unwrap();
+        assert_eq!(reloaded.to_model_text(), text);
+        assert_eq!(
+            reloaded.effective(
+                &principal("mod", false, &[]),
+                ObjectKind::Dimension,
+                Some("Sales")
+            ),
+            AccessLevel::Write
+        );
     }
 }

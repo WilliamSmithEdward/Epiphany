@@ -142,6 +142,26 @@ pub enum Subject {
     Group(String),
 }
 
+/// The scope of a per-object-kind permission grant (ADR-0023): all cubes, or one
+/// named cube. Ordered so it can key a `BTreeMap` deterministically.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Scope {
+    /// Every cube (and cube-creation, for the `Cube` kind at this scope).
+    Global,
+    /// One specific cube.
+    Cube(String),
+}
+
+impl Scope {
+    /// The cube this scope names, if specific.
+    pub fn cube(&self) -> Option<&str> {
+        match self {
+            Scope::Global => None,
+            Scope::Cube(name) => Some(name),
+        }
+    }
+}
+
 /// The grants on one object (or element): per-user and per-group access levels.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AccessList {
