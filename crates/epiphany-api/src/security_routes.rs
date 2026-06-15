@@ -8,7 +8,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use epiphany_security::{
-    AccessLevel, AuditAction, AuditFilter, ObjectKind, ObjectRef, SecurityError, Subject,
+    AccessLevel, AuditAction, AuditFilter, CubeGrant, ObjectKind, ObjectRef, SecurityError, Subject,
 };
 
 use crate::auth::AuthPrincipal;
@@ -575,10 +575,28 @@ pub(crate) struct CubeGrantBody {
     level: String,
 }
 
+/// Parse the single-knob cube-grant level token into the end state to apply.
+/// `none` revokes, `read`/`write`/`admin` allow at that level, `deny` denies.
+fn parse_cube_grant(level: &str) -> Result<CubeGrant, ApiError> {
+    Ok(match level {
+        "none" => CubeGrant::None,
+        "deny" => CubeGrant::Deny,
+        "read" => CubeGrant::Allow(AccessLevel::Read),
+        "write" => CubeGrant::Allow(AccessLevel::Write),
+        "admin" => CubeGrant::Allow(AccessLevel::Admin),
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "level must be none/read/write/admin/deny, got '{other}'"
+            )))
+        }
+    })
+}
+
 /// `PUT /api/v1/acl/cube-grants` -> set a cube grant (admin). `level` is the
 /// single knob: `none` revokes any allow and any deny for the (scope, subject);
 /// `read`/`write`/`admin` set an allow (clearing any deny); `deny` sets an
-/// explicit deny (clearing any allow). `scope` null = global (all cubes).
+/// explicit deny (clearing any allow). `scope` null = global (all cubes). The
+/// change is applied atomically so the pair is never left half-set.
 pub(crate) async fn put_cube_grant(
     auth: AuthPrincipal,
     State(state): State<AppState>,
@@ -586,47 +604,17 @@ pub(crate) async fn put_cube_grant(
 ) -> Result<StatusCode, ApiError> {
     require_admin(&state, &auth)?;
     let subject = parse_subject(&body.subject_kind, &body.subject)?;
+    let grant = parse_cube_grant(&body.level)?;
     let scope = body.scope.as_deref();
     if scope.is_some_and(|c| c.trim().is_empty()) {
         return Err(ApiError::bad_request("scope cube name must not be empty"));
     }
-    {
-        let mut security = state.security.lock().expect("security mutex");
-        match body.level.as_str() {
-            "deny" => {
-                // Deny wins; clear any allow at this scope to keep one knob.
-                security
-                    .set_cube_allow(scope, &subject, AccessLevel::None)
-                    .map_err(map_security_err)?;
-                security
-                    .set_cube_deny(scope, &subject, true)
-                    .map_err(map_security_err)?;
-            }
-            "none" => {
-                security
-                    .set_cube_allow(scope, &subject, AccessLevel::None)
-                    .map_err(map_security_err)?;
-                security
-                    .set_cube_deny(scope, &subject, false)
-                    .map_err(map_security_err)?;
-            }
-            other => {
-                let level = parse_level(other)?;
-                if level == AccessLevel::None {
-                    // Defensive: "none" is handled above; reject a stray empty.
-                    return Err(ApiError::bad_request(
-                        "level must be none/read/write/admin/deny",
-                    ));
-                }
-                security
-                    .set_cube_deny(scope, &subject, false)
-                    .map_err(map_security_err)?;
-                security
-                    .set_cube_allow(scope, &subject, level)
-                    .map_err(map_security_err)?;
-            }
-        }
-    }
+    state
+        .security
+        .lock()
+        .expect("security mutex")
+        .set_cube_grant(scope, &subject, grant)
+        .map_err(map_security_err)?;
     // Audit target: the named cube, or "*" for the global scope.
     let target = ObjectRef::cube(scope.unwrap_or("*"));
     audit(

@@ -11,7 +11,9 @@ use base64::Engine as _;
 use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 
-use crate::acl::{AccessLevel, AccessList, DenyList, GrantEffect, ObjectKind, ObjectRef, Subject};
+use crate::acl::{
+    AccessLevel, AccessList, CubeGrant, DenyList, GrantEffect, ObjectKind, ObjectRef, Subject,
+};
 
 const FORMAT_TAG: &str = "epiphany-security/v0";
 const ADMIN_USERNAME: &str = "admin";
@@ -590,16 +592,10 @@ impl SecurityStore {
 
     // ---- global cube grants and explicit deny (ADR-0016) ----
 
-    /// Set (or, with `AccessLevel::None`, remove) a cube **allow** grant for a
-    /// subject, persisting the change. `scope = None` is the global scope (all
-    /// cubes); `scope = Some(cube)` is a specific cube (the existing per-cube
-    /// allow path, kept identical so callers and stored files are unaffected).
-    pub fn set_cube_allow(
-        &mut self,
-        scope: Option<&str>,
-        subject: &Subject,
-        level: AccessLevel,
-    ) -> Result<(), SecurityError> {
+    /// In-memory only: set/clear a cube allow grant. The public setters and the
+    /// atomic [`set_cube_grant`](Self::set_cube_grant) compose this and then
+    /// `save()` once, so a multi-part change never persists half-applied.
+    fn apply_cube_allow(&mut self, scope: Option<&str>, subject: &Subject, level: AccessLevel) {
         match scope {
             None => self.global_cube_allow.set(subject, level),
             Some(cube) => {
@@ -611,6 +607,33 @@ impl SecurityStore {
                 }
             }
         }
+    }
+
+    /// In-memory only: set/clear a cube deny. See [`apply_cube_allow`](Self::apply_cube_allow).
+    fn apply_cube_deny(&mut self, scope: Option<&str>, subject: &Subject, denied: bool) {
+        match scope {
+            None => self.global_cube_deny.set(subject, denied),
+            Some(cube) => {
+                let entry = self.cube_deny.entry(cube.to_string()).or_default();
+                entry.set(subject, denied);
+                if entry.is_empty() {
+                    self.cube_deny.remove(cube);
+                }
+            }
+        }
+    }
+
+    /// Set (or, with `AccessLevel::None`, remove) a cube **allow** grant for a
+    /// subject, persisting the change. `scope = None` is the global scope (all
+    /// cubes); `scope = Some(cube)` is a specific cube (the existing per-cube
+    /// allow path, kept identical so callers and stored files are unaffected).
+    pub fn set_cube_allow(
+        &mut self,
+        scope: Option<&str>,
+        subject: &Subject,
+        level: AccessLevel,
+    ) -> Result<(), SecurityError> {
+        self.apply_cube_allow(scope, subject, level);
         self.save()
     }
 
@@ -623,14 +646,35 @@ impl SecurityStore {
         subject: &Subject,
         denied: bool,
     ) -> Result<(), SecurityError> {
-        match scope {
-            None => self.global_cube_deny.set(subject, denied),
-            Some(cube) => {
-                let entry = self.cube_deny.entry(cube.to_string()).or_default();
-                entry.set(subject, denied);
-                if entry.is_empty() {
-                    self.cube_deny.remove(cube);
-                }
+        self.apply_cube_deny(scope, subject, denied);
+        self.save()
+    }
+
+    /// Atomically set the single-knob cube grant for a `(scope, subject)` pair
+    /// (ADR-0016): allow, deny, or none. Applying one effect clears the others
+    /// in memory and the change is persisted in a **single** `save()`, so a
+    /// failure can never leave the pair in an inconsistent state (the
+    /// allow-XOR-deny-XOR-none invariant always holds on disk). This is the
+    /// setter the REST surface uses.
+    pub fn set_cube_grant(
+        &mut self,
+        scope: Option<&str>,
+        subject: &Subject,
+        grant: CubeGrant,
+    ) -> Result<(), SecurityError> {
+        match grant {
+            CubeGrant::None => {
+                self.apply_cube_allow(scope, subject, AccessLevel::None);
+                self.apply_cube_deny(scope, subject, false);
+            }
+            CubeGrant::Allow(level) => {
+                // Clear any deny first so the requested allow is the only knob.
+                self.apply_cube_deny(scope, subject, false);
+                self.apply_cube_allow(scope, subject, level);
+            }
+            CubeGrant::Deny => {
+                self.apply_cube_allow(scope, subject, AccessLevel::None);
+                self.apply_cube_deny(scope, subject, true);
             }
         }
         self.save()
@@ -802,8 +846,11 @@ impl SecurityStore {
                     .set(&subject, level);
             }
         }
-        // Global cube allows and all denies (ADR-0016). Loading is total: an
-        // unrecognized subject kind, level, or effect skips the row.
+        // Global cube allows and all denies (ADR-0016). Loading is total and
+        // fail-closed: a row whose subject kind or effect does not parse, an
+        // allow without a valid level, or a deny that carries a level (the level
+        // is meaningless for a deny) is skipped rather than guessed at, so a
+        // hand-edit typo can never silently flip a deny into an allow.
         let mut global_cube_allow = AccessList::default();
         let mut global_cube_deny = DenyList::default();
         let mut cube_deny: BTreeMap<String, DenyList> = BTreeMap::new();
@@ -811,7 +858,10 @@ impl SecurityStore {
             let Some(subject) = subject_from(&row.subject_kind, &row.subject) else {
                 continue;
             };
-            match GrantEffect::parse(&row.effect).unwrap_or(GrantEffect::Allow) {
+            let Some(effect) = GrantEffect::parse(&row.effect) else {
+                continue;
+            };
+            match effect {
                 GrantEffect::Allow => {
                     let Some(level) = row.level.as_deref().and_then(AccessLevel::parse) else {
                         continue;
@@ -827,10 +877,17 @@ impl SecurityStore {
                             .set(&subject, level),
                     }
                 }
-                GrantEffect::Deny => match row.cube {
-                    None => global_cube_deny.set(&subject, true),
-                    Some(cube) => cube_deny.entry(cube).or_default().set(&subject, true),
-                },
+                GrantEffect::Deny => {
+                    // A deny carries no level (ADR-0016). Skip a malformed deny
+                    // that has one rather than silently dropping it on re-save.
+                    if row.level.is_some() {
+                        continue;
+                    }
+                    match row.cube {
+                        None => global_cube_deny.set(&subject, true),
+                        Some(cube) => cube_deny.entry(cube).or_default().set(&subject, true),
+                    }
+                }
             }
         }
         Ok(SecurityStore {
@@ -1432,5 +1489,59 @@ mod tests {
             .contains("contractors"));
         // The per-cube allow stays in object_acls (not duplicated as a cube_grant).
         assert_eq!(store2.cube_access("ann", "Budget"), AccessLevel::Write);
+    }
+
+    #[test]
+    fn set_cube_grant_is_atomic_single_knob() {
+        // set_cube_grant holds the allow-XOR-deny-XOR-none invariant: applying one
+        // effect clears the others, so a pair is never both allowed and denied.
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        let g = || Subject::Group("g".into());
+
+        store.set_cube_grant(None, &g(), CubeGrant::Deny).unwrap();
+        assert!(store.global_cube_deny().groups.contains("g"));
+        assert!(!store.global_cube_allow().groups.contains_key("g"));
+
+        // Allow clears the deny.
+        store
+            .set_cube_grant(None, &g(), CubeGrant::Allow(AccessLevel::Read))
+            .unwrap();
+        assert!(!store.global_cube_deny().groups.contains("g"));
+        assert_eq!(
+            store.global_cube_allow().groups.get("g").copied(),
+            Some(AccessLevel::Read)
+        );
+
+        // Deny again clears the allow.
+        store.set_cube_grant(None, &g(), CubeGrant::Deny).unwrap();
+        assert!(store.global_cube_deny().groups.contains("g"));
+        assert!(!store.global_cube_allow().groups.contains_key("g"));
+
+        // None clears both.
+        store.set_cube_grant(None, &g(), CubeGrant::None).unwrap();
+        assert!(!store.global_cube_deny().groups.contains("g"));
+        assert!(!store.global_cube_allow().groups.contains_key("g"));
+    }
+
+    #[test]
+    fn load_is_fail_closed_on_malformed_cube_grants() {
+        // A deny row carrying a (meaningless) level is skipped, and a deny whose
+        // effect is mistyped is NOT silently turned into an allow: neither leaks
+        // access. A valid deny in the same file still applies.
+        let text = format!(
+            "format = \"{FORMAT_TAG}\"\n\n\
+             [[user]]\nusername = \"admin\"\nis_admin = true\nmust_change_password = false\npassword_hash = \"x\"\n\n\
+             [[cube_grant]]\nsubject_kind = \"group\"\nsubject = \"with_level\"\neffect = \"deny\"\nlevel = \"write\"\n\n\
+             [[cube_grant]]\nsubject_kind = \"group\"\nsubject = \"sneaky\"\neffect = \"dney\"\nlevel = \"write\"\n\n\
+             [[cube_grant]]\nsubject_kind = \"group\"\nsubject = \"blocked\"\neffect = \"deny\"\n"
+        );
+        let store = SecurityStore::from_model_text(&text, true).unwrap();
+        // The deny-with-level row was skipped (not applied as a deny).
+        assert!(!store.global_cube_deny().groups.contains("with_level"));
+        // The mistyped effect did NOT become an allow (fail-closed).
+        assert!(!store.global_cube_allow().groups.contains_key("sneaky"));
+        assert!(!store.global_cube_deny().groups.contains("sneaky"));
+        // The well-formed deny applied.
+        assert!(store.global_cube_deny().groups.contains("blocked"));
     }
 }

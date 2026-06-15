@@ -212,6 +212,19 @@ impl GrantEffect {
     }
 }
 
+/// The intended end state of one `(scope, subject)` cube grant (ADR-0016): the
+/// single knob the admin sets. Exactly one of allow, deny, or none holds for a
+/// pair; applying it atomically clears the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CubeGrant {
+    /// No grant: clears any allow and any deny for the pair.
+    None,
+    /// Allow at a level: clears any deny for the pair.
+    Allow(AccessLevel),
+    /// Explicit deny: clears any allow for the pair.
+    Deny,
+}
+
 /// The set of subjects (users and groups) explicitly denied at one scope
 /// (ADR-0016). A deny carries no level; it is a full denial of cube access and,
 /// within its tier, wins over any allow.
