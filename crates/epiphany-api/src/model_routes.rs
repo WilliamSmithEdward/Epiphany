@@ -16,7 +16,7 @@ use epiphany_core::{
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_admin, require_cube_access};
+use crate::authz::{audit, require_kind_access, require_manage_cubes};
 use crate::routes::map_batch_error;
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
@@ -180,7 +180,7 @@ pub(crate) async fn create_cube(
     State(state): State<AppState>,
     Json(body): Json<NewCubeBody>,
 ) -> Result<Json<CommitDto>, ApiError> {
-    require_admin(&state, &auth)?;
+    require_manage_cubes(&state, &auth)?;
     validate_name("cube", &body.name)?;
     if body.dimensions.is_empty() {
         return Err(ApiError::unprocessable(
@@ -235,7 +235,13 @@ pub(crate) async fn add_elements(
     Path(cube): Path<String>,
     Json(body): Json<AddElementsBody>,
 ) -> Result<Json<CommitDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Dimension,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
 
     let mut elements = Vec::with_capacity(body.elements.len());
     for e in &body.elements {
@@ -284,7 +290,13 @@ pub(crate) async fn define_attribute(
     Path((cube, dimension, attribute)): Path<(String, String, String)>,
     Json(body): Json<AttributeBody>,
 ) -> Result<Json<CommitDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Dimension,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     validate_name("attribute", &attribute)?;
     let kind = parse_attribute_kind(&body.kind)?;
 
@@ -319,7 +331,13 @@ pub(crate) async fn set_attribute_values(
     Path((cube, dimension, attribute)): Path<(String, String, String)>,
     Json(body): Json<AttributeValuesBody>,
 ) -> Result<Json<CommitDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Dimension,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
 
     // Read the attribute's kind from the live snapshot to parse each value.
     let snap = state

@@ -11,7 +11,8 @@ mod audit;
 mod store;
 
 pub use acl::{
-    AccessLevel, AccessList, CubeGrant, DenyList, GrantEffect, ObjectKind, ObjectRef, Subject,
+    AccessLevel, AccessList, CubeGrant, DenyList, GrantEffect, ObjectKind, ObjectRef, Scope,
+    Subject,
 };
 pub use audit::{AuditAction, AuditFilter, AuditLog, AuditRecord, RetentionPolicy};
 pub use store::{GeneratedAdminPassword, Principal, SecurityError, SecurityStore, UserView};

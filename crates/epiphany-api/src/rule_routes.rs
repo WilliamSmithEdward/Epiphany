@@ -18,7 +18,9 @@ use epiphany_engine::ReadSnapshot;
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, deny_if_element_restricted, element_mask, require_cube_access};
+use crate::authz::{
+    audit, deny_if_element_restricted, element_mask, require_cube_access, require_kind_access,
+};
 use crate::calc_factory::{compile_source, OwnedOverlay, PinnedRegistry, ValidateError};
 use crate::dto::CoordMap;
 use crate::resolve::resolve;
@@ -100,7 +102,13 @@ pub(crate) async fn put_rules(
     Path(cube): Path<String>,
     Json(body): Json<RulesDto>,
 ) -> Result<Json<RulesDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Rule,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     // Validate (parse + compile) before persisting; bad rules never get stored.
     compile_source(&state.engine, &cube, &body.source)
         .map_err(|e| map_validate(e, &body.source))?;
@@ -125,7 +133,13 @@ pub(crate) async fn delete_rules(
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Rule,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     let outcome = state
         .engine
         .delete_rules(&cube, None)
@@ -377,7 +391,13 @@ pub(crate) async fn put_rule_test(
     Path(cube): Path<String>,
     Json(body): Json<RuleTestDto>,
 ) -> Result<(StatusCode, Json<RuleTestDto>), ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Rule,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     let test = RuleTest {
         name: body.name.clone(),
         fixtures: body.fixtures.into_iter().map(to_cell).collect(),
@@ -405,7 +425,13 @@ pub(crate) async fn delete_rule_test(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Rule,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     let outcome = state
         .engine
         .delete_rule_test(&cube, None, &name)

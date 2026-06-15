@@ -22,7 +22,7 @@ use epiphany_flow::{
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, deny_if_element_restricted, require_cube_access};
+use crate::authz::{audit, deny_if_element_restricted, require_cube_access, require_kind_access};
 use crate::dto::CoordMap;
 use crate::routes::{build_write, map_batch_error};
 use crate::ws::ChangeEvent;
@@ -160,7 +160,13 @@ pub(crate) async fn put_flow(
     Path((cube, name)): Path<(String, String)>,
     Json(body): Json<FlowDto>,
 ) -> Result<Json<FlowDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Flow,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     // Validate (strip + parse) before persisting; a bad flow is never stored.
     if body.source.trim().is_empty() {
         return Err(ApiError::unprocessable(
@@ -197,7 +203,13 @@ pub(crate) async fn delete_flow(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Flow,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     state
         .engine
         .delete_flow(&cube, None, &name)
@@ -267,7 +279,13 @@ pub(crate) async fn run_flow_handler(
     Path((cube, name)): Path<(String, String)>,
     Json(body): Json<RunBody>,
 ) -> Result<Json<RunReport>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Flow,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     // Resolve the flow source and (if a connection is named) its command spec
     // from one snapshot.
     let (source, command) = {
@@ -501,7 +519,13 @@ pub(crate) async fn put_flow_test(
     Path(cube): Path<String>,
     Json(body): Json<FlowTestDto>,
 ) -> Result<(StatusCode, Json<FlowTestDto>), ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Flow,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     let test = FlowTest {
         name: body.name.clone(),
         flow: body.flow.clone(),
@@ -531,7 +555,13 @@ pub(crate) async fn delete_flow_test(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Flow,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     state
         .engine
         .delete_flow_test(&cube, None, &name)

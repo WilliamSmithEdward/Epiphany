@@ -14,7 +14,7 @@ use epiphany_flow::{Firing, RunRecord};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_cube_access};
+use crate::authz::{audit, require_cube_access, require_kind_access};
 use crate::routes::map_batch_error;
 use crate::scheduler::Scheduler;
 use crate::ws::ChangeEvent;
@@ -139,7 +139,13 @@ pub(crate) async fn put_job(
     Path((cube, name)): Path<(String, String)>,
     Json(body): Json<JobDto>,
 ) -> Result<Json<JobDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Job,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     let existed = {
         let snap = snapshot(&state, &cube)?;
         for step in &body.steps {
@@ -185,7 +191,13 @@ pub(crate) async fn delete_job(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Job,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     state
         .engine
         .delete_job(&cube, None, &name)
@@ -208,7 +220,13 @@ pub(crate) async fn run_job(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<Json<RunDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Job,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     {
         let snap = snapshot(&state, &cube)?;
         if snap.model().job(&name).is_none() {

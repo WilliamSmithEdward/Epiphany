@@ -9,7 +9,7 @@
 
 use epiphany_core::ElementMask;
 use epiphany_engine::ReadSnapshot;
-use epiphany_security::{AccessLevel, AuditAction, ObjectRef};
+use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
 use crate::dto::CoordMap;
@@ -113,6 +113,73 @@ pub(crate) fn require_cube_access(
             false,
         );
         Err(ApiError::forbidden("you do not have access to this cube"))
+    }
+}
+
+/// Gate a request on per-object-kind access (ADR-0023): the caller must hold at
+/// least `needed` on `kind` within `cube` (or globally when `cube` is `None`),
+/// resolved from the live store via `effective()` (fail-closed; admin bypasses;
+/// `Cube:Admin` over a cube confers `Write` on its kinds). On denial emits
+/// `AccessDenied` tagged with the kind and returns 403.
+pub(crate) fn require_kind_access(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    kind: ObjectKind,
+    cube: Option<&str>,
+    needed: AccessLevel,
+) -> Result<(), ApiError> {
+    let level = {
+        let store = state.security.lock().expect("security mutex");
+        match store.principal(&auth.principal.username) {
+            Some(p) => store.effective(&p, kind, cube),
+            None => AccessLevel::None,
+        }
+    };
+    if level >= needed {
+        Ok(())
+    } else {
+        let obj = match cube {
+            Some(c) => ObjectRef::in_cube(kind, c, ""),
+            None => ObjectRef::global(kind, ""),
+        };
+        audit(
+            state,
+            &auth.principal.username,
+            AuditAction::AccessDenied,
+            Some(&obj),
+            false,
+        );
+        Err(ApiError::forbidden(format!(
+            "you do not have {} access to {} objects here",
+            needed.as_str(),
+            kind.as_str()
+        )))
+    }
+}
+
+/// Gate cube lifecycle (create/delete) on the cube-management permission
+/// (ADR-0023): a server admin, or a holder of a global `Cube:Admin` grant. On
+/// denial emits `AccessDenied` and returns 403.
+pub(crate) fn require_manage_cubes(state: &AppState, auth: &AuthPrincipal) -> Result<(), ApiError> {
+    let ok = {
+        let store = state.security.lock().expect("security mutex");
+        store
+            .principal(&auth.principal.username)
+            .is_some_and(|p| store.can_manage_cubes(&p))
+    };
+    if ok {
+        Ok(())
+    } else {
+        audit(
+            state,
+            &auth.principal.username,
+            AuditAction::AccessDenied,
+            None,
+            false,
+        );
+        Err(ApiError::forbidden(
+            "cube management requires administrator or a global cube-admin grant",
+        ))
     }
 }
 
