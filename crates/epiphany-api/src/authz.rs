@@ -1,11 +1,14 @@
-//! Centralized authorization (ADR-0015) and audit emission (ADR-0010).
+//! Centralized authorization (ADR-0023) and audit emission (ADR-0010).
 //!
-//! [`require_access`] is the single object-security gate: it re-resolves the
-//! caller's access against the live security store (composing the owner and
-//! public fallbacks the API supplies from the model snapshot), and on denial
-//! emits an `AccessDenied` audit record and returns 403. [`audit`] is the
-//! shared, best-effort emit helper. Centralizing both keeps every handler's
-//! denial shape and audit trail uniform.
+//! Every gate re-resolves the caller's access against the live security store
+//! per request (so a revoked grant takes effect immediately) and, on denial,
+//! emits an `AccessDenied` audit record and returns 403. The gates are
+//! [`require_kind_access`] (modular per-object-kind grants), [`require_cube_access`]
+//! (cube read/write at the `Cube` kind), [`require_manage_cubes`] (cube
+//! lifecycle), [`require_admin`] (server-admin surface), and the element-level
+//! checks ([`require_element_write`], [`element_mask`]). [`audit`] is the shared,
+//! best-effort emit helper. Centralizing them keeps every handler's denial shape
+//! and audit trail uniform.
 
 use epiphany_core::ElementMask;
 use epiphany_engine::ReadSnapshot;
@@ -82,8 +85,8 @@ pub(crate) fn require_admin(state: &AppState, auth: &AuthPrincipal) -> Result<()
     }
 }
 
-/// The caller's cube-level access (ADR-0015 decision 2a), for filtering lists
-/// without erroring.
+/// The caller's cube-level access at the `Cube` kind (ADR-0023), for filtering
+/// lists without erroring.
 pub(crate) fn cube_level(state: &AppState, username: &str, cube: &str) -> AccessLevel {
     state
         .security
@@ -92,9 +95,9 @@ pub(crate) fn cube_level(state: &AppState, username: &str, cube: &str) -> Access
         .cube_access(username, cube)
 }
 
-/// Gate a request on cube-level access (ADR-0015 decision 2a: a cube is open
-/// until an admin restricts it). Used for cube, cell, rule, and flow handlers,
-/// which are cube-scoped. On denial this emits `AccessDenied` and returns 403.
+/// Gate a request on cube-level access (ADR-0023): `Cube:Read` to read, `Cube:Write`
+/// to write cell data. Fail-closed -- an ungranted cube denies a non-admin; the
+/// server admin bypasses. On denial this emits `AccessDenied` and returns 403.
 pub(crate) fn require_cube_access(
     state: &AppState,
     auth: &AuthPrincipal,
@@ -329,33 +332,4 @@ pub(crate) fn require_element_write_indices(
         ));
     }
     Ok(())
-}
-
-/// Gate a request on object access (ADR-0015). `owner`/`public` are the object's
-/// owner and visibility from the snapshot (pass `None`/`false` for objects that
-/// have neither). On denial this emits an `AccessDenied` record and returns 403.
-pub(crate) fn require_access(
-    state: &AppState,
-    auth: &AuthPrincipal,
-    obj: &ObjectRef,
-    needed: AccessLevel,
-    owner: Option<&str>,
-    public: bool,
-) -> Result<(), ApiError> {
-    let level = {
-        let security = state.security.lock().expect("security mutex");
-        security.resolve_access(&auth.principal.username, obj, owner, public)
-    };
-    if level >= needed {
-        Ok(())
-    } else {
-        audit(
-            state,
-            &auth.principal.username,
-            AuditAction::AccessDenied,
-            Some(obj),
-            false,
-        );
-        Err(ApiError::forbidden("you do not have access to this object"))
-    }
 }

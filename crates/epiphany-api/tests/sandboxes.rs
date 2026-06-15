@@ -15,10 +15,22 @@ use epiphany_determinism::{IdGen, ManualClock};
 use epiphany_engine::{CellWrite, Engine};
 use epiphany_mdx::MdxEvaluator;
 use epiphany_persist::Store;
-use epiphany_security::{AuditLog, SecurityStore};
+use epiphany_security::{AccessLevel, AuditLog, ObjectKind, Scope, SecurityStore, Subject};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
+
+/// Give a non-admin test user `Cube:Write` everywhere (ADR-0023), the modular
+/// replacement for the old open-cube posture these tests relied on.
+fn grant_cube_write(sec: &mut SecurityStore, user: &str) {
+    sec.set_grant(
+        &Subject::User(user.into()),
+        Scope::Global,
+        ObjectKind::Cube,
+        AccessLevel::Write,
+    )
+    .unwrap();
+}
 
 fn scratch(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("epiphany-sb-{}-{name}", std::process::id()));
@@ -44,9 +56,9 @@ fn router(dir: &Path) -> Router {
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
     sec.create_user("bob", "pw", false).unwrap();
-    // Sandbox tests use non-admin owners over an open cube (the closed default is
-    // covered by tests/cube_default_access.rs).
-    sec.set_default_cube_open(true);
+    // Sandbox tests use non-admin owners; grant them cube write (ADR-0023).
+    grant_cube_write(&mut sec, "ann");
+    grant_cube_write(&mut sec, "bob");
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
         clock: Arc::new(ManualClock::new(1_000)),
@@ -169,7 +181,7 @@ fn router_calc(dir: &Path) -> (Router, Engine) {
     let engine = Engine::from_stores(stores, Arc::new(IdGen::default()));
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
-    sec.set_default_cube_open(true);
+    grant_cube_write(&mut sec, "ann");
     let state = AppState {
         engine: engine.clone(),
         clock: Arc::new(ManualClock::new(1_000)),

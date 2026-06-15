@@ -28,11 +28,6 @@ pub struct Config {
     /// The run ledger's retained-run cap (ADR-0013). Default 50_000; `0` keeps
     /// everything.
     pub run_ledger_max_runs: usize,
-    /// The ungranted-cube posture (ADR-0015 decision 2a). Default `false`
-    /// (closed, secure-by-default): a non-admin is denied a cube with no grants.
-    /// `true` opts into the trusted-single-org posture where an ungranted cube is
-    /// open to any authenticated user at Write.
-    pub default_cube_open: bool,
     /// Consecutive failed logins before a username is locked out (ADR-0017).
     /// Default 5; `0` disables the lockout.
     pub login_max_failures: u32,
@@ -69,7 +64,6 @@ impl Default for Config {
             audit_max_records: 100_000,
             audit_retention_millis: None,
             run_ledger_max_runs: 50_000,
-            default_cube_open: false,
             login_max_failures: 5,
             login_lockout_millis: 15 * 60 * 1000,
             tls_self_signed: false,
@@ -134,11 +128,6 @@ impl Config {
             .and_then(|v| v.parse::<usize>().ok())
         {
             config.run_ledger_max_runs = max;
-        }
-        if let Some(access) = vars.get("EPIPHANY_DEFAULT_CUBE_ACCESS") {
-            // Only the explicit "open" opts into the trusted-single-org posture;
-            // anything else (including a typo) stays secure-by-default.
-            config.default_cube_open = access.eq_ignore_ascii_case("open");
         }
         if let Some(n) = vars
             .get("EPIPHANY_LOGIN_MAX_FAILURES")

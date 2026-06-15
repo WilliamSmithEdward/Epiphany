@@ -18,8 +18,8 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0012](0012-data-source-connectors.md) | Data-source connectors (command, HTTP) and the fetch/transform split | Accepted | 5+ |
 | [0013](0013-flow-scheduling-and-orchestration.md) | Flow scheduling and orchestration | Accepted | 8 |
 | [0014](0014-sandbox-overlay-representation.md) | Sandbox overlay representation | Accepted | 6 |
-| [0015](0015-object-and-element-security.md) | Object and element security model | Accepted | 7 |
-| [0016](0016-global-cube-grants-and-explicit-deny.md) | Global cube grants and explicit deny | Accepted | 7 (m8.2) |
+| [0015](0015-object-and-element-security.md) | Object and element security model | Element security accepted; object grants superseded by 0023 | 7 |
+| [0016](0016-global-cube-grants-and-explicit-deny.md) | Global cube grants and explicit deny | Superseded by 0023 | 7 (m8.2) |
 | [0017](0017-authentication-and-credential-hardening.md) | Authentication and credential hardening | Accepted | 8 (m8.3) |
 | [0018](0018-http-surface-hardening.md) | HTTP-surface hardening (security headers, body-size limit) | Accepted | 8 (m8.5) |
 | [0019](0019-optional-tls.md) | Optional TLS (HTTPS), simple to enable | Accepted | 8 (m8.6) |

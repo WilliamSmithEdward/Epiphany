@@ -1,6 +1,7 @@
-//! Security-administration acceptance (Phase 7F): the admin REST surface for
-//! users, groups, object/element ACLs (ADR-0015), and the audit query (ADR-0010).
-//! Every route is admin-only and every mutation lands an audit record.
+//! Security-administration acceptance: the admin REST surface for users, groups,
+//! the modular per-object-kind grants (ADR-0023), element ACLs (ADR-0015), and
+//! the audit query (ADR-0010). Every route is admin-only and every mutation
+//! lands an audit record.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -35,8 +36,6 @@ fn harness(name: &str) -> Router {
     stores.insert("Sales".to_string(), store);
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
-    // The object-grant test starts from an open cube; run the opt-in open posture.
-    sec.set_default_cube_open(true);
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
         clock: Arc::new(ManualClock::new(1_000)),
@@ -141,7 +140,6 @@ async fn non_admin_is_forbidden_from_every_admin_route() {
             Some(json!({ "username": "x", "password": "pw" })),
         ),
         ("GET", "/api/v1/groups", None),
-        ("GET", "/api/v1/acl/objects", None),
         ("GET", "/api/v1/acl/elements", None),
         ("GET", "/api/v1/acl/grants", None),
         (
@@ -333,8 +331,8 @@ async fn admin_manages_users_groups_and_membership() {
 }
 
 #[tokio::test]
-async fn object_grant_via_rest_governs_cube_access() {
-    let app = harness("objacl");
+async fn cube_grant_via_rest_governs_cube_access() {
+    let app = harness("cubegrant");
     let admin = login(&app, "admin", "pw").await.unwrap();
     let ann = login(&app, "ann", "pw").await.unwrap();
 
@@ -349,54 +347,53 @@ async fn object_grant_via_rest_governs_cube_access() {
     .await;
     let dan = login(&app, "dan", "pw").await.unwrap();
 
-    // Unmanaged: both can read.
-    assert_eq!(read_status(&app, &ann).await, StatusCode::OK);
-    assert_eq!(read_status(&app, &dan).await, StatusCode::OK);
+    // Fail-closed (ADR-0023): an ungranted cube denies both non-admins.
+    assert_eq!(read_status(&app, &ann).await, StatusCode::FORBIDDEN);
+    assert_eq!(read_status(&app, &dan).await, StatusCode::FORBIDDEN);
 
-    // Grant the group Read on the cube via REST: now the cube is managed.
+    // Grant the group Cube:Read on Sales via the modular grants surface.
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/acl/objects",
+        "/api/v1/acl/grants",
         &admin,
         Some(json!({
-            "kind": "cube", "name": "Sales",
-            "subject_kind": "group", "subject": "viewers", "level": "read"
+            "subject_kind": "group", "subject": "viewers",
+            "scope": "cube", "cube": "Sales", "kind": "cube", "level": "read"
         })),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // dan (in viewers) reads but cannot write; ann (ungranted) is denied.
+    // dan (in viewers) reads but cannot write; ann (ungranted) is still denied.
     assert_eq!(read_status(&app, &dan).await, StatusCode::OK);
     assert_eq!(write_status(&app, &dan).await, StatusCode::FORBIDDEN);
     assert_eq!(read_status(&app, &ann).await, StatusCode::FORBIDDEN);
 
     // The grant is listed.
-    let (_, grants) = call(&app, "GET", "/api/v1/acl/objects", &admin, None).await;
-    let g = &grants["grants"].as_array().unwrap()[0];
-    assert_eq!(g["kind"], "cube");
-    assert_eq!(g["name"], "Sales");
-    assert_eq!(g["subject_kind"], "group");
-    assert_eq!(g["subject"], "viewers");
-    assert_eq!(g["level"], "read");
+    let (_, grants) = call(&app, "GET", "/api/v1/acl/grants", &admin, None).await;
+    assert!(grants["grants"].as_array().unwrap().iter().any(|g| {
+        g["kind"] == "cube"
+            && g["cube"] == "Sales"
+            && g["subject_kind"] == "group"
+            && g["subject"] == "viewers"
+            && g["level"] == "read"
+    }));
 
-    // Revoke (level none): the cube becomes unmanaged again, ann reads once more.
+    // Revoke (level none): dan loses read again.
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/acl/objects",
+        "/api/v1/acl/grants",
         &admin,
         Some(json!({
-            "kind": "cube", "name": "Sales",
-            "subject_kind": "group", "subject": "viewers", "level": "none"
+            "subject_kind": "group", "subject": "viewers",
+            "scope": "cube", "cube": "Sales", "kind": "cube", "level": "none"
         })),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
-    let (_, grants) = call(&app, "GET", "/api/v1/acl/objects", &admin, None).await;
-    assert!(grants["grants"].as_array().unwrap().is_empty());
-    assert_eq!(read_status(&app, &ann).await, StatusCode::OK);
+    assert_eq!(read_status(&app, &dan).await, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

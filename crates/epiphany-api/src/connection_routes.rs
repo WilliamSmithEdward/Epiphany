@@ -1,8 +1,8 @@
-//! Connection endpoints: CRUD over a cube's admin-defined data-source
-//! connections. Defining or deleting a connection requires an admin, and a
-//! command (process-execution) connection additionally requires the server to
-//! have opted in (ADR-0012 decision 6): two independent gates before the host
-//! can ever run a program.
+//! Connection endpoints: CRUD over a cube's data-source connections. Reading a
+//! connection requires `Connection:Read`; defining or deleting one requires
+//! `Connection:Write` (ADR-0023), and a command (process-execution) connection
+//! additionally requires the server to have opted in (ADR-0012 decision 6): two
+//! independent gates before the host can ever run a program.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -13,7 +13,7 @@ use epiphany_core::{CommandSpec, Connection, ConnectionSpec, SourceFormat};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_access, require_cube_access};
+use crate::authz::{audit, require_kind_access};
 use crate::routes::map_batch_error;
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
@@ -93,7 +93,13 @@ pub(crate) async fn list_connections(
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<ConnectionListDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Connection,
+        Some(&cube),
+        AccessLevel::Read,
+    )?;
     let snap = snapshot(&state, &cube)?;
     let is_admin = auth.principal.is_admin;
     Ok(Json(ConnectionListDto {
@@ -113,7 +119,13 @@ pub(crate) async fn get_connection(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<Json<ConnectionDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Connection,
+        Some(&cube),
+        AccessLevel::Read,
+    )?;
     let snap = snapshot(&state, &cube)?;
     let conn = snap
         .model()
@@ -131,7 +143,13 @@ pub(crate) async fn put_connection(
     Json(body): Json<ConnectionDto>,
 ) -> Result<Json<ConnectionDto>, ApiError> {
     let obj = connection_ref(&cube, &name);
-    require_access(&state, &auth, &obj, AccessLevel::Admin, None, false)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Connection,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     if body.kind != "command" {
         return Err(ApiError::bad_request(format!(
             "unsupported connection kind '{}'",
@@ -201,7 +219,13 @@ pub(crate) async fn delete_connection(
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let obj = connection_ref(&cube, &name);
-    require_access(&state, &auth, &obj, AccessLevel::Admin, None, false)?;
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Connection,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
     let outcome = state
         .engine
         .delete_connection(&cube, None, &name)

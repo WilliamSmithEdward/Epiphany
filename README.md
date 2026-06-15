@@ -141,7 +141,6 @@ environment variables. The most useful:
 | `EPIPHANY_DATA_DIR` | Durable data directory | `./data` |
 | `EPIPHANY_TLS` | `on` serves HTTPS with an auto-generated self-signed certificate | off (HTTP) |
 | `EPIPHANY_TLS_CERT` / `EPIPHANY_TLS_KEY` | PEM cert + key to serve a real certificate (takes precedence) | none |
-| `EPIPHANY_DEFAULT_CUBE_ACCESS` | `open` opts an ungranted cube into trusted-org write access | closed (secure) |
 | `EPIPHANY_ENABLE_COMMAND_CONNECTORS` | Allow admin-defined programs as flow data sources | off |
 
 ### HTTPS / TLS

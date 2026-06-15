@@ -1,6 +1,6 @@
 # ADR-0015: Object and element security model
 
-- **Status:** Accepted (model locked; realized across Phase 7 increments 7B-7I)
+- **Status:** Element security accepted and retained; the per-object grant model and the open-by-default cube posture were superseded by [ADR-0023](0023-modular-object-kind-permissions.md)
 - **Date:** 2026-06-14
 - **Deciders:** Epiphany maintainers
 - **Phase:** 7 (object and element security)

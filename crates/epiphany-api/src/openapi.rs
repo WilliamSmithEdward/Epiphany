@@ -537,18 +537,6 @@ fn document() -> Value {
                 "parameters": [name_param()],
                 "responses": { "204": { "description": "Deleted" } }
             }},
-            "/api/v1/acl/objects": {
-                "get": {
-                    "summary": "List all object grants (admin)", "security": bearer(),
-                    "responses": ok("The object grants")
-                },
-                "put": {
-                    "summary": "Grant or (with level 'none') revoke object access (admin)",
-                    "security": bearer(),
-                    "requestBody": json_body("#/components/schemas/ObjectGrant"),
-                    "responses": { "204": { "description": "Applied" } }
-                }
-            },
             "/api/v1/acl/elements": {
                 "get": {
                     "summary": "List all element grants (admin)", "security": bearer(),
@@ -558,19 +546,6 @@ fn document() -> Value {
                     "summary": "Grant or (with level 'none') revoke element access (admin)",
                     "security": bearer(),
                     "requestBody": json_body("#/components/schemas/ElementGrant"),
-                    "responses": { "204": { "description": "Applied" } }
-                }
-            },
-            "/api/v1/acl/cube-grants": {
-                "get": {
-                    "summary": "List the complete cube-access picture: allows and denies, global and per-cube (admin)",
-                    "security": bearer(),
-                    "responses": ok("The cube grants")
-                },
-                "put": {
-                    "summary": "Set a cube grant (admin). level: none|read|write|admin|deny; scope null = all cubes (ADR-0016)",
-                    "security": bearer(),
-                    "requestBody": json_body("#/components/schemas/CubeGrant"),
                     "responses": { "204": { "description": "Applied" } }
                 }
             },
@@ -779,14 +754,6 @@ fn document() -> Value {
                     "password": { "type": "string", "description": "Reset the user's password" } } },
                 "CreateGroupRequest": { "type": "object", "properties": {
                     "name": { "type": "string" } }, "required": ["name"] },
-                "ObjectGrant": { "type": "object", "properties": {
-                    "kind": { "type": "string", "description": "Object kind, e.g. cube, rule, flow, view, subset, connection, sandbox" },
-                    "cube": { "type": "string", "description": "Owning cube for cube-scoped kinds; omit for global kinds" },
-                    "name": { "type": "string" },
-                    "subject_kind": { "type": "string", "enum": ["user", "group"] },
-                    "subject": { "type": "string" },
-                    "level": { "type": "string", "enum": ["none", "read", "write", "admin"], "description": "'none' revokes the grant" } },
-                    "required": ["kind", "name", "subject_kind", "subject", "level"] },
                 "ElementGrant": { "type": "object", "properties": {
                     "cube": { "type": "string" },
                     "dimension": { "type": "string" },
@@ -795,12 +762,6 @@ fn document() -> Value {
                     "subject": { "type": "string" },
                     "level": { "type": "string", "enum": ["none", "read", "write", "admin"], "description": "'none' revokes the grant" } },
                     "required": ["cube", "dimension", "element", "subject_kind", "subject", "level"] },
-                "CubeGrant": { "type": "object", "properties": {
-                    "scope": { "type": "string", "description": "Cube name; omit or null for the global scope (all cubes)" },
-                    "subject_kind": { "type": "string", "enum": ["user", "group"] },
-                    "subject": { "type": "string" },
-                    "level": { "type": "string", "enum": ["none", "read", "write", "admin", "deny"], "description": "Single knob: 'none' revokes any grant, read/write/admin allow, 'deny' explicitly denies (ADR-0016)" } },
-                    "required": ["subject_kind", "subject", "level"] },
                 "Grant": { "type": "object", "properties": {
                     "subject_kind": { "type": "string", "enum": ["user", "group"] },
                     "subject": { "type": "string" },
@@ -918,9 +879,7 @@ mod tests {
         "/api/v1/users/{username}",
         "/api/v1/groups",
         "/api/v1/groups/{name}",
-        "/api/v1/acl/objects",
         "/api/v1/acl/elements",
-        "/api/v1/acl/cube-grants",
         "/api/v1/acl/grants",
         "/api/v1/audit",
     ];

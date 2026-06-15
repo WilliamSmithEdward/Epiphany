@@ -1,9 +1,10 @@
-//! Object and element access control (ADR-0015): the access lattice, securable
-//! object references, subjects (user or group), and per-object/per-element grant
-//! lists. Resolution is most-permissive-wins; admin bypass, owner, and public
-//! fallbacks are composed at the API boundary (this layer knows only grants).
+//! Access-control primitives: the access lattice, securable object kinds and
+//! references, subjects (user or group), grant scope (ADR-0023), and the
+//! per-subject grant list. Element-level access (ADR-0015) reuses the same
+//! `AccessList`. Resolution is most-permissive-wins; admin bypass is composed at
+//! the API boundary (this layer knows only grants).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// The access lattice, totally ordered so effective access is a `max()` and a
 /// requirement is `>= need`.
@@ -200,81 +201,6 @@ impl AccessList {
     }
 
     /// Whether there are no grants.
-    pub fn is_empty(&self) -> bool {
-        self.users.is_empty() && self.groups.is_empty()
-    }
-}
-
-/// The effect of a cube grant (ADR-0016): `Allow` carries an [`AccessLevel`];
-/// `Deny` carries none (it is a full denial of cube access).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GrantEffect {
-    Allow,
-    Deny,
-}
-
-impl GrantEffect {
-    /// The canonical lowercase token (for model-as-code and the REST surface).
-    pub fn as_str(self) -> &'static str {
-        match self {
-            GrantEffect::Allow => "allow",
-            GrantEffect::Deny => "deny",
-        }
-    }
-
-    /// Parse a token; `None` for an unrecognized string.
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "allow" => Some(GrantEffect::Allow),
-            "deny" => Some(GrantEffect::Deny),
-            _ => None,
-        }
-    }
-}
-
-/// The intended end state of one `(scope, subject)` cube grant (ADR-0016): the
-/// single knob the admin sets. Exactly one of allow, deny, or none holds for a
-/// pair; applying it atomically clears the others.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CubeGrant {
-    /// No grant: clears any allow and any deny for the pair.
-    None,
-    /// Allow at a level: clears any deny for the pair.
-    Allow(AccessLevel),
-    /// Explicit deny: clears any allow for the pair.
-    Deny,
-}
-
-/// The set of subjects (users and groups) explicitly denied at one scope
-/// (ADR-0016). A deny carries no level; it is a full denial of cube access and,
-/// within its tier, wins over any allow.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DenyList {
-    pub users: BTreeSet<String>,
-    pub groups: BTreeSet<String>,
-}
-
-impl DenyList {
-    /// Whether a principal is denied here: a direct user deny, or a deny on any
-    /// of the principal's groups.
-    pub fn denies(&self, username: &str, groups: &[String]) -> bool {
-        self.users.contains(username) || groups.iter().any(|g| self.groups.contains(g))
-    }
-
-    /// Set (`denied = true`) or clear (`denied = false`) a subject's deny.
-    pub fn set(&mut self, subject: &Subject, denied: bool) {
-        let (set, key) = match subject {
-            Subject::User(u) => (&mut self.users, u),
-            Subject::Group(g) => (&mut self.groups, g),
-        };
-        if denied {
-            set.insert(key.clone());
-        } else {
-            set.remove(key);
-        }
-    }
-
-    /// Whether there are no denies.
     pub fn is_empty(&self) -> bool {
         self.users.is_empty() && self.groups.is_empty()
     }

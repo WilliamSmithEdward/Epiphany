@@ -14,7 +14,7 @@ use epiphany_determinism::{IdGen, ManualClock};
 use epiphany_engine::Engine;
 use epiphany_mdx::MdxEvaluator;
 use epiphany_persist::Store;
-use epiphany_security::{AuditLog, SecurityStore};
+use epiphany_security::{AccessLevel, AuditLog, ObjectKind, Scope, SecurityStore, Subject};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -66,8 +66,15 @@ fn router(name: &str) -> Router {
     stores.insert("Sales".to_string(), store);
     let mut security = SecurityStore::with_admin("admin", "pw", true);
     security.create_user("bob", "pw", false).unwrap();
-    // Subset-visibility tests use a non-admin over an open cube.
-    security.set_default_cube_open(true);
+    // Subset-visibility tests use a non-admin who can read the cube (ADR-0023).
+    security
+        .set_grant(
+            &Subject::User("bob".into()),
+            Scope::Global,
+            ObjectKind::Cube,
+            AccessLevel::Write,
+        )
+        .unwrap();
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
         clock: Arc::new(ManualClock::new(1_000)),

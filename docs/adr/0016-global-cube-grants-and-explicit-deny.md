@@ -1,6 +1,6 @@
 # ADR-0016: Global cube grants and explicit deny
 
-- **Status:** Accepted (model locked; realized in m8.2 as a Phase 7 security extension)
+- **Status:** Superseded by [ADR-0023](0023-modular-object-kind-permissions.md) (the global-cube-grant allow/deny tiers were removed in the modular-permissions cleanup; fail-closed plus explicit per-kind `Cube` grants replace them)
 - **Date:** 2026-06-14
 - **Deciders:** Epiphany maintainers
 - **Phase:** 7 extension (object security), built after Phase 8

@@ -22,7 +22,10 @@ file). Defaults in parentheses.
 | `EPIPHANY_TLS_CERT` / `EPIPHANY_TLS_KEY` | Operator PEM cert + key (takes precedence over the self-signed path). |
 | `EPIPHANY_LOG` | Log filter (e.g. `info`, `epiphany=debug`). |
 | `EPIPHANY_SCHEDULER_TICK_SECS` (`1`) | Scheduler tick; `0` disables the scheduler. |
-| `EPIPHANY_DEFAULT_CUBE_ACCESS` | `open` for the trusted-single-org posture; default is closed (secure). |
+
+Authorization is fail-closed (ADR-0023): a cube is reachable only by a server
+admin or the holder of a matching `Cube` grant. There is no open-by-default
+posture; grant access through the security admin surface.
 
 On first run the server writes the generated admin password to
 `<data_dir>/server/admin-password.txt` (owner-only) and logs only its path.

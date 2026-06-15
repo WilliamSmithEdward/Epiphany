@@ -69,10 +69,8 @@ fn harness(dir: &Path, audit_path: std::path::PathBuf) -> Harness {
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
     sec.create_user("bob", "pw", false).unwrap();
-    // The DoD narrative starts from an open cube and then restricts it, so this
-    // acceptance runs the opt-in open posture (the closed default is the secure
-    // out-of-box behavior, covered by tests/cube_default_access.rs).
-    sec.set_default_cube_open(true);
+    // Fail-closed (ADR-0023): the cube is reachable only by a server admin or a
+    // matching Cube grant; the narrative grants access explicitly below.
 
     let audit = AuditLog::open(audit_path).unwrap();
     let state = AppState {
@@ -179,24 +177,27 @@ async fn non_admin_is_confined_by_object_and_element_security_managed_via_rest()
     let ann = login(&h.app, "ann").await;
     let bob = login(&h.app, "bob").await;
 
-    // Before any grant the cube is open: every authenticated user reads.
-    assert_eq!(read_status(&h.app, &ann, "Total").await, StatusCode::OK);
+    // Fail-closed: before any grant, even ann is denied the cube.
+    assert_eq!(
+        read_status(&h.app, &ann, "Total").await,
+        StatusCode::FORBIDDEN
+    );
 
-    // The admin restricts the cube to ann (Read only) via the REST admin surface.
+    // The admin grants ann Cube:Read on Sales via the modular grants surface.
     let (status, _) = send(
         &h.app,
         "PUT",
-        "/api/v1/acl/objects",
+        "/api/v1/acl/grants",
         &admin,
         Some(json!({
-            "kind": "cube", "name": "Sales",
-            "subject_kind": "user", "subject": "ann", "level": "read"
+            "subject_kind": "user", "subject": "ann",
+            "scope": "cube", "cube": "Sales", "kind": "cube", "level": "read"
         })),
     )
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // Object security now holds: bob (ungranted) is denied the cube entirely --
+    // Cube security now holds: bob (ungranted) is denied the cube entirely --
     // cells and the cube's connection list alike;
     // ann reads but, granted only Read, cannot write; the admin bypasses.
     assert_eq!(

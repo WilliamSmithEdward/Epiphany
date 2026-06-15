@@ -19,7 +19,7 @@ use epiphany_determinism::{IdGen, ManualClock};
 use epiphany_engine::{CellWrite, Engine};
 use epiphany_mdx::MdxEvaluator;
 use epiphany_persist::Store;
-use epiphany_security::{AccessLevel, AuditLog, SecurityStore, Subject};
+use epiphany_security::{AccessLevel, AuditLog, ObjectKind, Scope, SecurityStore, Subject};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -85,10 +85,17 @@ fn harness(name: &str) -> Harness {
     let mut sec = SecurityStore::with_admin("admin", "pw", true);
     sec.create_user("ann", "pw", false).unwrap();
     sec.create_user("bob", "pw", false).unwrap();
-    // Element security is exercised over an open cube (the secure closed default is
-    // covered by tests/cube_default_access.rs); here the cube is reachable so the
-    // element ACLs are what gate access.
-    sec.set_default_cube_open(true);
+    // The cube is reachable (Cube:Write for the actors, ADR-0023) so the element
+    // ACLs are what gate access within it.
+    for user in ["ann", "bob"] {
+        sec.set_grant(
+            &Subject::User(user.into()),
+            Scope::Global,
+            ObjectKind::Cube,
+            AccessLevel::Write,
+        )
+        .unwrap();
+    }
     let security = Arc::new(Mutex::new(sec));
 
     let state = AppState {

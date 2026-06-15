@@ -4,30 +4,23 @@ import {
   createUser,
   deleteGroup,
   deleteUser,
-  listCubeGrants,
   listElementAcls,
   listGroups,
   listGrants,
-  listObjectAcls,
   listUsers,
   patchUser,
-  putCubeGrant,
   putElementAcl,
-  putObjectAcl,
   setGrant,
   type AccessLevel,
-  type CubeGrantDto,
-  type CubeGrantLevel,
   type ElementGrantDto,
   type GrantDto,
   type GrantKind,
-  type ObjectGrantDto,
   type SubjectKind,
   type UserDto,
 } from '../api/client'
 import AuditViewer from './AuditViewer'
 
-type Tab = 'users' | 'groups' | 'roles' | 'cube-grants' | 'objects' | 'elements' | 'audit'
+type Tab = 'users' | 'groups' | 'roles' | 'elements' | 'audit'
 
 /** The grantable object kinds (ADR-0023), with plain-language labels. */
 const GRANT_KINDS: { value: GrantKind; label: string }[] = [
@@ -51,22 +44,12 @@ const ROLE_PRESETS: { label: string; scope: 'global' | 'cube'; kind: GrantKind; 
   { label: 'Cube manager (create/admin cubes)', scope: 'global', kind: 'cube', level: 'admin' },
 ]
 
-const OBJECT_KINDS = [
-  'cube',
-  'dimension',
-  'rule',
-  'flow',
-  'view',
-  'subset',
-  'connection',
-  'sandbox',
-]
 const LEVELS: AccessLevel[] = ['read', 'write', 'admin']
-const CUBE_GRANT_LEVELS: CubeGrantLevel[] = ['read', 'write', 'admin', 'deny']
 
-// The server-global security console (ADR-0015 + ADR-0010): users, groups,
-// object and element access, and the audit log. Admin only; the topbar hides the
-// entry point for everyone else and every route is server-gated regardless.
+// The server-global security console (ADR-0023 + ADR-0010): users, groups, the
+// modular per-object-kind grants (roles), element access, and the audit log.
+// Admin only; the topbar hides the entry point for everyone else and every route
+// is server-gated regardless.
 export default function SecurityWorkspace() {
   const [tab, setTab] = useState<Tab>('users')
   return (
@@ -81,15 +64,6 @@ export default function SecurityWorkspace() {
         <button className={tab === 'roles' ? 'active' : ''} onClick={() => setTab('roles')}>
           Roles
         </button>
-        <button
-          className={tab === 'cube-grants' ? 'active' : ''}
-          onClick={() => setTab('cube-grants')}
-        >
-          Cube grants
-        </button>
-        <button className={tab === 'objects' ? 'active' : ''} onClick={() => setTab('objects')}>
-          Object access
-        </button>
         <button className={tab === 'elements' ? 'active' : ''} onClick={() => setTab('elements')}>
           Element access
         </button>
@@ -100,8 +74,6 @@ export default function SecurityWorkspace() {
       {tab === 'users' ? <UsersTab /> : null}
       {tab === 'groups' ? <GroupsTab /> : null}
       {tab === 'roles' ? <RolesTab /> : null}
-      {tab === 'cube-grants' ? <CubeGrantsTab /> : null}
-      {tab === 'objects' ? <ObjectAclTab /> : null}
       {tab === 'elements' ? <ElementAclTab /> : null}
       {tab === 'audit' ? <AuditViewer /> : null}
     </div>
@@ -465,249 +437,6 @@ function RolesTab() {
           }
         >
           Apply
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function CubeGrantsTab() {
-  const [grants, setGrants] = useState<CubeGrantDto[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [scope, setScope] = useState('')
-  const [subjectKind, setSubjectKind] = useState<SubjectKind>('group')
-  const [subject, setSubject] = useState('')
-  const [level, setLevel] = useState<CubeGrantLevel>('read')
-
-  const load = useCallback(() => {
-    listCubeGrants()
-      .then(setGrants)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load cube grants'))
-  }, [])
-  useEffect(load, [load])
-  const act = useAction(load, setError)
-
-  return (
-    <div>
-      <h3>Cube grants</h3>
-      <p className="muted">
-        Broad access across all cubes plus per-cube exceptions (ADR-0016). The most specific grant
-        wins (a per-cube grant overrides a global one), an explicit <em>deny</em> overrides an allow,
-        and an admin always has full access. Leave <em>Scope</em> blank for all cubes.
-      </p>
-      {error ? <p className="error">{error}</p> : null}
-      <table className="placements">
-        <thead>
-          <tr>
-            <th>Scope</th>
-            <th>Subject</th>
-            <th>Access</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {grants.map((g, i) => (
-            <tr key={`${g.scope ?? '*'}/${g.subject_kind}/${g.subject}/${g.effect}/${i}`}>
-              <td>{g.scope ?? <em>all cubes</em>}</td>
-              <td>
-                {g.subject_kind}: {g.subject}
-              </td>
-              <td>{g.effect === 'deny' ? <strong>deny</strong> : g.level}</td>
-              <td>
-                <button
-                  onClick={() =>
-                    act(() =>
-                      putCubeGrant({
-                        scope: g.scope,
-                        subject_kind: g.subject_kind,
-                        subject: g.subject,
-                        level: 'none',
-                      }),
-                    )
-                  }
-                >
-                  Revoke
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <h3>Set cube grant</h3>
-      <div className="field-row">
-        <label>
-          Scope (blank for all cubes)
-          <input value={scope} onChange={(e) => setScope(e.target.value)} />
-        </label>
-        <label>
-          Subject
-          <select
-            value={subjectKind}
-            onChange={(e) => setSubjectKind(e.target.value as SubjectKind)}
-          >
-            <option value="user">user</option>
-            <option value="group">group</option>
-          </select>
-        </label>
-        <label>
-          Subject name
-          <input value={subject} onChange={(e) => setSubject(e.target.value)} />
-        </label>
-        <label>
-          Access
-          <select value={level} onChange={(e) => setLevel(e.target.value as CubeGrantLevel)}>
-            {CUBE_GRANT_LEVELS.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <div className="actions">
-        <button
-          className="primary"
-          disabled={!subject.trim()}
-          onClick={() =>
-            act(async () => {
-              await putCubeGrant({
-                scope: scope.trim() || undefined,
-                subject_kind: subjectKind,
-                subject: subject.trim(),
-                level,
-              })
-              setSubject('')
-            })
-          }
-        >
-          Apply
-        </button>
-      </div>
-    </div>
-  )
-}
-
-function ObjectAclTab() {
-  const [grants, setGrants] = useState<ObjectGrantDto[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [kind, setKind] = useState('cube')
-  const [cube, setCube] = useState('')
-  const [name, setName] = useState('')
-  const [subjectKind, setSubjectKind] = useState<SubjectKind>('user')
-  const [subject, setSubject] = useState('')
-  const [level, setLevel] = useState<AccessLevel>('read')
-
-  const load = useCallback(() => {
-    listObjectAcls()
-      .then(setGrants)
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load grants'))
-  }, [])
-  useEffect(load, [load])
-  const act = useAction(load, setError)
-
-  return (
-    <div>
-      <h3>Object access</h3>
-      <p className="muted">
-        Grants on individual objects (rules, flows, views, subsets, connections, sandboxes) and
-        specific-cube allows. For broad cross-cube access and denies, use <em>Cube grants</em>.
-        Revoke to set a level of <em>none</em>.
-      </p>
-      {error ? <p className="error">{error}</p> : null}
-      <table className="placements">
-        <thead>
-          <tr>
-            <th>Kind</th>
-            <th>Cube</th>
-            <th>Name</th>
-            <th>Subject</th>
-            <th>Level</th>
-            <th />
-          </tr>
-        </thead>
-        <tbody>
-          {grants.map((g, i) => (
-            <tr key={`${g.kind}/${g.cube ?? ''}/${g.name}/${g.subject_kind}/${g.subject}/${i}`}>
-              <td>{g.kind}</td>
-              <td>{g.cube ?? ''}</td>
-              <td>{g.name}</td>
-              <td>
-                {g.subject_kind}: {g.subject}
-              </td>
-              <td>{g.level}</td>
-              <td>
-                <button onClick={() => act(() => putObjectAcl({ ...g, level: 'none' }))}>
-                  Revoke
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-
-      <h3>Grant object access</h3>
-      <div className="field-row">
-        <label>
-          Kind
-          <select value={kind} onChange={(e) => setKind(e.target.value)}>
-            {OBJECT_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {k}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Cube (blank for global)
-          <input value={cube} onChange={(e) => setCube(e.target.value)} />
-        </label>
-        <label>
-          Name
-          <input value={name} onChange={(e) => setName(e.target.value)} />
-        </label>
-        <label>
-          Subject
-          <select value={subjectKind} onChange={(e) => setSubjectKind(e.target.value as SubjectKind)}>
-            <option value="user">user</option>
-            <option value="group">group</option>
-          </select>
-        </label>
-        <label>
-          Subject name
-          <input value={subject} onChange={(e) => setSubject(e.target.value)} />
-        </label>
-        <label>
-          Level
-          <select value={level} onChange={(e) => setLevel(e.target.value as AccessLevel)}>
-            {LEVELS.map((l) => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-      <div className="actions">
-        <button
-          className="primary"
-          disabled={!name.trim() || !subject.trim()}
-          onClick={() =>
-            act(async () => {
-              await putObjectAcl({
-                kind,
-                cube: cube.trim() || undefined,
-                name: name.trim(),
-                subject_kind: subjectKind,
-                subject: subject.trim(),
-                level,
-              })
-              setName('')
-              setSubject('')
-            })
-          }
-        >
-          Grant
         </button>
       </div>
     </div>

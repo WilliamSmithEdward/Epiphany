@@ -356,16 +356,8 @@ pub fn build_router(state: AppState) -> Router {
             delete(security_routes::delete_group),
         )
         .route(
-            "/api/v1/acl/objects",
-            get(security_routes::list_object_acls).put(security_routes::put_object_acl),
-        )
-        .route(
             "/api/v1/acl/elements",
             get(security_routes::list_element_acls).put(security_routes::put_element_acl),
-        )
-        .route(
-            "/api/v1/acl/cube-grants",
-            get(security_routes::list_cube_grants).put(security_routes::put_cube_grant),
         )
         .route(
             "/api/v1/acl/grants",

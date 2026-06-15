@@ -155,7 +155,9 @@ async fn login_denial_and_object_change_are_audited() {
     assert_eq!(denied.len(), 1);
     assert_eq!(denied[0].actor, "ann");
     assert_eq!(denied[0].object_kind, "connection");
-    assert_eq!(denied[0].target, "Sales/c");
+    // The denial is at the Connection kind for the cube (ADR-0023 kind-access
+    // gate), so the target is the cube, not a specific connection name.
+    assert_eq!(denied[0].target, "Sales/");
 
     // An admin connection write succeeds and is audited as an object change.
     assert_eq!(put_connection(&h.app, &admin).await, StatusCode::OK);

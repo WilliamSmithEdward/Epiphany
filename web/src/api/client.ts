@@ -905,16 +905,6 @@ export interface UserDto {
   groups: string[]
 }
 
-/** An object access grant (level `none` revokes). */
-export interface ObjectGrantDto {
-  kind: string
-  cube?: string
-  name: string
-  subject_kind: SubjectKind
-  subject: string
-  level: AccessLevel
-}
-
 /** An element access grant (level `none` revokes). */
 export interface ElementGrantDto {
   cube: string
@@ -923,28 +913,6 @@ export interface ElementGrantDto {
   subject_kind: SubjectKind
   subject: string
   level: AccessLevel
-}
-
-/** The single-knob level for a cube grant (ADR-0016): `deny` is an explicit
- * denial, `none` revokes any grant. */
-export type CubeGrantLevel = AccessLevel | 'deny'
-
-/** A cube access grant (ADR-0016): an allow or deny at the global scope (no
- * `scope`, meaning all cubes) or a specific cube. */
-export interface CubeGrantDto {
-  scope?: string
-  subject_kind: SubjectKind
-  subject: string
-  effect: 'allow' | 'deny'
-  level?: AccessLevel
-}
-
-/** The body of a cube-grant write: `level` is the single knob. */
-export interface CubeGrantBody {
-  scope?: string
-  subject_kind: SubjectKind
-  subject: string
-  level: CubeGrantLevel
 }
 
 /** One audit record (ADR-0010). */
@@ -996,15 +964,6 @@ export async function deleteGroup(name: string): Promise<void> {
   return request<void>('DELETE', `/api/v1/groups/${encodeURIComponent(name)}`)
 }
 
-export async function listObjectAcls(): Promise<ObjectGrantDto[]> {
-  const result = await request<{ grants: ObjectGrantDto[] }>('GET', '/api/v1/acl/objects')
-  return result.grants
-}
-
-export async function putObjectAcl(grant: ObjectGrantDto): Promise<void> {
-  return request<void>('PUT', '/api/v1/acl/objects', grant)
-}
-
 export async function listElementAcls(): Promise<ElementGrantDto[]> {
   const result = await request<{ grants: ElementGrantDto[] }>('GET', '/api/v1/acl/elements')
   return result.grants
@@ -1012,15 +971,6 @@ export async function listElementAcls(): Promise<ElementGrantDto[]> {
 
 export async function putElementAcl(grant: ElementGrantDto): Promise<void> {
   return request<void>('PUT', '/api/v1/acl/elements', grant)
-}
-
-export async function listCubeGrants(): Promise<CubeGrantDto[]> {
-  const result = await request<{ grants: CubeGrantDto[] }>('GET', '/api/v1/acl/cube-grants')
-  return result.grants
-}
-
-export async function putCubeGrant(grant: CubeGrantBody): Promise<void> {
-  return request<void>('PUT', '/api/v1/acl/cube-grants', grant)
 }
 
 // ---- modular per-object-kind grants / roles (ADR-0023) ----

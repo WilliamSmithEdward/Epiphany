@@ -104,16 +104,11 @@ where
     // Users and password hashes, persisted separately from the cube model.
     let security_path = config.data_dir.join("server").join("security.model");
     let admin_override = std::env::var("EPIPHANY_ADMIN_PASSWORD").ok();
-    let (mut security, generated) =
+    let (security, generated) =
         SecurityStore::open_or_bootstrap(security_path, false, admin_override.as_deref())?;
-    // Ungranted-cube posture (ADR-0015 decision 2a): closed unless the operator
-    // opts into the trusted-single-org open mode.
-    security.set_default_cube_open(config.default_cube_open);
-    if config.default_cube_open {
-        tracing::warn!(
-            "ungranted cubes are OPEN to any authenticated user (EPIPHANY_DEFAULT_CUBE_ACCESS=open)"
-        );
-    }
+    // Authorization is fail-closed (ADR-0023): a cube is accessible only to a
+    // server admin or the holder of a matching Cube grant; there is no open
+    // default posture.
     if let Some(password) = &generated {
         // Deliver the one-time admin password via an owner-only file, never
         // stdout or the structured log (ADR-0017, RG-13). The operator reads it

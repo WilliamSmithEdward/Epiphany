@@ -62,11 +62,11 @@ fn app(tag: &str) -> Router {
         AccessLevel::Write,
     )
     .unwrap();
-    // Data-entry user: cube Write on Sales (the prior cube-level grant), no
-    // per-kind model grants.
-    sec.set_cube_allow(
-        Some("Sales"),
+    // Data-entry user: Cube:Write on Sales, no per-kind model grants.
+    sec.set_grant(
         &Subject::User("de".into()),
+        Scope::Cube("Sales".into()),
+        ObjectKind::Cube,
         AccessLevel::Write,
     )
     .unwrap();
@@ -80,9 +80,10 @@ fn app(tag: &str) -> Router {
         AccessLevel::Write,
     )
     .unwrap();
-    sec.set_cube_allow(
-        Some("Sales"),
+    sec.set_grant(
         &Subject::User("power".into()),
+        Scope::Cube("Sales".into()),
+        ObjectKind::Cube,
         AccessLevel::Write,
     )
     .unwrap();

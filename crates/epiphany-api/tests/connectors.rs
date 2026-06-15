@@ -21,7 +21,7 @@ use epiphany_determinism::{IdGen, ManualClock};
 use epiphany_engine::Engine;
 use epiphany_mdx::MdxEvaluator;
 use epiphany_persist::Store;
-use epiphany_security::{AuditLog, SecurityStore};
+use epiphany_security::{AccessLevel, AuditLog, ObjectKind, Scope, SecurityStore, Subject};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -52,9 +52,16 @@ fn router_for(dir: &Path, is_admin: bool, commands: bool) -> Router {
     let mut stores = BTreeMap::new();
     stores.insert("Sales".to_string(), store);
     let mut sec = SecurityStore::with_admin("admin", "pw", is_admin);
-    // The redaction test reads connections as a non-admin, so the cube must be
-    // reachable: run the opt-in open posture.
-    sec.set_default_cube_open(true);
+    // The redaction test reads connections as a non-admin, so grant the actor the
+    // Connection:Read it now needs (ADR-0023). Read, not Write: defining a
+    // connection still requires Connection:Write, which a non-admin lacks here.
+    sec.set_grant(
+        &Subject::User("admin".into()),
+        Scope::Global,
+        ObjectKind::Connection,
+        AccessLevel::Read,
+    )
+    .unwrap();
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
         clock: Arc::new(ManualClock::new(1_000)),
