@@ -16,7 +16,7 @@ mod ui;
 use std::sync::{Arc, Mutex};
 
 use config::Config;
-use epiphany_api::{build_router, AppState, SessionStore};
+use epiphany_api::{build_router, AppState, RunLedger, Scheduler, SessionStore};
 use epiphany_determinism::SystemClock;
 use epiphany_security::{AuditLog, SecurityStore};
 
@@ -50,6 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audit_path = config.data_dir.join("server").join("audit.log");
     let audit = AuditLog::open(audit_path)?;
 
+    // The durable run ledger (ADR-0013), a sibling of the audit stream. Recovery
+    // is non-gating and re-records any run in flight at a crash as interrupted,
+    // so the reconcile loop re-derives its firing as due.
+    let runs_path = config.data_dir.join("server").join("runs.log");
+    let runs = RunLedger::open(runs_path)?;
+
     let (events, _) = tokio::sync::broadcast::channel(256);
     // Inject the real MDX evaluator (dynamic subsets) and the rule-aware cell
     // resolver factory (calc); these are the composition-root injections.
@@ -74,7 +80,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         cells,
         command_connectors_enabled,
         audit: Arc::new(Mutex::new(audit)),
+        runs: Arc::new(Mutex::new(runs)),
     };
+
+    // Start the scheduler reconcile loop (ADR-0013) on the real clock unless it
+    // is disabled (tick = 0). It is a detached background task: durability never
+    // depends on a clean stop, since an interrupted run recovers on restart.
+    if config.scheduler_tick_millis > 0 {
+        tracing::info!(
+            tick_millis = config.scheduler_tick_millis,
+            "starting the job scheduler"
+        );
+        Scheduler::spawn(state.clone(), config.scheduler_tick_millis);
+    }
+
     let router = build_router(state);
     #[cfg(feature = "embed-ui")]
     let router = router.fallback(ui::fallback);

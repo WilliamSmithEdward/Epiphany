@@ -53,6 +53,7 @@ fn state(name: &str) -> AppState {
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
+        runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
     }
 }
 

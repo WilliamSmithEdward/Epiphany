@@ -73,6 +73,7 @@ fn router_for(dir: &Path) -> (Router, Arc<Mutex<SessionStore>>) {
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
+        runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
     };
     (build_router(state), sessions)
 }

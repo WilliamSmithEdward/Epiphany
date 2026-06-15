@@ -30,18 +30,22 @@ mod connection_routes;
 mod dto;
 mod error;
 mod flow_routes;
+mod job_routes;
 mod openapi;
 mod query_routes;
 mod resolve;
 mod routes;
 mod rule_routes;
 mod sandbox_routes;
+mod scheduler;
 mod security_routes;
 mod session;
 mod ws;
 
 pub use calc_factory::CalcFactory;
+pub use epiphany_flow::RunLedger;
 pub use error::ApiError;
+pub use scheduler::Scheduler;
 pub use session::SessionStore;
 pub use ws::ChangeEvent;
 
@@ -75,6 +79,10 @@ pub struct AppState {
     /// The append-only audit stream (ADR-0010), behind its own lock so audit
     /// writes do not serialize behind the security mutex.
     pub audit: Arc<Mutex<AuditLog>>,
+    /// The durable run ledger (ADR-0013): scheduled and submitted flow runs,
+    /// behind its own lock. Recovered on startup; an in-flight run at a crash is
+    /// re-derived as due by the reconcile loop.
+    pub runs: Arc<Mutex<RunLedger>>,
 }
 
 impl AppState {
@@ -213,6 +221,20 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/cubes/{cube}/flows/{name}/run",
             post(flow_routes::run_flow_handler),
         )
+        // Scheduled jobs (ADR-0013): CRUD, a manual async kick, and run queries.
+        .route("/api/v1/cubes/{cube}/jobs", get(job_routes::list_jobs))
+        .route(
+            "/api/v1/cubes/{cube}/jobs/{name}",
+            get(job_routes::get_job)
+                .put(job_routes::put_job)
+                .delete(job_routes::delete_job),
+        )
+        .route(
+            "/api/v1/cubes/{cube}/jobs/{name}/run",
+            post(job_routes::run_job),
+        )
+        .route("/api/v1/cubes/{cube}/runs", get(job_routes::list_runs))
+        .route("/api/v1/cubes/{cube}/runs/{id}", get(job_routes::get_run))
         // Data-source connections (admin-defined; command kind also requires the
         // server opt-in).
         .route(
@@ -379,6 +401,7 @@ mod tests {
             cells: Arc::new(epiphany_engine::StoredCellsFactory),
             command_connectors_enabled: false,
             audit: Arc::new(Mutex::new(AuditLog::in_memory())),
+            runs: Arc::new(Mutex::new(RunLedger::in_memory())),
         }
     }
 

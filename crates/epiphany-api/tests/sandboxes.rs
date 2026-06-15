@@ -54,6 +54,7 @@ fn router(dir: &Path) -> Router {
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
+        runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
     };
     build_router(state)
 }
@@ -174,6 +175,7 @@ fn router_calc(dir: &Path) -> (Router, Engine) {
         cells: Arc::new(CalcFactory::new(engine.clone())),
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
+        runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
     };
     (build_router(state), engine)
 }
@@ -560,6 +562,7 @@ async fn sandbox_rejects_string_what_if_but_allows_numeric() {
         cells: Arc::new(CalcFactory::new(engine)),
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
+        runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
     };
     let app = build_router(state);
     let ann = login(&app, "ann").await;

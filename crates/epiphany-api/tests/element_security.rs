@@ -97,6 +97,7 @@ fn harness(name: &str) -> Harness {
         cells: Arc::new(CalcFactory::new(engine)),
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
+        runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
     };
     Harness {
         app: build_router(state),

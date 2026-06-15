@@ -17,6 +17,9 @@ pub struct Config {
     pub open_browser: bool,
     /// Session lifetime in milliseconds. Default 8 hours.
     pub session_ttl_millis: u64,
+    /// The scheduler reconcile-tick period in milliseconds (ADR-0013). Default
+    /// 1000 (1s); `0` disables the scheduler loop entirely.
+    pub scheduler_tick_millis: u64,
 }
 
 impl Default for Config {
@@ -27,6 +30,7 @@ impl Default for Config {
             log_filter: "info".to_string(),
             open_browser: false,
             session_ttl_millis: 8 * 60 * 60 * 1000,
+            scheduler_tick_millis: 1000,
         }
     }
 }
@@ -61,6 +65,12 @@ impl Config {
             .and_then(|v| v.parse::<u64>().ok())
         {
             config.session_ttl_millis = secs.saturating_mul(1000);
+        }
+        if let Some(secs) = vars
+            .get("EPIPHANY_SCHEDULER_TICK_SECS")
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            config.scheduler_tick_millis = secs.saturating_mul(1000);
         }
         config
     }

@@ -79,6 +79,12 @@ impl ApiError {
     pub fn status_code(&self) -> StatusCode {
         self.status
     }
+
+    /// The client-safe message (no internal cause; RG-12). Used to record a run's
+    /// failure reason in the run ledger, which an admin can read back.
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 /// Map a core query error to the HTTP envelope with a stable code. A missing

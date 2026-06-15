@@ -51,6 +51,7 @@ fn harness(commands: bool) -> Harness {
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
         command_connectors_enabled: commands,
         audit: audit.clone(),
+        runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
     };
     Harness {
         app: build_router(state),

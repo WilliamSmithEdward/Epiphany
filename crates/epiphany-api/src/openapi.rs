@@ -307,6 +307,45 @@ fn document() -> Value {
                 "requestBody": json_body("#/components/schemas/FlowRun"),
                 "responses": ok("The run report")
             }},
+            "/api/v1/cubes/{cube}/jobs": { "get": {
+                "summary": "The cube's scheduled jobs (ADR-0013)", "security": bearer(),
+                "parameters": [cube_param()], "responses": ok("The jobs")
+            }},
+            "/api/v1/cubes/{cube}/jobs/{name}": {
+                "get": {
+                    "summary": "One job", "security": bearer(),
+                    "parameters": [cube_param(), name_param()], "responses": ok("The job")
+                },
+                "put": {
+                    "summary": "Create or replace a job (each step must be an existing flow)",
+                    "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "requestBody": json_body("#/components/schemas/Job"),
+                    "responses": {
+                        "200": { "description": "The stored job" },
+                        "422": { "description": "A step names an unknown flow", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                    }
+                },
+                "delete": {
+                    "summary": "Delete a job", "security": bearer(),
+                    "parameters": [cube_param(), name_param()],
+                    "responses": { "204": { "description": "Deleted" } }
+                }
+            },
+            "/api/v1/cubes/{cube}/jobs/{name}/run": { "post": {
+                "summary": "Run a job now (manual kick), returning the run record",
+                "security": bearer(),
+                "parameters": [cube_param(), name_param()],
+                "responses": ok("The run record")
+            }},
+            "/api/v1/cubes/{cube}/runs": { "get": {
+                "summary": "Recent runs for the cube (newest first)", "security": bearer(),
+                "parameters": [cube_param()], "responses": ok("The runs")
+            }},
+            "/api/v1/cubes/{cube}/runs/{id}": { "get": {
+                "summary": "One run by id", "security": bearer(),
+                "parameters": [cube_param(), id_param()], "responses": ok("The run record")
+            }},
             "/api/v1/cubes/{cube}/connections": { "get": {
                 "summary": "The cube's data-source connections", "security": bearer(),
                 "parameters": [cube_param()], "responses": ok("The connections")
@@ -533,6 +572,12 @@ fn document() -> Value {
                     "input": { "type": "string", "description": "Inline data-source content (CSV text)" },
                     "connection": { "type": "string", "description": "A configured connection to fetch rows from, instead of inline input" },
                     "params": { "type": "object", "additionalProperties": { "type": "string" } } } },
+                "Job": { "type": "object", "properties": {
+                    "name": { "type": "string" },
+                    "steps": { "type": "array", "items": { "type": "string" }, "description": "Flow names run in order, fail-fast" },
+                    "every_millis": { "type": "integer", "format": "int64", "description": "Interval trigger period in milliseconds" },
+                    "enabled": { "type": "boolean" } },
+                    "required": ["every_millis", "enabled"] },
                 "Connection": { "type": "object", "properties": {
                     "name": { "type": "string" },
                     "kind": { "type": "string", "enum": ["command"] },
@@ -623,6 +668,13 @@ fn username_param() -> Value {
     })
 }
 
+fn id_param() -> Value {
+    json!({
+        "name": "id", "in": "path", "required": true,
+        "schema": { "type": "string" }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +716,11 @@ mod tests {
         "/api/v1/cubes/{cube}/flows/tests/{name}",
         "/api/v1/cubes/{cube}/flows/{name}",
         "/api/v1/cubes/{cube}/flows/{name}/run",
+        "/api/v1/cubes/{cube}/jobs",
+        "/api/v1/cubes/{cube}/jobs/{name}",
+        "/api/v1/cubes/{cube}/jobs/{name}/run",
+        "/api/v1/cubes/{cube}/runs",
+        "/api/v1/cubes/{cube}/runs/{id}",
         "/api/v1/cubes/{cube}/connections",
         "/api/v1/cubes/{cube}/connections/{name}",
         "/api/v1/cubes/{cube}/sandboxes",

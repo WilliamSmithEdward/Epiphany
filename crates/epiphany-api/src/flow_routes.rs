@@ -63,7 +63,7 @@ fn map_flow_error(err: FlowError) -> ApiError {
 /// elements applied) before anything is committed, so an unresolvable cell or a
 /// rejected schema change commits nothing. On success the elements are committed
 /// first (so the new members exist) and then the cells as one batch.
-fn apply_outcome(
+pub(crate) fn apply_outcome(
     state: &AppState,
     cube: &str,
     outcome: &FlowOutcome,
