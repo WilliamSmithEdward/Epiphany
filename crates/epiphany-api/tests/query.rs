@@ -73,6 +73,7 @@ fn router(name: &str) -> Router {
         clock: Arc::new(ManualClock::new(1_000)),
         security: Arc::new(Mutex::new(security)),
         sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
+        login_guard: Arc::new(Mutex::new(epiphany_api::LoginGuard::new(5, 900_000))),
         events: tokio::sync::broadcast::channel(16).0,
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(epiphany_engine::StoredCellsFactory),

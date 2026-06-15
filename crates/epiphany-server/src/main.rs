@@ -20,6 +20,22 @@ use epiphany_api::{build_router, AppState, RunLedger, RunRetention, Scheduler, S
 use epiphany_determinism::SystemClock;
 use epiphany_security::{AuditLog, RetentionPolicy, SecurityStore};
 
+/// Write a one-time secret to `path` with owner-only permissions (`0600` on
+/// Unix; elsewhere the data directory's inherited ACL governs). The content is
+/// the exact secret with no trailing newline (ADR-0017).
+fn write_secret_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
@@ -46,11 +62,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     if let Some(password) = &generated {
-        // Shown once on the operator console (not the structured log).
-        println!(
-            "\nFirst run: created admin user 'admin' with password:\n    {}\nChange it after you log in.\n",
-            password.0
-        );
+        // Deliver the one-time admin password via an owner-only file, never
+        // stdout or the structured log (ADR-0017, RG-13). The operator reads it
+        // once and deletes it.
+        let pw_path = config.data_dir.join("server").join("admin-password.txt");
+        match write_secret_file(&pw_path, &password.0) {
+            Ok(()) => tracing::warn!(
+                path = %pw_path.display(),
+                "first run: the generated admin password was written to this file; read it once, then delete it"
+            ),
+            Err(e) => {
+                // Only if the file cannot be written do we fall back to stdout,
+                // so the operator is never locked out of the first login.
+                tracing::error!(error = %e, "could not write the admin password file; printing it once instead");
+                println!(
+                    "\nFirst run: admin password:\n    {}\nChange it after you log in.\n",
+                    password.0
+                );
+            }
+        }
     }
 
     // The audit stream (ADR-0010), a sibling of the security artifact. Recovery
@@ -94,6 +124,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         clock: Arc::new(SystemClock),
         security: Arc::new(Mutex::new(security)),
         sessions: Arc::new(Mutex::new(SessionStore::new(config.session_ttl_millis))),
+        login_guard: Arc::new(Mutex::new(epiphany_api::LoginGuard::new(
+            config.login_max_failures,
+            config.login_lockout_millis,
+        ))),
         events,
         mdx: Arc::new(epiphany_mdx::MdxEvaluator::new()),
         cells,

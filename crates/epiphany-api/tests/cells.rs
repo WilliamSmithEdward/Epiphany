@@ -48,6 +48,7 @@ fn state(name: &str) -> AppState {
         clock: Arc::new(ManualClock::new(1_000)),
         security: Arc::new(Mutex::new(SecurityStore::with_admin("admin", "pw", true))),
         sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
+        login_guard: Arc::new(Mutex::new(epiphany_api::LoginGuard::new(5, 900_000))),
         events: broadcast::channel(16).0,
         mdx: Arc::new(epiphany_core::NoSetEvaluator),
         cells: Arc::new(epiphany_engine::StoredCellsFactory),

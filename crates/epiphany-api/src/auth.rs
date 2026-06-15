@@ -39,9 +39,29 @@ impl FromRequestParts<AppState> for AuthPrincipal {
             .expect("session store mutex")
             .lookup(&token, now)
             .ok_or_else(|| ApiError::unauthorized("invalid or expired session"))?;
+        // Enforce a pending password change (ADR-0017): until it is done, only the
+        // minimal recovery routes are reachable. Re-resolved from the live store
+        // so the gate lifts immediately on change, with no re-login.
+        if !MUST_CHANGE_ALLOWED.contains(&parts.uri.path())
+            && state
+                .security
+                .lock()
+                .expect("security mutex")
+                .must_change_password(&principal.username)
+        {
+            return Err(ApiError::forbidden("password change required"));
+        }
         Ok(AuthPrincipal { principal, token })
     }
 }
+
+/// Routes a user with a pending forced password change may still reach: change
+/// the password, see who they are, or log out.
+const MUST_CHANGE_ALLOWED: [&str; 3] = [
+    "/api/v1/auth/password",
+    "/api/v1/auth/logout",
+    "/api/v1/auth/me",
+];
 
 /// Pull the token from `Authorization: Bearer <t>`, else from the session cookie.
 fn token_from_parts(parts: &Parts) -> Option<String> {
@@ -88,15 +108,42 @@ pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
+    let now = state.clock.now_millis();
+    // Lockout check before verifying the password (ADR-0017): a locked account
+    // never runs Argon2, removing a CPU/timing lever.
+    if state
+        .login_guard
+        .lock()
+        .expect("login guard mutex")
+        .is_locked(&req.username, now)
+    {
+        audit(&state, &req.username, AuditAction::Login, None, false);
+        return Err(ApiError::too_many_requests(
+            "too many failed login attempts; try again later",
+        ));
+    }
     let authenticated = state
         .security
         .lock()
         .expect("security mutex")
         .authenticate(&req.username, &req.password);
     let principal = match authenticated {
-        Some(principal) => principal,
+        Some(principal) => {
+            state
+                .login_guard
+                .lock()
+                .expect("login guard mutex")
+                .record_success(&req.username);
+            principal
+        }
         None => {
-            // Audit the failed attempt (no password in the record, RG-13).
+            // Count the failure (may trip the lockout) and audit it (no password
+            // in the record, RG-13).
+            state
+                .login_guard
+                .lock()
+                .expect("login guard mutex")
+                .record_failure(&req.username, now);
             audit(&state, &req.username, AuditAction::Login, None, false);
             return Err(ApiError::unauthorized("invalid credentials"));
         }
@@ -106,7 +153,6 @@ pub async fn login(
         .lock()
         .expect("security mutex")
         .must_change_password(&principal.username);
-    let now = state.clock.now_millis();
     let token = state
         .sessions
         .lock()

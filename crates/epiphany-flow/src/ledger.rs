@@ -177,6 +177,7 @@ impl RunLedger {
             .create(true)
             .truncate(false)
             .open(&path)?;
+        restrict_to_owner(&path)?;
         let records = match existing {
             Some((records, good_len)) => {
                 file.set_len(good_len)?;
@@ -421,6 +422,21 @@ fn header() -> [u8; 8] {
 /// write a sibling temp file (header + framed records), fsync, rename over the
 /// path, and return a fresh append-positioned handle. A crash before the rename
 /// leaves the original file intact.
+/// Restrict the ledger to owner-only access (`0600`) on Unix (ADR-0017); a no-op
+/// elsewhere, where the data directory's inherited ACL governs.
+fn restrict_to_owner(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 fn rewrite_file(path: &Path, records: &[RunRecord]) -> io::Result<File> {
     let tmp = path.with_extension("compact");
     {
@@ -435,6 +451,7 @@ fn rewrite_file(path: &Path, records: &[RunRecord]) -> io::Result<File> {
         }
         f.sync_data()?;
     }
+    restrict_to_owner(&tmp)?;
     fs::rename(&tmp, path)?;
     let mut f = OpenOptions::new()
         .read(true)

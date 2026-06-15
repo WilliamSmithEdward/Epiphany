@@ -31,6 +31,7 @@ mod dto;
 mod error;
 mod flow_routes;
 mod job_routes;
+mod login_guard;
 mod openapi;
 mod query_routes;
 mod resolve;
@@ -45,6 +46,7 @@ mod ws;
 pub use calc_factory::CalcFactory;
 pub use epiphany_flow::{RunLedger, RunRecord, RunRetention, RunState};
 pub use error::ApiError;
+pub use login_guard::LoginGuard;
 pub use scheduler::Scheduler;
 pub use session::SessionStore;
 pub use ws::ChangeEvent;
@@ -63,6 +65,8 @@ pub struct AppState {
     pub security: Arc<Mutex<SecurityStore>>,
     /// Live session tokens (in memory; lost on restart, by design).
     pub sessions: Arc<Mutex<SessionStore>>,
+    /// Per-username login lockout against brute-forcing (ADR-0017; in memory).
+    pub login_guard: Arc<Mutex<LoginGuard>>,
     /// Broadcaster of change events to WebSocket clients.
     pub events: broadcast::Sender<ChangeEvent>,
     /// The MDX set evaluator for dynamic subsets (the composition-root injects a
@@ -400,6 +404,7 @@ mod tests {
             clock,
             security: Arc::new(Mutex::new(SecurityStore::with_admin("admin", "pw", true))),
             sessions: Arc::new(Mutex::new(SessionStore::new(TTL))),
+            login_guard: Arc::new(Mutex::new(LoginGuard::new(5, 900_000))),
             events: broadcast::channel(16).0,
             mdx: Arc::new(epiphany_core::NoSetEvaluator),
             cells: Arc::new(epiphany_engine::StoredCellsFactory),

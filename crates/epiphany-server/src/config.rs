@@ -33,6 +33,12 @@ pub struct Config {
     /// `true` opts into the trusted-single-org posture where an ungranted cube is
     /// open to any authenticated user at Write.
     pub default_cube_open: bool,
+    /// Consecutive failed logins before a username is locked out (ADR-0017).
+    /// Default 5; `0` disables the lockout.
+    pub login_max_failures: u32,
+    /// Login lockout cooldown in milliseconds (ADR-0017). Default 15 minutes;
+    /// `0` disables the lockout.
+    pub login_lockout_millis: u64,
 }
 
 impl Default for Config {
@@ -48,6 +54,8 @@ impl Default for Config {
             audit_retention_millis: None,
             run_ledger_max_runs: 50_000,
             default_cube_open: false,
+            login_max_failures: 5,
+            login_lockout_millis: 15 * 60 * 1000,
         }
     }
 }
@@ -113,6 +121,18 @@ impl Config {
             // anything else (including a typo) stays secure-by-default.
             config.default_cube_open = access.eq_ignore_ascii_case("open");
         }
+        if let Some(n) = vars
+            .get("EPIPHANY_LOGIN_MAX_FAILURES")
+            .and_then(|v| v.parse::<u32>().ok())
+        {
+            config.login_max_failures = n;
+        }
+        if let Some(secs) = vars
+            .get("EPIPHANY_LOGIN_LOCKOUT_SECS")
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            config.login_lockout_millis = secs.saturating_mul(1000);
+        }
         config
     }
 }
@@ -139,6 +159,21 @@ mod tests {
         assert_eq!(c.bind_addr.port(), 9999);
         assert_eq!(c.data_dir, PathBuf::from("/tmp/epi"));
         assert!(c.open_browser);
+    }
+
+    #[test]
+    fn login_lockout_knobs_parse_with_secure_defaults() {
+        // Secure defaults out of the box (ADR-0017).
+        let d = Config::default();
+        assert_eq!(d.login_max_failures, 5);
+        assert_eq!(d.login_lockout_millis, 15 * 60 * 1000);
+        // Overridable from the environment; secs are converted to millis.
+        let mut vars = BTreeMap::new();
+        vars.insert("EPIPHANY_LOGIN_MAX_FAILURES".to_string(), "3".to_string());
+        vars.insert("EPIPHANY_LOGIN_LOCKOUT_SECS".to_string(), "60".to_string());
+        let c = Config::from_map(&vars);
+        assert_eq!(c.login_max_failures, 3);
+        assert_eq!(c.login_lockout_millis, 60_000);
     }
 
     #[test]

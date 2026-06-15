@@ -80,6 +80,7 @@ fn harness(dir: &Path, audit_path: std::path::PathBuf) -> Harness {
         clock: Arc::new(ManualClock::new(1_000)),
         security: Arc::new(Mutex::new(sec)),
         sessions: Arc::new(Mutex::new(SessionStore::new(60_000))),
+        login_guard: Arc::new(Mutex::new(epiphany_api::LoginGuard::new(5, 900_000))),
         events: tokio::sync::broadcast::channel(16).0,
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(CalcFactory::new(engine)),

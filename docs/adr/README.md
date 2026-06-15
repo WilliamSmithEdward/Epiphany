@@ -20,5 +20,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0014](0014-sandbox-overlay-representation.md) | Sandbox overlay representation | Accepted | 6 |
 | [0015](0015-object-and-element-security.md) | Object and element security model | Accepted | 7 |
 | [0016](0016-global-cube-grants-and-explicit-deny.md) | Global cube grants and explicit deny | Accepted | 7 (m8.2) |
+| [0017](0017-authentication-and-credential-hardening.md) | Authentication and credential hardening | Accepted | 8 (m8.3) |
 
-> All originally-reserved ADR numbers are allocated; later decisions continue from 0016.
+> All originally-reserved ADR numbers are allocated; later decisions continue from 0017.

@@ -193,6 +193,7 @@ impl AuditLog {
             .create(true)
             .truncate(false)
             .open(&path)?;
+        crate::restrict_to_owner(&path)?;
         let (records, next_seq) = match existing {
             Some((records, good_len)) => {
                 // Drop a torn tail, then position at the end for new appends.
@@ -360,6 +361,7 @@ fn rewrite_file(path: &Path, records: &[AuditRecord]) -> io::Result<File> {
         }
         f.sync_data()?;
     }
+    crate::restrict_to_owner(&tmp)?;
     fs::rename(&tmp, path)?;
     let mut f = OpenOptions::new()
         .read(true)

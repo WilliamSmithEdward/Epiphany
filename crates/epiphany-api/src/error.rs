@@ -66,6 +66,11 @@ impl ApiError {
         Self::new(StatusCode::FORBIDDEN, "FORBIDDEN", message)
     }
 
+    /// 429 Too Many Requests (rate-limited, e.g. a login lockout).
+    pub fn too_many_requests(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::TOO_MANY_REQUESTS, "TOO_MANY_REQUESTS", message)
+    }
+
     /// 500 Internal Server Error (the cause is logged, not serialized).
     pub fn internal() -> Self {
         Self::new(

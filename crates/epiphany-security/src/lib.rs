@@ -19,6 +19,22 @@ pub use store::{GeneratedAdminPassword, Principal, SecurityError, SecurityStore,
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-security";
 
+/// Restrict a secret file to owner-only access (`0600`) on Unix (ADR-0017); a
+/// no-op elsewhere, where the data directory's inherited ACL governs and the
+/// operator is responsible for protecting it.
+pub(crate) fn restrict_to_owner(path: &std::path::Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
