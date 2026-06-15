@@ -35,6 +35,49 @@ pub(crate) fn restrict_to_owner(path: &std::path::Path) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Configure an [`OpenOptions`](std::fs::OpenOptions) to create new files
+/// owner-only (`0600`) on Unix (ADR-0017); a no-op elsewhere. `mode` applies
+/// only at creation, so pair it with [`restrict_to_owner`] to also normalize a
+/// pre-existing file.
+pub(crate) fn set_owner_only(opts: &mut std::fs::OpenOptions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = opts;
+    }
+}
+
+/// Write `contents` to `path`, owner-only (`0600`) **from creation** on Unix, so
+/// the bytes are never momentarily world-readable in the window between a write
+/// and a later chmod (ADR-0017). Elsewhere it is a plain write under the data
+/// directory's inherited ACL.
+pub(crate) fn write_owner_only(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(contents)?;
+        // `mode` applies only on creation; normalize in case the file pre-existed
+        // (e.g. a stale temp from an interrupted save) with looser bits.
+        restrict_to_owner(path)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

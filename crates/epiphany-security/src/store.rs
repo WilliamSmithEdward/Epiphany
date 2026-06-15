@@ -910,9 +910,9 @@ impl SecurityStore {
                 std::fs::create_dir_all(parent)?;
             }
             let tmp = path.with_extension("model.tmp");
-            std::fs::write(&tmp, self.to_model_text())?;
-            // Owner-only: the artifact holds password hashes (ADR-0017).
-            crate::restrict_to_owner(&tmp)?;
+            // Owner-only from creation: the artifact holds password hashes, so it
+            // must never be briefly world-readable (ADR-0017).
+            crate::write_owner_only(&tmp, self.to_model_text().as_bytes())?;
             std::fs::rename(&tmp, path)?;
         }
         Ok(())

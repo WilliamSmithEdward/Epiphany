@@ -77,12 +77,16 @@ the path plus an instruction to read it once and delete it. The secret never
 enters stdout or the structured log (RG-13). An operator who sets
 `EPIPHANY_ADMIN_PASSWORD` supplies their own and no file is written.
 
-**4. Secret artifacts are written owner-only.** The atomic temp-then-rename
-writers for `security.model`, `audit.log`, the run ledger, and the admin-password
-file set `0600` on the temporary file before the rename on Unix, so the published
-file is never group- or world-readable even briefly. On non-Unix the call is a
-no-op and the data directory's inherited ACL governs; this is documented as the
-operator's responsibility.
+**4. Secret artifacts are created owner-only.** The writers for `security.model`,
+`audit.log`, the run ledger, and the admin-password file create the file with
+`0600` **from creation** on Unix (via `OpenOptions::mode`), so it is never
+group- or world-readable even momentarily between a write and a later chmod (a
+time-of-check window). Because `mode` applies only at creation, a pre-existing
+file (for example a temp left by an interrupted save) is also normalized with an
+explicit `set_permissions(0600)`. On non-Unix the mode and chmod calls are no-ops
+and the **data directory's inherited ACL governs**, so the operator must protect
+the data directory (full-disk or directory-level encryption and ACLs); this is
+called out in the deployment guidance.
 
 Policy values are configurable: `EPIPHANY_LOGIN_MAX_FAILURES` (default 5) and
 `EPIPHANY_LOGIN_LOCKOUT_SECS` (default 900; `0` disables the lockout).

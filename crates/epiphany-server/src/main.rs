@@ -20,18 +20,29 @@ use epiphany_api::{build_router, AppState, RunLedger, RunRetention, Scheduler, S
 use epiphany_determinism::SystemClock;
 use epiphany_security::{AuditLog, RetentionPolicy, SecurityStore};
 
-/// Write a one-time secret to `path` with owner-only permissions (`0600` on
-/// Unix; elsewhere the data directory's inherited ACL governs). The content is
-/// the exact secret with no trailing newline (ADR-0017).
+/// Write a one-time secret to `path`, owner-only (`0600`) **from creation** on
+/// Unix so it is never briefly world-readable; elsewhere the data directory's
+/// inherited ACL governs. The content is the exact secret with no trailing
+/// newline (ADR-0017).
 fn write_secret_file(path: &std::path::Path, contents: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, contents)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(contents.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)?;
     }
     Ok(())
 }

@@ -171,13 +171,11 @@ impl RunLedger {
         } else {
             None
         };
-        let mut file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
-        restrict_to_owner(&path)?;
+        let mut opts = OpenOptions::new();
+        opts.read(true).write(true).create(true).truncate(false);
+        set_owner_only(&mut opts); // owner-only from creation (ADR-0017)
+        let mut file = opts.open(&path)?;
+        restrict_to_owner(&path)?; // normalize a pre-existing file too
         let records = match existing {
             Some((records, good_len)) => {
                 file.set_len(good_len)?;
@@ -437,21 +435,35 @@ fn restrict_to_owner(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Configure an `OpenOptions` to create new files owner-only (`0600`) on Unix
+/// (ADR-0017); a no-op elsewhere. `mode` applies only at creation, so pair it
+/// with [`restrict_to_owner`] to also normalize a pre-existing file.
+fn set_owner_only(opts: &mut OpenOptions) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = opts;
+    }
+}
+
 fn rewrite_file(path: &Path, records: &[RunRecord]) -> io::Result<File> {
     let tmp = path.with_extension("compact");
     {
-        let mut f = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
+        let mut opts = OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        set_owner_only(&mut opts); // owner-only from creation (ADR-0017)
+        let mut f = opts.open(&tmp)?;
         f.write_all(&header())?;
         for record in records {
             f.write_all(&encode(record))?;
         }
         f.sync_data()?;
     }
-    restrict_to_owner(&tmp)?;
+    restrict_to_owner(&tmp)?; // normalize a pre-existing temp too
     fs::rename(&tmp, path)?;
     let mut f = OpenOptions::new()
         .read(true)
