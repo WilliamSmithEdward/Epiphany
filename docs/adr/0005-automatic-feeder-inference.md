@@ -33,16 +33,25 @@ sparse path fast; they can never make a read *wrong*, because the read does not
 use them. This separation is what makes "validate feeders" meaningful: we
 compare the sparse fed set against the dense truth.
 
-**2. Inference covers the statically analyzable leaf rule.** `infer_feeders`
-analyzes each compiled rule whose target is a leaf area (a consolidation
-override targets a consolidated cell and needs no feeder, so it is skipped). For
-a rule whose value reads same-cube input cells, every populated input leaf that
-the rule reads feeds the corresponding target leaf: the input's copied
-(FromTarget) dimensions map to the target coordinate, and pinned input
-dimensions require a single-member target so the populated input maps to exactly
-one target leaf. This is a sound over-approximation: it never under-feeds an
-analyzable rule (if an input is populated, its target is fed). The fed set is a
-sorted `BTreeSet` so it is byte-identical run to run.
+**2. Inference is a fixpoint over "potentially non-zero" leaves (amended m8.4).**
+`infer_feeders` analyzes each compiled rule whose area selects at least one leaf
+coordinate (a rule whose area selects no leaves is a pure consolidation override
+and needs no feeder, so it is skipped; see decision 4). For each such rule it
+walks the rule's *target* leaves and feeds a target whenever one of the rule's
+same-cube inputs is *potentially non-zero* there: a stored leaf, a leaf already
+fed by another rule, or a consolidated input that rolls up any such leaf (the
+consolidated input is expanded to its contributing leaves via
+`Dimension::leaf_weights`). This is computed to a **fixpoint** seeded by the
+stored leaves: a newly fed target is itself potentially non-zero, so a later
+round feeds a rule that reads it. This makes inference complete for the patterns
+the original cut missed: chained rules (a rule reading another rule's derived
+output), consolidated inputs, and multi-element target areas with a pinned input
+(each target leaf is considered independently, so a pinned input no longer forces
+a single-member target). It remains a sound over-approximation: it never
+under-feeds an analyzable rule, and at worst over-feeds a target whose inputs turn
+out to be zero (a warning). The fed set is a sorted `BTreeSet`, the target and
+input expansions are walked in index order, and the fixpoint only ever adds
+feeders over a finite leaf space, so the result is deterministic and terminates.
 
 **3. Honest scope: un-analyzable rules are reported, never guessed.** A rule
 with no same-cube input to localize the feed set (for example a pure constant,
@@ -57,11 +66,16 @@ rest" scope the roadmap commits to.
 dense evaluator and compares against the supplied fed set:
 under-fed = a leaf with a non-zero rule value that is not fed (the hard error: a
 silent wrong-zero in rollups); over-fed = a fed leaf whose rule value is zero
-(a warning: wasted scan and RAM, with an estimated byte cost). Candidate leaves
-and fed coordinates are walked in sorted order, so the diagnostic lists are
-deterministic. Validation is an explicit operation (the REST
-`/feeders/diagnostics` endpoint and the model test path), never on the read hot
-path.
+(a warning: wasted scan and RAM, with an estimated byte cost). The set of
+candidate target leaves is exactly a rule's *leaf* coordinates, so a rule whose
+area mixes leaf and consolidated members (for example `{descendants of Total}`)
+still has its leaf targets validated; only a rule with no leaf targets at all is
+treated as a pure override (amended m8.4: this replaces an earlier check that
+skipped any rule naming a consolidated member, which could hide an under-feed in
+such a rule's leaf targets). Candidate leaves and fed coordinates are walked in
+sorted order, so the diagnostic lists are deterministic. Validation is an
+explicit operation (the REST `/feeders/diagnostics` endpoint and the model test
+path), never on the read hot path.
 
 ## Alternatives considered
 

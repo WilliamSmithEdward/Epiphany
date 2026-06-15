@@ -14,9 +14,7 @@ use std::collections::BTreeSet;
 
 use epiphany_core::{Cube, Fixed};
 
-use crate::compiled::{
-    AddrSlot, CCell, CExpr, CompiledArea, CompiledModel, CompiledRule, DimPredicate, RuleId,
-};
+use crate::compiled::{AddrSlot, CCell, CExpr, CompiledArea, CompiledModel, DimPredicate, RuleId};
 use crate::eval::{CalcEngine, CalcError, EvalRegistry};
 
 /// Approximate bytes a fed cell costs (index slot plus the rule evaluation it
@@ -82,24 +80,80 @@ pub struct FeederInference {
     pub opaque: Vec<OpaqueRule>,
 }
 
-/// Infer feeders for a cube's compiled rules.
+/// One analyzable rule: its target leaf coordinates and the same-cube input
+/// cells whose population drives the feed.
+struct Analyzable<'a> {
+    targets: Vec<Vec<u32>>,
+    inputs: Vec<&'a CCell>,
+}
+
+/// Infer feeders for a cube's compiled rules (ADR-0005).
 ///
-/// `target_ordinal` is the cube's own ordinal (so same-cube inputs, which drive
-/// the feed set, are recognized). Cross-cube and consolidated inputs do not
-/// localize the feed set, so they are ignored for localization; a rule with no
-/// analyzable same-cube input is reported opaque.
+/// For each rule that targets leaves, every target leaf is fed when at least one
+/// of the rule's same-cube inputs is *potentially non-zero* at that target: a
+/// stored leaf, a leaf fed by another rule, or a consolidated input that rolls up
+/// any such leaf. This is computed to a **fixpoint** seeded by the stored leaves,
+/// so a rule reading another rule's derived output is fed too (chained rules).
+/// It is a sound over-approximation: it never under-feeds an analyzable rule, and
+/// at worst over-feeds a target whose inputs turn out to be zero (a warning).
+///
+/// `target_ordinal` is the cube's own ordinal. Cross-cube inputs cannot be
+/// localized from this cube's data, so a rule whose only inputs are cross-cube
+/// (or constant) is reported opaque rather than guessed at. A rule whose area
+/// selects no leaf coordinates is a pure consolidation override and needs no leaf
+/// feeder.
 pub fn infer_feeders(cube: &Cube, model: &CompiledModel, target_ordinal: u32) -> FeederInference {
     let mut result = FeederInference::default();
+
+    // Classify rules: skip pure overrides (no leaf targets), report opaque rules
+    // (no same-cube input to localize), and keep the rest as analyzable.
+    let mut analyzable: Vec<Analyzable> = Vec::new();
     for (i, rule) in model.rules.iter().enumerate() {
-        let id = RuleId(i);
-        if targets_consolidated(cube, rule) {
-            // A consolidation-override targets a consolidated cell, not a leaf, so
-            // it needs no leaf feeder (its value is computed at the coord).
+        let targets = area_leaf_coords(cube, &rule.area);
+        if targets.is_empty() {
+            continue; // pure consolidation override: value computed at the coord
+        }
+        let mut cells = Vec::new();
+        collect_cells(&rule.expr, &mut cells);
+        let inputs: Vec<&CCell> = cells
+            .into_iter()
+            .filter(|c| c.cube == target_ordinal)
+            .collect();
+        if inputs.is_empty() {
+            result.opaque.push(OpaqueRule {
+                rule: RuleId(i),
+                reason: "no same-cube input to localize feeders".to_string(),
+            });
             continue;
         }
-        match infer_rule(cube, rule, target_ordinal, &mut result.index) {
-            Ok(()) => {}
-            Err(reason) => result.opaque.push(OpaqueRule { rule: id, reason }),
+        analyzable.push(Analyzable { targets, inputs });
+    }
+
+    // Fixpoint: a leaf is "potent" (potentially non-zero) if it is stored or has
+    // been fed. Feed a target whose input is potent; the newly fed target is then
+    // itself potent, so a later iteration can feed a rule that reads it. Each
+    // round only adds feeders, and there are finitely many target leaves, so this
+    // terminates.
+    let mut potent: BTreeSet<Vec<u32>> = cube.cell_entries().map(|(coord, _)| coord).collect();
+    loop {
+        let mut changed = false;
+        for a in &analyzable {
+            for target in &a.targets {
+                if result.index.contains(target) {
+                    continue;
+                }
+                if a.inputs
+                    .iter()
+                    .any(|cell| input_potent(cube, cell, target, &potent))
+                {
+                    result.index.insert(target);
+                    potent.insert(target.clone());
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
         }
     }
     result
@@ -148,11 +202,11 @@ pub fn validate_feeders(
     let engine = CalcEngine::new(registry);
 
     // Under-feed: every leaf a rule targets with a non-zero value must be fed.
+    // `area_leaf_coords` returns only leaf targets, so a pure consolidation
+    // override (no leaf targets) contributes none and a mixed-target rule still
+    // has its leaf targets checked (no override skip can hide an under-feed).
     let mut under = BTreeSet::new();
     for rule in &model.rules {
-        if targets_consolidated(cube, rule) {
-            continue; // overrides target consolidated cells, not leaves
-        }
         for target in area_leaf_coords(cube, &rule.area) {
             if engine.value(ordinal, &target)? != Fixed::ZERO && !index.contains(&target) {
                 under.insert(target);
@@ -213,19 +267,6 @@ fn area_leaf_coords(cube: &Cube, area: &CompiledArea) -> Vec<Vec<u32>> {
     out
 }
 
-/// Whether any pinned dimension of the area names a consolidated element (making
-/// the rule a consolidation override rather than a leaf rule).
-fn targets_consolidated(cube: &Cube, rule: &CompiledRule) -> bool {
-    rule.area.per_dim.iter().enumerate().any(|(d, pred)| {
-        matches!(pred, DimPredicate::OneOf(set)
-            if set.iter().any(|&i| cube
-                .dimension(d)
-                .element(i)
-                .map(|e| !e.kind.is_leaf())
-                .unwrap_or(false)))
-    })
-}
-
 pub(crate) fn collect_cells<'a>(expr: &'a CExpr, out: &mut Vec<&'a CCell>) {
     match expr {
         CExpr::Cell(c) => out.push(c),
@@ -248,97 +289,57 @@ pub(crate) fn collect_cells<'a>(expr: &'a CExpr, out: &mut Vec<&'a CCell>) {
     }
 }
 
-/// Infer feeders for one analyzable leaf rule, or return why it is opaque.
-fn infer_rule(
-    cube: &Cube,
-    rule: &CompiledRule,
-    target_ordinal: u32,
-    index: &mut FeederIndex,
-) -> Result<(), String> {
-    let mut cells = Vec::new();
-    collect_cells(&rule.expr, &mut cells);
-    let same_cube: Vec<&CCell> = cells
-        .iter()
-        .copied()
-        .filter(|c| c.cube == target_ordinal)
-        .collect();
-    if same_cube.is_empty() {
-        return Err("no same-cube input to localize feeders".to_string());
-    }
-
-    // The target member for a pinned-input dimension must be a single leaf, so we
-    // can map a populated input back to one target leaf.
-    let single_target = |d: usize| -> Option<u32> {
-        match &rule.area.per_dim[d] {
-            DimPredicate::OneOf(set) if set.len() == 1 => Some(set[0]),
-            _ => None,
-        }
-    };
-
-    for cell in &same_cube {
-        // Validate the analyzable shape first: every pinned-input dim needs a
-        // single-leaf target member.
-        for (d, slot) in cell.addr.iter().enumerate() {
-            if matches!(slot, AddrSlot::Pinned(_)) && single_target(d).is_none() {
-                return Err(format!(
-                    "input pins dimension {d} but the target area for it is not a single member"
-                ));
-            }
-        }
-        // Walk the populated leaves; a cell that matches the input pattern feeds
-        // the corresponding target leaf.
-        for (pop, _) in cube.cell_entries() {
-            if !input_matches(cube, cell, &rule.area.per_dim, &pop) {
-                continue;
-            }
-            let target: Vec<u32> = cell
-                .addr
-                .iter()
-                .enumerate()
-                .map(|(d, slot)| match slot {
-                    AddrSlot::FromTarget(_) => pop[d],
-                    AddrSlot::Pinned(_) => single_target(d).expect("validated above"),
-                })
-                .collect();
-            if rule.area.matches(cube, &target) {
-                index.insert(&target);
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Whether a populated leaf `pop` could be the input addressed by `cell` for some
-/// target in the rule's area: pinned dims must match the pin, and copied
-/// (FromTarget) dims must be a leaf the area admits.
-fn input_matches(cube: &Cube, cell: &CCell, area: &[DimPredicate], pop: &[u32]) -> bool {
-    if cell.addr.len() != pop.len() {
+/// Whether the input addressed by `cell` for target leaf `target` is potentially
+/// non-zero: at least one leaf it resolves to is in `potent`. Each dimension
+/// resolves to a leaf set: a copied (`FromTarget`) dim to the target's leaf, a
+/// pinned leaf to itself, and a pinned consolidated element to the leaves it rolls
+/// up (so a rule reading a consolidated input is fed when any contributing leaf
+/// is potent). An input that resolves to no leaves (an empty consolidation) is
+/// not potent, which is correct: its value is zero.
+fn input_potent(cube: &Cube, cell: &CCell, target: &[u32], potent: &BTreeSet<Vec<u32>>) -> bool {
+    if cell.addr.len() != target.len() {
         return false;
     }
+    let mut per_dim: Vec<Vec<u32>> = Vec::with_capacity(cell.addr.len());
     for (d, slot) in cell.addr.iter().enumerate() {
-        match slot {
-            AddrSlot::Pinned(pin) => {
-                if pop[d] != *pin {
-                    return false;
-                }
-            }
-            AddrSlot::FromTarget(_) => {
-                let is_leaf = cube
-                    .dimension(d)
-                    .element(pop[d])
-                    .map(|e| e.kind.is_leaf())
-                    .unwrap_or(false);
-                let admitted = match &area[d] {
-                    DimPredicate::Any => is_leaf,
-                    DimPredicate::OneOf(set) => set.binary_search(&pop[d]).is_ok(),
-                };
-                if !admitted {
-                    return false;
-                }
-            }
+        let element = match slot {
+            AddrSlot::Pinned(pin) => *pin,
+            AddrSlot::FromTarget(_) => target[d],
+        };
+        // Expand to the contributing leaves under `element` (a leaf yields itself;
+        // a consolidation yields its non-zero-weight leaves, deterministically).
+        let leaves: Vec<u32> = match cube.dimension(d).leaf_weights(element) {
+            Ok(lw) => lw.into_iter().map(|(leaf, _)| leaf).collect(),
+            Err(_) => return false,
+        };
+        if leaves.is_empty() {
+            return false;
+        }
+        per_dim.push(leaves);
+    }
+    cartesian_any(&per_dim, |coord| potent.contains(coord))
+}
+
+/// Whether any coordinate in the cartesian product of `per_dim` satisfies `pred`.
+/// Deterministic (it walks the product in index order) and bounded by the product
+/// size, which is small in practice (most dimensions resolve to a single leaf).
+fn cartesian_any(per_dim: &[Vec<u32>], mut pred: impl FnMut(&[u32]) -> bool) -> bool {
+    let total: usize = per_dim.iter().map(|v| v.len()).product();
+    if total == 0 {
+        return false;
+    }
+    let mut coord = vec![0u32; per_dim.len()];
+    for n in 0..total {
+        let mut rem = n;
+        for (d, dim) in per_dim.iter().enumerate() {
+            coord[d] = dim[rem % dim.len()];
+            rem /= dim.len();
+        }
+        if pred(&coord) {
+            return true;
         }
     }
-    true
+    false
 }
 
 #[cfg(test)]
@@ -549,6 +550,157 @@ mod tests {
         assert!(
             inf.opaque.is_empty(),
             "an override is not opaque, just feeder-less"
+        );
+    }
+
+    /// Like `sales_cube` but with an extra leaf measure `Net`, for chained rules.
+    fn chain_cube() -> Cube {
+        let mut region = Dimension::new("Region");
+        let n = region.add_leaf("North");
+        let s = region.add_leaf("South");
+        let t = region.add_consolidated("Total");
+        region.add_child(t, n, 1).unwrap();
+        region.add_child(t, s, 1).unwrap();
+        let mut measure = Dimension::new("Measure");
+        measure.add_leaf("Sales");
+        measure.add_leaf("Cost");
+        measure.add_leaf("Margin");
+        measure.add_leaf("Net");
+        Cube::new("Sales", vec![region, measure]).unwrap()
+    }
+
+    #[test]
+    fn chained_rules_feed_the_downstream_target() {
+        let mut cube = chain_cube();
+        let n = cube.dimension(0).resolve("North").unwrap();
+        let (sales, cost) = (
+            cube.dimension(1).resolve("Sales").unwrap(),
+            cube.dimension(1).resolve("Cost").unwrap(),
+        );
+        cube.set_leaf(&[n, sales], Fixed::from(100)).unwrap();
+        cube.set_leaf(&[n, cost], Fixed::from(60)).unwrap();
+        // Rule A derives Margin; Rule B reads the derived Margin to derive Net.
+        let model = compile(
+            &cube,
+            &SingleCube::new(&cube),
+            &parse(
+                "['Measure':'Margin'] = value['Measure':'Sales'] - value['Measure':'Cost'];\n\
+                 ['Measure':'Net'] = value['Measure':'Margin'];",
+            )
+            .unwrap(),
+            1,
+        )
+        .unwrap();
+        let inf = infer_feeders(&cube, &model, 0);
+        let (margin, net) = (
+            cube.dimension(1).resolve("Margin").unwrap(),
+            cube.dimension(1).resolve("Net").unwrap(),
+        );
+        let s = cube.dimension(0).resolve("South").unwrap();
+        // The fixpoint feeds Net[North], which reads the rule-derived Margin[North]
+        // -- the chained dependency the stored-leaf-only inference missed.
+        assert!(inf.index.contains(&[n, margin]));
+        assert!(inf.index.contains(&[n, net]));
+        // South has no stored inputs, so nothing is fed there (still tight).
+        assert!(!inf.index.contains(&[s, margin]));
+        assert!(!inf.index.contains(&[s, net]));
+    }
+
+    #[test]
+    fn consolidated_input_feeds_via_its_leaves() {
+        let mut cube = chain_cube();
+        let n = cube.dimension(0).resolve("North").unwrap();
+        let (sales, cost) = (
+            cube.dimension(1).resolve("Sales").unwrap(),
+            cube.dimension(1).resolve("Cost").unwrap(),
+        );
+        cube.set_leaf(&[n, sales], Fixed::from(100)).unwrap();
+        cube.set_leaf(&[n, cost], Fixed::from(60)).unwrap();
+        // Net reads the Region:Total rollup of the rule-derived Margin: a
+        // consolidated input. The total is non-zero (Margin[North] != 0), so both
+        // Net leaves are fed -- the consolidated-input case the old inference missed.
+        let model = compile(
+            &cube,
+            &SingleCube::new(&cube),
+            &parse(
+                "['Measure':'Margin'] = value['Measure':'Sales'] - value['Measure':'Cost'];\n\
+                 ['Measure':'Net'] = value['Region':'Total', 'Measure':'Margin'];",
+            )
+            .unwrap(),
+            1,
+        )
+        .unwrap();
+        let inf = infer_feeders(&cube, &model, 0);
+        let net = cube.dimension(1).resolve("Net").unwrap();
+        let s = cube.dimension(0).resolve("South").unwrap();
+        assert!(inf.index.contains(&[n, net]));
+        assert!(inf.index.contains(&[s, net]));
+    }
+
+    #[test]
+    fn multi_element_target_with_pinned_input_feeds_all_targets() {
+        let mut cube = chain_cube();
+        let n = cube.dimension(0).resolve("North").unwrap();
+        let cost = cube.dimension(1).resolve("Cost").unwrap();
+        cube.set_leaf(&[n, cost], Fixed::from(60)).unwrap();
+        // Target is every leaf measure; the input pins one measure. The old
+        // inference rejected a pinned input on a multi-member target dim as opaque;
+        // now every target leaf whose pinned input is populated is fed.
+        let model = compile(
+            &cube,
+            &SingleCube::new(&cube),
+            &parse("['Measure':{leaves}] = value['Measure':'Cost'];").unwrap(),
+            1,
+        )
+        .unwrap();
+        let inf = infer_feeders(&cube, &model, 0);
+        assert!(
+            inf.opaque.is_empty(),
+            "a pinned input on a multi-leaf target is now analyzable"
+        );
+        let s = cube.dimension(0).resolve("South").unwrap();
+        let leaves =
+            ["Sales", "Cost", "Margin", "Net"].map(|m| cube.dimension(1).resolve(m).unwrap());
+        for m in leaves {
+            assert!(
+                inf.index.contains(&[n, m]),
+                "North feeds every measure leaf"
+            );
+            assert!(!inf.index.contains(&[s, m]), "South has no populated input");
+        }
+    }
+
+    #[test]
+    fn mixed_target_override_rule_under_feed_is_detected() {
+        let mut cube = sales_cube();
+        let n = cube.dimension(0).resolve("North").unwrap();
+        let (sales, cost) = (
+            cube.dimension(1).resolve("Sales").unwrap(),
+            cube.dimension(1).resolve("Cost").unwrap(),
+        );
+        cube.set_leaf(&[n, sales], Fixed::from(100)).unwrap();
+        cube.set_leaf(&[n, cost], Fixed::from(60)).unwrap();
+        // The Region target spans both leaves and the Total consolidation. The old
+        // classifier treated this as a pure override and skipped validation, hiding
+        // an under-feed of the leaf target [North, Margin] (value 40).
+        let model = compile(
+            &cube,
+            &SingleCube::new(&cube),
+            &parse(
+                "['Region':{descendants of 'Total'}, 'Measure':'Margin'] = \
+                 value['Measure':'Sales'] - value['Measure':'Cost'];",
+            )
+            .unwrap(),
+            1,
+        )
+        .unwrap();
+        let reg = OneCube { cube, model };
+        let diag = validate_feeders(&reg, 0, &FeederIndex::new()).unwrap();
+        let n = reg.cube.dimension(0).resolve("North").unwrap();
+        let margin = reg.cube.dimension(1).resolve("Margin").unwrap();
+        assert!(
+            diag.under_fed.contains(&vec![n, margin]),
+            "the mixed-target rule's leaf under-feed is no longer silently skipped"
         );
     }
 }
