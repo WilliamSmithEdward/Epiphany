@@ -27,5 +27,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0021](0021-model-editing-api.md) | Model-editing API (create cubes, build dimensions, edit attributes) | Accepted | UI overhaul (W-API) |
 | [0022](0022-excel-add-in.md) | Excel add-in (Excel-DNA + WebView2 configurator) | Accepted | Excel client |
 | [0023](0023-modular-object-kind-permissions.md) | Modular per-object-kind permissions (roles for users and groups) | Accepted | Security model |
+| [0024](0024-shared-independent-dimensions.md) | Shared, independent dimensions (a dimension registry) | Accepted | Model architecture |
 
 > All originally-reserved ADR numbers are allocated; later decisions continue from 0020.
