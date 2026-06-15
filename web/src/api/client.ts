@@ -681,6 +681,127 @@ export async function runFlowTests(cube: string): Promise<TestReportDto> {
   return request<TestReportDto>('POST', `${flowBase(cube)}/tests/run`)
 }
 
+// ---- security administration (Phase 7, ADR-0015 + ADR-0010, admin only) ----
+
+export type AccessLevel = 'none' | 'read' | 'write' | 'admin'
+export type SubjectKind = 'user' | 'group'
+
+/** A user as returned by the admin listing. */
+export interface UserDto {
+  username: string
+  is_admin: boolean
+  groups: string[]
+}
+
+/** An object access grant (level `none` revokes). */
+export interface ObjectGrantDto {
+  kind: string
+  cube?: string
+  name: string
+  subject_kind: SubjectKind
+  subject: string
+  level: AccessLevel
+}
+
+/** An element access grant (level `none` revokes). */
+export interface ElementGrantDto {
+  cube: string
+  dimension: string
+  element: string
+  subject_kind: SubjectKind
+  subject: string
+  level: AccessLevel
+}
+
+/** One audit record (ADR-0010). */
+export interface AuditRecordDto {
+  seq: number
+  timestamp_millis: number
+  actor: string
+  action: string
+  object_kind: string
+  target: string
+  allowed: boolean
+}
+
+export async function listUsers(): Promise<UserDto[]> {
+  const result = await request<{ users: UserDto[] }>('GET', '/api/v1/users')
+  return result.users
+}
+
+export async function createUser(body: {
+  username: string
+  password: string
+  is_admin?: boolean
+  groups?: string[]
+}): Promise<void> {
+  return request<void>('POST', '/api/v1/users', body)
+}
+
+export async function patchUser(
+  username: string,
+  body: { is_admin?: boolean; groups?: string[]; password?: string },
+): Promise<void> {
+  return request<void>('PATCH', `/api/v1/users/${encodeURIComponent(username)}`, body)
+}
+
+export async function deleteUser(username: string): Promise<void> {
+  return request<void>('DELETE', `/api/v1/users/${encodeURIComponent(username)}`)
+}
+
+export async function listGroups(): Promise<string[]> {
+  const result = await request<{ groups: string[] }>('GET', '/api/v1/groups')
+  return result.groups
+}
+
+export async function createGroup(name: string): Promise<void> {
+  return request<void>('POST', '/api/v1/groups', { name })
+}
+
+export async function deleteGroup(name: string): Promise<void> {
+  return request<void>('DELETE', `/api/v1/groups/${encodeURIComponent(name)}`)
+}
+
+export async function listObjectAcls(): Promise<ObjectGrantDto[]> {
+  const result = await request<{ grants: ObjectGrantDto[] }>('GET', '/api/v1/acl/objects')
+  return result.grants
+}
+
+export async function putObjectAcl(grant: ObjectGrantDto): Promise<void> {
+  return request<void>('PUT', '/api/v1/acl/objects', grant)
+}
+
+export async function listElementAcls(): Promise<ElementGrantDto[]> {
+  const result = await request<{ grants: ElementGrantDto[] }>('GET', '/api/v1/acl/elements')
+  return result.grants
+}
+
+export async function putElementAcl(grant: ElementGrantDto): Promise<void> {
+  return request<void>('PUT', '/api/v1/acl/elements', grant)
+}
+
+/** Audit-query filters; omitted fields are not constrained. */
+export interface AuditQuery {
+  actor?: string
+  action?: string
+  outcome?: 'allowed' | 'denied'
+  limit?: number
+}
+
+export async function queryAudit(filter: AuditQuery): Promise<AuditRecordDto[]> {
+  const params = new URLSearchParams()
+  if (filter.actor) params.set('actor', filter.actor)
+  if (filter.action) params.set('action', filter.action)
+  if (filter.outcome) params.set('outcome', filter.outcome)
+  if (filter.limit) params.set('limit', String(filter.limit))
+  const query = params.toString()
+  const result = await request<{ records: AuditRecordDto[] }>(
+    'GET',
+    `/api/v1/audit${query ? `?${query}` : ''}`,
+  )
+  return result.records
+}
+
 export interface ChangeEvent {
   type: string
   cube?: string

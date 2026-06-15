@@ -2,7 +2,11 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { login } from '../api/client'
 
-export default function Login({ onLoggedIn }: { onLoggedIn: (username: string) => void }) {
+export default function Login({
+  onLoggedIn,
+}: {
+  onLoggedIn: (username: string, isAdmin: boolean) => void
+}) {
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -14,7 +18,7 @@ export default function Login({ onLoggedIn }: { onLoggedIn: (username: string) =
     setError(null)
     try {
       const result = await login(username, password)
-      onLoggedIn(result.user.username)
+      onLoggedIn(result.user.username, result.user.is_admin)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign-in failed')
     } finally {

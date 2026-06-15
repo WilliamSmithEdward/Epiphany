@@ -2,11 +2,22 @@ import { useState } from 'react'
 import Login from './components/Login'
 import CubeApp from './components/CubeApp'
 
-export default function App() {
-  const [username, setUsername] = useState<string | null>(null)
+interface Session {
+  username: string
+  isAdmin: boolean
+}
 
-  if (!username) {
-    return <Login onLoggedIn={setUsername} />
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null)
+
+  if (!session) {
+    return <Login onLoggedIn={(username, isAdmin) => setSession({ username, isAdmin })} />
   }
-  return <CubeApp username={username} onLogout={() => setUsername(null)} />
+  return (
+    <CubeApp
+      username={session.username}
+      isAdmin={session.isAdmin}
+      onLogout={() => setSession(null)}
+    />
+  )
 }

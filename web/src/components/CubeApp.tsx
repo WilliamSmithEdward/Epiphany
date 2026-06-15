@@ -4,15 +4,19 @@ import FlowsWorkspace from './FlowsWorkspace'
 import PivotGrid from './PivotGrid'
 import RulesWorkspace from './RulesWorkspace'
 import SandboxBar from './SandboxBar'
+import SecurityWorkspace from './SecurityWorkspace'
 import ViewWorkspace from './ViewWorkspace'
 
 type Mode = 'grid' | 'views' | 'rules' | 'flows'
+type View = 'cubes' | 'admin'
 
 export default function CubeApp({
   username,
+  isAdmin,
   onLogout,
 }: {
   username: string
+  isAdmin: boolean
   onLogout: () => void
 }) {
   const [cubes, setCubes] = useState<CubeSummary[]>([])
@@ -21,6 +25,9 @@ export default function CubeApp({
   const [live, setLive] = useState(false)
   const [reload, setReload] = useState(0)
   const [mode, setMode] = useState<Mode>('grid')
+  // The server-global admin console is a top-level view, separate from the
+  // per-cube workspaces (it is not scoped to a cube). Admins only.
+  const [view, setView] = useState<View>('cubes')
 
   useEffect(() => {
     listCubes()
@@ -63,29 +70,50 @@ export default function CubeApp({
           className={`dot ${live ? 'on' : 'off'}`}
           title={live ? 'Live updates on' : 'Offline'}
         />
+        {isAdmin ? (
+          <span className="modes">
+            <button
+              className={view === 'cubes' ? 'active' : ''}
+              onClick={() => setView('cubes')}
+            >
+              Cubes
+            </button>
+            <button
+              className={view === 'admin' ? 'active' : ''}
+              onClick={() => setView('admin')}
+            >
+              Admin
+            </button>
+          </span>
+        ) : null}
         <span className="spacer" />
         <span className="user">{username}</span>
         <button onClick={signOut}>Sign out</button>
       </header>
-      <div className="body">
-        <nav className="sidebar">
-          <h2>Cubes</h2>
-          <ul>
-            {cubes.map((cube) => (
-              <li key={cube.name}>
-                <button
-                  className={cube.name === selected ? 'active' : ''}
-                  onClick={() => setSelected(cube.name)}
-                >
-                  {cube.name} <small>{cube.cell_count} cells</small>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </nav>
+      {view === 'admin' && isAdmin ? (
         <main className="content">
-          {error ? <p className="error">{error}</p> : null}
-          {selected ? (
+          <SecurityWorkspace />
+        </main>
+      ) : (
+        <div className="body">
+          <nav className="sidebar">
+            <h2>Cubes</h2>
+            <ul>
+              {cubes.map((cube) => (
+                <li key={cube.name}>
+                  <button
+                    className={cube.name === selected ? 'active' : ''}
+                    onClick={() => setSelected(cube.name)}
+                  >
+                    {cube.name} <small>{cube.cell_count} cells</small>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </nav>
+          <main className="content">
+            {error ? <p className="error">{error}</p> : null}
+            {selected ? (
             <>
               {mode === 'grid' || mode === 'views' ? (
                 <SandboxBar key={selected} cube={selected} onChange={bumpReload} />
@@ -110,15 +138,16 @@ export default function CubeApp({
                 <ViewWorkspace cube={selected} reloadSignal={reload} />
               ) : mode === 'rules' ? (
                 <RulesWorkspace cube={selected} reloadSignal={reload} />
-              ) : (
+                ) : (
                 <FlowsWorkspace cube={selected} reloadSignal={reload} />
               )}
-            </>
-          ) : (
-            <p>No cube selected.</p>
-          )}
-        </main>
-      </div>
+              </>
+            ) : (
+              <p>No cube selected.</p>
+            )}
+          </main>
+        </div>
+      )}
     </div>
   )
 }
