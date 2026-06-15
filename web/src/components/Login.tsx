@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { login } from '../api/client'
+import { notifyExcelHost } from '../host'
 import { Button, Field, Input } from '../ui'
 import ThemeToggle from '../ui/ThemeToggle'
 
@@ -19,6 +20,8 @@ export default function Login({
     setError(null)
     try {
       const result = await login(username, password)
+      // If embedded in the Excel add-in's WebView2, hand it the token (ADR-0022).
+      notifyExcelHost(result.token)
       onLoggedIn(result.user.username, result.user.is_admin)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign-in failed')

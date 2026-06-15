@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Epiphany Excel add-in (ADR-0022). A thin REST client packed as a single
+    Excel-DNA .xll. Targets net8.0-windows (Excel-DNA modern-.NET support); uses
+    WinForms to host the WebView2 configurator. Excel is not present in CI, so
+    this builds and is statically verified here and load-tested in Excel by the
+    user (see README).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <RootNamespace>Epiphany.ExcelAddIn</RootNamespace>
+    <AssemblyName>Epiphany.ExcelAddIn</AssemblyName>
+    <!-- Excel-DNA packs the .xll on build. -->
+    <ExcelAddInFileName>Epiphany</ExcelAddInFileName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ExcelDna.AddIn" Version="1.8.0" />
+    <PackageReference Include="ExcelDna.Integration" Version="1.8.0" />
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2792.45" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+
+</Project>
