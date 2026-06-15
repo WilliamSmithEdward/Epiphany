@@ -761,3 +761,84 @@
   text-align: center;
   color: var(--color-text-muted);
 }
+
+/* ---- Pivot grid (W2) ---- */
+.grid-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  margin-bottom: var(--space-4);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+.grid-axis {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.grid-axis > span {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-subtle);
+}
+.grid-toolbar__spacer {
+  flex: 1;
+}
+.grid-wrap {
+  overflow: auto;
+  max-height: calc(100vh - 17rem);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.grid-wrap table.pivot {
+  border: none;
+  border-radius: 0;
+  width: 100%;
+}
+.grid-wrap table.pivot thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-surface-3);
+}
+.grid-wrap table.pivot th.rowhead,
+.grid-wrap table.pivot th.corner {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--color-surface-3);
+}
+.grid-wrap table.pivot th.corner {
+  z-index: 3;
+}
+
+/* Multi-cue cell affordances (ADR-0020): editable vs calculated. */
+.cell.calc {
+  background: var(--color-calc-cell);
+  color: var(--color-text-muted);
+  padding: var(--space-2) var(--space-3);
+  cursor: not-allowed;
+}
+.cell.editable {
+  cursor: text;
+}
+.cell.editable::after {
+  /* a faint pencil hint on hover */
+  content: "✎";
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  font-size: 0.65rem;
+  color: var(--color-text-subtle);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease);
+  pointer-events: none;
+}
+.cell.editable:hover::after {
+  opacity: 0.6;
+}
