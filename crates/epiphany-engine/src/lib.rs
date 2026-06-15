@@ -20,14 +20,17 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use epiphany_core::{
-    AttributeKind, AttributeValue, CellResolver, Connection, Cube, DimensionDef, EdgeSpec,
-    ElementMask, ElementSpec, Fixed, Flow, FlowTest, Job, Model, ModelError, QueryError, RuleSet,
-    RuleTest, Sandbox, Subset, View,
+    AttributeKind, AttributeValue, CellResolver, Connection, Cube, Dimension, DimensionDef,
+    EdgeSpec, ElementMask, ElementSpec, Fixed, Flow, FlowTest, Job, Model, ModelError, QueryError,
+    RuleSet, RuleTest, Sandbox, Subset, View,
 };
 use epiphany_determinism::IdGen;
 use epiphany_persist::{PersistError, Store};
 
 pub use epiphany_persist::CellWrite;
+
+mod dimensions;
+pub use dimensions::{DimensionId, DimensionRegistry, SharedDimension};
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-engine";
@@ -175,6 +178,14 @@ pub struct Engine {
     /// Serializes cube create/registration so concurrent creates cannot lose a
     /// cube. Per-cube commits never take this lock.
     topology: Arc<Mutex<()>>,
+    /// The shared-dimension registry (ADR-0024, Phase 0): a server-level set of
+    /// dimensions cubes will reference by id. Held behind an `ArcSwap` like the
+    /// cube set; mutated under `dim_topology`. Additive and not yet wired into the
+    /// live read/commit path.
+    dimensions: Arc<ArcSwap<DimensionRegistry>>,
+    /// Serializes registry mutations. The lock order is `dim_topology` before any
+    /// per-cube `writer` (ADR-0024) to preclude an AB/BA deadlock.
+    dim_topology: Arc<Mutex<()>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -208,6 +219,8 @@ impl Engine {
             ids,
             cubes_dir: None,
             topology: Arc::new(Mutex::new(())),
+            dimensions: Arc::new(ArcSwap::from_pointee(DimensionRegistry::default())),
+            dim_topology: Arc::new(Mutex::new(())),
         }
     }
 
@@ -223,6 +236,62 @@ impl Engine {
     /// map guard before doing work (and so per-cube commits never pin the map).
     fn state(&self, cube: &str) -> Option<Arc<CubeState>> {
         self.cubes.load().get(cube).cloned()
+    }
+
+    // ---- shared-dimension registry (ADR-0024, Phase 0) ----
+    //
+    // Additive: these manage the server-level dimension registry but are not yet
+    // consulted by the live read/commit path (cubes still own their dimensions).
+    // Phase 1 makes cubes reference the registry and threads a pinned snapshot
+    // through reads.
+
+    /// A lock-free snapshot of the shared-dimension registry.
+    pub fn dimension_registry(&self) -> Arc<DimensionRegistry> {
+        self.dimensions.load_full()
+    }
+
+    /// Register a new shared dimension and return its server-unique id. Mints the
+    /// id from the shared `IdGen`, then copy-on-write swaps it into the registry
+    /// under `dim_topology`. Not yet referenced by any cube.
+    pub fn register_dimension(&self, dimension: Dimension) -> DimensionId {
+        let _topo = self
+            .dim_topology
+            .lock()
+            .expect("dim_topology mutex poisoned");
+        let id = DimensionId(self.ids.next_id());
+        let shared = Arc::new(SharedDimension::new(id, dimension));
+        let mut next = (**self.dimensions.load()).clone();
+        next.put(shared);
+        self.dimensions.store(Arc::new(next));
+        id
+    }
+
+    /// Append elements/edges to a registered shared dimension and publish the new
+    /// generation, returning it. A rejected change leaves the registry untouched.
+    pub fn grow_dimension(
+        &self,
+        id: DimensionId,
+        elements: &[ElementSpec],
+        edges: &[EdgeSpec],
+    ) -> Result<u64, BatchError> {
+        let _topo = self
+            .dim_topology
+            .lock()
+            .expect("dim_topology mutex poisoned");
+        let current = self.dimensions.load().get(id).cloned().ok_or_else(|| {
+            BatchError::Invalid(QueryError::Model(ModelError::UnknownDimension {
+                cube: "registry".to_string(),
+                dimension: format!("#{}", id.0),
+            }))
+        })?;
+        let grown = current
+            .grown(elements, edges)
+            .map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
+        let generation = grown.generation;
+        let mut next = (**self.dimensions.load()).clone();
+        next.put(Arc::new(grown));
+        self.dimensions.store(Arc::new(next));
+        Ok(generation)
     }
 
     /// The cube names, in deterministic sorted order.
@@ -1490,5 +1559,41 @@ mod tests {
                 .define_attribute("Sales", None, "R", "Currency", AttributeKind::Numeric),
             Err(BatchError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn dimension_registry_register_and_grow() {
+        let f = fixture("dim-registry");
+        let mut product = Dimension::new("Product");
+        product.add_leaf("Widget");
+        let id = f.engine.register_dimension(product);
+
+        // The registry snapshot sees it at generation 0.
+        let reg = f.engine.dimension_registry();
+        assert_eq!(reg.get(id).unwrap().generation, 0);
+        assert_eq!(reg.get(id).unwrap().dimension.index_of("Widget"), Some(0));
+
+        // Growing it appends with a stable index and bumps the generation.
+        let generation = f
+            .engine
+            .grow_dimension(
+                id,
+                &[ElementSpec {
+                    dimension: "Product".into(),
+                    name: "Gadget".into(),
+                    kind: ElementKind::Leaf,
+                }],
+                &[],
+            )
+            .unwrap();
+        assert_eq!(generation, 1);
+        let reg = f.engine.dimension_registry();
+        assert_eq!(reg.get(id).unwrap().dimension.index_of("Gadget"), Some(1));
+
+        // Growing an unknown dimension is rejected.
+        assert!(f
+            .engine
+            .grow_dimension(DimensionId(999_999), &[], &[])
+            .is_err());
     }
 }
