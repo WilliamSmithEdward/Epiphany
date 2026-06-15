@@ -9,12 +9,15 @@ mod boot;
 mod config;
 mod demo;
 mod observability;
+#[cfg(windows)]
+mod service_windows;
 mod shutdown;
 #[cfg(feature = "tls")]
 mod tls;
 #[cfg(feature = "embed-ui")]
 mod ui;
 
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use config::Config;
@@ -49,10 +52,47 @@ fn write_secret_file(path: &std::path::Path, contents: &str) -> std::io::Result<
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Entry point. Without arguments the server runs in the foreground until
+/// Ctrl-C / SIGTERM. `service install|uninstall|run` manages and hosts a native
+/// Windows service (Windows only); on other platforms use systemd/launchd/Docker
+/// (see docs/DEPLOYMENT.md).
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("service") {
+        let sub = args.get(2).map(String::as_str).unwrap_or("");
+        #[cfg(windows)]
+        {
+            return service_windows::handle(sub);
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = sub;
+            eprintln!(
+                "the 'service' command is Windows-only; on this platform run under \
+                 systemd, launchd, or Docker (see docs/DEPLOYMENT.md)"
+            );
+            std::process::exit(2);
+        }
+    }
+
+    // Foreground: drain on Ctrl-C / SIGTERM.
     let config = Config::from_env();
     observability::init(&config.log_filter);
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(run_server(config, shutdown::signal()))
+}
+
+/// Build the application state, start the scheduler, and serve (HTTP or HTTPS)
+/// until `shutdown` resolves, draining in-flight requests. The caller supplies
+/// the shutdown trigger: a signal future in the foreground, or the service
+/// control handler's stop notification when hosted as a Windows service.
+pub(crate) async fn run_server<F>(
+    config: Config,
+    shutdown: F,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     tracing::info!(
         version = env!("CARGO_PKG_VERSION"),
         "starting Epiphany server"
@@ -179,6 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 config.tls_cert.clone(),
                 config.tls_key.clone(),
                 &config.data_dir,
+                shutdown,
             )
             .await?;
             tracing::info!("shut down cleanly");
@@ -198,7 +239,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown::signal())
+        .with_graceful_shutdown(shutdown)
         .await?;
     tracing::info!("shut down cleanly");
     Ok(())

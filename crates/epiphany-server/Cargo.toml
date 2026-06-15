@@ -39,3 +39,9 @@ rust-embed = { version = "8", optional = true }
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
 rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"], optional = true }
+
+# Native Windows service (SCM) hosting. Windows-only; lets `epiphany-server
+# service install|run` register and run under the Service Control Manager so a
+# stop drains in-flight requests. Other platforms use systemd/launchd/Docker.
+[target.'cfg(windows)'.dependencies]
+windows-service = "0.7"

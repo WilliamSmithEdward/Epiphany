@@ -65,18 +65,27 @@ sudo launchctl load /Library/LaunchDaemons/com.epiphany.server.plist
 
 ## Windows
 
-The binary does not register with the Windows Service Control Manager directly;
-wrap it with a service shim:
+The binary registers with the Service Control Manager natively (no wrapper):
 
-- **WinSW** or **NSSM**: point the wrapper at `epiphany-server.exe`, set the
-  `EPIPHANY_*` variables, and it runs as a Windows service. Both forward a stop
-  to the process so the server's Ctrl-C / close-event handler drains in-flight
-  requests.
-- Set the data directory to a service-writable, ACL-restricted path via
-  `EPIPHANY_DATA_DIR` (the secret files rely on directory ACLs on Windows).
+```bat
+REM From an elevated (Administrator) prompt:
+epiphany-server.exe service install
+REM Set the service environment (EPIPHANY_DATA_DIR, EPIPHANY_BIND, ...), e.g.:
+sc start Epiphany
+REM ... and to remove it:
+epiphany-server.exe service uninstall
+```
 
-A native SCM integration (so `sc.exe` controls it without a wrapper) is a
-possible future addition.
+`service install` registers an auto-start service that runs `service run`; a
+`sc stop Epiphany` (or system shutdown) sends `SERVICE_CONTROL_STOP`, which the
+server drains cleanly. Configure it through the service's environment block
+(`EPIPHANY_*`), and point `EPIPHANY_DATA_DIR` at a service-writable,
+ACL-restricted path (on Windows the secret files rely on directory ACLs). The
+service runs as `LocalSystem` by default; assign a dedicated service account for
+least privilege.
+
+(WinSW or NSSM still work if you prefer an external supervisor, but are no longer
+required.)
 
 ## Notes
 

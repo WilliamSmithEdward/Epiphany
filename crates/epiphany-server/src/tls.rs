@@ -6,6 +6,7 @@
 //! the data directory on first run, which makes `EPIPHANY_TLS=on` a one-variable
 //! way to get working HTTPS for local and internal use.
 
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -13,18 +14,17 @@ use axum::Router;
 use axum_server::tls_rustls::RustlsConfig;
 use axum_server::Handle;
 
-use crate::shutdown;
-
 /// Serve `app` over HTTPS on `addr`. Uses the operator certificate when both
 /// `cert` and `key` are set, otherwise a self-signed certificate persisted under
-/// `{data_dir}/server/tls/`. Graceful shutdown is wired through the handle, so a
-/// signal drains in-flight requests before exit.
+/// `{data_dir}/server/tls/`. The `shutdown` future (Ctrl-C/SIGTERM, or a service
+/// manager's stop) drives a graceful drain through the handle before exit.
 pub(crate) async fn serve_https(
     addr: SocketAddr,
     app: Router,
     cert: Option<PathBuf>,
     key: Option<PathBuf>,
     data_dir: &Path,
+    shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     // The build pins the ring provider; install it as the process default (a
     // no-op if something already did).
@@ -44,7 +44,7 @@ pub(crate) async fn serve_https(
     let handle = Handle::new();
     let shutdown_handle = handle.clone();
     tokio::spawn(async move {
-        shutdown::signal().await;
+        shutdown.await;
         shutdown_handle.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
     });
 
