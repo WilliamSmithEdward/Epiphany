@@ -20,6 +20,11 @@ pub struct Config {
     /// The scheduler reconcile-tick period in milliseconds (ADR-0013). Default
     /// 1000 (1s); `0` disables the scheduler loop entirely.
     pub scheduler_tick_millis: u64,
+    /// The audit log's retained-record cap (ADR-0010, Phase 8). Default 100_000;
+    /// `0` keeps everything.
+    pub audit_max_records: usize,
+    /// The audit log's retention window in milliseconds (`None` = no age limit).
+    pub audit_retention_millis: Option<u64>,
 }
 
 impl Default for Config {
@@ -31,6 +36,8 @@ impl Default for Config {
             open_browser: false,
             session_ttl_millis: 8 * 60 * 60 * 1000,
             scheduler_tick_millis: 1000,
+            audit_max_records: 100_000,
+            audit_retention_millis: None,
         }
     }
 }
@@ -71,6 +78,19 @@ impl Config {
             .and_then(|v| v.parse::<u64>().ok())
         {
             config.scheduler_tick_millis = secs.saturating_mul(1000);
+        }
+        if let Some(max) = vars
+            .get("EPIPHANY_AUDIT_MAX_RECORDS")
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            config.audit_max_records = max;
+        }
+        if let Some(days) = vars
+            .get("EPIPHANY_AUDIT_RETENTION_DAYS")
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|d| *d > 0)
+        {
+            config.audit_retention_millis = Some(days.saturating_mul(24 * 60 * 60 * 1000));
         }
         config
     }

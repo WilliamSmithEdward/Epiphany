@@ -12,7 +12,7 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const AUDIT_MAGIC: [u8; 6] = *b"EPIAUD";
 const AUDIT_VERSION: u16 = 1;
@@ -127,21 +127,58 @@ pub struct AuditFilter {
     pub limit: Option<usize>,
 }
 
+/// How long the audit log is retained (ADR-0010, Phase 8). The log is bounded so
+/// it cannot grow without limit; when it exceeds the bound it is compacted to the
+/// retained tail (the file is rewritten via a temp-then-rename, so a crash during
+/// compaction leaves the previous file intact). Sequence numbers stay monotonic
+/// across a compaction; older records are dropped, not renumbered.
+#[derive(Debug, Clone, Copy)]
+pub struct RetentionPolicy {
+    /// Keep at most this many records (`0` = unbounded). The log compacts to the
+    /// newest `max_records` once it grows past twice that.
+    pub max_records: usize,
+    /// Drop records older than this many milliseconds before the newest record
+    /// (`None` = no age limit). Ages use the injected timestamps, never the wall
+    /// clock, so retention is deterministic in tests.
+    pub max_age_millis: Option<u64>,
+}
+
+impl Default for RetentionPolicy {
+    /// Unbounded: keep everything (the pre-Phase-8 behavior).
+    fn default() -> Self {
+        Self {
+            max_records: 0,
+            max_age_millis: None,
+        }
+    }
+}
+
 /// The append-only audit log: a durable file plus an in-memory index for query.
 /// Holds its own file handle and is guarded by its own lock at the API layer, so
 /// audit writes do not serialize behind the security mutex.
 #[derive(Debug)]
 pub struct AuditLog {
     file: Option<File>,
+    /// The backing path, kept so the log can be compacted in place (`None` for an
+    /// in-memory log).
+    path: Option<PathBuf>,
+    policy: RetentionPolicy,
     records: Vec<AuditRecord>,
     next_seq: u64,
 }
 
 impl AuditLog {
-    /// Open (or create) the audit log at `path`, recovering existing records.
-    /// Non-gating: a torn tail is truncated and a missing/corrupt-header file is
-    /// re-initialized with a fresh header, never erroring.
+    /// Open (or create) the audit log at `path`, recovering existing records,
+    /// with no retention bound (keeps everything). Non-gating: a torn tail is
+    /// truncated and a missing/corrupt-header file is re-initialized.
     pub fn open(path: PathBuf) -> io::Result<Self> {
+        Self::open_with_policy(path, RetentionPolicy::default())
+    }
+
+    /// Open the audit log with a retention `policy` (ADR-0010, Phase 8). After
+    /// recovery the policy is enforced immediately, so reopening with a tighter
+    /// bound compacts an oversized log on startup.
+    pub fn open_with_policy(path: PathBuf, policy: RetentionPolicy) -> io::Result<Self> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -173,11 +210,15 @@ impl AuditLog {
                 (Vec::new(), 0)
             }
         };
-        Ok(AuditLog {
+        let mut log = AuditLog {
             file: Some(file),
+            path: Some(path),
+            policy,
             records,
             next_seq,
-        })
+        };
+        log.enforce_retention()?;
+        Ok(log)
     }
 
     /// An in-memory audit log with no backing file: records are queryable but not
@@ -185,6 +226,8 @@ impl AuditLog {
     pub fn in_memory() -> Self {
         AuditLog {
             file: None,
+            path: None,
+            policy: RetentionPolicy::default(),
             records: Vec::new(),
             next_seq: 0,
         }
@@ -218,7 +261,51 @@ impl AuditLog {
         let seq = record.seq;
         self.records.push(record);
         self.next_seq += 1;
+        self.enforce_retention()?;
         Ok(seq)
+    }
+
+    /// Enforce the retention policy (ADR-0010, Phase 8): when the log exceeds its
+    /// bound, compact to the retained tail. Cheap when within bounds (a length and
+    /// one-timestamp check); a compaction rewrites the file via temp-then-rename so
+    /// a crash mid-rewrite leaves the prior file intact, and keeps in-memory and
+    /// on-disk identical.
+    fn enforce_retention(&mut self) -> io::Result<()> {
+        let max = self.policy.max_records;
+        if max == 0 && self.policy.max_age_millis.is_none() {
+            return Ok(());
+        }
+        // Drop records older than `max_age` before the newest one.
+        let age_cut = self.policy.max_age_millis.and_then(|age| {
+            self.records
+                .last()
+                .map(|r| r.timestamp_millis.saturating_sub(age))
+        });
+        // Compact lazily: only once the log has grown to twice the cap (so a
+        // compaction amortizes over many appends), or an aged-out record is present.
+        let over_count = max != 0 && self.records.len() >= max.saturating_mul(2);
+        let over_age = age_cut.is_some_and(|cut| {
+            self.records
+                .first()
+                .is_some_and(|r| r.timestamp_millis < cut)
+        });
+        if !over_count && !over_age {
+            return Ok(());
+        }
+        let start = if max == 0 {
+            0
+        } else {
+            self.records.len().saturating_sub(max)
+        };
+        let mut retained: Vec<AuditRecord> = self.records[start..].to_vec();
+        if let Some(cut) = age_cut {
+            retained.retain(|r| r.timestamp_millis >= cut);
+        }
+        if let Some(path) = self.path.clone() {
+            self.file = Some(rewrite_file(&path, &retained)?);
+        }
+        self.records = retained;
+        Ok(())
     }
 
     /// Query the in-memory record index with a filter (newest-last order).
@@ -253,6 +340,35 @@ fn header() -> [u8; 8] {
     h[..6].copy_from_slice(&AUDIT_MAGIC);
     h[6..].copy_from_slice(&AUDIT_VERSION.to_le_bytes());
     h
+}
+
+/// Rewrite the audit file to exactly `records` (a compaction), crash-safely: write
+/// a sibling temp file (header + framed records), fsync, then rename over the
+/// path, and return a fresh append-positioned handle. A crash before the rename
+/// leaves the original file intact.
+fn rewrite_file(path: &Path, records: &[AuditRecord]) -> io::Result<File> {
+    let tmp = path.with_extension("compact");
+    {
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)?;
+        f.write_all(&header())?;
+        for record in records {
+            f.write_all(&encode(record))?;
+        }
+        f.sync_data()?;
+    }
+    fs::rename(&tmp, path)?;
+    let mut f = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)?;
+    f.seek(SeekFrom::End(0))?;
+    Ok(f)
 }
 
 fn write_str(payload: &mut Vec<u8>, s: &str) {
@@ -512,5 +628,56 @@ mod tests {
             assert_eq!(AuditAction::parse(a.as_str()), Some(a));
         }
         assert_eq!(AuditAction::parse("nope"), None);
+    }
+
+    #[test]
+    fn record_cap_compacts_to_the_tail_and_survives_reopen() {
+        let path = scratch("retain-count");
+        let policy = RetentionPolicy {
+            max_records: 3,
+            max_age_millis: None,
+        };
+        {
+            let mut log = AuditLog::open_with_policy(path.clone(), policy).unwrap();
+            // The sixth append reaches 2x the cap and compacts to the newest 3.
+            for i in 0..6 {
+                log.append(i, "ann", AuditAction::Login, "", "", true)
+                    .unwrap();
+            }
+            assert_eq!(log.len(), 3);
+            let all = log.query(&AuditFilter::default());
+            // The newest three (seqs 3,4,5) survived; sequence numbers stay
+            // monotonic across the compaction.
+            assert_eq!(all.iter().map(|r| r.seq).collect::<Vec<_>>(), vec![3, 4, 5]);
+        }
+        // Reopen with the same policy: the compacted file recovers to the tail and
+        // a further append continues the sequence.
+        let mut log = AuditLog::open_with_policy(path, policy).unwrap();
+        assert_eq!(log.len(), 3);
+        let seq = log
+            .append(11, "ann", AuditAction::Logout, "", "", true)
+            .unwrap();
+        assert_eq!(seq, 6, "sequence continues across compaction and reopen");
+    }
+
+    #[test]
+    fn age_retention_drops_records_older_than_the_window() {
+        let path = scratch("retain-age");
+        let policy = RetentionPolicy {
+            max_records: 0,
+            max_age_millis: Some(100),
+        };
+        let mut log = AuditLog::open_with_policy(path, policy).unwrap();
+        log.append(1000, "ann", AuditAction::Login, "", "", true)
+            .unwrap();
+        log.append(1050, "ann", AuditAction::Login, "", "", true)
+            .unwrap();
+        // This record is the newest at 1200; the window is [1100, 1200], so the
+        // 1000 and 1050 records age out.
+        log.append(1200, "bob", AuditAction::Login, "", "", true)
+            .unwrap();
+        let all = log.query(&AuditFilter::default());
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].timestamp_millis, 1200);
     }
 }

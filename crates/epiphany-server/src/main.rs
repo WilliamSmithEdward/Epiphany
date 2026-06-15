@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use config::Config;
 use epiphany_api::{build_router, AppState, RunLedger, Scheduler, SessionStore};
 use epiphany_determinism::SystemClock;
-use epiphany_security::{AuditLog, SecurityStore};
+use epiphany_security::{AuditLog, RetentionPolicy, SecurityStore};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,7 +48,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The audit stream (ADR-0010), a sibling of the security artifact. Recovery
     // is non-gating, so a damaged audit file never blocks startup.
     let audit_path = config.data_dir.join("server").join("audit.log");
-    let audit = AuditLog::open(audit_path)?;
+    let audit = AuditLog::open_with_policy(
+        audit_path,
+        RetentionPolicy {
+            max_records: config.audit_max_records,
+            max_age_millis: config.audit_retention_millis,
+        },
+    )?;
 
     // The durable run ledger (ADR-0013), a sibling of the audit stream. Recovery
     // is non-gating and re-records any run in flight at a crash as interrupted,

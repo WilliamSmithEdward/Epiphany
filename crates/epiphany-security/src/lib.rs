@@ -11,7 +11,7 @@ mod audit;
 mod store;
 
 pub use acl::{AccessLevel, AccessList, ObjectKind, ObjectRef, Subject};
-pub use audit::{AuditAction, AuditFilter, AuditLog, AuditRecord};
+pub use audit::{AuditAction, AuditFilter, AuditLog, AuditRecord, RetentionPolicy};
 pub use store::{GeneratedAdminPassword, Principal, SecurityError, SecurityStore, UserView};
 
 /// Stable crate identifier, reported by the server's wiring banner.
