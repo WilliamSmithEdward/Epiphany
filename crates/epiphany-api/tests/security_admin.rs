@@ -143,11 +143,64 @@ async fn non_admin_is_forbidden_from_every_admin_route() {
         ("GET", "/api/v1/groups", None),
         ("GET", "/api/v1/acl/objects", None),
         ("GET", "/api/v1/acl/elements", None),
+        ("GET", "/api/v1/acl/grants", None),
+        (
+            "PUT",
+            "/api/v1/acl/grants",
+            Some(
+                json!({ "subject_kind": "group", "subject": "fa", "scope": "global", "kind": "flow", "level": "write" }),
+            ),
+        ),
         ("GET", "/api/v1/audit", None),
     ] {
         let (status, _) = call(&app, method, uri, &ann, body).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
     }
+}
+
+#[tokio::test]
+async fn admin_sets_and_lists_per_kind_grants() {
+    let app = harness("grants");
+    let admin = login(&app, "admin", "pw").await.unwrap();
+
+    // Grant a "flow authors" group Flow:Write globally (ADR-0023).
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/acl/grants",
+        &admin,
+        Some(json!({
+            "subject_kind": "group", "subject": "flow_authors",
+            "scope": "global", "kind": "flow", "level": "write"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, body) = call(&app, "GET", "/api/v1/acl/grants", &admin, None).await;
+    let grants = body["grants"].as_array().unwrap();
+    assert!(grants.iter().any(|g| {
+        g["subject"] == "flow_authors"
+            && g["kind"] == "flow"
+            && g["scope"] == "global"
+            && g["level"] == "write"
+    }));
+
+    // Revoking with level=none removes it.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/acl/grants",
+        &admin,
+        Some(json!({
+            "subject_kind": "group", "subject": "flow_authors",
+            "scope": "global", "kind": "flow", "level": "none"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = call(&app, "GET", "/api/v1/acl/grants", &admin, None).await;
+    assert!(body["grants"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]

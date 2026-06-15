@@ -8,7 +8,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use epiphany_security::{
-    AccessLevel, AuditAction, AuditFilter, CubeGrant, ObjectKind, ObjectRef, SecurityError, Subject,
+    AccessLevel, AuditAction, AuditFilter, CubeGrant, ObjectKind, ObjectRef, Scope, SecurityError,
+    Subject,
 };
 
 use crate::auth::AuthPrincipal;
@@ -346,6 +347,121 @@ pub(crate) async fn put_object_acl(
         .expect("security mutex")
         .set_object_access(obj.clone(), &subject, level)
         .map_err(map_security_err)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&obj),
+        true,
+    );
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ---- modular per-object-kind grants (ADR-0023) ----
+
+#[derive(Serialize)]
+pub(crate) struct GrantDto {
+    subject_kind: String,
+    subject: String,
+    scope: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cube: Option<String>,
+    kind: String,
+    level: String,
+}
+
+#[derive(Serialize)]
+pub(crate) struct GrantListDto {
+    grants: Vec<GrantDto>,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct GrantBody {
+    subject_kind: String,
+    subject: String,
+    /// `global` or `cube`.
+    scope: String,
+    #[serde(default)]
+    cube: Option<String>,
+    kind: String,
+    /// `none` revokes.
+    level: String,
+}
+
+/// `GET /api/v1/acl/grants` -> all modular per-kind grants (admin; ADR-0023).
+pub(crate) async fn list_grants(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+) -> Result<Json<GrantListDto>, ApiError> {
+    require_admin(&state, &auth)?;
+    let store = state.security.lock().expect("security mutex");
+    let mut grants = Vec::new();
+    for ((scope, kind), list) in store.grants() {
+        let (scope_tag, cube) = match scope {
+            Scope::Global => ("global", None),
+            Scope::Cube(c) => ("cube", Some(c.clone())),
+        };
+        for (user, level) in &list.users {
+            grants.push(GrantDto {
+                subject_kind: "user".to_string(),
+                subject: user.clone(),
+                scope: scope_tag.to_string(),
+                cube: cube.clone(),
+                kind: kind.as_str().to_string(),
+                level: level.as_str().to_string(),
+            });
+        }
+        for (group, level) in &list.groups {
+            grants.push(GrantDto {
+                subject_kind: "group".to_string(),
+                subject: group.clone(),
+                scope: scope_tag.to_string(),
+                cube: cube.clone(),
+                kind: kind.as_str().to_string(),
+                level: level.as_str().to_string(),
+            });
+        }
+    }
+    Ok(Json(GrantListDto { grants }))
+}
+
+/// `PUT /api/v1/acl/grants` -> set or (with level `none`) revoke a per-kind grant
+/// for a user or group (admin; ADR-0023).
+pub(crate) async fn put_grant(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Json(body): Json<GrantBody>,
+) -> Result<StatusCode, ApiError> {
+    require_admin(&state, &auth)?;
+    let subject = parse_subject(&body.subject_kind, &body.subject)?;
+    let kind = ObjectKind::parse(&body.kind)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown object kind '{}'", body.kind)))?;
+    let level = parse_level(&body.level)?;
+    let scope = match body.scope.as_str() {
+        "global" => Scope::Global,
+        "cube" => {
+            let cube = body
+                .cube
+                .clone()
+                .ok_or_else(|| ApiError::bad_request("scope 'cube' requires a cube name"))?;
+            Scope::Cube(cube)
+        }
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "scope must be 'global' or 'cube', got '{other}'"
+            )))
+        }
+    };
+    state
+        .security
+        .lock()
+        .expect("security mutex")
+        .set_grant(&subject, scope.clone(), kind, level)
+        .map_err(map_security_err)?;
+    let obj = match &scope {
+        Scope::Global => ObjectRef::global(kind, ""),
+        Scope::Cube(c) => ObjectRef::in_cube(kind, c, ""),
+    };
     audit(
         &state,
         &auth.principal.username,

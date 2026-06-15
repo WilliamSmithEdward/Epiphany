@@ -534,6 +534,19 @@ fn document() -> Value {
                     "responses": { "204": { "description": "Applied" } }
                 }
             },
+            "/api/v1/acl/grants": {
+                "get": {
+                    "summary": "List modular per-object-kind grants for users and groups (admin; ADR-0023)",
+                    "security": bearer(),
+                    "responses": ok("The per-kind grants")
+                },
+                "put": {
+                    "summary": "Set or (level=none) revoke a per-kind grant (admin; ADR-0023)",
+                    "security": bearer(),
+                    "requestBody": json_body("#/components/schemas/Grant"),
+                    "responses": { "204": { "description": "Applied" } }
+                }
+            },
             "/api/v1/audit": { "get": {
                 "summary": "Query the audit log (admin)", "security": bearer(),
                 "parameters": [
@@ -726,7 +739,15 @@ fn document() -> Value {
                     "subject_kind": { "type": "string", "enum": ["user", "group"] },
                     "subject": { "type": "string" },
                     "level": { "type": "string", "enum": ["none", "read", "write", "admin", "deny"], "description": "Single knob: 'none' revokes any grant, read/write/admin allow, 'deny' explicitly denies (ADR-0016)" } },
-                    "required": ["subject_kind", "subject", "level"] }
+                    "required": ["subject_kind", "subject", "level"] },
+                "Grant": { "type": "object", "properties": {
+                    "subject_kind": { "type": "string", "enum": ["user", "group"] },
+                    "subject": { "type": "string" },
+                    "scope": { "type": "string", "enum": ["global", "cube"] },
+                    "cube": { "type": "string", "description": "Required when scope = cube" },
+                    "kind": { "type": "string", "enum": ["cube", "dimension", "rule", "flow", "view", "subset", "job", "connection", "sandbox"] },
+                    "level": { "type": "string", "enum": ["none", "read", "write", "admin"], "description": "'none' revokes the grant (ADR-0023)" } },
+                    "required": ["subject_kind", "subject", "scope", "kind", "level"] }
             }
         }
     })
@@ -836,6 +857,7 @@ mod tests {
         "/api/v1/acl/objects",
         "/api/v1/acl/elements",
         "/api/v1/acl/cube-grants",
+        "/api/v1/acl/grants",
         "/api/v1/audit",
     ];
 
