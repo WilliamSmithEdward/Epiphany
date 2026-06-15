@@ -7,7 +7,7 @@ use std::str::FromStr;
 use axum::extract::{Path, State};
 use axum::Json;
 
-use epiphany_core::{CellResolver, Cube, Fixed};
+use epiphany_core::{CellResolver, Cube, ElementMask, Fixed};
 use epiphany_engine::{BatchError, CellWrite};
 use epiphany_security::AccessLevel;
 
@@ -33,31 +33,42 @@ pub(crate) async fn get_cube(
         .engine
         .snapshot(&cube)
         .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
-    Ok(Json(cube_detail(snap.cube())))
+    // Element security (ADR-0015): a non-admin must not learn the names of
+    // elements denied to them, so denied members (and any edge touching them) are
+    // suppressed from the cube structure, just as from a member enumeration.
+    let mask = element_mask(&state, &auth, &snap);
+    Ok(Json(cube_detail(snap.cube(), mask.as_ref())))
 }
 
-fn cube_detail(cube: &Cube) -> CubeDetailDto {
+fn cube_detail(cube: &Cube, mask: Option<&ElementMask>) -> CubeDetailDto {
     let dimensions = cube
         .dimensions()
         .iter()
-        .map(|dim| DimensionDto {
-            name: dim.name().to_string(),
-            elements: dim
-                .iter_elements()
-                .map(|el| ElementDto {
-                    name: el.name.clone(),
-                    kind: kind_str(el.kind),
-                })
-                .collect(),
-            edges: dim
-                .edges()
-                .into_iter()
-                .map(|(parent, child, weight)| EdgeDto {
-                    parent: dim.element(parent).expect("valid index").name.clone(),
-                    child: dim.element(child).expect("valid index").name.clone(),
-                    weight,
-                })
-                .collect(),
+        .enumerate()
+        .map(|(d, dim)| {
+            let denied = |idx: u32| mask.is_some_and(|m| m.denies_member(cube, d, idx));
+            DimensionDto {
+                name: dim.name().to_string(),
+                elements: dim
+                    .iter_elements()
+                    .enumerate()
+                    .filter(|(i, _)| !denied(*i as u32))
+                    .map(|(_, el)| ElementDto {
+                        name: el.name.clone(),
+                        kind: kind_str(el.kind),
+                    })
+                    .collect(),
+                edges: dim
+                    .edges()
+                    .into_iter()
+                    .filter(|(parent, child, _)| !denied(*parent) && !denied(*child))
+                    .map(|(parent, child, weight)| EdgeDto {
+                        parent: dim.element(parent).expect("valid index").name.clone(),
+                        child: dim.element(child).expect("valid index").name.clone(),
+                        weight,
+                    })
+                    .collect(),
+            }
         })
         .collect();
     CubeDetailDto {

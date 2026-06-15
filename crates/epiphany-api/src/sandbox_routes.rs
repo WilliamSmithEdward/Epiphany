@@ -17,6 +17,7 @@ use epiphany_engine::ReadSnapshot;
 use epiphany_security::Principal;
 
 use crate::auth::AuthPrincipal;
+use crate::authz::require_element_write_indices;
 use crate::routes::map_batch_error;
 use crate::{ApiError, AppState};
 
@@ -209,7 +210,13 @@ pub(crate) async fn commit_sandbox(
     body: Option<Json<CommitBody>>,
 ) -> Result<Json<CommitResponse>, ApiError> {
     let snap = snapshot(&state, &cube)?;
-    let committed = authorize_sandbox(&snap, &auth.principal, &name)?.len();
+    let sandbox = authorize_sandbox(&snap, &auth.principal, &name)?;
+    let committed = sandbox.len();
+    // Re-validate element-level write access against the live store (ADR-0015): a
+    // cell staged when the owner could write it must still be writable now, so an
+    // element ACL added after staging blocks committing that cell into base.
+    let coords: Vec<Vec<u32>> = sandbox.cells.keys().cloned().collect();
+    require_element_write_indices(&state, &auth, &cube, &snap, &coords)?;
     let base = body.and_then(|Json(b)| b.base_version);
     let outcome = state
         .engine

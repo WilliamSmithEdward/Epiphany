@@ -169,6 +169,30 @@ async fn send(
     (status, v)
 }
 
+/// Issue an authenticated request with no body (GET, or a body-less POST).
+async fn send_empty(app: &Router, method: &str, uri: &str, token: &str) -> (StatusCode, Value) {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, v)
+}
+
 async fn read(app: &Router, token: &str, region: &str, measure: &str) -> (StatusCode, Value) {
     send(
         app,
@@ -361,6 +385,92 @@ async fn writes_enforce_element_security() {
     assert_eq!(status, StatusCode::FORBIDDEN);
     // North/Sales is unchanged from ann's earlier successful single write (111).
     assert_eq!(read_value(&h.app, &admin, "North", "Sales").await, "111");
+}
+
+#[tokio::test]
+async fn member_enumeration_suppresses_denied_members() {
+    let h = harness("members");
+    restrict_south_to_bob(&h.security);
+    let ann = login(&h.app, "ann").await;
+    let bob = login(&h.app, "bob").await;
+
+    // Previewing a static subset of all Region members: ann sees only North
+    // (South denied, Total rolls up South); bob sees all three.
+    async fn preview_names(app: &Router, token: &str) -> Vec<String> {
+        let (status, body) = send(
+            app,
+            "POST",
+            "/api/v1/cubes/Sales/dimensions/Region/subsets/preview",
+            token,
+            json!({ "kind": "static", "members": ["North", "South", "Total"] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        body["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["name"].as_str().unwrap().to_string())
+            .collect()
+    }
+    assert_eq!(preview_names(&h.app, &ann).await, vec!["North"]);
+    assert_eq!(
+        preview_names(&h.app, &bob).await,
+        vec!["North", "South", "Total"]
+    );
+}
+
+#[tokio::test]
+async fn cube_structure_suppresses_denied_members() {
+    let h = harness("structure");
+    restrict_south_to_bob(&h.security);
+    let ann = login(&h.app, "ann").await;
+
+    // GET /cubes/Sales: ann must not learn South's name. South (denied) and Total
+    // (rolls up South) are suppressed from the Region dimension; North remains.
+    let (status, detail) = send_empty(&h.app, "GET", "/api/v1/cubes/Sales", &ann).await;
+    assert_eq!(status, StatusCode::OK);
+    let region = detail["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "Region")
+        .unwrap();
+    let names: Vec<&str> = region["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, vec!["North"]);
+}
+
+#[tokio::test]
+async fn model_tests_are_denied_to_element_restricted_users() {
+    let h = harness("modeltests");
+    restrict_south_to_bob(&h.security);
+    let ann = login(&h.app, "ann").await;
+    let admin = login(&h.app, "admin").await;
+
+    // Rule/flow tests evaluate over a clone of the live cube, exposing derived
+    // values; an element-restricted caller is denied, an unrestricted admin is not.
+    assert_eq!(
+        send_empty(&h.app, "POST", "/api/v1/cubes/Sales/rules/tests/run", &ann)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send_empty(
+            &h.app,
+            "POST",
+            "/api/v1/cubes/Sales/rules/tests/run",
+            &admin
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
 }
 
 #[tokio::test]

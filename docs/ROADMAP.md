@@ -342,7 +342,7 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Runtime persistence, crash recovery, full-persist | 1, 8 | [~] |
 | REST API (CRUD, cells, OpenAPI) | 2 | [~] |
 | Atomic multi-cell write (transactional batch) | 2 | [x] |
-| Native auth, users and groups | 2, 7 | [~] |
+| Native auth, users and groups | 2, 7 | [x] |
 | Web pivot grid with write-back | 2 | [x] |
 | Subsets (static and dynamic/MDX) | 3 | [x] |
 | Views (native and MDX cellsets), zero suppression | 3 | [x] |
@@ -356,8 +356,8 @@ Status legend: [ ] Planned, [~] In progress, [x] Done. All [ ] at kickoff. (Defe
 | Flow data sources (CSV/SQL/view) | 5 | [~] |
 | Model testing framework (rule and flow unit tests) | 4, 5 | [x] |
 | Sandboxes (what-if) | 6 | [x] |
-| Object and element security | 7 | [ ] |
-| Audit / user-action logging | 7, 8 | [ ] |
+| Object and element security | 7 | [x] |
+| Audit / user-action logging | 7, 8 | [~] |
 | Scheduled jobs | 8 | [ ] |
 | Web editors (rules, flows, subsets, views) | 3 to 5 | [x] |
 
@@ -414,8 +414,9 @@ graph LR
 3. **M3, "It slices"** (end of Phase 3) - **achieved**: define an MDX-backed dynamic subset, build a nested view (two dimensions on rows) with zero-suppression, execute it to a cellset over REST, and render it in the grid with write-back; the subset and view persist across a restart. Gated by `epiphany-api/tests/m3_acceptance.rs`.
 4. **M4, "It calculates"** (end of Phase 4) - **achieved**: rules plus auto-inferred feeds produce correct results on a cross-cube model, with working "explain". The defining milestone. Gated by `epiphany-api/tests/m4_acceptance.rs`.
 5. **M5, "It plans"** (end of Phase 6) - **achieved**: sandboxed what-if recalculates over rules and consolidations without touching base data, then commits or discards. Gated by `epiphany-api/tests/m6_acceptance.rs`.
+6. **M6, "It's multi-user"** (end of Phase 7) - **achieved**: a non-admin sees and edits only permitted cubes and elements (object and element security, including deny-the-rollup), an admin manages access and reviews the audit log from the UI and REST, and audited actions are append-only, deterministic-timestamp, survive a restart, and carry no secrets. Gated by `epiphany-api/tests/m7_acceptance.rs`.
 
-> Release tags follow phase numbers (`m1`..`m8`), not these demo-milestone labels: Phase 5 (Flows) shipped as tag `m5`, and this milestone ("It plans", Phase 6) ships as tag `m6`.
+> Release tags follow phase numbers (`m1`..`m8`), not these demo-milestone labels: Phase 5 (Flows) shipped as tag `m5`, Phase 6 ("It plans") as `m6`, and Phase 7 ("It's multi-user") as `m7`.
 
 **Each milestone is gated by an automated, deterministic acceptance suite.** The DoD is executable, not a judgment call. A green suite in CI (deterministic mode) means the milestone is met; red or flaky means it is not done.
 

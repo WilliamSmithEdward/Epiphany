@@ -296,6 +296,30 @@ pub(crate) async fn delete_subset(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Drop members the caller may not see (ADR-0015 element security): a denied
+/// member, or one rolling up a denied leaf, is omitted from an enumeration -- like
+/// zero-suppression -- so the member's existence never leaks through a member or
+/// preview listing. Admin and ACL-free cubes keep every member (no mask).
+fn suppress_denied_members(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    snap: &ReadSnapshot,
+    dim: &str,
+    indices: Vec<u32>,
+) -> Vec<u32> {
+    let Some(mask) = element_mask(state, auth, snap) else {
+        return indices;
+    };
+    let cube = snap.cube();
+    let Some(pos) = cube.dimensions().iter().position(|d| d.name() == dim) else {
+        return indices;
+    };
+    indices
+        .into_iter()
+        .filter(|&i| !mask.denies_member(cube, pos, i))
+        .collect()
+}
+
 /// `GET /cubes/{cube}/dimensions/{dim}/subsets/{name}/members` -> resolved members.
 pub(crate) async fn subset_members(
     auth: AuthPrincipal,
@@ -306,6 +330,7 @@ pub(crate) async fn subset_members(
     let snap = snapshot(&state, &cube)?;
     let s = visible_subset(&snap, &auth.principal, &dim, &name)?;
     let indices = resolve_subset(snap.cube(), s, state.evaluator())?;
+    let indices = suppress_denied_members(&state, &auth, &snap, &dim, indices);
     Ok(Json(members_response(snap.cube(), &dim, &indices)))
 }
 
@@ -321,6 +346,7 @@ pub(crate) async fn preview_subset(
     ensure_dimension(snap.cube(), &dim)?;
     let subset = subset_from_body("preview".to_string(), dim.clone(), None, &body)?;
     let indices = resolve_subset(snap.cube(), &subset, state.evaluator())?;
+    let indices = suppress_denied_members(&state, &auth, &snap, &dim, indices);
     Ok(Json(members_response(snap.cube(), &dim, &indices)))
 }
 
@@ -342,6 +368,7 @@ pub(crate) async fn preview_mdx(
         kind: SubsetKind::Dynamic { mdx: body.mdx },
     };
     let indices = resolve_subset(snap.cube(), &subset, state.evaluator())?;
+    let indices = suppress_denied_members(&state, &auth, &snap, &dim, indices);
     Ok(Json(members_response(snap.cube(), &dim, &indices)))
 }
 

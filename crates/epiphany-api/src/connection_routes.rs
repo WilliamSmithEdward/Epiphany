@@ -13,7 +13,7 @@ use epiphany_core::{CommandSpec, Connection, ConnectionSpec, SourceFormat};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_access};
+use crate::authz::{audit, require_access, require_cube_access};
 use crate::routes::map_batch_error;
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
@@ -93,6 +93,7 @@ pub(crate) async fn list_connections(
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<ConnectionListDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let is_admin = auth.principal.is_admin;
     Ok(Json(ConnectionListDto {
@@ -112,6 +113,7 @@ pub(crate) async fn get_connection(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<Json<ConnectionDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let conn = snap
         .model()

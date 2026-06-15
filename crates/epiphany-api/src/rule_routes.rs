@@ -18,7 +18,7 @@ use epiphany_engine::ReadSnapshot;
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, element_mask, require_cube_access};
+use crate::authz::{audit, deny_if_element_restricted, element_mask, require_cube_access};
 use crate::calc_factory::{compile_source, OwnedOverlay, PinnedRegistry, ValidateError};
 use crate::dto::CoordMap;
 use crate::resolve::resolve;
@@ -284,6 +284,7 @@ pub(crate) async fn feeder_diagnostics(
     Path(cube): Path<String>,
 ) -> Result<Json<FeederReportDto>, ApiError> {
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    deny_if_element_restricted(&state, &auth, &snapshot(&state, &cube)?)?;
     let registry = PinnedRegistry::build(&state.engine);
     let ordinal = registry
         .ordinal_of(&cube)
@@ -448,6 +449,9 @@ pub(crate) async fn run_rule_tests_handler(
 ) -> Result<Json<TestReportDto>, ApiError> {
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
+    // Tests evaluate over a clone of the live cube, so they expose derived values
+    // across the whole cube; an element-restricted caller is denied (ADR-0015).
+    deny_if_element_restricted(&state, &auth, &snap)?;
     let outcomes = run_rule_tests(snap.model())
         .map_err(|e| ApiError::unprocessable("RULE_TEST_ERROR", e.to_string()))?;
     let all_passed = outcomes.iter().all(|o| o.passed);

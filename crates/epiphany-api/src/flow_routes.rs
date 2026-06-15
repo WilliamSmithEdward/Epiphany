@@ -22,7 +22,7 @@ use epiphany_flow::{
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_cube_access};
+use crate::authz::{audit, deny_if_element_restricted, require_cube_access};
 use crate::dto::CoordMap;
 use crate::routes::{build_write, map_batch_error};
 use crate::ws::ChangeEvent;
@@ -575,6 +575,9 @@ pub(crate) async fn run_flow_tests_handler(
 ) -> Result<Json<TestReportDto>, ApiError> {
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
+    // Tests evaluate over a clone of the live cube; an element-restricted caller
+    // is denied so they cannot observe a denied member's value (ADR-0015).
+    deny_if_element_restricted(&state, &auth, &snap)?;
     let outcomes = run_flow_tests(snap.model()).map_err(map_flow_test_error)?;
     let all_passed = outcomes.iter().all(|o| o.passed);
     Ok(Json(TestReportDto {

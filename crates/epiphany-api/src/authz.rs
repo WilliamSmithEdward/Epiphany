@@ -176,6 +176,78 @@ pub(crate) fn require_element_write(
     Ok(())
 }
 
+/// Deny a modeler/diagnostic action that evaluates over live cell data (rule and
+/// flow test runs, feeder diagnostics) when the caller has any element
+/// restriction on the cube (ADR-0015). Such tools surface values and coordinates
+/// across the whole cube, so an element-restricted reader could observe a denied
+/// member through them; rather than partially redact, deny the action. Admins and
+/// callers with no element restriction on this cube pass.
+pub(crate) fn deny_if_element_restricted(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    snap: &ReadSnapshot,
+) -> Result<(), ApiError> {
+    if element_mask(state, auth, snap).is_some() {
+        audit(
+            state,
+            &auth.principal.username,
+            AuditAction::AccessDenied,
+            Some(&ObjectRef::cube(snap.cube().name())),
+            false,
+        );
+        return Err(ApiError::forbidden(
+            "element-restricted users may not run model tests or diagnostics on this cube",
+        ));
+    }
+    Ok(())
+}
+
+/// Gate a set of (already-resolved) write coordinates on element-level access
+/// (ADR-0015), re-checked against the live store. Used when committing a sandbox:
+/// a cell staged when the owner could write it must still be writable now, so an
+/// element ACL added after staging blocks the commit. Each coordinate is a leaf,
+/// so each component is checked directly. On denial emits `AccessDenied` and 403.
+pub(crate) fn require_element_write_indices(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    cube: &str,
+    snap: &ReadSnapshot,
+    coords: &[Vec<u32>],
+) -> Result<(), ApiError> {
+    let denied = {
+        let security = state.security.lock().expect("security mutex");
+        match security.principal(&auth.principal.username) {
+            Some(p) if p.is_admin => false,
+            Some(p) => {
+                let cube_ref = snap.cube();
+                coords.iter().any(|coord| {
+                    coord.iter().enumerate().any(|(d, &idx)| {
+                        let dim = cube_ref.dimension(d);
+                        match dim.element(idx) {
+                            Ok(el) => !security.element_writable(&p, cube, dim.name(), &el.name),
+                            Err(_) => false,
+                        }
+                    })
+                })
+            }
+            None => true,
+        }
+    };
+    if denied {
+        audit(
+            state,
+            &auth.principal.username,
+            AuditAction::AccessDenied,
+            Some(&ObjectRef::cube(cube)),
+            false,
+        );
+        return Err(ApiError::forbidden(
+            "you do not have access to a cell staged in this sandbox",
+        ));
+    }
+    Ok(())
+}
+
 /// Gate a request on object access (ADR-0015). `owner`/`public` are the object's
 /// owner and visibility from the snapshot (pass `None`/`false` for objects that
 /// have neither). On denial this emits an `AccessDenied` record and returns 403.
