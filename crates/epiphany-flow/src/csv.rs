@@ -9,6 +9,13 @@
 /// One parsed record: column name to field value, in column order.
 pub type Row = Vec<(String, String)>;
 
+/// Hard cap on the number of records a single CSV parse will produce, a
+/// memory-exhaustion backstop on top of the byte caps the entry points already
+/// enforce (the 8 MiB request-body limit, ADR-0018, and the 16 MiB connector
+/// stdout cap, ADR-0012). A fixed safety limit, far above any realistic flow
+/// input; not an operational tuning knob.
+pub const MAX_CSV_ROWS: usize = 1_000_000;
+
 /// A CSV parse failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CsvError {
@@ -29,7 +36,7 @@ impl std::error::Error for CsvError {}
 /// Parse CSV `text` into records keyed by the header row's column names. An empty
 /// input (or header-only input) yields no records.
 pub fn parse_csv(text: &str) -> Result<Vec<Row>, CsvError> {
-    let records = split_records(text)?;
+    let records = split_records(text, MAX_CSV_ROWS)?;
     let mut iter = records.into_iter();
     let header = match iter.next() {
         Some(h) => h,
@@ -52,7 +59,9 @@ pub fn parse_csv(text: &str) -> Result<Vec<Row>, CsvError> {
 }
 
 /// Split CSV text into records (each a vector of fields), honoring quoting.
-fn split_records(text: &str) -> Result<Vec<Vec<String>>, CsvError> {
+/// Aborts with an error once more than `max_records` records have accumulated
+/// (header + data rows), a memory backstop.
+fn split_records(text: &str, max_records: usize) -> Result<Vec<Vec<String>>, CsvError> {
     let chars: Vec<char> = text.chars().collect();
     let mut records = Vec::new();
     let mut record: Vec<String> = Vec::new();
@@ -104,6 +113,14 @@ fn split_records(text: &str) -> Result<Vec<Vec<String>>, CsvError> {
             records.push(std::mem::take(&mut record));
             started = false;
             i += 1;
+            // Memory backstop: abort before accumulating an unbounded record set
+            // (one header + up to `max_records` data records).
+            if records.len() > max_records {
+                return Err(CsvError {
+                    message: format!("too many rows (limit {max_records})"),
+                    line,
+                });
+            }
         } else {
             started = true;
             field.push(c);
@@ -121,6 +138,17 @@ fn split_records(text: &str) -> Result<Vec<Vec<String>>, CsvError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_cap_aborts_oversized_input() {
+        // header + 5 data records, cap of 3 records -> error once the 4th record
+        // is pushed (records.len() 4 > 3). The public parse_csv uses MAX_CSV_ROWS.
+        let text = "h\n1\n2\n3\n4\n5\n";
+        let err = split_records(text, 3).unwrap_err();
+        assert!(err.message.contains("too many rows"));
+        // Within the cap it parses fine.
+        assert!(split_records("h\n1\n2\n", 3).is_ok());
+    }
 
     #[test]
     fn parses_simple_csv() {

@@ -570,6 +570,8 @@ struct ConnectionDoc {
     json_path: Option<String>,
     #[serde(default)]
     timeout_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    working_dir: Option<String>,
 }
 
 fn format_token(format: SourceFormat) -> String {
@@ -597,6 +599,7 @@ fn connection_doc(conn: &Connection) -> ConnectionDoc {
             format: format_token(cmd.format),
             json_path: cmd.json_path.clone(),
             timeout_ms: cmd.timeout_ms,
+            working_dir: cmd.working_dir.clone(),
         },
     }
 }
@@ -612,6 +615,7 @@ fn build_connection(doc: &ConnectionDoc) -> Connection {
             format: build_format(&doc.format),
             json_path: doc.json_path.clone(),
             timeout_ms: doc.timeout_ms,
+            working_dir: doc.working_dir.clone(),
         }),
     }
 }
@@ -1549,6 +1553,7 @@ mod tests {
                     format: SourceFormat::Json,
                     json_path: Some("data.rows".to_string()),
                     timeout_ms: 30_000,
+                    working_dir: Some("/srv/epiphany/scripts".to_string()),
                 }),
             },
         );
@@ -1564,6 +1569,7 @@ mod tests {
         assert_eq!(cmd.format, SourceFormat::Json);
         assert_eq!(cmd.json_path.as_deref(), Some("data.rows"));
         assert_eq!(cmd.timeout_ms, 30_000);
+        assert_eq!(cmd.working_dir.as_deref(), Some("/srv/epiphany/scripts"));
     }
 
     #[test]

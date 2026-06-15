@@ -39,6 +39,10 @@ pub(crate) struct ConnectionDto {
     pub json_path: Option<String>,
     #[serde(default)]
     pub timeout_ms: u64,
+    /// Optional working directory the program runs in (must be an absolute path
+    /// with no `..` traversal). Redacted for non-admins like the command line.
+    #[serde(default)]
+    pub working_dir: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -75,8 +79,39 @@ fn to_dto(conn: &Connection, is_admin: bool) -> ConnectionDto {
                 None
             },
             timeout_ms: cmd.timeout_ms,
+            working_dir: if is_admin {
+                cmd.working_dir.clone()
+            } else {
+                None
+            },
         },
     }
+}
+
+/// Validate an optional connector working directory (ADR-0017): if present it
+/// must be an absolute path with no `..` traversal component. Fail-closed: a
+/// relative path or a traversal is rejected (422).
+fn validate_working_dir(dir: &Option<String>) -> Result<(), ApiError> {
+    let Some(dir) = dir.as_deref().filter(|d| !d.is_empty()) else {
+        return Ok(());
+    };
+    let path = std::path::Path::new(dir);
+    if !path.is_absolute() {
+        return Err(ApiError::unprocessable(
+            "INVALID_WORKING_DIR",
+            "working_dir must be an absolute path",
+        ));
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(ApiError::unprocessable(
+            "INVALID_WORKING_DIR",
+            "working_dir must not contain a '..' traversal",
+        ));
+    }
+    Ok(())
 }
 
 fn snapshot(state: &AppState, cube: &str) -> Result<epiphany_engine::ReadSnapshot, ApiError> {
@@ -167,6 +202,7 @@ pub(crate) async fn put_connection(
             "a command connection needs a program",
         ));
     }
+    validate_working_dir(&body.working_dir)?;
     let format = match body.format.as_str() {
         "csv" | "" => SourceFormat::Csv,
         "json" => SourceFormat::Json,
@@ -187,6 +223,7 @@ pub(crate) async fn put_connection(
         } else {
             body.timeout_ms
         },
+        working_dir: body.working_dir.as_ref().filter(|d| !d.is_empty()).cloned(),
     };
     let connection = Connection {
         name: name.clone(),

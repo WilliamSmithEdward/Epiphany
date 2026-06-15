@@ -17,7 +17,7 @@ pub mod scheduler;
 pub mod strip;
 pub mod testing;
 
-pub use csv::{parse_csv, CsvError, Row};
+pub use csv::{parse_csv, CsvError, Row, MAX_CSV_ROWS};
 pub use ledger::{RunLedger, RunRecord, RunRetention, RunState};
 pub use run::{run_flow, validate_flow, FlowError, FlowOutcome, FlowReport, PlannedCell};
 pub use scheduler::{due_firings, scheduled_run_id, Firing};

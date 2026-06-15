@@ -26,7 +26,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use epiphany_core::{CommandSpec, SourceFormat};
-use epiphany_flow::{parse_csv, Row};
+use epiphany_flow::{parse_csv, Row, MAX_CSV_ROWS};
 
 /// Default cap on a command's captured stdout (16 MiB): output beyond this fails
 /// the run rather than risking memory exhaustion.
@@ -94,13 +94,19 @@ pub fn run_command(spec: &CommandSpec) -> Result<Vec<Row>, ConnectError> {
 /// killing the process if it runs past `spec.timeout_ms`. On a clean exit the
 /// stdout is parsed per `spec.format` into rows.
 pub fn run_command_capped(spec: &CommandSpec, cap: usize) -> Result<Vec<Row>, ConnectError> {
-    let mut child = Command::new(&spec.program)
+    let mut command = Command::new(&spec.program);
+    command
         .args(&spec.args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(ConnectError::Spawn)?;
+        .stderr(Stdio::piped());
+    // Run in the configured directory (ADR-0017) so the program's relative paths
+    // are predictable; `None` inherits the server's directory. The path was
+    // validated (absolute, no traversal) at definition time.
+    if let Some(dir) = &spec.working_dir {
+        command.current_dir(dir);
+    }
+    let mut child = command.spawn().map_err(ConnectError::Spawn)?;
 
     // Drain both pipes on threads so a chatty program cannot deadlock on a full
     // pipe buffer; stdout is capped, stderr is bounded small for error context.
@@ -221,6 +227,13 @@ fn parse_json(text: &str, json_path: Option<&str>) -> Result<Vec<Row>, ConnectEr
     let array = node.as_array().ok_or_else(|| {
         ConnectError::BadOutput("expected a JSON array of record objects".to_string())
     })?;
+    // Record-count backstop, mirroring the CSV row cap (and on top of the 16 MiB
+    // stdout cap above): a memory-exhaustion guard, far above any realistic feed.
+    if array.len() > MAX_CSV_ROWS {
+        return Err(ConnectError::BadOutput(format!(
+            "too many records (limit {MAX_CSV_ROWS})"
+        )));
+    }
 
     let mut rows = Vec::with_capacity(array.len());
     for (i, item) in array.iter().enumerate() {
@@ -282,6 +295,7 @@ mod tests {
             format,
             json_path: None,
             timeout_ms,
+            working_dir: None,
         }
     }
 
@@ -386,6 +400,7 @@ mod tests {
             format: SourceFormat::Csv,
             json_path: None,
             timeout_ms: 10_000,
+            working_dir: None,
         };
         assert!(matches!(run_command(&spec), Err(ConnectError::Spawn(_))));
     }

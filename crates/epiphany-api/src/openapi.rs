@@ -720,7 +720,8 @@ fn document() -> Value {
                     "args": { "type": "array", "items": { "type": "string" } },
                     "format": { "type": "string", "enum": ["csv", "json"] },
                     "json_path": { "type": "string", "description": "Dotted path to the JSON record array" },
-                    "timeout_ms": { "type": "integer", "format": "int64" } },
+                    "timeout_ms": { "type": "integer", "format": "int64" },
+                    "working_dir": { "type": "string", "description": "Absolute working directory (no '..'); the program runs here (ADR-0017)" } },
                     "required": ["name", "kind"] },
                 "FlowImport": { "type": "object", "properties": {
                     "csv": { "type": "string" },

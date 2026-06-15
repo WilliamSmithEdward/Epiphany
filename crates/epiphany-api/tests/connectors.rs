@@ -243,6 +243,51 @@ async fn defining_a_command_connection_requires_the_enable_gate() {
 }
 
 #[tokio::test]
+async fn connection_working_dir_must_be_absolute_without_traversal() {
+    let dir = scratch("workdir");
+    let app = router_for(&dir, true, true);
+    let token = login(&app).await;
+    let put = |conn: Value| {
+        let app = app.clone();
+        let token = token.clone();
+        async move {
+            call(
+                &app,
+                "PUT",
+                "/api/v1/cubes/Sales/connections/emit",
+                &token,
+                Some(conn),
+            )
+            .await
+            .0
+        }
+    };
+
+    // A relative working_dir is rejected.
+    let mut conn = emit_csv_connection();
+    conn["working_dir"] = json!("scripts");
+    assert_eq!(put(conn.clone()).await, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A '..' traversal is rejected (per platform's absolute form).
+    #[cfg(windows)]
+    let bad = "C:\\data\\..\\secret";
+    #[cfg(not(windows))]
+    let bad = "/data/../secret";
+    conn["working_dir"] = json!(bad);
+    assert_eq!(put(conn.clone()).await, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A clean absolute path is accepted.
+    #[cfg(windows)]
+    let good = "C:\\epiphany\\scripts";
+    #[cfg(not(windows))]
+    let good = "/epiphany/scripts";
+    conn["working_dir"] = json!(good);
+    assert_eq!(put(conn).await, StatusCode::OK);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
 async fn defining_a_connection_requires_admin() {
     let dir = scratch("nonadmin");
     let app = router_for(&dir, false, true); // commands enabled, but not admin

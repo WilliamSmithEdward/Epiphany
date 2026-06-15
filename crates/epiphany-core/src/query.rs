@@ -822,6 +822,11 @@ pub struct CommandSpec {
     /// of 0 means no timeout (the REST layer coerces an unset value to a safe
     /// default, so 0 only arises from a hand-edited model).
     pub timeout_ms: u64,
+    /// Working directory the program runs in (ADR-0017). `None` inherits the
+    /// server's directory (unspecified, often a filesystem root); set it to make
+    /// the program's relative paths predictable. The REST layer validates it is an
+    /// absolute path with no `..` traversal before accepting it.
+    pub working_dir: Option<String>,
 }
 
 /// What a connection does. One variant for now (a command); an HTTP variant is
