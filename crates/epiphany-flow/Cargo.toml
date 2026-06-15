@@ -19,3 +19,7 @@ boa_engine = "0.21"
 # Used only as a transport across the Rust/JS boundary (host functions exchange
 # JSON strings the JS side builds with the engine's own JSON).
 serde_json = "1"
+
+[[bench]]
+name = "scheduler"
+harness = false
