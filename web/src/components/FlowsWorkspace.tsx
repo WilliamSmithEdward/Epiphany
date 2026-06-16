@@ -263,7 +263,7 @@ function RunPanel({
       <label className="muted">
         Source{' '}
         <select value={source} onChange={(e) => setSource(e.target.value)}>
-          <option value="">Inline CSV</option>
+          <option value="">Paste data (CSV)</option>
           {connections.map((c) => (
             <option key={c.name} value={c.name}>
               {c.name} ({c.kind})
@@ -276,12 +276,12 @@ function RunPanel({
           className="rules-source"
           value={csv}
           spellCheck={false}
-          placeholder={'Paste CSV input (leave empty for a source-less flow)\nRegion,Value\nNorth,100'}
+          placeholder={'Paste CSV input (leave empty to run with no input rows)\nRegion,Value\nNorth,100'}
           onChange={(e) => setCsv(e.target.value)}
           rows={5}
         />
       ) : (
-        <p className="muted">Rows are fetched from the &quot;{source}&quot; connection.</p>
+        <p className="muted">Rows are fetched from the &quot;{source}&quot; data source.</p>
       )}
       {error ? <p className="error" role="alert">{error}</p> : null}
       {report ? <RunReportView report={report} /> : null}

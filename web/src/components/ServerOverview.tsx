@@ -82,7 +82,7 @@ export default function ServerOverview() {
           subtitle={
             cache.enabled
               ? 'Repeat reads of a view are served from memory until the cube changes.'
-              : 'The view cache is turned off (EPIPHANY_VIEW_CACHE_ENTRIES=0).'
+              : 'The view cache is turned off. Enable it in the server configuration.'
           }
         >
           <div className="overview-stats">

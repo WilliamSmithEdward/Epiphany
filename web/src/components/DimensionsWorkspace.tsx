@@ -71,8 +71,8 @@ export default function DimensionsWorkspace({ reloadSignal }: { reloadSignal: nu
   if (forbidden) {
     return (
       <EmptyState icon="⬡" title="No access to the dimension library">
-        You need the Dimension permission to view or manage shared dimensions. Ask an administrator
-        to grant it.
+        You do not have access to the shared dimension library yet. Ask an administrator to grant you
+        access.
       </EmptyState>
     )
   }

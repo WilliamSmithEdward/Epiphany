@@ -258,7 +258,7 @@ export default function CubeApp({
               {error}
             </p>
           ) : null}
-          <WelcomeCard username={username} isAdmin={isAdmin} />
+          <WelcomeCard username={username} isAdmin={isAdmin} hasCubes={cubes.length > 0} />
           {section === 'admin' && isAdmin ? (
             <SecurityWorkspace />
           ) : section === 'overview' && isAdmin ? (
