@@ -19,6 +19,8 @@ import {
   type RunReport,
   type TestReportDto,
 } from '../api/client'
+import { CodeEditor } from '../ui'
+import { appendTemplate, FLOW_TEMPLATES } from '../templates'
 
 const STARTER = `// A flow reads ctx.input() (the data rows) and stages changes.
 function rows(ctx) {
@@ -157,13 +159,31 @@ export default function FlowsWorkspace({
           ) : (
             <span className="ok">Valid</span>
           )}
+          <select
+            className="template-pick"
+            value=""
+            aria-label="Insert a flow template"
+            onChange={(e) => {
+              const t = FLOW_TEMPLATES[Number(e.target.value)]
+              if (t) setSource((s) => appendTemplate(s, t.body))
+              e.target.value = ''
+            }}
+          >
+            <option value="">Insert template…</option>
+            {FLOW_TEMPLATES.map((t, i) => (
+              <option key={i} value={i} title={t.description}>
+                {t.label}
+              </option>
+            ))}
+          </select>
         </div>
-        <textarea
-          className="rules-source"
+        <CodeEditor
+          language="flow"
           value={source}
-          spellCheck={false}
-          onChange={(e) => setSource(e.target.value)}
+          onChange={setSource}
+          ariaLabel="Flow source"
           rows={14}
+          errorLine={preview?.ok === false ? preview.line : null}
         />
         {error ? <p className="error">{error}</p> : null}
         <div className="actions">

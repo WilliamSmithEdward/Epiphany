@@ -1190,3 +1190,68 @@
 .new-cube__dim-head .input {
   flex: 1;
 }
+
+/* --- CodeEditor (ADR-0026): textarea + syntax-highlight overlay --- */
+.code-editor {
+  position: relative;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.code-editor:focus-within {
+  border-color: var(--color-accent-border);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+.code-editor__hl,
+.code-editor__ta {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  border: 0;
+  box-sizing: border-box;
+  padding: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 20px;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  overflow-wrap: normal;
+}
+.code-editor__hl {
+  z-index: 1;
+  color: var(--color-text);
+  pointer-events: none;
+}
+.code-editor__hl code {
+  font: inherit;
+}
+.code-editor__ta {
+  z-index: 2;
+  background: transparent;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  caret-color: var(--color-text);
+  resize: none;
+  outline: none;
+}
+.code-editor__ta::placeholder {
+  color: var(--color-text-subtle);
+  -webkit-text-fill-color: var(--color-text-subtle);
+}
+.code-editor__errline {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 0;
+  background: var(--color-danger-soft);
+  pointer-events: none;
+}
+/* Token colors adapt to the theme through the base tokens. */
+.tok-kw { color: var(--color-accent); font-weight: 600; }
+.tok-str { color: var(--color-success); }
+.tok-num { color: var(--color-warning); }
+.tok-comment { color: var(--color-text-subtle); font-style: italic; }
+.tok-bracket { color: var(--color-text); }
+.tok-punct { color: var(--color-text-muted); }

@@ -15,13 +15,15 @@ import {
   type TestReportDto,
   type TraceDto,
 } from '../api/client'
+import { CodeEditor } from '../ui'
+import { appendTemplate, RULE_TEMPLATES } from '../templates'
 
 // The modeler's calculation workspace for one cube (Phase 4): edit and validate
 // rules, see auto-inferred feeders and under/over-feed diagnostics, trace any
-// cell's provenance ("explain"), and run the model's rule unit tests. Editing
-// follows the M3 pattern - a plain textarea with debounced server-side
-// validation - so the app stays dependency-free; syntax highlighting is a
-// deferred enhancement, but located error markers are delivered here.
+// cell's provenance ("explain"), and run the model's rule unit tests. The editor
+// is the in-house CodeEditor (ADR-0026): a textarea with a dependency-free
+// syntax-highlight overlay, debounced server-side validation, and an inline
+// marker on the reported error line.
 export default function RulesWorkspace({
   cube,
   reloadSignal,
@@ -102,14 +104,32 @@ export default function RulesWorkspace({
           ) : (
             <span className="ok">Valid</span>
           )}
+          <select
+            className="template-pick"
+            value=""
+            aria-label="Insert a rule template"
+            onChange={(e) => {
+              const t = RULE_TEMPLATES[Number(e.target.value)]
+              if (t) setSource((s) => appendTemplate(s, t.body))
+              e.target.value = ''
+            }}
+          >
+            <option value="">Insert template…</option>
+            {RULE_TEMPLATES.map((t, i) => (
+              <option key={i} value={i} title={t.description}>
+                {t.label}
+              </option>
+            ))}
+          </select>
         </div>
-        <textarea
-          className="rules-source"
+        <CodeEditor
+          language="rules"
           value={source}
-          spellCheck={false}
-          onChange={(e) => setSource(e.target.value)}
+          onChange={setSource}
+          ariaLabel="Rules source"
           placeholder={"['Measure':'Margin'] = value['Measure':'Sales'] - value['Measure':'Cost'];"}
           rows={12}
+          errorLine={preview?.ok === false ? preview.line : null}
         />
         {saveError ? <p className="error">{saveError}</p> : null}
         <div className="actions">

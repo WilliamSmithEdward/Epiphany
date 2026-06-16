@@ -754,3 +754,13 @@ table.pivot th.rowhead {
 .cell.overlaid {
   box-shadow: inset 3px 0 0 #e6a017;
 }
+
+.template-pick {
+  margin-left: auto;
+  font-size: 0.8rem;
+  padding: 0.15rem 0.3rem;
+  border: 1px solid var(--line, var(--color-border));
+  border-radius: 5px;
+  background: var(--color-surface, #fff);
+  color: var(--color-text);
+}
