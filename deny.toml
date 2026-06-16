@@ -32,6 +32,12 @@ allow = [
   "ISC",
   "Unicode-3.0",
   "Zlib",
+  # webpki-roots / webpki-root-certs bundle Mozilla's root-CA set; that cert DATA
+  # is licensed CDLA-Permissive-2.0 (Community Data License Agreement - Permissive,
+  # a permissive, freely-redistributable data license). Pulled transitively by
+  # ureq's rustls roots (the optional `http` feature, ADR-0030). Only surfaces
+  # under `cargo deny check --all-features` (which enables `http`); permissive.
+  "CDLA-Permissive-2.0",
 ]
 
 [bans]
