@@ -73,6 +73,11 @@ export default function Login({
         <Button variant="primary" type="submit" disabled={busy} className="login__submit">
           {busy ? 'Signing in…' : 'Sign in'}
         </Button>
+        <p className="login__hint">
+          First time? On first run the server writes a one-time admin password to{' '}
+          <code>data/server/admin-password.txt</code> and loads a demo cube you can explore right
+          away.
+        </p>
       </form>
     </div>
   )

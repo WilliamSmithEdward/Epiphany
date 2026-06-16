@@ -1,4 +1,5 @@
 import type { DimensionDto, SubsetDto, Visibility } from '../api/client'
+import { Tooltip } from '../ui'
 
 export type Placement = 'rows' | 'columns' | 'context'
 
@@ -119,7 +120,9 @@ export default function ViewBuilder({
             checked={suppress}
             onChange={(e) => onSuppressChange(e.target.checked)}
           />
-          Suppress zeros
+          <Tooltip content="Hide rows and columns that are entirely blank or zero, so only meaningful numbers show.">
+            <span>Suppress zeros</span>
+          </Tooltip>
         </label>
         <label>
           Name

@@ -9,6 +9,7 @@ import RulesWorkspace from './RulesWorkspace'
 import SandboxBar from './SandboxBar'
 import SecurityWorkspace from './SecurityWorkspace'
 import ServerOverview from './ServerOverview'
+import WelcomeCard from './WelcomeCard'
 import ViewWorkspace from './ViewWorkspace'
 import {
   Badge,
@@ -249,6 +250,7 @@ export default function CubeApp({
 
         <main className="content">
           {error ? <p className="error">{error}</p> : null}
+          <WelcomeCard username={username} isAdmin={isAdmin} />
           {section === 'admin' && isAdmin ? (
             <SecurityWorkspace />
           ) : section === 'overview' && isAdmin ? (
