@@ -38,6 +38,7 @@ mod job_routes;
 mod login_guard;
 mod model_routes;
 mod openapi;
+mod overview_routes;
 mod query_routes;
 mod resolve;
 mod routes;
@@ -374,6 +375,7 @@ pub fn build_router(state: AppState) -> Router {
             get(security_routes::list_grants).put(security_routes::put_grant),
         )
         .route("/api/v1/runs", get(job_routes::list_all_runs))
+        .route("/api/v1/overview", get(overview_routes::overview))
         .route("/api/v1/audit", get(security_routes::query_audit))
         .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))

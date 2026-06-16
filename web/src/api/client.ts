@@ -774,6 +774,19 @@ export async function listAllRuns(limit = 50): Promise<RunDto[]> {
   return result.runs
 }
 
+/** View-cache counters for the admin server overview (ADR-0028). */
+export interface ViewCacheStats {
+  enabled: boolean
+  hits: number
+  misses: number
+  entries: number
+}
+
+/** Server-wide stats for the admin overview (admin only). */
+export async function getOverview(): Promise<{ view_cache: ViewCacheStats }> {
+  return request<{ view_cache: ViewCacheStats }>('GET', '/api/v1/overview')
+}
+
 // ---- model editing (ADR-0021) ----
 
 /** An element to add: a name and its kind. */

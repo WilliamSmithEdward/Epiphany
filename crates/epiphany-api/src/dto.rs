@@ -18,6 +18,26 @@ pub struct ElementDto {
     pub kind: &'static str,
 }
 
+/// View-cache counters for the admin server overview (ADR-0028).
+#[derive(Debug, Serialize)]
+pub struct ViewCacheStatsDto {
+    /// Whether the cache is on (`EPIPHANY_VIEW_CACHE_ENTRIES` > 0).
+    pub enabled: bool,
+    /// Cumulative cache hits since startup.
+    pub hits: u64,
+    /// Cumulative cache misses since startup.
+    pub misses: u64,
+    /// Resident entries across both pools.
+    pub entries: usize,
+}
+
+/// The admin server overview: cross-cutting server stats. Extensible; today it
+/// carries the view-cache counters.
+#[derive(Debug, Serialize)]
+pub struct OverviewDto {
+    pub view_cache: ViewCacheStatsDto,
+}
+
 /// A weighted consolidation edge.
 #[derive(Debug, Serialize)]
 pub struct EdgeDto {

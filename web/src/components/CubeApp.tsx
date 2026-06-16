@@ -249,7 +249,11 @@ export default function CubeApp({
         </nav>
 
         <main className="content">
-          {error ? <p className="error">{error}</p> : null}
+          {error ? (
+            <p className="error" role="alert">
+              {error}
+            </p>
+          ) : null}
           <WelcomeCard username={username} isAdmin={isAdmin} />
           {section === 'admin' && isAdmin ? (
             <SecurityWorkspace />

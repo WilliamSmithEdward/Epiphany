@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState } from 'react'
-import { listAllRuns, listCubes, queryAudit, type AuditRecordDto, type CubeSummary, type RunDto } from '../api/client'
+import {
+  getOverview,
+  listAllRuns,
+  listCubes,
+  queryAudit,
+  type AuditRecordDto,
+  type CubeSummary,
+  type RunDto,
+  type ViewCacheStats,
+} from '../api/client'
 import { Badge, Button, Card, EmptyState } from '../ui'
 
 // The admin server-overview dashboard (W4): a cross-cube snapshot of recent
@@ -9,14 +18,21 @@ export default function ServerOverview() {
   const [cubes, setCubes] = useState<CubeSummary[] | null>(null)
   const [runs, setRuns] = useState<RunDto[]>([])
   const [denials, setDenials] = useState<AuditRecordDto[]>([])
+  const [cache, setCache] = useState<ViewCacheStats | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const refresh = useCallback(() => {
-    Promise.all([listCubes(), listAllRuns(20), queryAudit({ outcome: 'denied', limit: 10 })])
-      .then(([c, r, d]) => {
+    Promise.all([
+      listCubes(),
+      listAllRuns(20),
+      queryAudit({ outcome: 'denied', limit: 10 }),
+      getOverview(),
+    ])
+      .then(([c, r, d, o]) => {
         setCubes(c)
         setRuns(r)
         setDenials(d)
+        setCache(o.view_cache)
         setError(null)
       })
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load the overview'))
@@ -36,7 +52,11 @@ export default function ServerOverview() {
     )
   }
   if (!cubes) {
-    return <p className="banner">Loading the overview…</p>
+    return (
+      <p className="banner" role="status" aria-live="polite">
+        Loading the overview…
+      </p>
+    )
   }
 
   const cellTotal = cubes.reduce((sum, c) => sum + c.cell_count, 0)
@@ -55,6 +75,24 @@ export default function ServerOverview() {
           <Stat label="Recent denials" value={String(denials.length)} tone={denials.length > 0 ? 'warn' : 'neutral'} />
         </div>
       </Card>
+
+      {cache ? (
+        <Card
+          title="View cache"
+          subtitle={
+            cache.enabled
+              ? 'Repeat reads of a view are served from memory until the cube changes.'
+              : 'The view cache is turned off (EPIPHANY_VIEW_CACHE_ENTRIES=0).'
+          }
+        >
+          <div className="overview-stats">
+            <Stat label="Cached views" value={cache.entries.toLocaleString()} />
+            <Stat label="Hits" value={cache.hits.toLocaleString()} />
+            <Stat label="Misses" value={cache.misses.toLocaleString()} />
+            <Stat label="Hit rate" value={hitRate(cache)} />
+          </div>
+        </Card>
+      ) : null}
 
       <Card title="Recent runs" subtitle="Scheduled and manual flow runs across every cube.">
         {runs.length === 0 ? (
@@ -121,6 +159,12 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'da
       <div className="overview-stat__label">{label}</div>
     </div>
   )
+}
+
+function hitRate(cache: ViewCacheStats): string {
+  const total = cache.hits + cache.misses
+  if (total === 0) return '—'
+  return `${Math.round((cache.hits / total) * 100)}%`
 }
 
 function runBadge(state: string) {

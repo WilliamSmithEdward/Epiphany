@@ -227,6 +227,11 @@ impl ViewCache {
         Ok(cellset)
     }
 
+    /// Whether the cache is on (a non-zero entry cap).
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
     /// Cumulative cache hits (for the operator dashboard and tests).
     pub fn hits(&self) -> u64 {
         self.hits.load(Ordering::Relaxed)

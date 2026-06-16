@@ -579,6 +579,10 @@ fn document() -> Value {
                 ],
                 "responses": ok("Recent runs, newest first")
             }},
+            "/api/v1/overview": { "get": {
+                "summary": "Server-wide stats for the admin overview (admin)", "security": bearer(),
+                "responses": ok("Server stats, including view-cache counters")
+            }},
             "/api/v1/audit": { "get": {
                 "summary": "Query the audit log (admin)", "security": bearer(),
                 "parameters": [
@@ -901,6 +905,7 @@ mod tests {
         "/api/v1/acl/elements",
         "/api/v1/acl/grants",
         "/api/v1/runs",
+        "/api/v1/overview",
         "/api/v1/audit",
     ];
 
