@@ -198,6 +198,10 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/cubes/{cube}/cells/batch",
             post(routes::batch_write),
         )
+        .route(
+            "/api/v1/cubes/{cube}/cells/spread",
+            post(routes::spread_cells),
+        )
         // Subsets (dimension-scoped).
         .route(
             "/api/v1/cubes/{cube}/dimensions/{dim}/subsets",

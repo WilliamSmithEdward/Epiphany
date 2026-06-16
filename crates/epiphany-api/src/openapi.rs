@@ -177,6 +177,16 @@ fn document() -> Value {
                     "422": { "description": "A write was rejected; nothing applied", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
                 }
             }},
+            "/api/v1/cubes/{cube}/cells/spread": { "post": {
+                "summary": "Spread a value at a coordinate across its leaves (equal/proportional/repeat/clear)", "security": bearer(),
+                "parameters": [cube_param()],
+                "requestBody": json_body("#/components/schemas/SpreadRequest"),
+                "responses": {
+                    "200": { "description": "The spread was applied" },
+                    "403": { "description": "A contributing leaf is denied", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+                    "422": { "description": "The target cannot be spread (weighted, too large, or a string cell)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
+            }},
             "/api/v1/cubes/{cube}/dimensions/{dim}/subsets": {
                 "get": {
                     "summary": "List the visible subsets of a dimension", "security": bearer(),
@@ -627,6 +637,11 @@ fn document() -> Value {
                         "required": ["coord", "value"] } },
                     "base_version": { "type": "integer", "format": "int64" } },
                     "required": ["writes"] },
+                "SpreadRequest": { "type": "object", "properties": {
+                    "target": { "$ref": "#/components/schemas/Coord" },
+                    "value": { "type": "string" },
+                    "method": { "type": "string", "enum": ["equal", "proportional", "repeat", "clear"] } },
+                    "required": ["target", "value", "method"] },
                 "NewCubeRequest": { "type": "object", "properties": {
                     "name": { "type": "string" },
                     "dimensions": { "type": "array", "items": { "type": "object", "properties": {
@@ -859,6 +874,7 @@ mod tests {
         "/api/v1/cubes/{cube}/cells/read",
         "/api/v1/cubes/{cube}/cell",
         "/api/v1/cubes/{cube}/cells/batch",
+        "/api/v1/cubes/{cube}/cells/spread",
         "/api/v1/cubes/{cube}/elements",
         "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}",
         "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}/values",

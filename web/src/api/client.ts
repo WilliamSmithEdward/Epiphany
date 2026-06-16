@@ -150,6 +150,23 @@ export async function writeCell(cube: string, coord: Coord, value: string): Prom
   return request<CellDto>('PUT', `/api/v1/cubes/${encodeURIComponent(cube)}/cell`, { coord, value })
 }
 
+/** How a spread distributes a value across the contributing leaves (ADR-0029). */
+export type SpreadMethod = 'equal' | 'proportional' | 'repeat' | 'clear'
+
+/** Spread a value entered at a (possibly consolidated) coordinate across its leaves. */
+export async function spreadCells(
+  cube: string,
+  target: Coord,
+  value: string,
+  method: SpreadMethod,
+): Promise<{ applied: number; version: number }> {
+  return request('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/cells/spread`, {
+    target,
+    value,
+    method,
+  })
+}
+
 export async function batchWrite(
   cube: string,
   writes: { coord: Coord; value: string }[],

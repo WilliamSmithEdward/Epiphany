@@ -7,16 +7,21 @@ use std::str::FromStr;
 use axum::extract::{Path, State};
 use axum::Json;
 
-use epiphany_core::{AttributeKind, AttributeValue, CellResolver, Cube, ElementMask, Fixed};
+use epiphany_core::{
+    spread_leaves, AttributeKind, AttributeValue, CellResolver, Cube, ElementMask, Fixed,
+    SpreadError, SpreadMethod,
+};
 use epiphany_engine::{BatchError, CellWrite};
 use epiphany_security::AccessLevel;
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{element_mask, require_cube_access, require_element_write};
+use crate::authz::{
+    element_mask, require_cube_access, require_element_write, require_element_write_indices,
+};
 use crate::dto::{
     AttributeDto, AttributeValueDto, BatchWriteRequest, BatchWriteResponse, CellDto, CoordMap,
     CubeDetailDto, DimensionDto, EdgeDto, ElementDto, ReadCellsRequest, ReadCellsResponse,
-    WriteCellRequest,
+    SpreadRequest, WriteCellRequest,
 };
 use crate::resolve::{kind_str, resolve, Resolved};
 use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
@@ -262,6 +267,109 @@ pub(crate) async fn batch_write(
         applied: writes.len(),
         version: outcome.version,
     }))
+}
+
+/// `POST /api/v1/cubes/{cube}/cells/spread` -> distribute a value entered at a
+/// (possibly consolidated) coordinate across its leaves (ADR-0029).
+pub(crate) async fn spread_cells(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Path(cube): Path<String>,
+    selector: SandboxSelector,
+    Json(req): Json<SpreadRequest>,
+) -> Result<Json<BatchWriteResponse>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    let method = parse_spread_method(&req.method)?;
+    let value = Fixed::from_str(&req.value).map_err(|_| {
+        ApiError::unprocessable("INVALID_NUMBER", format!("invalid number '{}'", req.value))
+    })?;
+
+    let snap = state
+        .engine
+        .snapshot(&cube)
+        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
+    let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
+    let resolved = resolve(snap.cube(), &req.target)?;
+    if resolved.has_string {
+        return Err(ApiError::unprocessable(
+            "SPREAD_TO_STRING",
+            "cannot spread into a string cell",
+        ));
+    }
+
+    // Expand the target into leaf writes, reading current values (for the
+    // proportional basis) through a resolver that honors the sandbox + mask.
+    let writes = {
+        let sandbox = sandbox_name
+            .as_deref()
+            .and_then(|n| snap.model().sandbox(n));
+        let mask = element_mask(&state, &auth, &snap);
+        let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
+        spread_leaves(snap.cube(), &resolved.indices, value, method, &|c| {
+            resolver.value(c)
+        })
+        .map_err(map_spread_error)?
+    };
+    if writes.is_empty() {
+        return Ok(Json(BatchWriteResponse {
+            applied: 0,
+            version: snap.version(),
+        }));
+    }
+
+    // Element security (ADR-0015): fail-closed. If any contributing leaf is not
+    // writable, the whole spread is denied before anything is staged.
+    let coords: Vec<Vec<u32>> = writes.iter().map(|(c, _)| c.clone()).collect();
+    require_element_write_indices(&state, &auth, &cube, &snap, &coords)?;
+
+    let batch: Vec<CellWrite> = writes
+        .into_iter()
+        .map(|(coord, value)| CellWrite::Leaf { coord, value })
+        .collect();
+    let outcome = match &sandbox_name {
+        Some(name) => state.engine.sandbox_set_cells(&cube, None, name, &batch),
+        None => state.engine.apply_batch(&cube, None, &batch),
+    }
+    .map_err(map_batch_error)?;
+    let _ = state.events.send(ChangeEvent::CellsChanged {
+        cube: cube.clone(),
+        version: outcome.version,
+        coords: vec![req.target.clone()],
+        sandbox: sandbox_name.clone(),
+        owner: sandbox_name
+            .as_ref()
+            .map(|_| auth.principal.username.clone()),
+    });
+    Ok(Json(BatchWriteResponse {
+        applied: batch.len(),
+        version: outcome.version,
+    }))
+}
+
+fn parse_spread_method(token: &str) -> Result<SpreadMethod, ApiError> {
+    match token {
+        "equal" => Ok(SpreadMethod::Equal),
+        "proportional" => Ok(SpreadMethod::Proportional),
+        "repeat" => Ok(SpreadMethod::Repeat),
+        "clear" => Ok(SpreadMethod::Clear),
+        other => Err(ApiError::bad_request(format!(
+            "unknown spread method '{other}'"
+        ))),
+    }
+}
+
+fn map_spread_error(err: SpreadError) -> ApiError {
+    match err {
+        SpreadError::WeightedConsolidation => ApiError::unprocessable(
+            "SPREAD_WEIGHTED",
+            "cannot spread across a weighted consolidation",
+        ),
+        SpreadError::TooManyLeaves { count, cap } => ApiError::unprocessable(
+            "SPREAD_TOO_LARGE",
+            format!("the target expands to {count} cells, over the limit of {cap}"),
+        ),
+        SpreadError::Read(query_error) => ApiError::from(query_error),
+    }
 }
 
 fn read_one(

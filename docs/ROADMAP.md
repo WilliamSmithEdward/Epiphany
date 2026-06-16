@@ -462,7 +462,7 @@ Consciously cut from the core to keep the program deep, not wide. Recorded here 
 - ~~**Multi-threaded or parallel query execution.**~~ **Promoted and shipped (ADR-0028 Stage B):** deterministic parallel aggregation fills the cellset grid across scoped threads (one per row band) above a cell-count threshold, proven bit-identical to the serial path; benchmark-gated, several-fold speedup on large cold reads.
 
 **Data entry**
-- **Data spreading** (all methods: equal, proportional, repeat, percent change, relational, holds, and so on).
+- **Data spreading** ~~(all methods)~~ **v1 shipped (ADR-0029):** equal, proportional, repeat, and clear, exact and element-security-aware. *Still deferred:* percent change, relational, holds, and spreading into weighted consolidations.
 - **Picklists** (static, subset-driven, attribute-driven).
 - *Revisit when interactive data-entry ergonomics become a priority; start with proportional, equal, repeat, and clear.*
 

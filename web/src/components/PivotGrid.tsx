@@ -3,10 +3,12 @@ import {
   explainCell,
   getCube,
   readCells,
+  spreadCells,
   writeCell,
   type CellDto,
   type Coord,
   type CubeDetail,
+  type SpreadMethod,
   type TraceDto,
 } from '../api/client'
 import { Button, Dialog, Select } from '../ui'
@@ -24,6 +26,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
   const [cells, setCells] = useState<Map<string, CellDto>>(new Map())
   const [error, setError] = useState<string | null>(null)
   const [drill, setDrill] = useState<{ label: string; trace: TraceDto | null } | null>(null)
+  const [spreadMode, setSpreadMode] = useState<'' | SpreadMethod>('')
   const gridRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -106,6 +109,23 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     [cube, coordFor, refresh],
   )
 
+  /** Spread a value entered at a (possibly consolidated) cell across its leaves. */
+  const spread = useCallback(
+    async (rowMember: string, colMember: string, typed: string) => {
+      if (!spreadMode) return
+      // Clear ignores the typed value; the others need a number.
+      const value = spreadMode === 'clear' ? '0' : typed.trim()
+      if (spreadMode !== 'clear' && value === '') return
+      try {
+        await spreadCells(cube, coordFor(rowMember, colMember), value, spreadMode)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Spread failed')
+      }
+      await refresh()
+    },
+    [cube, coordFor, refresh, spreadMode],
+  )
+
   /** Open the provenance drill-down for a calculated cell. */
   const drillInto = useCallback(
     async (rowMember: string, colMember: string) => {
@@ -162,12 +182,37 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
             />
           </label>
         ))}
+        <label className="grid-axis">
+          <span>Spread</span>
+          <Select
+            value={spreadMode}
+            onValueChange={(v) => setSpreadMode(v as '' | SpreadMethod)}
+            options={[
+              { value: '', label: 'Off' },
+              { value: 'equal', label: 'Equal' },
+              { value: 'proportional', label: 'Proportional' },
+              { value: 'repeat', label: 'Repeat' },
+              { value: 'clear', label: 'Clear' },
+            ]}
+            ariaLabel="Spread mode"
+          />
+        </label>
         <span className="grid-toolbar__spacer" />
         <Button variant="ghost" size="sm" icon="↻" onClick={() => void refresh()}>
           Refresh
         </Button>
       </div>
-      {error ? <p className="error">{error}</p> : null}
+      {spreadMode ? (
+        <p className="banner" role="status">
+          Spreading is on ({spreadMode}). Type a value into a total cell to distribute it across the
+          leaves underneath. Turn it off to edit single cells again.
+        </p>
+      ) : null}
+      {error ? (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      ) : null}
       <div className="grid-wrap" ref={gridRef}>
         <table className="pivot">
           <thead>
@@ -196,7 +241,9 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
                       cell={cell}
                       r={ri}
                       c={ci}
+                      spreadMode={spreadMode}
                       onCommit={(next) => void commit(r.name, c.name, cell?.value ?? '', next)}
+                      onSpread={(next) => void spread(r.name, c.name, next)}
                       onNav={focusCell}
                       onDrill={() => void drillInto(r.name, c.name)}
                     />
@@ -234,18 +281,52 @@ function CellView({
   cell,
   r,
   c,
+  spreadMode,
   onCommit,
+  onSpread,
   onNav,
   onDrill,
 }: {
   cell: CellDto | undefined
   r: number
   c: number
+  spreadMode: '' | SpreadMethod
   onCommit: (next: string) => void
+  onSpread: (next: string) => void
   onNav: (r: number, c: number) => void
   onDrill: () => void
 }) {
   if (!cell || !cell.editable) {
+    // With spreading on, a calculated (total) cell accepts a value to distribute
+    // across its leaves; otherwise it stays a click-to-explain calculated value.
+    if (cell && spreadMode) {
+      return (
+        <td className={cell.overlaid ? 'cell editable overlaid' : 'cell editable'} title={`Spread (${spreadMode}) across the leaves under this total`}>
+          <input
+            key={`spread-${cell.value ?? ''}`}
+            data-r={r}
+            data-c={c}
+            defaultValue=""
+            placeholder={spreadMode === 'clear' ? '↵ clear' : cell.value ?? ''}
+            inputMode="decimal"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                onSpread(e.currentTarget.value)
+                e.currentTarget.value = ''
+              } else if (e.key === 'Escape') {
+                e.currentTarget.value = ''
+                e.currentTarget.blur()
+              }
+            }}
+            onBlur={(e) => {
+              if (e.currentTarget.value.trim() !== '') onSpread(e.currentTarget.value)
+              e.currentTarget.value = ''
+            }}
+          />
+        </td>
+      )
+    }
     const hasValue = cell?.value != null && cell.value !== ''
     return (
       <td

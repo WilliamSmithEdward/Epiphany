@@ -16,6 +16,7 @@ mod dimension;
 mod element_mask;
 mod error;
 mod query;
+mod spread;
 mod text;
 mod value;
 
@@ -30,6 +31,7 @@ pub use query::{
     RuleTest, Sandbox, SetEvaluator, SourceFormat, StoredCells, Subset, SubsetKind, TestCell,
     TraceKind, Trigger, View, Visibility,
 };
+pub use spread::{spread_leaves, SpreadError, SpreadMethod, MAX_SPREAD_LEAVES};
 pub use text::{LoadError, SaveError};
 pub use value::{Fixed, SCALE, SCALE_DECIMALS};
 

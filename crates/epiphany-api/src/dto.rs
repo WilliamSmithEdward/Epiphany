@@ -132,6 +132,16 @@ pub struct BatchWriteResponse {
     pub version: u64,
 }
 
+/// Spread a value entered at a (possibly consolidated) coordinate across its
+/// contributing leaves (ADR-0029). `method` is one of `equal`, `proportional`,
+/// `repeat`, or `clear`.
+#[derive(Debug, Deserialize)]
+pub struct SpreadRequest {
+    pub target: CoordMap,
+    pub value: String,
+    pub method: String,
+}
+
 // ---- subsets ----
 
 /// A subset definition request (create, replace, or preview). For preview the

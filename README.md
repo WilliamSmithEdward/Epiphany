@@ -38,7 +38,9 @@ single static binary with a clean JSON REST API and a React + TypeScript web UI.
 - MDX-based subsets, views, and cellsets with crossjoin nesting and
   zero-suppression.
 - A high-performance **pivot grid with write-back** and transactional batch
-  writes.
+  writes, with **data spreading**: type a number at a total and distribute it
+  across the leaves underneath (equal, proportional, repeat, or clear), exactly
+  and within your access (ADR-0029).
 - A **persistent view cache** and **deterministic parallel aggregation**: repeat
   reads of a view are served instantly from a version-keyed cache that never
   returns a stale or cross-user result, and large cold views aggregate across all

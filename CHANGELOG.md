@@ -6,6 +6,20 @@ of the form `mN[.M]`, where the integer part tracks the roadmap phase and the
 point part is a follow-on release; binaries for each release are attached to the
 matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/releases).
 
+## [Unreleased]
+
+### Added
+
+- **Data spreading** (ADR-0029): enter a value at a total and distribute it
+  across the leaves underneath, by `equal`, `proportional`, `repeat`, or `clear`.
+  Spreads are exact (the leaves sum back to the entered value) and deterministic,
+  honor the active what-if sandbox, and are fail-closed under element security
+  (if any contributing leaf is denied, the whole spread is refused). New
+  `POST /api/v1/cubes/{cube}/cells/spread` endpoint and a pivot-grid spread
+  control. Spreading into a weighted consolidation is refused in v1.
+- View-cache counters on the admin Server Overview dashboard (cached views,
+  hits, misses, hit rate) via a new `GET /api/v1/overview` endpoint.
+
 ## [m8.7] - 2026-06-15
 
 The performance release, and the first tag to gather the post-roadmap programs
