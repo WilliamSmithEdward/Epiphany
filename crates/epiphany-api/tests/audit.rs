@@ -53,6 +53,7 @@ fn harness(commands: bool) -> Harness {
         command_connectors_enabled: commands,
         audit: audit.clone(),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
+        view_cache: Default::default(),
     };
     Harness {
         app: build_router(state),

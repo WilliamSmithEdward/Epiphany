@@ -48,6 +48,7 @@ fn harness(name: &str) -> Router {
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
+        view_cache: Default::default(),
     };
     build_router(state)
 }

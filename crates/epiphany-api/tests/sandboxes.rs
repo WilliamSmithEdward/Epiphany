@@ -71,6 +71,7 @@ fn router(dir: &Path) -> Router {
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
+        view_cache: Default::default(),
     };
     build_router(state)
 }
@@ -194,6 +195,7 @@ fn router_calc(dir: &Path) -> (Router, Engine) {
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
+        view_cache: Default::default(),
     };
     (build_router(state), engine)
 }
@@ -582,6 +584,7 @@ async fn sandbox_rejects_string_what_if_but_allows_numeric() {
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
+        view_cache: Default::default(),
     };
     let app = build_router(state);
     let ann = login(&app, "ann").await;

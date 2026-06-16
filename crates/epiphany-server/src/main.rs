@@ -190,6 +190,7 @@ where
         command_connectors_enabled,
         audit: Arc::new(Mutex::new(audit)),
         runs: Arc::new(Mutex::new(runs)),
+        view_cache: Arc::new(epiphany_api::ViewCache::new(config.view_cache_entries)),
     };
 
     // Start the scheduler reconcile loop (ADR-0013) on the real clock unless it

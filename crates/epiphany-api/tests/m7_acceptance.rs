@@ -85,6 +85,7 @@ fn harness(dir: &Path, audit_path: std::path::PathBuf) -> Harness {
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(audit)),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
+        view_cache: Default::default(),
     };
     Harness {
         app: build_router(state),

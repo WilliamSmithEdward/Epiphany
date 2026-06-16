@@ -94,6 +94,7 @@ fn state(engine: Engine, clock: Arc<ManualClock>, runs: RunLedger) -> AppState {
         command_connectors_enabled: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(runs)),
+        view_cache: Default::default(),
     }
 }
 

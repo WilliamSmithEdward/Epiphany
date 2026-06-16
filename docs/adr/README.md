@@ -30,5 +30,7 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0024](0024-shared-independent-dimensions.md) | Shared, independent dimensions (a dimension registry) | Accepted | Model architecture |
 | [0025](0025-at-rest-encryption-posture.md) | At-rest encryption posture (operator-managed, not in-binary) | Accepted | Security hardening |
 | [0026](0026-web-syntax-highlighting.md) | Web syntax highlighting for the rules and flow editors (in-house) | Accepted | Web UI (W3) |
+| [0027](0027-connection-preview-endpoint.md) | Connection preview endpoint (admin, gated, row-capped) | Accepted | Web UI (W4) |
+| [0028](0028-view-cache-and-parallel-aggregation.md) | Persistent view cache and deterministic parallel aggregation | Accepted | Performance |
 
 > All originally-reserved ADR numbers are allocated; later decisions continue from 0020.

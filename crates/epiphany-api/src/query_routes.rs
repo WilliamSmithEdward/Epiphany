@@ -631,13 +631,26 @@ pub(crate) async fn execute_saved_view(
     // carrying the caller's element deny mask (ADR-0015): denied members are
     // suppressed from the axes and a cell rolling up a denied leaf is denied.
     let mask = element_mask(&state, &auth, &snap);
-    let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
-    let cellset = snap
-        .model()
-        .execute(view, &*resolver, state.evaluator(), mask.as_ref())?;
+    // Read-through the view cache (ADR-0028). The resolver (which compiles every
+    // cube's rules) is built lazily inside the closure, so a cache hit skips it.
+    let cellset = state.view_cache.get_or_compute(
+        crate::view_cache::ViewRead {
+            cube: &cube,
+            version: snap.version(),
+            view,
+            sandbox,
+            mask: mask.as_ref(),
+            is_adhoc: false,
+        },
+        || {
+            let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
+            snap.model()
+                .execute(view, &*resolver, state.evaluator(), mask.as_ref())
+        },
+    )?;
     Ok(Json(cellset_dto(
         snap.cube(),
-        cellset,
+        &cellset,
         snap.version(),
         sandbox,
     )))
@@ -659,18 +672,32 @@ pub(crate) async fn execute_adhoc(
         .as_deref()
         .and_then(|n| snap.model().sandbox(n));
     let mask = element_mask(&state, &auth, &snap);
-    let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
-    let cellset = execute_view(
-        snap.cube(),
-        &view,
-        &*resolver,
-        &|d, n| snap.subset(d, n),
-        state.evaluator(),
-        mask.as_ref(),
+    // Read-through the view cache (ADR-0028), ad-hoc pool. The resolver is built
+    // lazily inside the closure so a cache hit skips rule compilation.
+    let cellset = state.view_cache.get_or_compute(
+        crate::view_cache::ViewRead {
+            cube: &cube,
+            version: snap.version(),
+            view: &view,
+            sandbox,
+            mask: mask.as_ref(),
+            is_adhoc: true,
+        },
+        || {
+            let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
+            execute_view(
+                snap.cube(),
+                &view,
+                &*resolver,
+                &|d, n| snap.subset(d, n),
+                state.evaluator(),
+                mask.as_ref(),
+            )
+        },
     )?;
     Ok(Json(cellset_dto(
         snap.cube(),
-        cellset,
+        &cellset,
         snap.version(),
         sandbox,
     )))
@@ -727,7 +754,7 @@ fn cell_coord_indices(
     Some(coord)
 }
 
-fn cellset_dto(cube: &Cube, cs: Cellset, version: u64, sandbox: Option<&Sandbox>) -> CellsetDto {
+fn cellset_dto(cube: &Cube, cs: &Cellset, version: u64, sandbox: Option<&Sandbox>) -> CellsetDto {
     let leaf_of = |dim_name: &str, member: &str| -> bool {
         cube.dimensions()
             .iter()
@@ -822,13 +849,14 @@ fn cellset_dto(cube: &Cube, cs: Cellset, version: u64, sandbox: Option<&Sandbox>
         .collect();
 
     CellsetDto {
-        row_dimensions: cs.row_dimensions,
-        column_dimensions: cs.column_dimensions,
+        row_dimensions: cs.row_dimensions.clone(),
+        column_dimensions: cs.column_dimensions.clone(),
         row_tuples,
         column_tuples,
         context: cs
             .context
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|(dimension, member)| ContextEntryDto { dimension, member })
             .collect(),
         cells,

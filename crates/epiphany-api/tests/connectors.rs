@@ -74,6 +74,7 @@ fn router_for(dir: &Path, is_admin: bool, commands: bool) -> Router {
         command_connectors_enabled: commands,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
+        view_cache: Default::default(),
     };
     build_router(state)
 }

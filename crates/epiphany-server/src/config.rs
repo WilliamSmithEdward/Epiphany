@@ -42,6 +42,9 @@ pub struct Config {
     pub password_min_length: usize,
     /// Reject common/guessable passwords (ADR-0017). Default true.
     pub password_reject_common: bool,
+    /// The view (cellset) cache's saved-view entry cap (ADR-0028). Default 256;
+    /// `0` disables the cache. The ad-hoc pool is a fraction of this.
+    pub view_cache_entries: usize,
     /// Serve a self-signed certificate generated into the data directory
     /// (ADR-0019): the zero-config HTTPS path (`EPIPHANY_TLS=on`).
     pub tls_self_signed: bool,
@@ -77,6 +80,7 @@ impl Default for Config {
             login_lockout_millis: 15 * 60 * 1000,
             password_min_length: 12,
             password_reject_common: true,
+            view_cache_entries: 256,
             tls_self_signed: false,
             tls_cert: None,
             tls_key: None,
@@ -172,6 +176,12 @@ impl Config {
                 "off" | "0" | "false" | "no"
             );
         }
+        if let Some(n) = vars
+            .get("EPIPHANY_VIEW_CACHE_ENTRIES")
+            .and_then(|v| v.parse::<usize>().ok())
+        {
+            config.view_cache_entries = n;
+        }
         // TLS (ADR-0019). `EPIPHANY_TLS=on` (or self-signed/1/true/yes) serves a
         // generated self-signed cert; an explicit cert+key takes precedence.
         if let Some(v) = vars.get("EPIPHANY_TLS") {
@@ -255,6 +265,21 @@ mod tests {
             "/etc/epi/cert.pem".to_string(),
         );
         assert!(!Config::from_map(&vars).wants_tls());
+    }
+
+    #[test]
+    fn view_cache_entries_default_and_override() {
+        // A cache is on by default (ADR-0028).
+        assert_eq!(Config::default().view_cache_entries, 256);
+        let mut vars = BTreeMap::new();
+        vars.insert("EPIPHANY_VIEW_CACHE_ENTRIES".to_string(), "0".to_string());
+        assert_eq!(Config::from_map(&vars).view_cache_entries, 0);
+        let mut vars = BTreeMap::new();
+        vars.insert(
+            "EPIPHANY_VIEW_CACHE_ENTRIES".to_string(),
+            "1024".to_string(),
+        );
+        assert_eq!(Config::from_map(&vars).view_cache_entries, 1024);
     }
 
     #[test]

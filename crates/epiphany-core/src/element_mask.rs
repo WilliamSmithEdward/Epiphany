@@ -52,6 +52,26 @@ impl ElementMask {
         self.denied.iter().all(|s| !s.iter().any(|&b| b))
     }
 
+    /// The mask's exact denied set as sorted `(dimension position, element
+    /// index)` pairs. This is the canonical, lossless identity of a mask: two
+    /// masks are interchangeable for a read iff their `denied_pairs` are equal.
+    /// Used by the API view cache (ADR-0028) to key a masked entry on the precise
+    /// denial set that produced it, so two principals with identical denials
+    /// share one entry and any difference yields a distinct, non-aliasing key.
+    /// Iteration is in dimension-then-index order, so the result is already
+    /// sorted and deterministic.
+    pub fn denied_pairs(&self) -> Vec<(u32, u32)> {
+        let mut pairs = Vec::new();
+        for (dim, bits) in self.denied.iter().enumerate() {
+            for (idx, &denied) in bits.iter().enumerate() {
+                if denied {
+                    pairs.push((dim as u32, idx as u32));
+                }
+            }
+        }
+        pairs
+    }
+
     fn dim_has_denials(&self, dim: usize) -> bool {
         self.denied.get(dim).is_some_and(|s| s.iter().any(|&b| b))
     }
@@ -162,5 +182,32 @@ mod tests {
         assert!(mask.denies_member(&cube, 0, south));
         assert!(mask.denies_member(&cube, 0, total));
         assert!(!mask.denies_member(&cube, 0, north));
+    }
+
+    #[test]
+    fn denied_pairs_is_canonical_and_lossless() {
+        let cube = cube();
+        let north = cube.dimension(0).resolve("North").unwrap();
+        let south = cube.dimension(0).resolve("South").unwrap();
+
+        // An empty mask has no pairs; two principals with the same denials yield
+        // identical pairs (so they share a cache entry); different denials differ.
+        let empty = ElementMask::from_denied(&[3, 1], &[Vec::new(), Vec::new()]);
+        assert!(empty.denied_pairs().is_empty());
+
+        let deny_south_a = ElementMask::from_denied(&[3, 1], &[vec![south], Vec::new()]);
+        let deny_south_b = ElementMask::from_denied(&[3, 1], &[vec![south], Vec::new()]);
+        assert_eq!(deny_south_a.denied_pairs(), deny_south_b.denied_pairs());
+        assert_eq!(deny_south_a.denied_pairs(), vec![(0, south)]);
+
+        let deny_north = ElementMask::from_denied(&[3, 1], &[vec![north], Vec::new()]);
+        assert_ne!(deny_south_a.denied_pairs(), deny_north.denied_pairs());
+
+        // Pairs are sorted by (dimension, index) regardless of input order.
+        let multi = ElementMask::from_denied(&[3, 1], &[vec![south, north], Vec::new()]);
+        let mut sorted = multi.denied_pairs();
+        let observed = sorted.clone();
+        sorted.sort_unstable();
+        assert_eq!(observed, sorted);
     }
 }

@@ -46,6 +46,7 @@ mod sandbox_routes;
 mod scheduler;
 mod security_routes;
 mod session;
+mod view_cache;
 mod ws;
 
 pub use calc_factory::CalcFactory;
@@ -54,6 +55,7 @@ pub use error::ApiError;
 pub use login_guard::LoginGuard;
 pub use scheduler::Scheduler;
 pub use session::SessionStore;
+pub use view_cache::ViewCache;
 pub use ws::ChangeEvent;
 
 /// Stable crate identifier.
@@ -92,6 +94,10 @@ pub struct AppState {
     /// behind its own lock. Recovered on startup; an in-flight run at a crash is
     /// re-derived as due by the reconcile loop.
     pub runs: Arc<Mutex<RunLedger>>,
+    /// The bounded, version-keyed view (cellset) cache (ADR-0028). Read-through
+    /// over view execution; keyed so a cached entry is only served for an
+    /// identical read. Shared across the cheap `AppState` clones.
+    pub view_cache: Arc<ViewCache>,
 }
 
 impl AppState {
@@ -489,6 +495,7 @@ mod tests {
             command_connectors_enabled: false,
             audit: Arc::new(Mutex::new(AuditLog::in_memory())),
             runs: Arc::new(Mutex::new(RunLedger::in_memory())),
+            view_cache: Default::default(),
         }
     }
 

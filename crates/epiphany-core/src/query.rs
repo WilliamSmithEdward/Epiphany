@@ -277,7 +277,7 @@ pub fn validate_subset(cube: &Cube, subset: &Subset) -> Result<(), QueryError> {
 /// Each spec selects members from exactly one dimension. An [`Axis`] is an
 /// ordered list of specs whose member lists are crossjoined to form tuples, with
 /// the first spec varying slowest (outermost nesting).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AxisSpec {
     /// Reference a saved subset by dimension and name.
     Subset {
