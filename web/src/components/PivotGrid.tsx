@@ -26,7 +26,9 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
   const [cells, setCells] = useState<Map<string, CellDto>>(new Map())
   const [error, setError] = useState<string | null>(null)
   const [drill, setDrill] = useState<{ label: string; trace: TraceDto | null } | null>(null)
-  const [spreadMode, setSpreadMode] = useState<'' | SpreadMethod>('')
+  // 'off' is the disabled sentinel; a Radix Select.Item value may never be the
+  // empty string, so the "off" option carries a real value.
+  const [spreadMode, setSpreadMode] = useState<'off' | SpreadMethod>('off')
   const gridRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -112,7 +114,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
   /** Spread a value entered at a (possibly consolidated) cell across its leaves. */
   const spread = useCallback(
     async (rowMember: string, colMember: string, typed: string) => {
-      if (!spreadMode) return
+      if (spreadMode === 'off') return
       // Clear ignores the typed value; the others need a number.
       const value = spreadMode === 'clear' ? '0' : typed.trim()
       if (spreadMode !== 'clear' && value === '') return
@@ -186,9 +188,9 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
           <span>Spread</span>
           <Select
             value={spreadMode}
-            onValueChange={(v) => setSpreadMode(v as '' | SpreadMethod)}
+            onValueChange={(v) => setSpreadMode(v as 'off' | SpreadMethod)}
             options={[
-              { value: '', label: 'Off' },
+              { value: 'off', label: 'Off' },
               { value: 'equal', label: 'Equal' },
               { value: 'proportional', label: 'Proportional' },
               { value: 'repeat', label: 'Repeat' },
@@ -202,7 +204,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
           Refresh
         </Button>
       </div>
-      {spreadMode ? (
+      {spreadMode !== 'off' ? (
         <p className="banner" role="status">
           Spreading is on ({spreadMode}). Type a value into a total cell to distribute it across the
           leaves underneath. Turn it off to edit single cells again.
@@ -290,7 +292,7 @@ function CellView({
   cell: CellDto | undefined
   r: number
   c: number
-  spreadMode: '' | SpreadMethod
+  spreadMode: 'off' | SpreadMethod
   onCommit: (next: string) => void
   onSpread: (next: string) => void
   onNav: (r: number, c: number) => void
@@ -299,7 +301,7 @@ function CellView({
   if (!cell || !cell.editable) {
     // With spreading on, a calculated (total) cell accepts a value to distribute
     // across its leaves; otherwise it stays a click-to-explain calculated value.
-    if (cell && spreadMode) {
+    if (cell && spreadMode !== 'off') {
       return (
         <td className={cell.overlaid ? 'cell editable overlaid' : 'cell editable'} title={`Spread (${spreadMode}) across the leaves under this total`}>
           <input
