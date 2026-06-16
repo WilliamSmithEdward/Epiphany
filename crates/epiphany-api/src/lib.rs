@@ -23,7 +23,7 @@ use serde::Serialize;
 use epiphany_core::SetEvaluator;
 use epiphany_determinism::Clock;
 use epiphany_engine::{CellResolverFactory, Engine};
-use epiphany_security::{AuditLog, SecurityStore};
+use epiphany_security::{AuditLog, SecretStore, SecurityStore};
 use tokio::sync::broadcast;
 
 mod auth;
@@ -34,6 +34,7 @@ mod dimension_routes;
 mod dto;
 mod error;
 mod flow_routes;
+mod http_connector;
 mod job_routes;
 mod login_guard;
 mod model_routes;
@@ -45,6 +46,7 @@ mod routes;
 mod rule_routes;
 mod sandbox_routes;
 mod scheduler;
+mod secret_routes;
 mod security_routes;
 mod session;
 mod view_cache;
@@ -99,6 +101,32 @@ pub struct AppState {
     /// over view execution; keyed so a cached entry is only served for an
     /// identical read. Shared across the cheap `AppState` clones.
     pub view_cache: Arc<ViewCache>,
+    /// The operator secret store (ADR-0030): named credentials HTTP connections
+    /// reference by name. Values are write-only over the API and never reach the
+    /// model, logs, or audit.
+    pub secrets: Arc<Mutex<SecretStore>>,
+    /// HTTP connector capability and SSRF host allowlist (ADR-0030). Fail-closed:
+    /// disabled with an empty allowlist unless the operator opts in.
+    pub http: HttpConnectorConfig,
+}
+
+/// The HTTP connector capability and its SSRF host allowlist (ADR-0030).
+/// Fail-closed by default: disabled with an empty allowlist, so enabling the
+/// capability is not enough on its own; the operator must also name the hosts.
+#[derive(Clone, Debug, Default)]
+pub struct HttpConnectorConfig {
+    /// Whether HTTP connections may be defined and run.
+    pub enabled: bool,
+    /// Lowercased hostnames an HTTP connection may target. Empty allows nothing.
+    pub allowed_hosts: Vec<String>,
+}
+
+impl HttpConnectorConfig {
+    /// Whether `host` (case-insensitive) is allowlisted.
+    pub fn allows_host(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        self.allowed_hosts.iter().any(|h| h == &host)
+    }
 }
 
 impl AppState {
@@ -380,6 +408,11 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/runs", get(job_routes::list_all_runs))
         .route("/api/v1/overview", get(overview_routes::overview))
+        .route("/api/v1/secrets", get(secret_routes::list_secrets))
+        .route(
+            "/api/v1/secrets/{name}",
+            put(secret_routes::put_secret).delete(secret_routes::delete_secret),
+        )
         .route("/api/v1/audit", get(security_routes::query_audit))
         .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))
@@ -502,6 +535,8 @@ mod tests {
             audit: Arc::new(Mutex::new(AuditLog::in_memory())),
             runs: Arc::new(Mutex::new(RunLedger::in_memory())),
             view_cache: Default::default(),
+            secrets: Default::default(),
+            http: HttpConnectorConfig::default(),
         }
     }
 

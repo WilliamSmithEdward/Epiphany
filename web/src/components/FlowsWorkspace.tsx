@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   deleteConnection,
   deleteFlow,
+  deleteSecret,
   getCube,
   importCsv,
   listConnections,
   listFlows,
   listFlowTests,
+  listSecrets,
   previewConnection,
+  putSecret,
   previewFlow,
   putConnection,
   putFlow,
@@ -286,9 +289,12 @@ function RunPanel({
 
 function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: number }) {
   const [connections, setConnections] = useState<ConnectionDto[]>([])
+  const [kind, setKind] = useState<'command' | 'http'>('command')
   const [name, setName] = useState('')
   const [program, setProgram] = useState('')
   const [args, setArgs] = useState('')
+  const [url, setUrl] = useState('')
+  const [authSecret, setAuthSecret] = useState('')
   const [format, setFormat] = useState('csv')
   const [workingDir, setWorkingDir] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -307,31 +313,60 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
     load()
   }, [load, reloadSignal])
 
+  function reset() {
+    setName('')
+    setProgram('')
+    setArgs('')
+    setWorkingDir('')
+    setUrl('')
+    setAuthSecret('')
+  }
+
   async function add() {
-    if (name.trim() === '' || program.trim() === '') {
-      setError('A connection needs a name and a program.')
+    if (name.trim() === '') {
+      setError('A data source needs a name.')
       return
     }
     setSaving(true)
     setError(null)
     try {
-      await putConnection(cube, {
-        name: name.trim(),
-        kind: 'command',
-        program: program.trim(),
-        // One argument per line.
-        args: args.split('\n').map((a) => a.trim()).filter((a) => a !== ''),
-        format,
-        timeout_ms: 30000,
-        working_dir: workingDir.trim() === '' ? null : workingDir.trim(),
-      })
-      setName('')
-      setProgram('')
-      setArgs('')
-      setWorkingDir('')
+      if (kind === 'command') {
+        if (program.trim() === '') {
+          setError('A command data source needs a program.')
+          setSaving(false)
+          return
+        }
+        await putConnection(cube, {
+          name: name.trim(),
+          kind: 'command',
+          program: program.trim(),
+          // One argument per line.
+          args: args.split('\n').map((a) => a.trim()).filter((a) => a !== ''),
+          format,
+          timeout_ms: 30000,
+          working_dir: workingDir.trim() === '' ? null : workingDir.trim(),
+        })
+      } else {
+        if (url.trim() === '') {
+          setError('An HTTP data source needs a url.')
+          setSaving(false)
+          return
+        }
+        await putConnection(cube, {
+          name: name.trim(),
+          kind: 'http',
+          program: '',
+          args: [],
+          format,
+          timeout_ms: 30000,
+          url: url.trim(),
+          auth: authSecret.trim() === '' ? null : { kind: 'bearer', secret: authSecret.trim() },
+        })
+      }
+      reset()
       load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not save the connection')
+      setError(e instanceof Error ? e.message : 'Could not save the data source')
     } finally {
       setSaving(false)
     }
@@ -369,7 +404,8 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
       <ul className="coord-list">
         {connections.map((c) => (
           <li key={c.name}>
-            <strong>{c.name}</strong> [{c.kind}] {c.program} {c.args.join(' ')}{' '}
+            <strong>{c.name}</strong> [{c.kind}]{' '}
+            {c.kind === 'http' ? (c.url ?? '') : `${c.program} ${c.args.join(' ')}`}{' '}
             <button
               className="link"
               onClick={() => void test(c.name)}
@@ -387,23 +423,52 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
         {connections.length === 0 ? <li className="muted">No data sources</li> : null}
       </ul>
       <p className="muted">
-        Add a command data source (admin only; the server must enable command connectors). Test it
-        before using it in a flow.
+        Add a data source (admin only; the server must enable the matching connector kind). An HTTP
+        source can reference a named secret for its credential (managed below). Test a source before
+        using it in a flow.
       </p>
       <div className="conn-form">
+        <label className="check">
+          <span>Kind</span>
+          <select value={kind} onChange={(e) => setKind(e.target.value as 'command' | 'http')}>
+            <option value="command">command</option>
+            <option value="http">http</option>
+          </select>
+        </label>
         <input value={name} placeholder="name" onChange={(e) => setName(e.target.value)} />
-        <input value={program} placeholder="program (e.g. python)" onChange={(e) => setProgram(e.target.value)} />
-        <textarea
-          value={args}
-          placeholder={'one argument per line\nscripts/extract.py\n--region=North'}
-          onChange={(e) => setArgs(e.target.value)}
-          rows={3}
-        />
-        <input
-          value={workingDir}
-          placeholder="working directory (optional, absolute path)"
-          onChange={(e) => setWorkingDir(e.target.value)}
-        />
+        {kind === 'command' ? (
+          <>
+            <input
+              value={program}
+              placeholder="program (e.g. python)"
+              onChange={(e) => setProgram(e.target.value)}
+            />
+            <textarea
+              value={args}
+              placeholder={'one argument per line\nscripts/extract.py\n--region=North'}
+              onChange={(e) => setArgs(e.target.value)}
+              rows={3}
+            />
+            <input
+              value={workingDir}
+              placeholder="working directory (optional, absolute path)"
+              onChange={(e) => setWorkingDir(e.target.value)}
+            />
+          </>
+        ) : (
+          <>
+            <input
+              value={url}
+              placeholder="https://api.example.com/data.csv (host must be allowlisted)"
+              onChange={(e) => setUrl(e.target.value)}
+            />
+            <input
+              value={authSecret}
+              placeholder="bearer-token secret name (optional)"
+              onChange={(e) => setAuthSecret(e.target.value)}
+            />
+          </>
+        )}
         <select value={format} onChange={(e) => setFormat(e.target.value)}>
           <option value="csv">csv</option>
           <option value="json">json</option>
@@ -413,7 +478,94 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
         </button>
       </div>
       {error ? <p className="error" role="alert">{error}</p> : null}
+      <SecretsPanel />
     </section>
+  )
+}
+
+/** Manage the named HTTP credentials (ADR-0030; admin). Values are write-only:
+ * the list shows names only, and a value is never returned after saving. */
+function SecretsPanel() {
+  const [names, setNames] = useState<string[]>([])
+  const [name, setName] = useState('')
+  const [value, setValue] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    listSecrets()
+      .then(setNames)
+      .catch(() => undefined)
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  async function add() {
+    if (name.trim() === '' || value === '') {
+      setError('A secret needs a name and a value.')
+      return
+    }
+    setBusy(true)
+    setError(null)
+    try {
+      await putSecret(name.trim(), value)
+      setName('')
+      setValue('')
+      load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the secret')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function remove(secretName: string) {
+    try {
+      await deleteSecret(secretName)
+      load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not delete the secret')
+    }
+  }
+
+  return (
+    <div className="secrets-panel">
+      <h4>HTTP secrets</h4>
+      <p className="muted">
+        Named credentials for HTTP data sources (admin only). Values are write-only: a secret is
+        never shown again after you save it.
+      </p>
+      <ul className="coord-list">
+        {names.map((n) => (
+          <li key={n}>
+            <strong>{n}</strong>{' '}
+            <button className="link" onClick={() => void remove(n)} title="Delete">
+              x
+            </button>
+          </li>
+        ))}
+        {names.length === 0 ? <li className="muted">No secrets</li> : null}
+      </ul>
+      <div className="conn-form">
+        <input
+          value={name}
+          placeholder="secret name (e.g. rates_token)"
+          onChange={(e) => setName(e.target.value)}
+        />
+        <input
+          type="password"
+          value={value}
+          placeholder="value (bearer token, or user:password for basic)"
+          onChange={(e) => setValue(e.target.value)}
+        />
+        <button disabled={busy} onClick={() => void add()}>
+          {busy ? 'Saving...' : 'Add secret'}
+        </button>
+      </div>
+      {error ? <p className="error" role="alert">{error}</p> : null}
+    </div>
   )
 }
 

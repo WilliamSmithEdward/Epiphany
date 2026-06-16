@@ -59,6 +59,10 @@ pub enum ObjectKind {
     Job,
     Group,
     User,
+    /// An operator secret (ADR-0030). Admin-managed only (never per-kind
+    /// grantable); used as an audit target so a secret operation records the
+    /// secret name, never its value.
+    Secret,
 }
 
 impl ObjectKind {
@@ -76,6 +80,7 @@ impl ObjectKind {
             ObjectKind::Job => "job",
             ObjectKind::Group => "group",
             ObjectKind::User => "user",
+            ObjectKind::Secret => "secret",
         }
     }
 
@@ -93,6 +98,7 @@ impl ObjectKind {
             "job" => ObjectKind::Job,
             "group" => ObjectKind::Group,
             "user" => ObjectKind::User,
+            "secret" => ObjectKind::Secret,
             _ => return None,
         })
     }

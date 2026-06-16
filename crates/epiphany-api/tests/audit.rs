@@ -54,6 +54,8 @@ fn harness(commands: bool) -> Harness {
         audit: audit.clone(),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
+        secrets: Default::default(),
+        http: Default::default(),
     };
     Harness {
         app: build_router(state),

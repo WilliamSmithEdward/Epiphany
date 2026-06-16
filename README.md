@@ -50,9 +50,11 @@ single static binary with a clean JSON REST API and a React + TypeScript web UI.
 **Automation and integration**
 - **Flows**: TypeScript ETL and automation on an embedded JavaScript engine,
   where scripts orchestrate and native Rust does the bulk work. Includes a CSV
-  import wizard and **data-source connectors** (run an admin-defined program and
-  read its CSV/JSON output, e.g. a Python or PowerShell script for a database
-  pull).
+  import wizard and **data-source connectors**: run an admin-defined program and
+  read its CSV/JSON output (a Python or PowerShell script for a database pull),
+  or fetch an HTTP(S) API directly. HTTP connectors are off by default and bounded
+  by a host allowlist, and reference credentials by name from an owner-only secret
+  store that keeps them out of the model and Git (ADR-0030).
 - **Scheduled jobs**: ordered flow sequences on an in-process scheduler with a
   durable run ledger and convergent crash recovery.
 - **Excel add-in** (a single Excel-DNA `.xll`): pull live cube values with
@@ -173,6 +175,8 @@ environment variables. The most useful:
 | `EPIPHANY_TLS` | `on` serves HTTPS with an auto-generated self-signed certificate | off (HTTP) |
 | `EPIPHANY_TLS_CERT` / `EPIPHANY_TLS_KEY` | PEM cert + key to serve a real certificate (takes precedence) | none |
 | `EPIPHANY_ENABLE_COMMAND_CONNECTORS` | Allow admin-defined programs as flow data sources | off |
+| `EPIPHANY_ENABLE_HTTP_CONNECTORS` | Allow admin-defined HTTP(S) data sources (needs the `http` build feature) | off |
+| `EPIPHANY_HTTP_ALLOWED_HOSTS` | Comma-separated hosts an HTTP connection may target (empty = none) | empty |
 
 ### HTTPS / TLS
 

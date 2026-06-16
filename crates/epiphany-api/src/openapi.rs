@@ -593,6 +593,23 @@ fn document() -> Value {
                 "summary": "Server-wide stats for the admin overview (admin)", "security": bearer(),
                 "responses": ok("Server stats, including view-cache counters")
             }},
+            "/api/v1/secrets": { "get": {
+                "summary": "Secret names for HTTP connections (admin); values are never returned", "security": bearer(),
+                "responses": ok("The secret names")
+            }},
+            "/api/v1/secrets/{name}": {
+                "put": {
+                    "summary": "Set a secret value (admin); write-only, never echoed or logged", "security": bearer(),
+                    "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "properties": { "value": { "type": "string" } }, "required": ["value"] } } } },
+                    "responses": { "204": { "description": "Stored" } }
+                },
+                "delete": {
+                    "summary": "Delete a secret (admin)", "security": bearer(),
+                    "parameters": [{ "name": "name", "in": "path", "required": true, "schema": { "type": "string" } }],
+                    "responses": { "204": { "description": "Deleted" } }
+                }
+            },
             "/api/v1/audit": { "get": {
                 "summary": "Query the audit log (admin)", "security": bearer(),
                 "parameters": [
@@ -922,6 +939,8 @@ mod tests {
         "/api/v1/acl/grants",
         "/api/v1/runs",
         "/api/v1/overview",
+        "/api/v1/secrets",
+        "/api/v1/secrets/{name}",
         "/api/v1/audit",
     ];
 

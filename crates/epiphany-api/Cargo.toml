@@ -10,6 +10,12 @@ description = "Epiphany: REST + WebSocket API surface (Axum, Phase 2)."
 [lints]
 workspace = true
 
+[features]
+# Build the HTTP fetch connector (ADR-0030). Off by default to keep the lean
+# build dependency-light; the server's `http` feature and release binaries
+# enable it. Forwards to epiphany-connect's http feature (ureq, rustls/ring).
+http = ["epiphany-connect/http"]
+
 [dependencies]
 epiphany-core = { path = "../epiphany-core" }
 epiphany-engine = { path = "../epiphany-engine" }

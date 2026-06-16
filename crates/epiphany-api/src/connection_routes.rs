@@ -9,11 +9,15 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use epiphany_core::{CommandSpec, Connection, ConnectionSpec, SourceFormat};
+use epiphany_core::{CommandSpec, Connection, ConnectionSpec, HttpAuth, HttpAuthKind, HttpSpec};
+use epiphany_flow::Row;
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
 use crate::authz::{audit, require_kind_access};
+use crate::http_connector::{
+    format_token, parse_format, require_http_host_allowed, resolve_auth_header,
+};
 use crate::routes::{map_batch_error, snapshot};
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
@@ -23,12 +27,16 @@ fn connection_ref(cube: &str, name: &str) -> ObjectRef {
     ObjectRef::in_cube(ObjectKind::Connection, cube, name)
 }
 
-/// A connection in JSON form (flat; the command fields apply when `kind` is
-/// `"command"`, the only kind today).
+/// A connection in JSON form (flat). The command fields apply when `kind` is
+/// `"command"`; the http fields when `kind` is `"http"` (ADR-0030).
 #[derive(Serialize, Deserialize)]
 pub(crate) struct ConnectionDto {
+    /// Ignored on a request (the name comes from the path); always set on a
+    /// response.
+    #[serde(default)]
     pub name: String,
     pub kind: String,
+    // ---- command fields ----
     #[serde(default)]
     pub program: String,
     #[serde(default)]
@@ -43,6 +51,31 @@ pub(crate) struct ConnectionDto {
     /// with no `..` traversal). Redacted for non-admins like the command line.
     #[serde(default)]
     pub working_dir: Option<String>,
+    // ---- http fields (ADR-0030) ----
+    /// The URL to fetch. Redacted for non-admins (it may embed a token).
+    #[serde(default)]
+    pub url: String,
+    /// Static request headers. Redacted for non-admins (may embed a token).
+    #[serde(default)]
+    pub headers: Vec<HeaderDto>,
+    /// Optional credential, referencing a secret by NAME (never a value).
+    #[serde(default)]
+    pub auth: Option<AuthDto>,
+}
+
+/// One static HTTP request header.
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) struct HeaderDto {
+    pub name: String,
+    pub value: String,
+}
+
+/// An HTTP credential reference: scheme plus the NAME of the secret holding the
+/// value (a token, or `user:password` for basic). The value is never in the DTO.
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) struct AuthDto {
+    pub kind: String,
+    pub secret: String,
 }
 
 #[derive(Serialize)]
@@ -50,14 +83,41 @@ pub(crate) struct ConnectionListDto {
     pub connections: Vec<ConnectionDto>,
 }
 
-/// Render a connection as a DTO. For a non-admin the command line (program,
-/// args, json_path) is redacted, since it is an admin artifact that may embed
-/// sensitive paths or tokens; the name/kind/format remain so a modeler can still
-/// pick the connection as a flow source.
+fn auth_kind_token(kind: HttpAuthKind) -> &'static str {
+    match kind {
+        HttpAuthKind::Bearer => "bearer",
+        HttpAuthKind::Basic => "basic",
+    }
+}
+
+fn auth_dto(auth: &HttpAuth) -> AuthDto {
+    AuthDto {
+        kind: auth_kind_token(auth.kind).to_string(),
+        secret: auth.secret.clone(),
+    }
+}
+
+/// Render a connection as a DTO. For a non-admin the operator-authored detail
+/// (the command line, or the URL and headers) is redacted, since it may embed
+/// sensitive paths or tokens; the name/kind/format (and the credential's secret
+/// NAME, which is not itself sensitive) remain so a modeler can still pick the
+/// connection as a flow source.
 fn to_dto(conn: &Connection, is_admin: bool) -> ConnectionDto {
+    let base = ConnectionDto {
+        name: conn.name.clone(),
+        kind: String::new(),
+        program: String::new(),
+        args: Vec::new(),
+        format: String::new(),
+        json_path: None,
+        timeout_ms: 0,
+        working_dir: None,
+        url: String::new(),
+        headers: Vec::new(),
+        auth: None,
+    };
     match &conn.spec {
         ConnectionSpec::Command(cmd) => ConnectionDto {
-            name: conn.name.clone(),
             kind: "command".to_string(),
             program: if is_admin {
                 cmd.program.clone()
@@ -69,10 +129,7 @@ fn to_dto(conn: &Connection, is_admin: bool) -> ConnectionDto {
             } else {
                 Vec::new()
             },
-            format: match cmd.format {
-                SourceFormat::Csv => "csv".to_string(),
-                SourceFormat::Json => "json".to_string(),
-            },
+            format: format_token(cmd.format).to_string(),
             json_path: if is_admin {
                 cmd.json_path.clone()
             } else {
@@ -84,6 +141,31 @@ fn to_dto(conn: &Connection, is_admin: bool) -> ConnectionDto {
             } else {
                 None
             },
+            ..base
+        },
+        ConnectionSpec::Http(http) => ConnectionDto {
+            kind: "http".to_string(),
+            format: format_token(http.format).to_string(),
+            json_path: http.json_path.clone(),
+            timeout_ms: http.timeout_ms,
+            url: if is_admin {
+                http.url.clone()
+            } else {
+                String::new()
+            },
+            headers: if is_admin {
+                http.headers
+                    .iter()
+                    .map(|(name, value)| HeaderDto {
+                        name: name.clone(),
+                        value: value.clone(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            auth: http.auth.as_ref().map(auth_dto),
+            ..base
         },
     }
 }
@@ -181,49 +263,102 @@ pub(crate) async fn put_connection(
         Some(&cube),
         AccessLevel::Write,
     )?;
-    if body.kind != "command" {
-        return Err(ApiError::bad_request(format!(
-            "unsupported connection kind '{}'",
-            body.kind
-        )));
-    }
-    // A command connection is host code execution: require the server opt-in.
-    if !state.command_connectors_enabled {
-        return Err(ApiError::forbidden(
-            "command connectors are disabled on this server (set EPIPHANY_ENABLE_COMMAND_CONNECTORS)",
-        ));
-    }
-    if body.program.trim().is_empty() {
-        return Err(ApiError::bad_request(
-            "a command connection needs a program",
-        ));
-    }
-    validate_working_dir(&body.working_dir)?;
-    let format = match body.format.as_str() {
-        "csv" | "" => SourceFormat::Csv,
-        "json" => SourceFormat::Json,
+    // Default an unset timeout to 30s so a misconfigured connection cannot hang.
+    let timeout_ms = if body.timeout_ms == 0 {
+        30_000
+    } else {
+        body.timeout_ms
+    };
+    let spec = match body.kind.as_str() {
+        "command" => {
+            // A command connection is host code execution: require the opt-in.
+            if !state.command_connectors_enabled {
+                return Err(ApiError::forbidden(
+                    "command connectors are disabled on this server (set EPIPHANY_ENABLE_COMMAND_CONNECTORS)",
+                ));
+            }
+            if body.program.trim().is_empty() {
+                return Err(ApiError::bad_request(
+                    "a command connection needs a program",
+                ));
+            }
+            validate_working_dir(&body.working_dir)?;
+            ConnectionSpec::Command(CommandSpec {
+                program: body.program.clone(),
+                args: body.args.clone(),
+                format: parse_format(&body.format)?,
+                json_path: body.json_path.clone(),
+                timeout_ms,
+                working_dir: body.working_dir.as_ref().filter(|d| !d.is_empty()).cloned(),
+            })
+        }
+        "http" => {
+            // An HTTP connection fetches an external URL: require the opt-in and
+            // an allowlisted host (ADR-0030 SSRF control), and a referenced
+            // secret must already exist (fail-closed).
+            if !state.http.enabled {
+                return Err(ApiError::forbidden(
+                    "HTTP connectors are disabled on this server (set EPIPHANY_ENABLE_HTTP_CONNECTORS)",
+                ));
+            }
+            if body.url.trim().is_empty() {
+                return Err(ApiError::bad_request("an http connection needs a url"));
+            }
+            require_http_host_allowed(&state, &body.url)?;
+            let auth = match &body.auth {
+                None => None,
+                Some(a) => {
+                    let kind = match a.kind.as_str() {
+                        "bearer" => HttpAuthKind::Bearer,
+                        "basic" => HttpAuthKind::Basic,
+                        other => {
+                            return Err(ApiError::bad_request(format!(
+                                "unknown auth kind '{other}' (expected 'bearer' or 'basic')"
+                            )))
+                        }
+                    };
+                    if a.secret.trim().is_empty() {
+                        return Err(ApiError::bad_request("auth needs a secret name"));
+                    }
+                    if !state
+                        .secrets
+                        .lock()
+                        .expect("secret store")
+                        .contains(&a.secret)
+                    {
+                        return Err(ApiError::unprocessable(
+                            "UNKNOWN_SECRET",
+                            format!("no secret named '{}'", a.secret),
+                        ));
+                    }
+                    Some(HttpAuth {
+                        kind,
+                        secret: a.secret.clone(),
+                    })
+                }
+            };
+            ConnectionSpec::Http(HttpSpec {
+                url: body.url.clone(),
+                headers: body
+                    .headers
+                    .iter()
+                    .map(|h| (h.name.clone(), h.value.clone()))
+                    .collect(),
+                auth,
+                format: parse_format(&body.format)?,
+                json_path: body.json_path.clone(),
+                timeout_ms,
+            })
+        }
         other => {
             return Err(ApiError::bad_request(format!(
-                "unknown output format '{other}' (expected 'csv' or 'json')"
+                "unsupported connection kind '{other}'"
             )))
         }
     };
-    let spec = CommandSpec {
-        program: body.program.clone(),
-        args: body.args.clone(),
-        format,
-        json_path: body.json_path.clone(),
-        // Default to 30s when unset, so a misconfigured connection cannot hang.
-        timeout_ms: if body.timeout_ms == 0 {
-            30_000
-        } else {
-            body.timeout_ms
-        },
-        working_dir: body.working_dir.as_ref().filter(|d| !d.is_empty()).cloned(),
-    };
     let connection = Connection {
         name: name.clone(),
-        spec: ConnectionSpec::Command(spec),
+        spec,
     };
     // The caller is an admin (checked above), so the echoed DTO is unredacted.
     let response = to_dto(&connection, true);
@@ -306,24 +441,17 @@ pub(crate) async fn preview_connection(
         Some(&cube),
         AccessLevel::Write,
     )?;
-    // Running a program is host code execution: require the server opt-in.
-    if !state.command_connectors_enabled {
-        return Err(ApiError::forbidden(
-            "command connectors are disabled on this server (set EPIPHANY_ENABLE_COMMAND_CONNECTORS)",
-        ));
-    }
-    let cmd = {
+    let conn = {
         let snap = snapshot(&state, &cube)?;
-        let conn = snap
-            .model()
+        snap.model()
             .connections
             .get(&name)
-            .ok_or_else(|| ApiError::not_found(format!("unknown connection '{name}'")))?;
-        let ConnectionSpec::Command(cmd) = &conn.spec;
-        cmd.clone()
+            .cloned()
+            .ok_or_else(|| ApiError::not_found(format!("unknown connection '{name}'")))?
     };
-    let rows = epiphany_connect::run_command(&cmd)
-        .map_err(|e| ApiError::unprocessable("CONNECTOR_ERROR", e.to_string()))?;
+    // Per-kind gates (command opt-in, or HTTP opt-in + host allowlist) live in the
+    // shared fetcher, so preview and a flow run apply the same controls.
+    let rows = fetch_connection_rows(&state, &conn)?;
     audit(
         &state,
         &auth.principal.username,
@@ -345,4 +473,58 @@ pub(crate) async fn preview_connection(
         rows: sample,
         row_count: rows.len(),
     }))
+}
+
+/// Fetch a connection's rows, applying the per-kind runtime gates. Shared by the
+/// preview endpoint and a flow run so both enforce the same controls: a command
+/// connection needs the command opt-in; an HTTP connection needs the HTTP opt-in,
+/// an allowlisted host, and its credential resolved from the secret store.
+pub(crate) fn fetch_connection_rows(
+    state: &AppState,
+    conn: &Connection,
+) -> Result<Vec<Row>, ApiError> {
+    match &conn.spec {
+        ConnectionSpec::Command(cmd) => {
+            if !state.command_connectors_enabled {
+                return Err(ApiError::forbidden(
+                    "command connectors are disabled on this server (set EPIPHANY_ENABLE_COMMAND_CONNECTORS)",
+                ));
+            }
+            epiphany_connect::run_command(cmd)
+                .map_err(|e| ApiError::unprocessable("CONNECTOR_ERROR", e.to_string()))
+        }
+        ConnectionSpec::Http(http) => fetch_http_rows(state, http),
+    }
+}
+
+/// Fetch an HTTP connection's rows: gate on the capability and host allowlist,
+/// resolve the credential into an `Authorization` header from the secret store,
+/// then fetch (the fetch itself is compiled only with the `http` feature).
+fn fetch_http_rows(state: &AppState, http: &HttpSpec) -> Result<Vec<Row>, ApiError> {
+    if !state.http.enabled {
+        return Err(ApiError::forbidden(
+            "HTTP connectors are disabled on this server (set EPIPHANY_ENABLE_HTTP_CONNECTORS)",
+        ));
+    }
+    require_http_host_allowed(state, &http.url)?;
+    let auth_header = match &http.auth {
+        None => None,
+        Some(auth) => {
+            let secrets = state.secrets.lock().expect("secret store");
+            Some(resolve_auth_header(&secrets, auth)?)
+        }
+    };
+    #[cfg(feature = "http")]
+    {
+        epiphany_connect::fetch_http(http, auth_header.as_deref())
+            .map_err(|e| ApiError::unprocessable("CONNECTOR_ERROR", e.to_string()))
+    }
+    #[cfg(not(feature = "http"))]
+    {
+        let _ = auth_header;
+        Err(ApiError::unprocessable(
+            "HTTP_NOT_BUILT",
+            "this server build does not include the HTTP connector (build with --features http)",
+        ))
+    }
 }

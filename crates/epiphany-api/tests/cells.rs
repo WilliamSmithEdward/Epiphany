@@ -56,6 +56,8 @@ fn state(name: &str) -> AppState {
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
+        secrets: Default::default(),
+        http: Default::default(),
     }
 }
 

@@ -103,6 +103,8 @@ fn harness(name: &str) -> Harness {
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: cache.clone(),
+        secrets: Default::default(),
+        http: Default::default(),
     };
     Harness {
         app: build_router(state),

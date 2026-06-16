@@ -172,6 +172,27 @@ where
             "command (process-execution) connectors are ENABLED: admin-defined connections may run host programs"
         );
     }
+    // The operator secret store (ADR-0030): owner-only credentials referenced by
+    // HTTP connections; loaded next to the other server artifacts.
+    let secrets_path = config.data_dir.join("server").join("secrets.toml");
+    let secrets = epiphany_security::SecretStore::open_or_create(secrets_path)?;
+    // HTTP connectors fetch external URLs, so they are off unless the operator
+    // opts in AND names an allowlist of hosts (fail-closed, SSRF-bounded).
+    let http_connectors_enabled = std::env::var("EPIPHANY_ENABLE_HTTP_CONNECTORS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let http_allowed_hosts: Vec<String> = std::env::var("EPIPHANY_HTTP_ALLOWED_HOSTS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|h| h.trim().to_ascii_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect();
+    if http_connectors_enabled {
+        tracing::warn!(
+            "HTTP connectors are ENABLED with {} allowlisted host(s): admin-defined connections may fetch external URLs",
+            http_allowed_hosts.len()
+        );
+    }
     let state = AppState {
         engine,
         clock: Arc::new(SystemClock),
@@ -191,6 +212,11 @@ where
         audit: Arc::new(Mutex::new(audit)),
         runs: Arc::new(Mutex::new(runs)),
         view_cache: Arc::new(epiphany_api::ViewCache::new(config.view_cache_entries)),
+        secrets: Arc::new(Mutex::new(secrets)),
+        http: epiphany_api::HttpConnectorConfig {
+            enabled: http_connectors_enabled,
+            allowed_hosts: http_allowed_hosts,
+        },
     };
 
     // Start the scheduler reconcile loop (ADR-0013) on the real clock unless it

@@ -16,8 +16,9 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::query::{
-    AxisSpec, CommandSpec, Connection, ConnectionSpec, Flow, FlowTest, Job, Model, RuleSet,
-    RuleTest, Sandbox, SourceFormat, Subset, SubsetKind, TestCell, Trigger, View, Visibility,
+    AxisSpec, CommandSpec, Connection, ConnectionSpec, Flow, FlowTest, HttpAuth, HttpAuthKind,
+    HttpSpec, Job, Model, RuleSet, RuleTest, Sandbox, SourceFormat, Subset, SubsetKind, TestCell,
+    Trigger, View, Visibility,
 };
 use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
@@ -558,8 +559,9 @@ fn build_flow_test(doc: &FlowTestDoc) -> FlowTest {
 #[derive(Serialize, Deserialize)]
 struct ConnectionDoc {
     name: String,
-    // The connection kind ("command"); the per-kind fields below apply to it.
+    // The connection kind ("command" or "http"); the per-kind fields below apply.
     kind: String,
+    // ---- command fields ----
     #[serde(default, skip_serializing_if = "String::is_empty")]
     program: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -572,6 +574,40 @@ struct ConnectionDoc {
     timeout_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     working_dir: Option<String>,
+    // ---- http fields (ADR-0030); a secret is referenced by name, never value ----
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    headers: Vec<HeaderDoc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auth: Option<AuthDoc>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct HeaderDoc {
+    name: String,
+    value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct AuthDoc {
+    kind: String,
+    secret: String,
+}
+
+fn auth_kind_token(kind: HttpAuthKind) -> String {
+    match kind {
+        HttpAuthKind::Bearer => "bearer",
+        HttpAuthKind::Basic => "basic",
+    }
+    .to_string()
+}
+
+fn build_auth_kind(token: &str) -> HttpAuthKind {
+    match token {
+        "basic" => HttpAuthKind::Basic,
+        _ => HttpAuthKind::Bearer,
+    }
 }
 
 fn format_token(format: SourceFormat) -> String {
@@ -590,9 +626,21 @@ fn build_format(token: &str) -> SourceFormat {
 }
 
 fn connection_doc(conn: &Connection) -> ConnectionDoc {
+    let base = ConnectionDoc {
+        name: conn.name.clone(),
+        kind: String::new(),
+        program: String::new(),
+        args: Vec::new(),
+        format: String::new(),
+        json_path: None,
+        timeout_ms: 0,
+        working_dir: None,
+        url: String::new(),
+        headers: Vec::new(),
+        auth: None,
+    };
     match &conn.spec {
         ConnectionSpec::Command(cmd) => ConnectionDoc {
-            name: conn.name.clone(),
             kind: "command".to_string(),
             program: cmd.program.clone(),
             args: cmd.args.clone(),
@@ -600,16 +648,51 @@ fn connection_doc(conn: &Connection) -> ConnectionDoc {
             json_path: cmd.json_path.clone(),
             timeout_ms: cmd.timeout_ms,
             working_dir: cmd.working_dir.clone(),
+            ..base
+        },
+        ConnectionSpec::Http(http) => ConnectionDoc {
+            kind: "http".to_string(),
+            format: format_token(http.format),
+            json_path: http.json_path.clone(),
+            timeout_ms: http.timeout_ms,
+            url: http.url.clone(),
+            headers: http
+                .headers
+                .iter()
+                .map(|(name, value)| HeaderDoc {
+                    name: name.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+            auth: http.auth.as_ref().map(|a| AuthDoc {
+                kind: auth_kind_token(a.kind),
+                secret: a.secret.clone(),
+            }),
+            ..base
         },
     }
 }
 
 fn build_connection(doc: &ConnectionDoc) -> Connection {
-    // Only the command kind exists today; an unknown kind builds a command with
-    // the present fields (forward-compatible) rather than failing the load.
-    Connection {
-        name: doc.name.clone(),
-        spec: ConnectionSpec::Command(CommandSpec {
+    let spec = match doc.kind.as_str() {
+        "http" => ConnectionSpec::Http(HttpSpec {
+            url: doc.url.clone(),
+            headers: doc
+                .headers
+                .iter()
+                .map(|h| (h.name.clone(), h.value.clone()))
+                .collect(),
+            auth: doc.auth.as_ref().map(|a| HttpAuth {
+                kind: build_auth_kind(&a.kind),
+                secret: a.secret.clone(),
+            }),
+            format: build_format(&doc.format),
+            json_path: doc.json_path.clone(),
+            timeout_ms: doc.timeout_ms,
+        }),
+        // The command kind (and, forward-compatibly, any unknown kind) builds a
+        // command from the present fields rather than failing the load.
+        _ => ConnectionSpec::Command(CommandSpec {
             program: doc.program.clone(),
             args: doc.args.clone(),
             format: build_format(&doc.format),
@@ -617,6 +700,10 @@ fn build_connection(doc: &ConnectionDoc) -> Connection {
             timeout_ms: doc.timeout_ms,
             working_dir: doc.working_dir.clone(),
         }),
+    };
+    Connection {
+        name: doc.name.clone(),
+        spec,
     }
 }
 
@@ -1563,13 +1650,61 @@ mod tests {
         let text2 = model2.to_model_text().unwrap();
         assert_eq!(text1, text2, "connections must round-trip byte-identically");
         assert_eq!(model2.connections.len(), 1);
-        let ConnectionSpec::Command(cmd) = &model2.connections["py_extract"].spec;
+        let ConnectionSpec::Command(cmd) = &model2.connections["py_extract"].spec else {
+            panic!("expected a command connection");
+        };
         assert_eq!(cmd.program, "python");
         assert_eq!(cmd.args.len(), 2);
         assert_eq!(cmd.format, SourceFormat::Json);
         assert_eq!(cmd.json_path.as_deref(), Some("data.rows"));
         assert_eq!(cmd.timeout_ms, 30_000);
         assert_eq!(cmd.working_dir.as_deref(), Some("/srv/epiphany/scripts"));
+    }
+
+    #[test]
+    fn model_round_trips_http_connections() {
+        use crate::{Connection, ConnectionSpec, HttpAuth, HttpAuthKind, HttpSpec, SourceFormat};
+
+        let mut model = Model::new(sample_cube());
+        model.connections.insert(
+            "rates_api".to_string(),
+            Connection {
+                name: "rates_api".to_string(),
+                spec: ConnectionSpec::Http(HttpSpec {
+                    url: "https://api.example.com/rates.csv".to_string(),
+                    headers: vec![("Accept".to_string(), "text/csv".to_string())],
+                    auth: Some(HttpAuth {
+                        kind: HttpAuthKind::Bearer,
+                        secret: "rates_token".to_string(),
+                    }),
+                    format: SourceFormat::Csv,
+                    json_path: None,
+                    timeout_ms: 15_000,
+                }),
+            },
+        );
+
+        let text1 = model.to_model_text().unwrap();
+        // The model text references the secret by NAME, never the value (RG-13).
+        assert!(text1.contains("rates_token"));
+        let model2 = Model::from_model_text(&text1).unwrap();
+        let text2 = model2.to_model_text().unwrap();
+        assert_eq!(
+            text1, text2,
+            "http connections must round-trip byte-identically"
+        );
+        let ConnectionSpec::Http(http) = &model2.connections["rates_api"].spec else {
+            panic!("expected an http connection");
+        };
+        assert_eq!(http.url, "https://api.example.com/rates.csv");
+        assert_eq!(
+            http.headers,
+            vec![("Accept".to_string(), "text/csv".to_string())]
+        );
+        assert_eq!(http.timeout_ms, 15_000);
+        let auth = http.auth.as_ref().expect("auth");
+        assert_eq!(auth.kind, HttpAuthKind::Bearer);
+        assert_eq!(auth.secret, "rates_token");
     }
 
     #[test]

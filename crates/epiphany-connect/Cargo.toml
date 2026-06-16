@@ -10,9 +10,19 @@ description = "Epiphany: data-source connectors (run a program and read its outp
 [lints]
 workspace = true
 
+[features]
+# Optional HTTP(S) fetch connector (ADR-0030). Off by default so the lean build
+# stays dependency-light; release binaries enable it. rustls pinned to the ring
+# provider with bundled webpki roots (matches the server TLS feature; no
+# native-tls, no aws-lc-rs, builds on the GNU toolchain).
+http = ["dep:ureq"]
+
 [dependencies]
 epiphany-core = { path = "../epiphany-core" }
 # Connectors produce the same row shape flows consume, and reuse the CSV reader.
 epiphany-flow = { path = "../epiphany-flow" }
 # Parse a connector program's JSON stdout.
 serde_json = "1"
+# HTTP(S) fetch connector (feature = "http"): a blocking client over rustls
+# (ring) with bundled roots; no native-tls, no aws-lc-rs.
+ureq = { version = "2", default-features = false, features = ["tls", "gzip"], optional = true }

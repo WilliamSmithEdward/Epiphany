@@ -33,5 +33,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0027](0027-connection-preview-endpoint.md) | Connection preview endpoint (admin, gated, row-capped) | Accepted | Web UI (W4) |
 | [0028](0028-view-cache-and-parallel-aggregation.md) | Persistent view cache and deterministic parallel aggregation | Accepted | Performance |
 | [0029](0029-data-spreading.md) | Data spreading (equal, proportional, repeat, clear) | Accepted | Data entry |
+| [0030](0030-http-connector-and-secret-store.md) | HTTP fetch connector and secret store | Accepted | Connectors |
 
 > All originally-reserved ADR numbers are allocated; later decisions continue from 0020.

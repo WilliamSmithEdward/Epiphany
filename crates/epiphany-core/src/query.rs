@@ -1001,14 +1001,59 @@ pub struct CommandSpec {
     pub working_dir: Option<String>,
 }
 
-/// What a connection does. One variant for now (a command); an HTTP variant is
-/// the planned follow-on (ADR-0012). Database/ODBC ingestion is served by a
-/// command connection running the user's own client script, so the server stays
-/// a single pure-Rust binary with no database-driver dependency.
+/// The HTTP authentication scheme for an [`HttpAuth`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HttpAuthKind {
+    /// `Authorization: Bearer <secret>`.
+    Bearer,
+    /// `Authorization: Basic base64(user:password)`, the secret holding
+    /// `user:password`.
+    Basic,
+}
+
+/// How an HTTP connection authenticates (ADR-0030). `secret` names an entry in
+/// the operator's secret store; the credential value never lives in the model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpAuth {
+    /// The authentication scheme.
+    pub kind: HttpAuthKind,
+    /// The name of the secret holding the credential (a bearer token, or
+    /// `user:password` for basic). A name, never the value.
+    pub secret: String,
+}
+
+/// An HTTP(S) connection's configuration (ADR-0030): GET `url` with optional
+/// static `headers` and a referenced credential, reading the response as
+/// `format`. The capability is off by default and constrained by an operator
+/// host allowlist; credentials are referenced by name, never stored here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HttpSpec {
+    /// The absolute URL to fetch (http or https).
+    pub url: String,
+    /// Static, non-secret request headers.
+    pub headers: Vec<(String, String)>,
+    /// Optional credential, referenced by secret name.
+    pub auth: Option<HttpAuth>,
+    /// How to parse the response body into rows.
+    pub format: SourceFormat,
+    /// For JSON, a dotted path to the array of record objects; `None` means the
+    /// body is itself the array.
+    pub json_path: Option<String>,
+    /// Connect/read timeout in milliseconds (0 means the REST layer's safe
+    /// default; 0 only arises from a hand-edited model).
+    pub timeout_ms: u64,
+}
+
+/// What a connection does: run a command (ADR-0012) or fetch an HTTP(S) URL
+/// (ADR-0030). Database/ODBC ingestion is served by a command connection running
+/// the user's own client script, so the server stays a single pure-Rust binary
+/// with no database-driver dependency.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectionSpec {
     /// Run an external program and read its stdout (ADR-0012 decision 6).
     Command(CommandSpec),
+    /// Fetch an HTTP(S) URL and read the response body (ADR-0030).
+    Http(HttpSpec),
 }
 
 /// A named, admin-defined data-source connection. Flows reference it by name to

@@ -19,6 +19,9 @@ embed-ui = ["dep:rust-embed"]
 # release binaries enable it. Pure-Rust (rustls with the ring provider, rcgen for
 # self-signed generation) so the single static binary holds.
 tls = ["dep:axum-server", "dep:rustls", "dep:rcgen"]
+# Optional HTTP fetch connector (ADR-0030). Off by default; release binaries
+# enable it. Forwards to the API's http feature (ureq, rustls/ring; no aws-lc-rs).
+http = ["epiphany-api/http"]
 
 [dependencies]
 epiphany-api = { path = "../epiphany-api" }

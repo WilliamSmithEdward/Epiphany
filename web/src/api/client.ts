@@ -646,7 +646,19 @@ export async function runFlow(
 
 // ---- connections (ADR-0012) ----
 
-/** A data-source connection (command kind for now). */
+/** A static HTTP request header (ADR-0030). */
+export interface ConnectionHeaderDto {
+  name: string
+  value: string
+}
+
+/** An HTTP credential reference: scheme + the NAME of a stored secret (ADR-0030). */
+export interface ConnectionAuthDto {
+  kind: string
+  secret: string
+}
+
+/** A data-source connection: `command` (ADR-0012) or `http` (ADR-0030). */
 export interface ConnectionDto {
   name: string
   kind: string
@@ -657,6 +669,12 @@ export interface ConnectionDto {
   timeout_ms: number
   /** Optional absolute working directory the program runs in (ADR-0012 addendum). */
   working_dir?: string | null
+  /** HTTP url (kind === 'http'). */
+  url?: string
+  /** Static HTTP request headers (kind === 'http'). */
+  headers?: ConnectionHeaderDto[]
+  /** HTTP credential, referencing a secret by name (kind === 'http'). */
+  auth?: ConnectionAuthDto | null
 }
 
 /** A connection's sample output, from the wizard's "Test" button (ADR-0027). */
@@ -686,6 +704,24 @@ export async function deleteConnection(cube: string, name: string): Promise<void
 /** Run a connection and return up to 20 sample rows plus the total count. */
 export async function previewConnection(cube: string, name: string): Promise<ConnectionPreview> {
   return request<ConnectionPreview>('POST', `${connBase(cube)}/${encodeURIComponent(name)}/preview`)
+}
+
+// ---- operator secrets (ADR-0030, admin) ----
+
+/** The secret names (admin). Values are write-only and never returned. */
+export async function listSecrets(): Promise<string[]> {
+  const result = await request<{ names: string[] }>('GET', '/api/v1/secrets')
+  return result.names
+}
+
+/** Set (create or replace) a secret value (admin). The value is never echoed. */
+export async function putSecret(name: string, value: string): Promise<void> {
+  return request<void>('PUT', `/api/v1/secrets/${encodeURIComponent(name)}`, { value })
+}
+
+/** Delete a secret (admin). */
+export async function deleteSecret(name: string): Promise<void> {
+  return request<void>('DELETE', `/api/v1/secrets/${encodeURIComponent(name)}`)
 }
 
 export interface ImportRequest {

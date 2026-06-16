@@ -12,8 +12,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use epiphany_connect::run_command;
-use epiphany_core::{ConnectionSpec, ElementKind, ElementSpec, Flow, FlowTest};
+use epiphany_core::{ElementKind, ElementSpec, Flow, FlowTest};
 use epiphany_engine::CellWrite;
 use epiphany_flow::{
     parse_csv, run_flow, run_flow_tests, validate_flow, FlowError, FlowOutcome, FlowTestError,
@@ -26,6 +25,7 @@ use crate::authz::{
     audit, deny_if_element_restricted, require_cube_access, require_element_write,
     require_kind_access,
 };
+use crate::connection_routes::fetch_connection_rows;
 use crate::dto::{from_cell, to_cell, FailureDto, TestCellDto, TestOutcomeDto, TestReportDto};
 use crate::routes::{broadcast, build_write, map_batch_error, snapshot};
 use crate::{ApiError, AppState};
@@ -304,9 +304,9 @@ pub(crate) async fn run_flow_handler(
         Some(&cube),
         AccessLevel::Write,
     )?;
-    // Resolve the flow source and (if a connection is named) its command spec
-    // from one snapshot.
-    let (source, command) = {
+    // Resolve the flow source and (if a connection is named) the connection
+    // itself from one snapshot.
+    let (source, connection) = {
         let snap = snapshot(&state, &cube)?;
         let model = snap.model();
         let source = model
@@ -315,30 +315,21 @@ pub(crate) async fn run_flow_handler(
             .ok_or_else(|| ApiError::not_found(format!("unknown flow '{name}'")))?
             .source
             .clone();
-        let command = match &body.connection {
+        let connection = match &body.connection {
             Some(conn_name) => {
-                let conn = model.connections.get(conn_name).ok_or_else(|| {
+                Some(model.connections.get(conn_name).cloned().ok_or_else(|| {
                     ApiError::not_found(format!("unknown connection '{conn_name}'"))
-                })?;
-                let ConnectionSpec::Command(cmd) = &conn.spec;
-                Some(cmd.clone())
+                })?)
             }
             None => None,
         };
-        (source, command)
+        (source, connection)
     };
 
-    // Fetch input rows: from the connection (impure edge), else inline CSV.
-    let rows = match command {
-        Some(cmd) => {
-            if !state.command_connectors_enabled {
-                return Err(ApiError::forbidden(
-                    "command connectors are disabled on this server",
-                ));
-            }
-            run_command(&cmd)
-                .map_err(|e| ApiError::unprocessable("CONNECTOR_ERROR", e.to_string()))?
-        }
+    // Fetch input rows: from the connection (impure edge, with its per-kind
+    // gates applied by the shared fetcher), else inline CSV.
+    let rows = match connection {
+        Some(conn) => fetch_connection_rows(&state, &conn)?,
         None => parse_csv(&body.input)
             .map_err(|e| ApiError::unprocessable("FLOW_INPUT_ERROR", e.to_string()))?,
     };

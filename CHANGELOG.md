@@ -10,6 +10,15 @@ matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/release
 
 ### Added
 
+- **HTTP fetch connector and secret store** (ADR-0030): a flow can ingest from an
+  HTTP(S) API (CSV or JSON) in addition to a command. The capability is off by
+  default and bounded by a host allowlist (`EPIPHANY_ENABLE_HTTP_CONNECTORS`,
+  `EPIPHANY_HTTP_ALLOWED_HOSTS`); redirects are not followed (SSRF control).
+  Credentials live in an owner-only secret store, referenced by name from the
+  connection, so they never enter the model or Git; the value is write-only over
+  the API (`/api/v1/secrets`, admin) and never returned, logged, or audited.
+  Behind an `http` build feature (ureq over rustls/ring; no native-tls, no
+  aws-lc-rs).
 - **Data spreading** (ADR-0029): enter a value at a total and distribute it
   across the leaves underneath, by `equal`, `proportional`, `repeat`, or `clear`.
   Spreads are exact (the leaves sum back to the entered value) and deterministic,

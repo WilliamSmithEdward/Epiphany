@@ -28,6 +28,11 @@ use std::time::{Duration, Instant};
 use epiphany_core::{CommandSpec, SourceFormat};
 use epiphany_flow::{parse_csv, Row, MAX_CSV_ROWS};
 
+#[cfg(feature = "http")]
+mod http;
+#[cfg(feature = "http")]
+pub use http::{fetch_http, fetch_http_capped};
+
 /// Default cap on a command's captured stdout (16 MiB): output beyond this fails
 /// the run rather than risking memory exhaustion.
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
@@ -48,6 +53,10 @@ pub enum ConnectError {
     NonZeroExit { code: Option<i32>, stderr: String },
     /// The program's output could not be parsed as the configured format.
     BadOutput(String),
+    /// An HTTP transport error: DNS, connect, TLS, or read failure (ADR-0030).
+    Http(String),
+    /// The HTTP server returned a non-2xx status.
+    HttpStatus { code: u16, body: String },
 }
 
 impl std::fmt::Display for ConnectError {
@@ -75,6 +84,15 @@ impl std::fmt::Display for ConnectError {
                 }
             }
             ConnectError::BadOutput(m) => write!(f, "could not parse the program's output: {m}"),
+            ConnectError::Http(m) => write!(f, "could not fetch the URL: {m}"),
+            ConnectError::HttpStatus { code, body } => {
+                let tail = body.trim();
+                if tail.is_empty() {
+                    write!(f, "the server returned HTTP {code}")
+                } else {
+                    write!(f, "the server returned HTTP {code}: {tail}")
+                }
+            }
         }
     }
 }
@@ -185,8 +203,9 @@ fn spawn_reader(
     })
 }
 
-/// Parse a command's stdout into rows per the configured format.
-fn parse_output(
+/// Parse a connector's output text into rows per the configured format. Shared
+/// by the command connector (stdout) and the HTTP connector (response body).
+pub(crate) fn parse_output(
     text: &str,
     format: SourceFormat,
     json_path: Option<&str>,
