@@ -140,7 +140,7 @@ export default function SubsetEditor({
         </div>
       )}
 
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       <div className="actions">
         <button className="primary" disabled={saving} onClick={() => void save()}>
           Save subset

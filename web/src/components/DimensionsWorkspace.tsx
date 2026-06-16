@@ -78,7 +78,7 @@ export default function DimensionsWorkspace({ reloadSignal }: { reloadSignal: nu
   }
 
   if (!list) {
-    return <p className="banner">Loading the dimension library…</p>
+    return <p className="banner" role="status">Loading the dimension library…</p>
   }
 
   return (
@@ -92,7 +92,7 @@ export default function DimensionsWorkspace({ reloadSignal }: { reloadSignal: nu
           </Button>
         }
       >
-        {error ? <p className="error">{error}</p> : null}
+        {error ? <p className="error" role="alert">{error}</p> : null}
         {list.length === 0 ? (
           <EmptyState icon="⬡" title="No shared dimensions yet">
             Register a dimension here, then reference it when you create a cube. One edit keeps every
@@ -337,7 +337,7 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
           )}
         </section>
 
-        {error ? <p className="error">{error}</p> : null}
+        {error ? <p className="error" role="alert">{error}</p> : null}
       </div>
     </Card>
   )
@@ -434,7 +434,7 @@ function NewDimensionDialog({
           label="Add a Total"
           description="Creates a Total member that sums every member of this dimension."
         />
-        {error ? <p className="error">{error}</p> : null}
+        {error ? <p className="error" role="alert">{error}</p> : null}
       </div>
     </Dialog>
   )

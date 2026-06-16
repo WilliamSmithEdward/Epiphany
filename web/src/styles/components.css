@@ -4,6 +4,15 @@
  * mode) for free.
  */
 
+/* A consistent, high-contrast focus indicator for keyboard users on every
+ * interactive element that does not define its own (accessibility heuristic;
+ * see docs/UI_UX_GUIDELINES.md). :focus-visible keeps the ring keyboard-only, so
+ * pointer clicks stay clean. */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 /* ---- Button ---- */
 .btn {
   display: inline-flex;
@@ -923,6 +932,20 @@
 }
 .cell.calc:has(.cell-drill) {
   padding: 0;
+}
+/* Numbers read best right-aligned with tabular figures (data-table heuristic;
+   see docs/UI_UX_GUIDELINES.md). The pivot grid is numeric, so the editable
+   inputs align on the right edge to match the calculated cells (.cell-drill). */
+.cell.editable input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: none;
+  color: inherit;
 }
 
 /* ---- Jobs / Schedules workspace ---- */

@@ -121,7 +121,7 @@ function UsersTab() {
   return (
     <div>
       <h3>Users</h3>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       <table className="placements">
         <thead>
           <tr>
@@ -247,7 +247,7 @@ function GroupsTab() {
   return (
     <div>
       <h3>Groups</h3>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       {groups.length === 0 ? <p className="muted">No groups defined.</p> : null}
       <table className="placements">
         <tbody>
@@ -312,7 +312,7 @@ function RolesTab() {
         can build and run flows but cannot write cells or edit dimensions. An admin always has full
         access; absence of a grant means no access.
       </p>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       <table className="placements">
         <thead>
           <tr>
@@ -468,7 +468,7 @@ function ElementAclTab() {
         Granting any subject access to an element restricts it: everyone else (except admins) is then
         denied that member and any total that rolls it up.
       </p>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       <table className="placements">
         <thead>
           <tr>

@@ -188,7 +188,7 @@ export default function FlowsWorkspace({
           rows={14}
           errorLine={preview?.ok === false ? preview.line : null}
         />
-        {error ? <p className="error">{error}</p> : null}
+        {error ? <p className="error" role="alert">{error}</p> : null}
         <div className="actions">
           <button className="primary" disabled={saving || preview?.ok === false} onClick={() => void save()}>
             {saving ? 'Saving...' : 'Save flow'}
@@ -276,7 +276,7 @@ function RunPanel({
       ) : (
         <p className="muted">Rows are fetched from the &quot;{source}&quot; connection.</p>
       )}
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       {report ? <RunReportView report={report} /> : null}
     </section>
   )
@@ -412,7 +412,7 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
           {saving ? 'Saving...' : 'Add data source'}
         </button>
       </div>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
     </section>
   )
 }
@@ -573,7 +573,7 @@ function ImportPanel({ cube, detail }: { cube: string; detail: CubeDetail }) {
             ))}
         </div>
       ) : null}
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       {report ? <RunReportView report={report} /> : null}
     </section>
   )
@@ -620,7 +620,7 @@ function FlowTestPanel({ cube, reloadSignal }: { cube: string; reloadSignal: num
           {running ? 'Running...' : 'Run tests'}
         </button>
       </div>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       {report ? <TestReport report={report} /> : null}
     </section>
   )

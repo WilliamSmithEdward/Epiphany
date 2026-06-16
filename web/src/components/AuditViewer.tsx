@@ -50,7 +50,7 @@ export default function AuditViewer() {
   return (
     <div>
       <h3>Audit log</h3>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       <div className="field-row">
         <label>
           Actor

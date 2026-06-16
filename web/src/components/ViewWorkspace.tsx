@@ -185,7 +185,7 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
     [detail, editorDim],
   )
 
-  if (!detail) return <p className="banner">Loading {cube}...</p>
+  if (!detail) return <p className="banner" role="status">Loading {cube}...</p>
 
   return (
     <div className="workspace">
@@ -236,7 +236,7 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
             busy={busy}
           />
         )}
-        {error ? <p className="error">{error}</p> : null}
+        {error ? <p className="error" role="alert">{error}</p> : null}
         {cellset ? (
           <>
             {cellset.suppressed.row_tuples > 0 || cellset.suppressed.column_tuples > 0 ? (

@@ -183,7 +183,7 @@ function FeederPanel({ cube, reloadSignal }: { cube: string; reloadSignal: numbe
           {loading ? 'Checking...' : 'Recheck'}
         </button>
       </div>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       {report ? (
         <div className="feeder-report">
           <p>
@@ -307,7 +307,7 @@ function ExplainPanel({
           </label>
         ))}
       </div>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       {trace ? (
         <div className="trace">
           <TraceNode node={trace} />
@@ -389,7 +389,7 @@ function TestPanel({ cube, reloadSignal }: { cube: string; reloadSignal: number 
           {running ? 'Running...' : 'Run tests'}
         </button>
       </div>
-      {error ? <p className="error">{error}</p> : null}
+      {error ? <p className="error" role="alert">{error}</p> : null}
       {report ? <TestReport report={report} /> : null}
     </section>
   )

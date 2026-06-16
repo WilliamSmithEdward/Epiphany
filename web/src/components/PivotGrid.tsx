@@ -152,7 +152,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
   }, [])
 
   if (!detail) {
-    return <p className="banner">Loading {cube}…</p>
+    return <p className="banner" role="status">Loading {cube}…</p>
   }
 
   const rowMembers = detail.dimensions.find((d) => d.name === rowDim)?.elements ?? []

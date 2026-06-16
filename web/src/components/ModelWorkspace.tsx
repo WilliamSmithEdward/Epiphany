@@ -76,7 +76,7 @@ export default function ModelWorkspace({
   )
 
   if (!detail) {
-    return <p className="banner">Loading {cube}…</p>
+    return <p className="banner" role="status">Loading {cube}…</p>
   }
 
   return (
@@ -92,7 +92,7 @@ export default function ModelWorkspace({
           ) : undefined
         }
       >
-        {error ? <p className="error">{error}</p> : null}
+        {error ? <p className="error" role="alert">{error}</p> : null}
         <div className="model-dims">
           {detail.dimensions.map((d) => (
             <button
@@ -408,7 +408,7 @@ function DimensionEditor({
           ) : null}
         </section>
 
-        {error ? <p className="error">{error}</p> : null}
+        {error ? <p className="error" role="alert">{error}</p> : null}
       </div>
     </Card>
   )
@@ -616,7 +616,7 @@ function NewCubeDialog({
           </Button>
         </div>
 
-        {error ? <p className="error">{error}</p> : null}
+        {error ? <p className="error" role="alert">{error}</p> : null}
       </div>
     </Dialog>
   )

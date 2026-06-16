@@ -354,7 +354,7 @@ export default function JobsWorkspace({
               description="When off, the schedule is kept but will not fire automatically."
             />
 
-            {error ? <p className="error">{error}</p> : null}
+            {error ? <p className="error" role="alert">{error}</p> : null}
             <div className="actions">
               <Button variant="primary" disabled={busy} onClick={() => void save()}>
                 {busy ? 'Saving…' : selected ? 'Save changes' : 'Create schedule'}
