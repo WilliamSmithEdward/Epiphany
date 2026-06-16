@@ -403,7 +403,84 @@ pub struct Cellset {
     pub suppressed_column_tuples: Vec<Vec<String>>,
 }
 
-/// Execute a view over a cube into a [`Cellset`].
+/// How the cellset value grid is computed: serial, or in parallel across
+/// independent output cells (ADR-0028 Stage B).
+///
+/// Parallelism is over whole output cells, never within a cell's reduction, so
+/// the result is bit-identical regardless of worker count or scheduling: cell
+/// `(r, c)` always writes only its own slot and the within-cell reduction order
+/// is unchanged. Small reads stay serial (below `threshold`), so the common case
+/// is untouched.
+#[derive(Clone, Copy, Debug)]
+pub struct Parallelism {
+    max_workers: usize,
+    threshold: usize,
+}
+
+impl Parallelism {
+    /// Parallelize large reads across the available cores (capped), leaving small
+    /// reads serial. The default used by [`execute_view`].
+    pub fn auto() -> Self {
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        Self {
+            max_workers: cores.min(8),
+            threshold: 1024,
+        }
+    }
+
+    /// Always serial (one worker). Used by callers that must not spawn threads
+    /// and as the determinism-test baseline.
+    pub fn serial() -> Self {
+        Self {
+            max_workers: 1,
+            threshold: usize::MAX,
+        }
+    }
+
+    /// Force `workers` workers regardless of size (testing/benchmarks). One worker
+    /// is serial.
+    pub fn forced(workers: usize) -> Self {
+        Self {
+            max_workers: workers.max(1),
+            threshold: 0,
+        }
+    }
+
+    /// The worker count to use for a grid of `total` cells (1 = serial).
+    fn workers_for(&self, total: usize) -> usize {
+        if self.max_workers <= 1 || total == 0 || total < self.threshold {
+            1
+        } else {
+            self.max_workers.min(total)
+        }
+    }
+}
+
+/// Execute a view over a cube into a [`Cellset`], filling the value grid with the
+/// default [`Parallelism::auto`] policy. See [`execute_view_with`].
+pub fn execute_view<'a>(
+    cube: &Cube,
+    view: &View,
+    cells: &(dyn CellResolver + Sync),
+    subset_lookup: &dyn Fn(&str, &str) -> Option<&'a Subset>,
+    eval: &dyn SetEvaluator,
+    mask: Option<&crate::ElementMask>,
+) -> Result<Cellset, QueryError> {
+    execute_view_with(
+        cube,
+        view,
+        cells,
+        subset_lookup,
+        eval,
+        mask,
+        Parallelism::auto(),
+    )
+}
+
+/// Execute a view over a cube into a [`Cellset`] with an explicit parallelism
+/// policy.
 ///
 /// `cells` is the value seam: cell values are read through it, so a
 /// [`StoredCells`] reads exactly today's stored consolidation while a rule-aware
@@ -413,14 +490,17 @@ pub struct Cellset {
 /// resolves each axis to crossjoined member tuples, reads consolidation-aware
 /// values via `cells`, then applies zero-suppression (rows first, then columns)
 /// preserving order. An axis or suppression that yields zero tuples is a valid
-/// empty result, not an error.
-pub fn execute_view<'a>(
+/// empty result, not an error. `cells` is `Sync` because the value grid may be
+/// filled from several threads (`par`); the resolver is only ever read, never
+/// mutated, across them.
+pub fn execute_view_with<'a>(
     cube: &Cube,
     view: &View,
-    cells: &dyn CellResolver,
+    cells: &(dyn CellResolver + Sync),
     subset_lookup: &dyn Fn(&str, &str) -> Option<&'a Subset>,
     eval: &dyn SetEvaluator,
     mask: Option<&crate::ElementMask>,
+    par: Parallelism,
 ) -> Result<Cellset, QueryError> {
     validate_coverage(cube, view)?;
 
@@ -482,36 +562,55 @@ pub fn execute_view<'a>(
         });
     }
 
-    // Dense value matrix over all (row, column) tuples.
+    // Dense value grid over all (row, column) tuples, row-major. Each output cell
+    // is computed independently, so the grid can be filled in parallel across
+    // disjoint row bands without changing the result (ADR-0028 Stage B): cell
+    // (r, c) only ever writes its own slot `r * ncols + c`, so completion order is
+    // irrelevant, and the within-cell reduction order is unchanged.
     let nrows = row_tuples_idx.len();
     let ncols = column_tuples_idx.len();
-    let mut matrix: Vec<Vec<Fixed>> = Vec::with_capacity(nrows);
-    for row in &row_tuples_idx {
-        let mut line = Vec::with_capacity(ncols);
-        for col in &column_tuples_idx {
-            let mut coord = base_coord.clone();
-            for (k, &idx) in row.iter().enumerate() {
-                coord[row_ci[k]] = idx;
-            }
-            for (k, &idx) in col.iter().enumerate() {
-                coord[col_ci[k]] = idx;
-            }
-            line.push(cells.value(&coord)?);
+    let total = nrows * ncols;
+
+    // Compute one cell's full coordinate into `scratch` and read its value. Reads
+    // only (no shared mutation), so it is safe to call from several threads.
+    let cell_at = |r: usize, c: usize, scratch: &mut Vec<u32>| -> Result<Fixed, QueryError> {
+        scratch.clear();
+        scratch.extend_from_slice(&base_coord);
+        for (k, &idx) in row_tuples_idx[r].iter().enumerate() {
+            scratch[row_ci[k]] = idx;
         }
-        matrix.push(line);
-    }
+        for (k, &idx) in column_tuples_idx[c].iter().enumerate() {
+            scratch[col_ci[k]] = idx;
+        }
+        cells.value(scratch)
+    };
+
+    let grid: Vec<Fixed> = match par.workers_for(total) {
+        workers if workers > 1 => fill_grid_parallel(nrows, ncols, workers, &cell_at)?,
+        _ => {
+            let mut grid = Vec::with_capacity(total);
+            let mut scratch = Vec::with_capacity(cube.rank());
+            for r in 0..nrows {
+                for c in 0..ncols {
+                    grid.push(cell_at(r, c, &mut scratch)?);
+                }
+            }
+            grid
+        }
+    };
+    let at = |r: usize, c: usize| grid[r * ncols + c];
 
     // Zero-suppression: rows first, then columns over the surviving rows. Only
     // meaningful when both axes are non-empty (otherwise there are no cells).
     let suppress = view.suppress_zeros && nrows > 0 && ncols > 0;
     let (keep_rows, supp_rows): (Vec<usize>, Vec<usize>) = if suppress {
-        (0..nrows).partition(|&r| (0..ncols).any(|c| !matrix[r][c].is_zero()))
+        (0..nrows).partition(|&r| (0..ncols).any(|c| !at(r, c).is_zero()))
     } else {
         ((0..nrows).collect(), Vec::new())
     };
     let suppress_cols = suppress && !keep_rows.is_empty();
     let (keep_cols, supp_cols): (Vec<usize>, Vec<usize>) = if suppress_cols {
-        (0..ncols).partition(|&c| keep_rows.iter().any(|&r| !matrix[r][c].is_zero()))
+        (0..ncols).partition(|&c| keep_rows.iter().any(|&r| !at(r, c).is_zero()))
     } else {
         ((0..ncols).collect(), Vec::new())
     };
@@ -519,7 +618,7 @@ pub fn execute_view<'a>(
     let mut cells = Vec::with_capacity(keep_rows.len() * keep_cols.len());
     for &r in &keep_rows {
         for &c in &keep_cols {
-            cells.push(matrix[r][c]);
+            cells.push(at(r, c));
         }
     }
 
@@ -546,6 +645,76 @@ pub fn execute_view<'a>(
         context: view.context.clone(),
         cells,
     })
+}
+
+/// Fill the dense `nrows x ncols` value grid (row-major) across `workers` scoped
+/// threads, each owning a disjoint contiguous band of rows (ADR-0028 Stage B).
+///
+/// Determinism: thread `k` writes only the slots in its band, so the assembled
+/// grid is bit-identical to the serial fill regardless of worker count or
+/// scheduling. There is no shared mutable state and no randomness in the parallel
+/// region; `cell_at` only reads. An error is reported deterministically as the
+/// failing cell with the lowest row-major ordinal, matching the serial path's
+/// first-error semantics.
+fn fill_grid_parallel<F>(
+    nrows: usize,
+    ncols: usize,
+    workers: usize,
+    cell_at: &F,
+) -> Result<Vec<Fixed>, QueryError>
+where
+    F: Fn(usize, usize, &mut Vec<u32>) -> Result<Fixed, QueryError> + Sync,
+{
+    let total = nrows * ncols;
+    let mut grid = vec![Fixed::ZERO; total];
+    let rows_per = nrows.div_ceil(workers);
+    let band_cells = (rows_per * ncols).max(1);
+
+    let band_errors: Vec<Option<(usize, QueryError)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = grid
+            .chunks_mut(band_cells)
+            .enumerate()
+            .map(|(band, chunk)| {
+                let r0 = band * rows_per;
+                scope.spawn(move || {
+                    let mut scratch: Vec<u32> = Vec::new();
+                    let mut first: Option<(usize, QueryError)> = None;
+                    let band_rows = chunk.len() / ncols;
+                    for rr in 0..band_rows {
+                        let r = r0 + rr;
+                        for c in 0..ncols {
+                            match cell_at(r, c, &mut scratch) {
+                                Ok(v) => chunk[rr * ncols + c] = v,
+                                Err(e) => {
+                                    let ord = r * ncols + c;
+                                    if first.as_ref().is_none_or(|(o, _)| ord < *o) {
+                                        first = Some((ord, e));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    first
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|h| h.join().expect("view aggregation worker panicked"))
+            .collect()
+    });
+
+    // The deterministic error is the failing cell with the lowest ordinal.
+    let mut lowest: Option<(usize, QueryError)> = None;
+    for err in band_errors.into_iter().flatten() {
+        if lowest.as_ref().is_none_or(|(o, _)| err.0 < *o) {
+            lowest = Some(err);
+        }
+    }
+    if let Some((_, e)) = lowest {
+        return Err(e);
+    }
+    Ok(grid)
 }
 
 /// Structurally validate a view against a model without executing it.
@@ -983,7 +1152,7 @@ impl Model {
     pub fn execute(
         &self,
         view: &View,
-        cells: &dyn CellResolver,
+        cells: &(dyn CellResolver + Sync),
         eval: &dyn SetEvaluator,
         mask: Option<&crate::ElementMask>,
     ) -> Result<Cellset, QueryError> {
@@ -1227,6 +1396,66 @@ mod tests {
             .unwrap(),
             cs
         );
+    }
+
+    #[test]
+    fn parallel_aggregation_matches_serial_bit_for_bit() {
+        // A grid with consolidations on both axes (rollups, so the parallel path
+        // does real aggregation work), tested with and without zero-suppression.
+        let cube = sales_cube();
+        for suppress in [false, true] {
+            let v = view(
+                vec![
+                    members("Region", &["North", "South", "Total"]),
+                    members("Product", &["Widget", "Gadget", "All"]),
+                ],
+                vec![members("Measure", &["Sales", "Cost", "Margin"])],
+                &[],
+                suppress,
+            );
+            let serial = execute_view_with(
+                &cube,
+                &v,
+                &StoredCells(&cube),
+                &no_subsets,
+                &NoSetEvaluator,
+                None,
+                Parallelism::serial(),
+            )
+            .unwrap();
+            // Non-power-of-two worker counts expose row-band boundary bugs.
+            for workers in [2usize, 3, 5, 7] {
+                let par = execute_view_with(
+                    &cube,
+                    &v,
+                    &StoredCells(&cube),
+                    &no_subsets,
+                    &NoSetEvaluator,
+                    None,
+                    Parallelism::forced(workers),
+                )
+                .unwrap();
+                assert_eq!(
+                    par, serial,
+                    "parallel ({workers} workers, suppress={suppress}) must equal serial"
+                );
+            }
+            // Repeat-run stability: many runs at a fixed worker count are identical
+            // (guards against a latent shared-state race a single compare may miss).
+            for _ in 0..25 {
+                let again = execute_view_with(
+                    &cube,
+                    &v,
+                    &StoredCells(&cube),
+                    &no_subsets,
+                    &NoSetEvaluator,
+                    None,
+                    Parallelism::forced(4),
+                )
+                .unwrap();
+                assert_eq!(again, serial, "repeat parallel run drifted");
+            }
+        }
     }
 
     #[test]

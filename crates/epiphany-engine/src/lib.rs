@@ -1133,8 +1133,10 @@ impl Engine {
 /// server injects a rule-aware factory that overlays calc. The returned resolver
 /// owns its snapshot, so it is independent of any borrow.
 pub trait CellResolverFactory: Send + Sync {
-    /// Build a value resolver bound to a pinned snapshot.
-    fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver>;
+    /// Build a value resolver bound to a pinned snapshot. The resolver is `Sync`
+    /// so a view's value grid may be filled from several threads (ADR-0028
+    /// Stage B); it is only ever read across them, never mutated.
+    fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver + Sync>;
 
     /// Build a resolver that overlays a sandbox's what-if values beneath the
     /// rules (ADR-0014) and enforces a caller's element deny mask (ADR-0015): a
@@ -1148,7 +1150,7 @@ pub trait CellResolverFactory: Send + Sync {
         snapshot: &ReadSnapshot,
         sandbox: Option<&epiphany_core::Sandbox>,
         mask: Option<&ElementMask>,
-    ) -> Box<dyn CellResolver> {
+    ) -> Box<dyn CellResolver + Sync> {
         let _ = (sandbox, mask);
         self.resolver(snapshot)
     }
@@ -1160,7 +1162,7 @@ pub trait CellResolverFactory: Send + Sync {
 pub struct StoredCellsFactory;
 
 impl CellResolverFactory for StoredCellsFactory {
-    fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver> {
+    fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver + Sync> {
         Box::new(StoredResolver {
             snapshot: snapshot.clone(),
             mask: None,
@@ -1177,7 +1179,7 @@ impl CellResolverFactory for StoredCellsFactory {
         snapshot: &ReadSnapshot,
         sandbox: Option<&epiphany_core::Sandbox>,
         mask: Option<&ElementMask>,
-    ) -> Box<dyn CellResolver> {
+    ) -> Box<dyn CellResolver + Sync> {
         let _ = sandbox;
         Box::new(StoredResolver {
             snapshot: snapshot.clone(),

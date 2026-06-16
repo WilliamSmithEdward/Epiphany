@@ -211,7 +211,7 @@ impl CalcFactory {
 }
 
 impl CellResolverFactory for CalcFactory {
-    fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver> {
+    fn resolver(&self, snapshot: &ReadSnapshot) -> Box<dyn CellResolver + Sync> {
         self.resolver_with(snapshot, None, None)
     }
 
@@ -220,7 +220,7 @@ impl CellResolverFactory for CalcFactory {
         snapshot: &ReadSnapshot,
         sandbox: Option<&Sandbox>,
         mask: Option<&ElementMask>,
-    ) -> Box<dyn CellResolver> {
+    ) -> Box<dyn CellResolver + Sync> {
         let registry = PinnedRegistry::build(&self.engine);
         let target = registry.ordinal_of(snapshot.cube().name()).unwrap_or(0);
         // The overlay covers the target cube's leaves only (ADR-0014).

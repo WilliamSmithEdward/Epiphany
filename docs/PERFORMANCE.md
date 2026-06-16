@@ -44,11 +44,17 @@ build on the GNU toolchain and add no dependencies.
 | Bulk-load | about 13 M cells/sec/core (100k cells) | ~1 M/sec/core |
 | Point read (`get_leaf`) | about 37 ns/op | sub-microsecond |
 | Cold consolidated read (scans 100k cells) | about 10 ms/call | p99 < ~1000 ms |
+| Cold consolidated view, serial (40k-cell all-Total crossjoin) | about 454 ms/call | p99 < ~1000 ms |
+| Same view, parallel aggregation (14 cores, ADR-0028) | about 72 ms/call (6.3x) | p99 < ~1000 ms |
+| Repeat view read (cached, ADR-0028) | a refcount bump plus the DTO transform | p99 < ~100 ms |
 | Reconcile due-scan | 2000 jobs against a 1000-run ledger in about 11 ms/tick | cheap relative to the tick period (default 1 s) |
 
 Bulk-load clears the budget by an order of magnitude, the cold consolidation is
 roughly 100x under the latency budget, and bytes-per-cell is within budget and
-CI-enforced.
+CI-enforced. View execution adds a persistent cache for repeat reads and parallel
+aggregation for large cold reads (both ADR-0028); the serial path already meets
+the cold budget, and parallelism (gated above 1024 cells) cuts large cold reads
+several-fold on a multicore host.
 
 ## Notes and known scaling characteristics
 
@@ -57,7 +63,15 @@ CI-enforced.
   expected scale (tens to hundreds of jobs); a per-job `last_fired` index is a
   deferred optimization if a deployment ever runs thousands of jobs at a sub-second
   tick.
-- Parallel aggregation and a persistent view cache remain deferred (ROADMAP
-  section 13); the architecture allows them and they are to be promoted only if
-  benchmarks on representative models demand it. Current single-threaded
-  consolidation already meets the cold-query budget on the representative fixture.
+- Parallel aggregation and a persistent view cache are implemented (ADR-0028).
+  The view cache (`epiphany-api`, bounded and version-keyed) serves repeat reads
+  of an identical view between writes; it is keyed losslessly on cube version,
+  view shape, sandbox scope, and the caller's element-deny set, so it never serves
+  a stale or cross-principal result. Parallel aggregation (`execute_view_with`,
+  `epiphany-core`) fills the cellset grid across `std::thread::scope` workers, one
+  per disjoint row band, above a 1024-cell threshold; it is determinism-safe by
+  construction (each output cell writes only its own slot, the within-cell
+  reduction order is unchanged) and proven bit-identical to the serial path by a
+  serial-vs-parallel equality test across worker counts. The `view_exec`
+  benchmark measures both. Configure the cache cap with `EPIPHANY_VIEW_CACHE_ENTRIES`
+  (default 256; 0 disables).

@@ -458,8 +458,8 @@ Consciously cut from the core to keep the program deep, not wide. Recorded here 
 
 **Model and calc**
 - **Multiple named hierarchies per dimension.** Alternate rollups within one hierarchy *are* in scope; separate named hierarchies are not. *Revisit if alternate rollups prove insufficient.*
-- **A persistent cross-query view or calculation cache.** In-query memoization is in scope. *Likely promoted early given the performance mandate; the architecture must not preclude it. Benchmark-gated.*
-- **Multi-threaded or parallel query execution.** *Likely promoted early given the performance mandate; data structures (immutable snapshots, a shardable index) are chosen to allow it. Benchmark-gated.*
+- ~~**A persistent cross-query view or calculation cache.**~~ **Promoted and shipped (ADR-0028 Stage A):** a bounded, version-keyed view cache serves repeat reads; keyed losslessly on cube version, view shape, sandbox scope, and element-deny set so it never serves a stale or cross-principal result.
+- ~~**Multi-threaded or parallel query execution.**~~ **Promoted and shipped (ADR-0028 Stage B):** deterministic parallel aggregation fills the cellset grid across scoped threads (one per row band) above a cell-count threshold, proven bit-identical to the serial path; benchmark-gated, several-fold speedup on large cold reads.
 
 **Data entry**
 - **Data spreading** (all methods: equal, proportional, repeat, percent change, relational, holds, and so on).

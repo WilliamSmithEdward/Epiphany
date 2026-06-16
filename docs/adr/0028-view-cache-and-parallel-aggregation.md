@@ -147,11 +147,13 @@ backbone (the MVCC version as the linearization point).
     `min(available_parallelism, ceil(ncells / threshold), cap)`. The worker
     count cannot change the result (decision 8), which the determinism test pins.
 
-11. **Threshold.** Parallelize only when `ncells >= CELL_THRESHOLD` (initial
-    1024) AND the view has at least one consolidated coordinate (pure-leaf reads
-    hit a cheap fast path and stay serial). Below threshold the code path is
-    byte-identical to today. This bounds Stage B's blast radius to large cold
-    consolidations.
+11. **Threshold.** Parallelize only when the grid has at least `CELL_THRESHOLD`
+    cells (initial 1024); below that the serial loop runs and the result is
+    byte-identical to today. The threshold is on cell count alone (a large
+    pure-leaf grid parallelizes harmlessly: each `value` is cheap and the result
+    is still identical), which keeps the gate simple and the common small read
+    untouched. The policy is a `Parallelism` value (`auto`, `serial`, or
+    `forced(n)` for tests/benches); `execute_view` uses `auto`.
 
 12. **Determinism is proven, not assumed.** A test computes a battery of
     generated cubes/views serially and in parallel at worker counts {1, 2, 3, 7}
@@ -234,3 +236,17 @@ backbone (the MVCC version as the linearization point).
   read-after-write test, the cached-hit timing test, and the speedup benchmark
   together validate the decision. PERFORMANCE.md and ROADMAP section 13 are
   updated with the observed numbers and the Stage B gate outcome.
+
+### Outcome (both stages shipped)
+
+The `view_exec` benchmark on the development machine (release, 14 cores) showed
+serial cold view execution well within the section-8 budget even on a pathological
+all-consolidated crossjoin (about 454 ms for a 40k-cell grid, p99 budget 1 s), so
+the cache (Stage A) is the primary win for repeat reads. Stage B was still
+warranted for cold large reads, which the cache cannot accelerate: parallel
+aggregation cut a 16.6k-cell consolidated view from about 139 ms to 20 ms (6.9x),
+a 40k-cell view from about 454 ms to 72 ms (6.3x), and a 4-dimensional view 4.5x,
+while small views (below the 1024-cell threshold) stay serial with no measurable
+overhead (1.0x). The serial-vs-parallel equality test confirms bit-identical
+results across worker counts {2, 3, 5, 7} and across repeated runs, so the speedup
+costs no determinism. Both stages shipped.

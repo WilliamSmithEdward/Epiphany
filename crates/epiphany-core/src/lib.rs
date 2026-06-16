@@ -24,10 +24,11 @@ pub use dimension::{AttributeDef, AttributeKind, AttributeValue, Dimension, Elem
 pub use element_mask::ElementMask;
 pub use error::ModelError;
 pub use query::{
-    execute_view, resolve_subset, validate_subset, validate_view, Axis, AxisSpec, CellResolver,
-    CellTrace, Cellset, CommandSpec, Connection, ConnectionSpec, ExplainDepth, Flow, FlowTest, Job,
-    Model, NoSetEvaluator, QueryError, RuleSet, RuleTest, Sandbox, SetEvaluator, SourceFormat,
-    StoredCells, Subset, SubsetKind, TestCell, TraceKind, Trigger, View, Visibility,
+    execute_view, execute_view_with, resolve_subset, validate_subset, validate_view, Axis,
+    AxisSpec, CellResolver, CellTrace, Cellset, CommandSpec, Connection, ConnectionSpec,
+    ExplainDepth, Flow, FlowTest, Job, Model, NoSetEvaluator, Parallelism, QueryError, RuleSet,
+    RuleTest, Sandbox, SetEvaluator, SourceFormat, StoredCells, Subset, SubsetKind, TestCell,
+    TraceKind, Trigger, View, Visibility,
 };
 pub use text::{LoadError, SaveError};
 pub use value::{Fixed, SCALE, SCALE_DECIMALS};
