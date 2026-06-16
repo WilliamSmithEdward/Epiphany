@@ -90,6 +90,36 @@ least privilege.
 (WinSW or NSSM still work if you prefer an external supervisor, but are no longer
 required.)
 
+## Encryption at rest (ADR-0025)
+
+Epiphany does not encrypt its on-disk artifacts itself; encrypting the storage
+beneath the data directory is the operator's responsibility, and is the
+recommended posture (ADR-0025). On-disk secret files are created owner-only
+(`0600`) on Unix as defense in depth, but file permissions are not encryption.
+
+**Threat model.** Anyone who can read `<data_dir>` directly bypasses the server's
+authentication: another local user, a backup or snapshot system, a cloud volume
+snapshot, or a lost/stolen disk. The data directory holds the cube model
+(business data), the security store (password hashes only), the audit log, and
+the run ledger.
+
+**Recommended baseline.**
+
+- **Self-hosted:** put `<data_dir>` on an encrypted filesystem or volume -
+  BitLocker (Windows), LUKS/dm-crypt (Linux), or FileVault (macOS). This covers
+  every artifact plus temp files and OS swap, with mature key management, and
+  needs no application involvement.
+- **Cloud:** use an encrypted volume (for example an encrypted block-storage
+  volume) for the data directory; key it with the platform's key-management
+  service.
+- **Containers:** back the data volume with host-level or orchestrator-level
+  encryption; where a secrets manager / vault is in use, mount the data directory
+  on a volume keyed by it rather than handling keys in the application.
+
+There is deliberately no in-binary cipher: it would add a crypto dependency and a
+key-management/rotation/recovery surface, break the single-binary property, and
+still not cover temp files or swap, which the storage layer handles better.
+
 ## Notes
 
 - Put a reverse proxy (or `EPIPHANY_TLS`) in front for public exposure; the
