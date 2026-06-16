@@ -324,6 +324,10 @@ pub fn build_router(state: AppState) -> Router {
                 .put(connection_routes::put_connection)
                 .delete(connection_routes::delete_connection),
         )
+        .route(
+            "/api/v1/cubes/{cube}/connections/{name}/preview",
+            post(connection_routes::preview_connection),
+        )
         // Sandboxes (per-user what-if overlays, ADR-0014). Data endpoints select
         // one with the X-Epiphany-Sandbox header; lifecycle is by path here.
         .route(
@@ -363,6 +367,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/acl/grants",
             get(security_routes::list_grants).put(security_routes::put_grant),
         )
+        .route("/api/v1/runs", get(job_routes::list_all_runs))
         .route("/api/v1/audit", get(security_routes::query_audit))
         .route("/api/v1/ws", get(ws::ws))
         .route("/api/v1/auth/me", get(auth::me))

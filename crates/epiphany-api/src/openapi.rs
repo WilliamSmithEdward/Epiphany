@@ -453,6 +453,16 @@ fn document() -> Value {
                     "responses": { "204": { "description": "Deleted" } }
                 }
             },
+            "/api/v1/cubes/{cube}/connections/{name}/preview": { "post": {
+                "summary": "Run a connection and return sample rows (Connection:Write; command opt-in; ADR-0027)",
+                "security": bearer(),
+                "parameters": [cube_param(), name_param()],
+                "responses": {
+                    "200": { "description": "Up to 20 sample rows plus the total row count" },
+                    "403": { "description": "Lacks Connection:Write, or command connectors disabled", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+                    "422": { "description": "The program failed or its output did not parse", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
+            }},
             "/api/v1/cubes/{cube}/sandboxes": {
                 "get": {
                     "summary": "The caller's what-if sandboxes (admin sees all)", "security": bearer(),
@@ -562,6 +572,13 @@ fn document() -> Value {
                     "responses": { "204": { "description": "Applied" } }
                 }
             },
+            "/api/v1/runs": { "get": {
+                "summary": "Recent runs across all cubes (admin)", "security": bearer(),
+                "parameters": [
+                    { "name": "limit", "in": "query", "required": false, "schema": { "type": "integer" }, "description": "Default 50, max 500" }
+                ],
+                "responses": ok("Recent runs, newest first")
+            }},
             "/api/v1/audit": { "get": {
                 "summary": "Query the audit log (admin)", "security": bearer(),
                 "parameters": [
@@ -872,6 +889,7 @@ mod tests {
         "/api/v1/cubes/{cube}/runs/{id}",
         "/api/v1/cubes/{cube}/connections",
         "/api/v1/cubes/{cube}/connections/{name}",
+        "/api/v1/cubes/{cube}/connections/{name}/preview",
         "/api/v1/cubes/{cube}/sandboxes",
         "/api/v1/cubes/{cube}/sandboxes/{name}",
         "/api/v1/cubes/{cube}/sandboxes/{name}/commit",
@@ -882,6 +900,7 @@ mod tests {
         "/api/v1/groups/{name}",
         "/api/v1/acl/elements",
         "/api/v1/acl/grants",
+        "/api/v1/runs",
         "/api/v1/audit",
     ];
 

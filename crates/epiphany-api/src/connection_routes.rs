@@ -283,3 +283,73 @@ pub(crate) async fn delete_connection(
     });
     Ok(StatusCode::NO_CONTENT)
 }
+
+/// The first rows a connection emits, for the wizard's "Test connection" button.
+#[derive(Serialize)]
+pub(crate) struct ConnectionPreviewDto {
+    /// Column names, taken from the first row's keys (in order).
+    columns: Vec<String>,
+    /// Up to `PREVIEW_ROW_LIMIT` sample rows, each aligned to `columns`.
+    rows: Vec<Vec<String>>,
+    /// Total rows the connection produced (may exceed the sample shown).
+    row_count: usize,
+}
+
+/// How many rows the preview returns; the rest are counted but not sent.
+const PREVIEW_ROW_LIMIT: usize = 20;
+
+/// `POST /cubes/{cube}/connections/{name}/preview` -> run the connection and
+/// return a small sample of its parsed rows (ADR-0027). Requires `Connection:Write`
+/// and the command-connector enable flag; never stages a model change.
+pub(crate) async fn preview_connection(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Path((cube, name)): Path<(String, String)>,
+) -> Result<Json<ConnectionPreviewDto>, ApiError> {
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Connection,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
+    // Running a program is host code execution: require the server opt-in.
+    if !state.command_connectors_enabled {
+        return Err(ApiError::forbidden(
+            "command connectors are disabled on this server (set EPIPHANY_ENABLE_COMMAND_CONNECTORS)",
+        ));
+    }
+    let cmd = {
+        let snap = snapshot(&state, &cube)?;
+        let conn = snap
+            .model()
+            .connections
+            .get(&name)
+            .ok_or_else(|| ApiError::not_found(format!("unknown connection '{name}'")))?;
+        let ConnectionSpec::Command(cmd) = &conn.spec;
+        cmd.clone()
+    };
+    let rows = epiphany_connect::run_command(&cmd)
+        .map_err(|e| ApiError::unprocessable("CONNECTOR_ERROR", e.to_string()))?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&connection_ref(&cube, &name)),
+        true,
+    );
+    let columns: Vec<String> = rows
+        .first()
+        .map(|r| r.iter().map(|(k, _)| k.clone()).collect())
+        .unwrap_or_default();
+    let sample: Vec<Vec<String>> = rows
+        .iter()
+        .take(PREVIEW_ROW_LIMIT)
+        .map(|r| r.iter().map(|(_, v)| v.clone()).collect())
+        .collect();
+    Ok(Json(ConnectionPreviewDto {
+        columns,
+        rows: sample,
+        row_count: rows.len(),
+    }))
+}

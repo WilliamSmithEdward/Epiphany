@@ -140,6 +140,7 @@ async fn non_admin_is_forbidden_from_every_admin_route() {
             Some(json!({ "username": "x", "password": "pw" })),
         ),
         ("GET", "/api/v1/groups", None),
+        ("GET", "/api/v1/runs", None),
         ("GET", "/api/v1/acl/elements", None),
         ("GET", "/api/v1/acl/grants", None),
         (

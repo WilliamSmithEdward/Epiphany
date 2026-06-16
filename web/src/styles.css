@@ -764,3 +764,20 @@ table.pivot th.rowhead {
   background: var(--color-surface, #fff);
   color: var(--color-text);
 }
+
+.conn-preview {
+  margin: 0.4rem 0 0.6rem;
+}
+.conn-preview-table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+.conn-preview-table th,
+.conn-preview-table td {
+  border: 1px solid var(--color-border, var(--line));
+  padding: 0.15rem 0.4rem;
+  text-align: left;
+}
+.conn-preview-table th {
+  background: var(--color-surface-2, transparent);
+}

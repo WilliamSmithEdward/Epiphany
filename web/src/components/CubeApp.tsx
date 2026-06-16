@@ -8,6 +8,7 @@ import PivotGrid from './PivotGrid'
 import RulesWorkspace from './RulesWorkspace'
 import SandboxBar from './SandboxBar'
 import SecurityWorkspace from './SecurityWorkspace'
+import ServerOverview from './ServerOverview'
 import ViewWorkspace from './ViewWorkspace'
 import {
   Badge,
@@ -25,7 +26,16 @@ import {
   type Command,
 } from '../ui'
 
-type Section = 'data' | 'model' | 'dimensions' | 'views' | 'rules' | 'flows' | 'jobs' | 'admin'
+type Section =
+  | 'data'
+  | 'model'
+  | 'dimensions'
+  | 'views'
+  | 'rules'
+  | 'flows'
+  | 'jobs'
+  | 'overview'
+  | 'admin'
 
 interface NavItem {
   id: Section
@@ -43,6 +53,7 @@ const NAV: NavItem[] = [
   { id: 'rules', label: 'Rules', glyph: 'Σ', group: 'Workspace' },
   { id: 'flows', label: 'Flows', glyph: '⇄', group: 'Workspace' },
   { id: 'jobs', label: 'Schedules', glyph: '⏱', group: 'Workspace' },
+  { id: 'overview', label: 'Server overview', glyph: '◷', group: 'Administration', admin: true },
   { id: 'admin', label: 'Security & audit', glyph: '⚿', group: 'Administration', admin: true },
 ]
 
@@ -145,7 +156,7 @@ export default function CubeApp({
           <span className="appbar__name">Epiphany</span>
         </div>
         <nav className="crumbs" aria-label="Breadcrumb">
-          {section === 'admin' ? (
+          {section === 'admin' || section === 'overview' ? (
             <span className="crumbs__seg">Administration</span>
           ) : section === 'dimensions' ? (
             <span className="crumbs__seg">Library</span>
@@ -240,6 +251,8 @@ export default function CubeApp({
           {error ? <p className="error">{error}</p> : null}
           {section === 'admin' && isAdmin ? (
             <SecurityWorkspace />
+          ) : section === 'overview' && isAdmin ? (
+            <ServerOverview />
           ) : section === 'dimensions' ? (
             <DimensionsWorkspace reloadSignal={reload} />
           ) : selected ? (

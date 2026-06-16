@@ -389,6 +389,16 @@ impl RunLedger {
             .collect()
     }
 
+    /// Recent runs across all cubes (latest state per run), newest first, capped.
+    /// For the admin server-overview dashboard.
+    pub fn recent_global(&self, limit: usize) -> Vec<RunRecord> {
+        self.latest_records()
+            .into_iter()
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+
     /// Recent runs of one job (latest state per run), newest first.
     pub fn runs_for_job(&self, cube: &str, job: &str) -> Vec<RunRecord> {
         self.latest_records()

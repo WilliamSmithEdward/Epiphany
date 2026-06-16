@@ -1255,3 +1255,38 @@
 .tok-comment { color: var(--color-text-subtle); font-style: italic; }
 .tok-bracket { color: var(--color-text); }
 .tok-punct { color: var(--color-text-muted); }
+
+/* --- Server overview dashboard (W4) --- */
+.overview { display: flex; flex-direction: column; gap: 1rem; }
+.overview-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.5rem;
+}
+.overview-stat__value {
+  font-size: 1.6rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+.overview-stat__value.is-danger { color: var(--color-danger); }
+.overview-stat__value.is-warn { color: var(--color-warning); }
+.overview-stat__label {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+.overview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.overview-table th,
+.overview-table td {
+  border-bottom: 1px solid var(--color-border);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+.overview-table th {
+  color: var(--color-text-muted);
+  font-weight: 600;
+}

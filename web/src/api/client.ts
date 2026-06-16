@@ -638,6 +638,15 @@ export interface ConnectionDto {
   format: string
   json_path?: string | null
   timeout_ms: number
+  /** Optional absolute working directory the program runs in (ADR-0012 addendum). */
+  working_dir?: string | null
+}
+
+/** A connection's sample output, from the wizard's "Test" button (ADR-0027). */
+export interface ConnectionPreview {
+  columns: string[]
+  rows: string[][]
+  row_count: number
 }
 
 function connBase(cube: string): string {
@@ -655,6 +664,11 @@ export async function putConnection(cube: string, conn: ConnectionDto): Promise<
 
 export async function deleteConnection(cube: string, name: string): Promise<void> {
   return request<void>('DELETE', `${connBase(cube)}/${encodeURIComponent(name)}`)
+}
+
+/** Run a connection and return up to 20 sample rows plus the total count. */
+export async function previewConnection(cube: string, name: string): Promise<ConnectionPreview> {
+  return request<ConnectionPreview>('POST', `${connBase(cube)}/${encodeURIComponent(name)}/preview`)
 }
 
 export interface ImportRequest {
@@ -751,6 +765,12 @@ export async function listRuns(cube: string): Promise<RunDto[]> {
     'GET',
     `/api/v1/cubes/${encodeURIComponent(cube)}/runs`,
   )
+  return result.runs
+}
+
+/** Recent runs across all cubes, newest first (admin only). */
+export async function listAllRuns(limit = 50): Promise<RunDto[]> {
+  const result = await request<{ runs: RunDto[] }>('GET', `/api/v1/runs?limit=${limit}`)
   return result.runs
 }
 

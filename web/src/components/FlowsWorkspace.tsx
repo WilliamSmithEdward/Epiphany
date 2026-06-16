@@ -7,12 +7,14 @@ import {
   listConnections,
   listFlows,
   listFlowTests,
+  previewConnection,
   previewFlow,
   putConnection,
   putFlow,
   runFlow,
   runFlowTests,
   type ConnectionDto,
+  type ConnectionPreview,
   type CubeDetail,
   type FlowDto,
   type FlowPreview,
@@ -287,8 +289,12 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
   const [program, setProgram] = useState('')
   const [args, setArgs] = useState('')
   const [format, setFormat] = useState('csv')
+  const [workingDir, setWorkingDir] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // The most recent "Test connection" result, keyed by connection name.
+  const [preview, setPreview] = useState<{ name: string; data: ConnectionPreview } | null>(null)
+  const [testing, setTesting] = useState<string | null>(null)
 
   const load = useCallback(() => {
     listConnections(cube)
@@ -316,10 +322,12 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
         args: args.split('\n').map((a) => a.trim()).filter((a) => a !== ''),
         format,
         timeout_ms: 30000,
+        working_dir: workingDir.trim() === '' ? null : workingDir.trim(),
       })
       setName('')
       setProgram('')
       setArgs('')
+      setWorkingDir('')
       load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save the connection')
@@ -331,30 +339,55 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
   async function remove(connName: string) {
     try {
       await deleteConnection(cube, connName)
+      if (preview?.name === connName) setPreview(null)
       load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not delete the connection')
     }
   }
 
+  async function test(connName: string) {
+    setTesting(connName)
+    setError(null)
+    setPreview(null)
+    try {
+      const data = await previewConnection(cube, connName)
+      setPreview({ name: connName, data })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'The connection test failed')
+    } finally {
+      setTesting(null)
+    }
+  }
+
   return (
     <section className="connections-panel">
       <div className="rules-editor-head">
-        <h3>Connections</h3>
+        <h3>Data sources</h3>
       </div>
       <ul className="coord-list">
         {connections.map((c) => (
           <li key={c.name}>
             <strong>{c.name}</strong> [{c.kind}] {c.program} {c.args.join(' ')}{' '}
+            <button
+              className="link"
+              onClick={() => void test(c.name)}
+              disabled={testing === c.name}
+              title="Run the connection and preview its output"
+            >
+              {testing === c.name ? 'testing…' : 'test'}
+            </button>{' '}
             <button className="link" onClick={() => void remove(c.name)} title="Delete">
               x
             </button>
+            {preview?.name === c.name ? <PreviewTable data={preview.data} /> : null}
           </li>
         ))}
-        {connections.length === 0 ? <li className="muted">No connections</li> : null}
+        {connections.length === 0 ? <li className="muted">No data sources</li> : null}
       </ul>
       <p className="muted">
-        Add a command connection (admin only; the server must enable command connectors):
+        Add a command data source (admin only; the server must enable command connectors). Test it
+        before using it in a flow.
       </p>
       <div className="conn-form">
         <input value={name} placeholder="name" onChange={(e) => setName(e.target.value)} />
@@ -365,16 +398,54 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
           onChange={(e) => setArgs(e.target.value)}
           rows={3}
         />
+        <input
+          value={workingDir}
+          placeholder="working directory (optional, absolute path)"
+          onChange={(e) => setWorkingDir(e.target.value)}
+        />
         <select value={format} onChange={(e) => setFormat(e.target.value)}>
           <option value="csv">csv</option>
           <option value="json">json</option>
         </select>
         <button className="primary" disabled={saving} onClick={() => void add()}>
-          {saving ? 'Saving...' : 'Add connection'}
+          {saving ? 'Saving...' : 'Add data source'}
         </button>
       </div>
       {error ? <p className="error">{error}</p> : null}
     </section>
+  )
+}
+
+/** Render a connection preview as a small table (first rows + total count). */
+function PreviewTable({ data }: { data: ConnectionPreview }) {
+  if (data.row_count === 0) {
+    return <p className="muted">The connection ran but returned no rows.</p>
+  }
+  return (
+    <div className="conn-preview">
+      <p className="muted">
+        {data.row_count} row{data.row_count === 1 ? '' : 's'}
+        {data.rows.length < data.row_count ? ` (showing first ${data.rows.length})` : ''}
+      </p>
+      <table className="conn-preview-table">
+        <thead>
+          <tr>
+            {data.columns.map((col) => (
+              <th key={col}>{col}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.rows.map((row, i) => (
+            <tr key={i}>
+              {row.map((cell, j) => (
+                <td key={j}>{cell}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }
 

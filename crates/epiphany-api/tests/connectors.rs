@@ -243,6 +243,46 @@ async fn defining_a_command_connection_requires_the_enable_gate() {
 }
 
 #[tokio::test]
+async fn connection_preview_returns_sample_rows() {
+    let dir = scratch("preview");
+    let app = router_for(&dir, true, true);
+    let token = login(&app).await;
+
+    // Define the connection, then test it via the preview endpoint (ADR-0027).
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/connections/emit",
+        &token,
+        Some(emit_csv_connection()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/connections/emit/preview",
+        &token,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["row_count"], 2);
+    let columns: Vec<&str> = body["columns"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    assert_eq!(columns, vec!["Region", "Value"]);
+    assert_eq!(body["rows"].as_array().unwrap().len(), 2);
+    assert_eq!(body["rows"][0][0], "North");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[tokio::test]
 async fn connection_working_dir_must_be_absolute_without_traversal() {
     let dir = scratch("workdir");
     let app = router_for(&dir, true, true);

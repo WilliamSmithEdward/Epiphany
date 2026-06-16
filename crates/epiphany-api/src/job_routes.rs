@@ -4,7 +4,7 @@
 //! through the same path the reconcile loop uses and records it in the durable
 //! run ledger.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,7 @@ use epiphany_flow::{Firing, RunRecord};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_cube_access, require_kind_access};
+use crate::authz::{audit, require_admin, require_cube_access, require_kind_access};
 use crate::routes::map_batch_error;
 use crate::scheduler::Scheduler;
 use crate::ws::ChangeEvent;
@@ -290,6 +290,33 @@ pub(crate) async fn list_runs(
         .lock()
         .expect("run ledger mutex")
         .recent(&cube, 200)
+        .iter()
+        .map(run_dto)
+        .collect();
+    Ok(Json(RunListDto { runs }))
+}
+
+/// Query for the global runs listing.
+#[derive(Deserialize)]
+pub(crate) struct RunsQuery {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// `GET /runs` -> recent runs across all cubes (admin only), for the server
+/// overview dashboard. `limit` defaults to 50, capped at 500.
+pub(crate) async fn list_all_runs(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Query(q): Query<RunsQuery>,
+) -> Result<Json<RunListDto>, ApiError> {
+    require_admin(&state, &auth)?;
+    let limit = q.limit.unwrap_or(50).min(500);
+    let runs = state
+        .runs
+        .lock()
+        .expect("run ledger mutex")
+        .recent_global(limit)
         .iter()
         .map(run_dto)
         .collect();
