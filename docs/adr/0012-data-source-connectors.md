@@ -149,3 +149,30 @@ clean binary, in exchange for the user managing the DB client themselves.
   follow-ons; database/ODBC ingestion is served by the command connector running
   a user's client script, so the server keeps no DB driver and stays a single
   pure-Rust binary.
+
+## Addendum (post-roadmap hardening, 2026-06-15)
+
+Two resource/path fences were added to the command connector after the roadmap,
+in the same family as decision 6 (Tier-2/3 security backlog):
+
+- **Working directory.** `CommandSpec` gained an optional `working_dir`. The
+  program runs there (via `current_dir`) so its relative paths are predictable
+  instead of resolving against the server's (often filesystem-root) directory.
+  The REST definition boundary validates it is an **absolute path with no `..`
+  ParentDir component**, fail-closed (422), and redacts it for non-admins like
+  the rest of the command line. Validation is **lexical, not canonicalized**: a
+  `..`-free absolute path can still resolve through a symlink, which is
+  acceptable because the program and args are already admin-defined arbitrary
+  code (decision 6) so `working_dir` confers no additional reach. A value loaded
+  from an on-disk model is **trusted and not re-validated**: the model file is a
+  full-trust boundary (whoever edits it already controls `program`/`args` =
+  full execution), so a non-absolute or traversal value only arises from a
+  hand-edited model.
+- **Ingestion row cap.** CSV/JSON parsing aborts past a fixed record count
+  (`MAX_CSV_ROWS`, 1,000,000) as a memory-exhaustion backstop on top of the
+  existing byte caps (the 8 MiB request body, ADR-0018; the 16 MiB connector
+  stdout cap above). A fixed safety limit, not an operational knob.
+
+These are connector controls, so they live here rather than in ADR-0017
+(authentication/credential hardening), which they were initially mis-cited
+against.

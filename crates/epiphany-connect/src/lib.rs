@@ -100,9 +100,11 @@ pub fn run_command_capped(spec: &CommandSpec, cap: usize) -> Result<Vec<Row>, Co
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // Run in the configured directory (ADR-0017) so the program's relative paths
-    // are predictable; `None` inherits the server's directory. The path was
-    // validated (absolute, no traversal) at definition time.
+    // Run in the configured directory (ADR-0012 addendum) so the program's
+    // relative paths are predictable; `None` inherits the server's directory.
+    // Validated (absolute, no traversal) at the REST definition boundary; a value
+    // from an on-disk model is trusted (the model file is a full-trust boundary,
+    // ADR-0012 decision 6).
     if let Some(dir) = &spec.working_dir {
         command.current_dir(dir);
     }

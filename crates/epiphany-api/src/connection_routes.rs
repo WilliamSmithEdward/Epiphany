@@ -88,9 +88,12 @@ fn to_dto(conn: &Connection, is_admin: bool) -> ConnectionDto {
     }
 }
 
-/// Validate an optional connector working directory (ADR-0017): if present it
-/// must be an absolute path with no `..` traversal component. Fail-closed: a
-/// relative path or a traversal is rejected (422).
+/// Validate an optional connector working directory (ADR-0012 addendum): if
+/// present it must be an absolute path with no `..` traversal component.
+/// Fail-closed: a relative path or a traversal is rejected (422). Validation is
+/// lexical (not canonicalized); a `..`-free absolute path can still resolve
+/// through a symlink, which is acceptable since the program/args are already
+/// admin-defined arbitrary code (ADR-0012 decision 6).
 fn validate_working_dir(dir: &Option<String>) -> Result<(), ApiError> {
     let Some(dir) = dir.as_deref().filter(|d| !d.is_empty()) else {
         return Ok(());

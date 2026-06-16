@@ -822,10 +822,13 @@ pub struct CommandSpec {
     /// of 0 means no timeout (the REST layer coerces an unset value to a safe
     /// default, so 0 only arises from a hand-edited model).
     pub timeout_ms: u64,
-    /// Working directory the program runs in (ADR-0017). `None` inherits the
-    /// server's directory (unspecified, often a filesystem root); set it to make
-    /// the program's relative paths predictable. The REST layer validates it is an
-    /// absolute path with no `..` traversal before accepting it.
+    /// Working directory the program runs in (ADR-0012 addendum). `None` inherits
+    /// the server's directory (unspecified, often a filesystem root); set it to
+    /// make the program's relative paths predictable. The REST definition boundary
+    /// validates it is an absolute path with no `..` traversal; a value loaded
+    /// from an on-disk model is trusted (the model file is a full-trust boundary,
+    /// ADR-0012 decision 6), so a non-absolute or traversal value only arises from
+    /// a hand-edited model.
     pub working_dir: Option<String>,
 }
 
