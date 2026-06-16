@@ -163,6 +163,43 @@ pub(crate) async fn patch_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The one-time temporary password from an admin reset. Returned only in the
+/// reset response (never persisted in the clear, logged, or audited).
+#[derive(Serialize)]
+pub(crate) struct TempPasswordResponse {
+    username: String,
+    temp_password: String,
+}
+
+/// `POST /api/v1/users/{username}/reset-password` -> reset a user to a freshly
+/// generated temporary password and require a change at next sign-in (admin).
+/// The temporary password is returned once for the admin to convey out of band;
+/// the audit record names only the user, never the secret (RG-13).
+pub(crate) async fn reset_user_password(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Path(username): Path<String>,
+) -> Result<Json<TempPasswordResponse>, ApiError> {
+    require_admin(&state, &auth)?;
+    let temp = state
+        .security
+        .lock()
+        .expect("security mutex")
+        .reset_password_to_temp(&username)
+        .map_err(map_security_err)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::UserChange,
+        Some(&ObjectRef::global(ObjectKind::User, &username)),
+        true,
+    );
+    Ok(Json(TempPasswordResponse {
+        username,
+        temp_password: temp.0,
+    }))
+}
+
 /// `DELETE /api/v1/users/{username}` -> delete a user (admin).
 pub(crate) async fn delete_user(
     auth: AuthPrincipal,

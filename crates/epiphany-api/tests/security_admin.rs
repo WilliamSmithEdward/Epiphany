@@ -75,6 +75,25 @@ async fn login(app: &Router, user: &str, pass: &str) -> Option<String> {
     Some(v["token"].as_str().unwrap().to_string())
 }
 
+/// Log in and return the full response body (token plus the user summary,
+/// including `must_change_password`). Asserts the login itself succeeds.
+async fn login_body(app: &Router, user: &str, pass: &str) -> Value {
+    let body = json!({ "username": user, "password": pass }).to_string();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post("/api/v1/auth/login")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 /// Issue an authenticated request with an optional JSON body; return status and
 /// parsed body (Null for an empty body).
 async fn call(
@@ -331,6 +350,75 @@ async fn admin_manages_users_groups_and_membership() {
             .await
             .0,
         StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn admin_resets_user_to_temp_password_and_forces_change() {
+    let app = harness("temppw");
+    let admin = login(&app, "admin", "pw").await.unwrap();
+
+    // Admin resets ann to a freshly generated temporary password; it is returned
+    // once in the response body.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/users/ann/reset-password",
+        &admin,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["username"], "ann");
+    let temp = body["temp_password"].as_str().unwrap().to_string();
+    assert!(!temp.is_empty(), "a temporary password is returned");
+
+    // The old password stops working; the temporary one logs in and reports that
+    // a change is required.
+    assert!(login(&app, "ann", "pw").await.is_none());
+    let first = login_body(&app, "ann", &temp).await;
+    assert_eq!(first["user"]["must_change_password"], json!(true));
+    let ann = first["token"].as_str().unwrap().to_string();
+
+    // Changing it with the temp clears the forced-change requirement.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/auth/password",
+        &ann,
+        Some(json!({ "current_password": temp, "new_password": "ann-brand-new-1" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let after = login_body(&app, "ann", "ann-brand-new-1").await;
+    assert_eq!(after["user"]["must_change_password"], json!(false));
+
+    // Resetting an unknown user is a 404.
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/users/ghost/reset-password",
+            &admin,
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // A non-admin cannot reset anyone (admin-only surface).
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/users/admin/reset-password",
+            &ann,
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
     );
 }
 

@@ -10,6 +10,7 @@ import {
   listUsers,
   patchUser,
   putElementAcl,
+  resetUserPassword,
   setGrant,
   type AccessLevel,
   type ElementGrantDto,
@@ -98,6 +99,8 @@ function UsersTab() {
   const [error, setError] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [pw, setPw] = useState<Record<string, string>>({})
+  // The one-time temporary password from the most recent admin reset.
+  const [temp, setTemp] = useState<{ user: string; password: string } | null>(null)
   // New-user form.
   const [name, setName] = useState('')
   const [pass, setPass] = useState('')
@@ -118,10 +121,30 @@ function UsersTab() {
       .map((g) => g.trim())
       .filter(Boolean)
 
+  // Reset a user to a system-generated temporary password; show it once.
+  async function resetTemp(username: string) {
+    setError(null)
+    try {
+      const r = await resetUserPassword(username)
+      setTemp({ user: r.username, password: r.temp_password })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Reset failed')
+    }
+  }
+
   return (
     <div>
       <h3>Users</h3>
       {error ? <p className="error" role="alert">{error}</p> : null}
+      {temp ? (
+        <p className="banner" role="status">
+          Temporary password for <strong>{temp.user}</strong>: <code>{temp.password}</code> — share
+          it securely. It will not be shown again, and {temp.user} must choose a new password at
+          next sign-in.{' '}
+          <button onClick={() => void navigator.clipboard?.writeText(temp.password)}>Copy</button>{' '}
+          <button onClick={() => setTemp(null)}>Dismiss</button>
+        </p>
+      ) : null}
       <table className="placements">
         <thead>
           <tr>
@@ -176,6 +199,7 @@ function UsersTab() {
                   >
                     Set
                   </button>
+                  <button onClick={() => void resetTemp(u.username)}>Reset to temp</button>
                 </td>
                 <td>
                   <button onClick={() => act(() => deleteUser(u.username))}>Delete</button>

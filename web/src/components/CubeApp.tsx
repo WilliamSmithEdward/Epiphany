@@ -11,10 +11,12 @@ import SecurityWorkspace from './SecurityWorkspace'
 import ServerOverview from './ServerOverview'
 import WelcomeCard from './WelcomeCard'
 import ViewWorkspace from './ViewWorkspace'
+import ChangePassword from './ChangePassword'
 import {
   Badge,
   Button,
   CommandPalette,
+  Dialog,
   EmptyState,
   Menu,
   MenuItem,
@@ -73,6 +75,7 @@ export default function CubeApp({
   const [error, setError] = useState<string | null>(null)
   const [live, setLive] = useState(false)
   const [reload, setReload] = useState(0)
+  const [pwOpen, setPwOpen] = useState(false)
   const palette = useCommandPalette()
 
   const loadCubes = useCallback((select?: string) => {
@@ -199,6 +202,7 @@ export default function CubeApp({
           <MenuLabel>Signed in as {username}</MenuLabel>
           {isAdmin ? <MenuLabel>Administrator</MenuLabel> : null}
           <MenuSeparator />
+          <MenuItem onSelect={() => setPwOpen(true)}>Change password</MenuItem>
           <MenuItem danger onSelect={signOut}>
             Sign out
           </MenuItem>
@@ -280,7 +284,7 @@ export default function CubeApp({
               ) : section === 'rules' ? (
                 <RulesWorkspace cube={selected} reloadSignal={reload} />
               ) : section === 'flows' ? (
-                <FlowsWorkspace cube={selected} reloadSignal={reload} />
+                <FlowsWorkspace cube={selected} reloadSignal={reload} isAdmin={isAdmin} />
               ) : (
                 <JobsWorkspace cube={selected} reloadSignal={reload} />
               )}
@@ -288,7 +292,9 @@ export default function CubeApp({
           ) : (
             <EmptyState icon="▦" title="No cube selected">
               {cubes.length === 0
-                ? 'No cubes are available yet. Define a model or load the demo data to get started.'
+                ? isAdmin
+                  ? 'No cubes yet. Create one in Model to get started.'
+                  : 'No cubes are available to you yet. Ask an administrator for access.'
                 : 'Pick a cube from the sidebar to begin.'}
             </EmptyState>
           )}
@@ -300,6 +306,14 @@ export default function CubeApp({
         onOpenChange={palette.setOpen}
         commands={commands}
       />
+
+      <Dialog open={pwOpen} onOpenChange={setPwOpen} title="Change password" size="sm">
+        <ChangePassword
+          submitLabel="Update password"
+          onCancel={() => setPwOpen(false)}
+          onDone={() => setPwOpen(false)}
+        />
+      </Dialog>
     </div>
   )
 }

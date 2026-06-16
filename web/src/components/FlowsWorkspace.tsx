@@ -43,9 +43,11 @@ function rows(ctx) {
 export default function FlowsWorkspace({
   cube,
   reloadSignal,
+  isAdmin,
 }: {
   cube: string
   reloadSignal: number
+  isAdmin: boolean
 }) {
   const [detail, setDetail] = useState<CubeDetail | null>(null)
   const [flows, setFlows] = useState<FlowDto[]>([])
@@ -202,7 +204,9 @@ export default function FlowsWorkspace({
       {selected ? <RunPanel cube={cube} flow={selected} reloadSignal={reloadSignal} /> : null}
       {detail ? <ImportPanel cube={cube} detail={detail} /> : null}
       <FlowTestPanel cube={cube} reloadSignal={reloadSignal} />
-      <ConnectionsPanel cube={cube} reloadSignal={reloadSignal} />
+      {/* Data sources + HTTP secrets are operator configuration (admin only); a
+          non-admin never sees the connector internals (ADR-0012/0030). */}
+      {isAdmin ? <ConnectionsPanel cube={cube} reloadSignal={reloadSignal} /> : null}
     </div>
   )
 }

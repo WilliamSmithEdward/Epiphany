@@ -541,6 +541,14 @@ fn document() -> Value {
                     "responses": { "204": { "description": "Deleted" } }
                 }
             },
+            "/api/v1/users/{username}/reset-password": {
+                "post": {
+                    "summary": "Reset a user to a generated temporary password and require a change (admin)",
+                    "security": bearer(),
+                    "parameters": [username_param()],
+                    "responses": ok("The one-time temporary password (shown once; the user must change it at next sign-in)")
+                }
+            },
             "/api/v1/groups": {
                 "get": {
                     "summary": "List all groups (admin)", "security": bearer(),
@@ -933,6 +941,7 @@ mod tests {
         "/api/v1/ws",
         "/api/v1/users",
         "/api/v1/users/{username}",
+        "/api/v1/users/{username}/reset-password",
         "/api/v1/groups",
         "/api/v1/groups/{name}",
         "/api/v1/acl/elements",

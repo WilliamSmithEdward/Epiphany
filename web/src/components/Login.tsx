@@ -7,7 +7,7 @@ import ThemeToggle from '../ui/ThemeToggle'
 export default function Login({
   onLoggedIn,
 }: {
-  onLoggedIn: (username: string, isAdmin: boolean) => void
+  onLoggedIn: (username: string, isAdmin: boolean, mustChange: boolean) => void
 }) {
   const [username, setUsername] = useState('admin')
   const [password, setPassword] = useState('')
@@ -22,7 +22,7 @@ export default function Login({
       const result = await login(username, password)
       // If embedded in the Excel add-in's WebView2, hand it the token (ADR-0022).
       notifyExcelHost(result.token)
-      onLoggedIn(result.user.username, result.user.is_admin)
+      onLoggedIn(result.user.username, result.user.is_admin, result.user.must_change_password)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign-in failed')
     } finally {
@@ -74,9 +74,7 @@ export default function Login({
           {busy ? 'Signing in…' : 'Sign in'}
         </Button>
         <p className="login__hint">
-          First time? On first run the server writes a one-time admin password to{' '}
-          <code>data/server/admin-password.txt</code> and loads a demo cube you can explore right
-          away.
+          Use the username and password your administrator gave you.
         </p>
       </form>
     </div>

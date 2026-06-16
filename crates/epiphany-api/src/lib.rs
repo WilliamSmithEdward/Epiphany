@@ -391,6 +391,10 @@ pub fn build_router(state: AppState) -> Router {
             patch(security_routes::patch_user).delete(security_routes::delete_user),
         )
         .route(
+            "/api/v1/users/{username}/reset-password",
+            post(security_routes::reset_user_password),
+        )
+        .route(
             "/api/v1/groups",
             get(security_routes::list_groups).post(security_routes::create_group),
         )

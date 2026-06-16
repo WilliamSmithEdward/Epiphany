@@ -128,6 +128,21 @@ export async function logout(): Promise<void> {
   }
 }
 
+/**
+ * Change the current user's password. Allowed even while a forced rotation is
+ * pending (the server keeps this session and revokes the user's others), so the
+ * caller stays signed in afterwards.
+ */
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  await request<void>('POST', '/api/v1/auth/password', {
+    current_password: currentPassword,
+    new_password: newPassword,
+  })
+}
+
 export async function listCubes(): Promise<CubeSummary[]> {
   const result = await request<{ cubes: CubeSummary[] }>('GET', '/api/v1/cubes')
   return result.cubes
@@ -1035,6 +1050,17 @@ export async function patchUser(
 
 export async function deleteUser(username: string): Promise<void> {
   return request<void>('DELETE', `/api/v1/users/${encodeURIComponent(username)}`)
+}
+
+/**
+ * Reset a user to a system-generated temporary password and require a change at
+ * next sign-in (admin). The temporary password is returned once; it is never
+ * retrievable again.
+ */
+export async function resetUserPassword(
+  username: string,
+): Promise<{ username: string; temp_password: string }> {
+  return request('POST', `/api/v1/users/${encodeURIComponent(username)}/reset-password`)
 }
 
 export async function listGroups(): Promise<string[]> {

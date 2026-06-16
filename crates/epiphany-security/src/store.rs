@@ -379,6 +379,28 @@ impl SecurityStore {
         self.save()
     }
 
+    /// Reset a user to a freshly generated temporary password and require a
+    /// change at next sign-in (admin operation), persisting. Returns the one-time
+    /// temporary password for the admin to convey out of band; it is never stored
+    /// in the clear, logged, or audited. The strength policy is not applied: a
+    /// generated password is long and random by construction.
+    pub fn reset_password_to_temp(
+        &mut self,
+        username: &str,
+    ) -> Result<GeneratedAdminPassword, SecurityError> {
+        // Fail fast on an unknown user before spending an Argon2 hash.
+        if !self.users.contains_key(username) {
+            return Err(SecurityError::UserNotFound(username.to_string()));
+        }
+        let temp = generate_password();
+        let new_hash = hash_password(&temp, self.fast_kdf)?;
+        let user = self.users.get_mut(username).expect("user present");
+        user.password_hash = new_hash;
+        user.must_change_password = true;
+        self.save()?;
+        Ok(GeneratedAdminPassword(temp))
+    }
+
     /// All group names.
     pub fn list_groups(&self) -> Vec<String> {
         self.groups.iter().cloned().collect()
@@ -937,6 +959,32 @@ mod tests {
         ));
         store.reset_password("u", "reset-strong-pass-1").unwrap();
         assert!(store.authenticate("u", "reset-strong-pass-1").is_some());
+    }
+
+    #[test]
+    fn reset_password_to_temp_generates_and_forces_change() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store
+            .create_user_with_groups("u", "a-strong-pass-1", false, &[])
+            .unwrap();
+        assert!(!store.must_change_password("u"));
+
+        let temp = store.reset_password_to_temp("u").unwrap().0;
+        // The old password no longer works; the generated temp does.
+        assert!(store.authenticate("u", "a-strong-pass-1").is_none());
+        assert!(store.authenticate("u", &temp).is_some());
+        // The user must now change it at next sign-in.
+        assert!(store.must_change_password("u"));
+        // Changing it with the temp clears the requirement.
+        store
+            .change_password("u", &temp, "brand-new-strong-1")
+            .unwrap();
+        assert!(!store.must_change_password("u"));
+        // An unknown user is rejected (and spends no hash before the check).
+        assert!(matches!(
+            store.reset_password_to_temp("ghost"),
+            Err(SecurityError::UserNotFound(_))
+        ));
     }
 
     #[test]

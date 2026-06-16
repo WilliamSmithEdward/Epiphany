@@ -39,7 +39,7 @@ export default function WelcomeCard({ username, isAdmin }: { username: string; i
     >
       <ul className="welcome-steps">
         <li>
-          <strong>Pick a cube</strong> from the sidebar - a demo one is loaded so you can start now.
+          <strong>Pick a cube</strong> from the sidebar to get started.
         </li>
         <li>
           <strong>Open Data</strong> and type a number into a cell; totals recalculate as you go.
