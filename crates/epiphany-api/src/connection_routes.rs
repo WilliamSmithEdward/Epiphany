@@ -14,7 +14,7 @@ use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
 use crate::authz::{audit, require_kind_access};
-use crate::routes::map_batch_error;
+use crate::routes::{map_batch_error, snapshot};
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
 
@@ -115,13 +115,6 @@ fn validate_working_dir(dir: &Option<String>) -> Result<(), ApiError> {
         ));
     }
     Ok(())
-}
-
-fn snapshot(state: &AppState, cube: &str) -> Result<epiphany_engine::ReadSnapshot, ApiError> {
-    state
-        .engine
-        .snapshot(cube)
-        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))
 }
 
 /// `GET /cubes/{cube}/connections` -> the cube's connections (command lines

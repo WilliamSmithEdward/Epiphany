@@ -13,8 +13,7 @@ use epiphany_calc::{
     explain_with, infer_feeders, run_rule_tests, validate_feeders, CalcError, EvalRegistry,
     SandboxOverlay,
 };
-use epiphany_core::{CellTrace, Cube, ExplainDepth, RuleTest, TestCell, TraceKind};
-use epiphany_engine::ReadSnapshot;
+use epiphany_core::{CellTrace, Cube, ExplainDepth, RuleTest, TraceKind};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
@@ -22,21 +21,15 @@ use crate::authz::{
     audit, deny_if_element_restricted, element_mask, require_cube_access, require_kind_access,
 };
 use crate::calc_factory::{compile_source, OwnedOverlay, PinnedRegistry, ValidateError};
-use crate::dto::CoordMap;
+use crate::dto::{
+    from_cell, to_cell, CoordMap, FailureDto, TestCellDto, TestOutcomeDto, TestReportDto,
+};
 use crate::resolve::resolve;
-use crate::routes::map_batch_error;
+use crate::routes::{broadcast_with_version, map_batch_error, snapshot};
 use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
-use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
 
 // ---- shared helpers ----
-
-fn snapshot(state: &AppState, cube: &str) -> Result<ReadSnapshot, ApiError> {
-    state
-        .engine
-        .snapshot(cube)
-        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))
-}
 
 fn coord_names(cube: &Cube, coord: &[u32]) -> Vec<String> {
     coord
@@ -66,13 +59,6 @@ fn map_validate(err: ValidateError, source: &str) -> ApiError {
         }
         ValidateError::UnknownCube(name) => ApiError::not_found(format!("unknown cube '{name}'")),
     }
-}
-
-fn broadcast(state: &AppState, cube: &str, version: u64) {
-    let _ = state.events.send(ChangeEvent::ObjectsChanged {
-        cube: cube.to_string(),
-        version,
-    });
 }
 
 // ---- rules CRUD ----
@@ -123,7 +109,7 @@ pub(crate) async fn put_rules(
         Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, "rules")),
         true,
     );
-    broadcast(&state, &cube, outcome.version);
+    broadcast_with_version(&state, &cube, outcome.version);
     Ok(Json(body))
 }
 
@@ -151,7 +137,7 @@ pub(crate) async fn delete_rules(
         Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, "rules")),
         true,
     );
-    broadcast(&state, &cube, outcome.version);
+    broadcast_with_version(&state, &cube, outcome.version);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -330,12 +316,6 @@ pub(crate) async fn feeder_diagnostics(
 // ---- rule tests ----
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct TestCellDto {
-    pub coord: CoordMap,
-    pub value: String,
-}
-
-#[derive(Serialize, Deserialize)]
 pub(crate) struct RuleTestDto {
     pub name: String,
     #[serde(default)]
@@ -347,20 +327,6 @@ pub(crate) struct RuleTestDto {
 #[derive(Serialize)]
 pub(crate) struct RuleTestListDto {
     pub tests: Vec<RuleTestDto>,
-}
-
-fn to_cell(c: TestCellDto) -> TestCell {
-    TestCell {
-        coord: c.coord,
-        value: c.value,
-    }
-}
-
-fn from_cell(c: &TestCell) -> TestCellDto {
-    TestCellDto {
-        coord: c.coord.clone(),
-        value: c.value.clone(),
-    }
 }
 
 fn test_dto(t: &RuleTest) -> RuleTestDto {
@@ -415,7 +381,7 @@ pub(crate) async fn put_rule_test(
         Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, &body.name)),
         true,
     );
-    broadcast(&state, &cube, outcome.version);
+    broadcast_with_version(&state, &cube, outcome.version);
     Ok((StatusCode::CREATED, Json(response)))
 }
 
@@ -443,28 +409,8 @@ pub(crate) async fn delete_rule_test(
         Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, &name)),
         true,
     );
-    broadcast(&state, &cube, outcome.version);
+    broadcast_with_version(&state, &cube, outcome.version);
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Serialize)]
-pub(crate) struct FailureDto {
-    pub coord: CoordMap,
-    pub expected: String,
-    pub actual: String,
-}
-
-#[derive(Serialize)]
-pub(crate) struct TestOutcomeDto {
-    pub name: String,
-    pub passed: bool,
-    pub failures: Vec<FailureDto>,
-}
-
-#[derive(Serialize)]
-pub(crate) struct TestReportDto {
-    pub all_passed: bool,
-    pub outcomes: Vec<TestOutcomeDto>,
 }
 
 /// `POST /cubes/{cube}/rules/tests/run` -> run the cube's rule tests.

@@ -11,7 +11,7 @@ use epiphany_core::{
     spread_leaves, AttributeKind, AttributeValue, CellResolver, Cube, ElementMask, Fixed,
     SpreadError, SpreadMethod,
 };
-use epiphany_engine::{BatchError, CellWrite};
+use epiphany_engine::{BatchError, CellWrite, ReadSnapshot};
 use epiphany_security::AccessLevel;
 
 use crate::auth::AuthPrincipal;
@@ -27,6 +27,34 @@ use crate::resolve::{kind_str, resolve, Resolved};
 use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
+
+// ---- shared route helpers (used across the route modules) ----
+
+/// Pin a lock-free read snapshot of a cube, or 404 if it does not exist
+/// (ADR-0001). The single definition shared by every route module.
+pub(crate) fn snapshot(state: &AppState, cube: &str) -> Result<ReadSnapshot, ApiError> {
+    state
+        .engine
+        .snapshot(cube)
+        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))
+}
+
+/// Broadcast that a cube's objects changed, at its current version (a no-op if
+/// the cube has no version yet). Used after object edits where the caller does
+/// not already hold the committed version.
+pub(crate) fn broadcast(state: &AppState, cube: &str) {
+    if let Some(version) = state.engine.version(cube) {
+        broadcast_with_version(state, cube, version);
+    }
+}
+
+/// Broadcast an objects-changed event at a specific (just-committed) version.
+pub(crate) fn broadcast_with_version(state: &AppState, cube: &str, version: u64) {
+    let _ = state.events.send(ChangeEvent::ObjectsChanged {
+        cube: cube.to_string(),
+        version,
+    });
+}
 
 /// `GET /api/v1/cubes/{cube}` -> the cube with its dimensions and elements.
 pub(crate) async fn get_cube(

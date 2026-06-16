@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use epiphany_connect::run_command;
-use epiphany_core::{ConnectionSpec, ElementKind, ElementSpec, Flow, FlowTest, TestCell};
+use epiphany_core::{ConnectionSpec, ElementKind, ElementSpec, Flow, FlowTest};
 use epiphany_engine::CellWrite;
 use epiphany_flow::{
     parse_csv, run_flow, run_flow_tests, validate_flow, FlowError, FlowOutcome, FlowTestError,
@@ -26,28 +26,9 @@ use crate::authz::{
     audit, deny_if_element_restricted, require_cube_access, require_element_write,
     require_kind_access,
 };
-use crate::dto::CoordMap;
-use crate::routes::{build_write, map_batch_error};
-use crate::ws::ChangeEvent;
+use crate::dto::{from_cell, to_cell, FailureDto, TestCellDto, TestOutcomeDto, TestReportDto};
+use crate::routes::{broadcast, build_write, map_batch_error, snapshot};
 use crate::{ApiError, AppState};
-
-// ---- shared helpers ----
-
-fn snapshot(state: &AppState, cube: &str) -> Result<epiphany_engine::ReadSnapshot, ApiError> {
-    state
-        .engine
-        .snapshot(cube)
-        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))
-}
-
-fn broadcast(state: &AppState, cube: &str) {
-    if let Some(version) = state.engine.version(cube) {
-        let _ = state.events.send(ChangeEvent::ObjectsChanged {
-            cube: cube.to_string(),
-            version,
-        });
-    }
-}
 
 /// Map a flow run/validate failure to the API envelope, attaching line/column
 /// for a type-strip error.
@@ -492,12 +473,6 @@ fn plan_import(rows: &[epiphany_flow::Row], body: &ImportBody) -> Result<FlowOut
 // ---- flow tests ----
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct TestCellDto {
-    pub coord: CoordMap,
-    pub value: String,
-}
-
-#[derive(Serialize, Deserialize)]
 pub(crate) struct FlowTestDto {
     pub name: String,
     pub flow: String,
@@ -512,20 +487,6 @@ pub(crate) struct FlowTestDto {
 #[derive(Serialize)]
 pub(crate) struct FlowTestListDto {
     pub tests: Vec<FlowTestDto>,
-}
-
-fn to_cell(c: TestCellDto) -> TestCell {
-    TestCell {
-        coord: c.coord,
-        value: c.value,
-    }
-}
-
-fn from_cell(c: &TestCell) -> TestCellDto {
-    TestCellDto {
-        coord: c.coord.clone(),
-        value: c.value.clone(),
-    }
 }
 
 fn flow_test_dto(t: &FlowTest) -> FlowTestDto {
@@ -619,26 +580,6 @@ pub(crate) async fn delete_flow_test(
     );
     broadcast(&state, &cube);
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Serialize)]
-pub(crate) struct FailureDto {
-    pub coord: CoordMap,
-    pub expected: String,
-    pub actual: String,
-}
-
-#[derive(Serialize)]
-pub(crate) struct TestOutcomeDto {
-    pub name: String,
-    pub passed: bool,
-    pub failures: Vec<FailureDto>,
-}
-
-#[derive(Serialize)]
-pub(crate) struct TestReportDto {
-    pub all_passed: bool,
-    pub outcomes: Vec<TestOutcomeDto>,
 }
 
 /// `POST /cubes/{cube}/flows/tests/run` -> run the cube's flow tests.

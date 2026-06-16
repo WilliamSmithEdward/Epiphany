@@ -25,19 +25,12 @@ use crate::dto::{
     SuppressedDto, ViewBody, ViewDto, ViewListResponse,
 };
 use crate::resolve::kind_str;
-use crate::routes::map_batch_error;
+use crate::routes::{map_batch_error, snapshot};
 use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
 use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
 
 // ---- shared helpers ----
-
-fn snapshot(state: &AppState, cube: &str) -> Result<ReadSnapshot, ApiError> {
-    state
-        .engine
-        .snapshot(cube)
-        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))
-}
 
 fn ensure_dimension(cube: &Cube, dim: &str) -> Result<(), ApiError> {
     if cube.dimensions().iter().any(|d| d.name() == dim) {

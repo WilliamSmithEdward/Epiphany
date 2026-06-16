@@ -18,8 +18,7 @@ use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
 use crate::authz::{audit, require_kind_access, require_manage_cubes};
-use crate::routes::map_batch_error;
-use crate::ws::ChangeEvent;
+use crate::routes::{broadcast, map_batch_error};
 use crate::{ApiError, AppState};
 
 // ---- request bodies ----
@@ -114,15 +113,6 @@ pub(crate) struct CommitDto {
 }
 
 // ---- helpers ----
-
-fn broadcast(state: &AppState, cube: &str) {
-    if let Some(version) = state.engine.version(cube) {
-        let _ = state.events.send(ChangeEvent::ObjectsChanged {
-            cube: cube.to_string(),
-            version,
-        });
-    }
-}
 
 pub(crate) fn parse_element_kind(s: &str) -> Result<ElementKind, ApiError> {
     match s {

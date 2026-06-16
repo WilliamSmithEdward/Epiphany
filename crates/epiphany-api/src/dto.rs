@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 
+use epiphany_core::TestCell;
 use serde::{Deserialize, Serialize};
 
 /// A cell coordinate: dimension name -> element name, one entry per dimension.
@@ -140,6 +141,56 @@ pub struct SpreadRequest {
     pub target: CoordMap,
     pub value: String,
     pub method: String,
+}
+
+// ---- model testing (shared by flow tests and rule tests) ----
+
+/// One assertion in a test: a coordinate and its expected value.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TestCellDto {
+    pub coord: CoordMap,
+    pub value: String,
+}
+
+/// Convert a test-cell DTO into the core [`TestCell`].
+pub(crate) fn to_cell(c: TestCellDto) -> TestCell {
+    TestCell {
+        coord: c.coord,
+        value: c.value,
+    }
+}
+
+/// Convert a core [`TestCell`] into its DTO.
+pub(crate) fn from_cell(c: &TestCell) -> TestCellDto {
+    TestCellDto {
+        coord: c.coord.clone(),
+        value: c.value.clone(),
+    }
+}
+
+/// One failed assertion in a test run: where, expected, and actual.
+#[derive(Debug, Serialize)]
+pub struct FailureDto {
+    pub coord: CoordMap,
+    pub expected: String,
+    pub actual: String,
+}
+
+/// One test's outcome: its name, whether it passed, and any failures.
+#[derive(Debug, Serialize)]
+pub struct TestOutcomeDto {
+    pub name: String,
+    pub passed: bool,
+    pub failures: Vec<FailureDto>,
+}
+
+/// A test run report: overall pass/fail plus each test's outcome. Shared by the
+/// flow-test and rule-test run endpoints (they map their respective engine
+/// outcomes into this one shape).
+#[derive(Debug, Serialize)]
+pub struct TestReportDto {
+    pub all_passed: bool,
+    pub outcomes: Vec<TestOutcomeDto>,
 }
 
 // ---- subsets ----

@@ -23,6 +23,7 @@ import {
 } from '../api/client'
 import { CodeEditor } from '../ui'
 import { appendTemplate, FLOW_TEMPLATES } from '../templates'
+import { TestReport } from './TestReport'
 
 const STARTER = `// A flow reads ctx.input() (the data rows) and stages changes.
 function rows(ctx) {
@@ -620,34 +621,7 @@ function FlowTestPanel({ cube, reloadSignal }: { cube: string; reloadSignal: num
         </button>
       </div>
       {error ? <p className="error">{error}</p> : null}
-      {report ? (
-        <div className="test-report">
-          <p className={report.all_passed ? 'ok' : 'error'}>
-            {report.all_passed
-              ? `All ${report.outcomes.length} tests passed`
-              : `${report.outcomes.filter((o) => !o.passed).length} of ${report.outcomes.length} failed`}
-          </p>
-          <ul className="test-list">
-            {report.outcomes.map((o) => (
-              <li key={o.name} className={o.passed ? 'ok' : 'error'}>
-                <span className="test-status">{o.passed ? 'PASS' : 'FAIL'}</span> {o.name}
-                {o.failures.length > 0 ? (
-                  <ul className="failure-list">
-                    {o.failures.map((f, i) => (
-                      <li key={i}>
-                        {Object.entries(f.coord)
-                          .map(([d, m]) => `${d}:${m}`)
-                          .join(' / ')}{' '}
-                        expected {f.expected}, got {f.actual}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      {report ? <TestReport report={report} /> : null}
     </section>
   )
 }

@@ -17,6 +17,7 @@ import {
 } from '../api/client'
 import { CodeEditor } from '../ui'
 import { appendTemplate, RULE_TEMPLATES } from '../templates'
+import { TestReport } from './TestReport'
 
 // The modeler's calculation workspace for one cube (Phase 4): edit and validate
 // rules, see auto-inferred feeders and under/over-feed diagnostics, trace any
@@ -389,34 +390,7 @@ function TestPanel({ cube, reloadSignal }: { cube: string; reloadSignal: number 
         </button>
       </div>
       {error ? <p className="error">{error}</p> : null}
-      {report ? (
-        <div className="test-report">
-          <p className={report.all_passed ? 'ok' : 'error'}>
-            {report.all_passed
-              ? `All ${report.outcomes.length} tests passed`
-              : `${report.outcomes.filter((o) => !o.passed).length} of ${report.outcomes.length} failed`}
-          </p>
-          <ul className="test-list">
-            {report.outcomes.map((o) => (
-              <li key={o.name} className={o.passed ? 'ok' : 'error'}>
-                <span className="test-status">{o.passed ? 'PASS' : 'FAIL'}</span> {o.name}
-                {o.failures.length > 0 ? (
-                  <ul className="failure-list">
-                    {o.failures.map((f, i) => (
-                      <li key={i}>
-                        {Object.entries(f.coord)
-                          .map(([d, m]) => `${d}:${m}`)
-                          .join(' / ')}{' '}
-                        expected {f.expected}, got {f.actual}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : null}
+      {report ? <TestReport report={report} /> : null}
     </section>
   )
 }

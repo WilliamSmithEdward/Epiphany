@@ -15,26 +15,9 @@ use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
 use crate::authz::{audit, require_admin, require_cube_access, require_kind_access};
-use crate::routes::map_batch_error;
+use crate::routes::{broadcast, map_batch_error, snapshot};
 use crate::scheduler::Scheduler;
-use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
-
-fn snapshot(state: &AppState, cube: &str) -> Result<epiphany_engine::ReadSnapshot, ApiError> {
-    state
-        .engine
-        .snapshot(cube)
-        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))
-}
-
-fn broadcast(state: &AppState, cube: &str) {
-    if let Some(version) = state.engine.version(cube) {
-        let _ = state.events.send(ChangeEvent::ObjectsChanged {
-            cube: cube.to_string(),
-            version,
-        });
-    }
-}
 
 // ---- DTOs ----
 

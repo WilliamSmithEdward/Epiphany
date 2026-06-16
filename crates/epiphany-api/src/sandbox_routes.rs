@@ -18,7 +18,7 @@ use epiphany_security::Principal;
 
 use crate::auth::AuthPrincipal;
 use crate::authz::require_element_write_indices;
-use crate::routes::map_batch_error;
+use crate::routes::{map_batch_error, snapshot};
 use crate::{ApiError, AppState};
 
 /// The HTTP header naming the sandbox a data request should overlay.
@@ -96,13 +96,6 @@ fn dto(sb: &Sandbox) -> SandboxDto {
         updated: sb.updated,
         cell_count: sb.len(),
     }
-}
-
-fn snapshot(state: &AppState, cube: &str) -> Result<ReadSnapshot, ApiError> {
-    state
-        .engine
-        .snapshot(cube)
-        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))
 }
 
 #[derive(Serialize)]
