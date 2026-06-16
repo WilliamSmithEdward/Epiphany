@@ -7,8 +7,9 @@ security, scheduled jobs, and a fast pivot grid with write-back. It ships as a
 single static binary with a clean JSON REST API and a React + TypeScript web UI.
 
 > **Status: feature-complete across the nine-phase roadmap (0-8).** Latest
-> release is `m8.2`; security hardening continues as point releases. See the
-> [roadmap](docs/ROADMAP.md) and the [changelog of releases](https://github.com/WilliamSmithEdward/Epiphany/releases).
+> release is `m8.7`; hardening and performance work continue as point releases.
+> See the [roadmap](docs/ROADMAP.md), the [changelog](CHANGELOG.md), and the
+> [releases](https://github.com/WilliamSmithEdward/Epiphany/releases).
 
 ## Core features
 
@@ -38,6 +39,10 @@ single static binary with a clean JSON REST API and a React + TypeScript web UI.
   zero-suppression.
 - A high-performance **pivot grid with write-back** and transactional batch
   writes.
+- A **persistent view cache** and **deterministic parallel aggregation**: repeat
+  reads of a view are served instantly from a version-keyed cache that never
+  returns a stale or cross-user result, and large cold views aggregate across all
+  cores, several times faster, with bit-identical results (ADR-0028).
 - Live change notifications over WebSocket.
 
 **Automation and integration**
@@ -75,9 +80,27 @@ single static binary with a clean JSON REST API and a React + TypeScript web UI.
 
 ## Performance
 
-The performance and memory budgets are a binding requirement. Numbers below are
-release-mode measurements on a development machine and are indicative; full
-detail and methodology are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+Performance and memory efficiency are binding requirements here, not
+afterthoughts, and every budget is gated in CI so a regression fails the build.
+Epiphany is built to stay fast on large models: sparse packed-key storage keeps
+memory near the theoretical floor, consolidations run on a dense always-correct
+path, repeated reads are served from a coherent cache, and large cold reads
+aggregate in parallel across every core. Numbers below are release-mode
+measurements on a development machine and are indicative; full methodology is in
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
+
+**Highlights**
+
+- **~17 bytes per numeric leaf cell** (CI-asserted; budget 24) and
+  **~13M cells/sec/core** bulk load, an order of magnitude over budget.
+- **Sub-microsecond point reads** (~37 ns).
+- **Cold consolidation ~100x under the 1 s latency budget**, and large cold views
+  aggregate **4.5x to 6.9x faster in parallel** across cores (a 40k-cell
+  all-consolidated crossjoin drops from ~454 ms to ~72 ms on 14 cores) with
+  results provably **bit-identical** to the serial path.
+- **Repeat reads are effectively free**: a version-keyed view cache serves an
+  unchanged view in well under the 100 ms cached-read budget, and never returns a
+  stale or cross-user result.
 
 | Measurement | Observed | Budget |
 |---|---|---|
@@ -85,12 +108,18 @@ detail and methodology are in [docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 | Bulk-load throughput | about 13M cells/sec/core | about 1M/sec/core |
 | Point read (`get_leaf`) | about 37 ns/op | sub-microsecond |
 | Cold consolidated read (scans 100k cells) | about 10 ms/call | p99 under about 1 s |
+| Large cold view, parallel aggregation (14 cores) | about 72 ms (40k-cell crossjoin, 6.3x vs serial) | p99 under about 1 s |
+| Repeat view read (cached) | a refcount bump plus the response transform | p99 under about 100 ms |
 | Scheduler reconcile due-scan | 2000 jobs vs a 1000-run ledger in about 11 ms/tick | cheap vs the tick period |
 
 Bulk-load clears its budget by an order of magnitude, cold consolidation runs
 roughly 100x under the latency budget, and bytes-per-cell is within budget and
-asserted in CI so a regression fails the build. Benchmarks are self-contained
-(no external framework): run `cargo bench -p epiphany-core` and
+asserted in CI so a regression fails the build. The view cache is keyed
+losslessly on the cube version, the view shape, the active sandbox, and the
+caller's exact element-deny set, so it accelerates the common case without ever
+crossing a security boundary; parallel aggregation is gated above a cell-count
+threshold so small reads stay serial. Benchmarks are self-contained (no external
+framework): run `cargo bench -p epiphany-core` (cube ops and `view_exec`) and
 `cargo bench -p epiphany-flow`.
 
 ## Quickstart
