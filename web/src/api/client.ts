@@ -110,8 +110,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     }
     throw new Error(message)
   }
-  if (response.status === 204) return undefined as T
-  return (await response.json()) as T
+  // A successful response may carry no body (204, or a 201 Created with no
+  // payload). Only parse JSON when a body is actually present, so a bodyless
+  // 2xx does not throw "Unexpected end of JSON input".
+  const text = await response.text()
+  return (text ? (JSON.parse(text) as T) : (undefined as T))
 }
 
 export async function login(username: string, password: string): Promise<LoginResult> {
