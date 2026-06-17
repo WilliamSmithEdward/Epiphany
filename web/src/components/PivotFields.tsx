@@ -10,11 +10,12 @@ interface DropHandlers {
   onDrop: (e: DragEvent) => void
 }
 
-// Where a dimension sits in the pivot layout. The editable grid puts exactly one
-// dimension on rows and one on columns; every other dimension is pinned to a
-// single member (the cube is always fully covered) and shown either as an active
-// Filter or parked under Unused. Unused and Filters behave identically for the
-// query; the split is organizational, so a parked dimension is out of the way.
+// Where a dimension sits in the pivot layout. The editable grid nests one or
+// more dimensions on rows and one or more on columns; every other dimension is
+// pinned to a single member (the cube is always fully covered) and shown either
+// as an active Filter or parked under Unused. Unused and Filters behave
+// identically for the query; the split is organizational, so a parked dimension
+// is out of the way.
 export type AxisRole = 'rows' | 'columns' | 'filters' | 'unused'
 
 /** The set applied to a row/column axis: a named saved subset resolved to its
@@ -27,15 +28,19 @@ export interface AxisSet {
 const DT = 'application/x-epiphany-dim'
 
 /**
- * The pivot field tray: three drop zones (Rows, Columns, Filters) holding a chip
- * per dimension. Chips are dragged between zones to re-pivot; each chip also
- * carries a menu with the same moves (keyboard parity) plus, for a row/column
- * dimension, the member set to show (all members, a saved subset, or a new one).
+ * The pivot field tray: four drop zones (Rows, Columns, Filters, Unused). Rows
+ * and Columns each hold an ordered list of dimension chips (outer to inner, the
+ * nesting order); every other dimension is pinned to a single member and shown
+ * as a Filter or parked under Unused. Chips are dragged between zones to
+ * re-pivot; dropping on Rows or Columns appends the dimension to that axis
+ * (nesting). Each chip also carries a menu with the same moves (keyboard parity)
+ * plus, for a row/column dimension, the member set to show (all members, a saved
+ * subset, or a new one).
  */
 export default function PivotFields({
   dimensions,
-  rowDim,
-  colDim,
+  rowDims,
+  colDims,
   context,
   unused,
   subsetsByDim,
@@ -46,8 +51,8 @@ export default function PivotFields({
   onNewSet,
 }: {
   dimensions: DimensionDto[]
-  rowDim: string
-  colDim: string
+  rowDims: string[]
+  colDims: string[]
   context: Record<string, string>
   unused: Set<string>
   subsetsByDim: Record<string, SubsetDto[]>
@@ -58,7 +63,8 @@ export default function PivotFields({
   onNewSet: (dim: string) => void
 }) {
   const [over, setOver] = useState<AxisRole | null>(null)
-  const offAxis = dimensions.filter((d) => d.name !== rowDim && d.name !== colDim)
+  const onAxis = new Set([...rowDims, ...colDims])
+  const offAxis = dimensions.filter((d) => !onAxis.has(d.name))
   const filterDims = offAxis.filter((d) => !unused.has(d.name))
   const unusedDims = offAxis.filter((d) => unused.has(d.name))
 
@@ -81,26 +87,32 @@ export default function PivotFields({
   return (
     <div className="pivot-fields">
       <Zone role="rows" label="Rows" over={over === 'rows'} dropProps={dropProps('rows')}>
-        <AxisChip
-          dim={rowDim}
-          role="rows"
-          set={axisSet[rowDim] ?? null}
-          subsets={subsetsByDim[rowDim] ?? []}
-          onPlace={onPlace}
-          onPickSet={onPickSet}
-          onNewSet={onNewSet}
-        />
+        {rowDims.map((dim) => (
+          <AxisChip
+            key={dim}
+            dim={dim}
+            role="rows"
+            set={axisSet[dim] ?? null}
+            subsets={subsetsByDim[dim] ?? []}
+            onPlace={onPlace}
+            onPickSet={onPickSet}
+            onNewSet={onNewSet}
+          />
+        ))}
       </Zone>
       <Zone role="columns" label="Columns" over={over === 'columns'} dropProps={dropProps('columns')}>
-        <AxisChip
-          dim={colDim}
-          role="columns"
-          set={axisSet[colDim] ?? null}
-          subsets={subsetsByDim[colDim] ?? []}
-          onPlace={onPlace}
-          onPickSet={onPickSet}
-          onNewSet={onNewSet}
-        />
+        {colDims.map((dim) => (
+          <AxisChip
+            key={dim}
+            dim={dim}
+            role="columns"
+            set={axisSet[dim] ?? null}
+            subsets={subsetsByDim[dim] ?? []}
+            onPlace={onPlace}
+            onPickSet={onPickSet}
+            onNewSet={onNewSet}
+          />
+        ))}
       </Zone>
       <Zone role="filters" label="Filters" over={over === 'filters'} dropProps={dropProps('filters')}>
         {filterDims.length === 0 ? (
