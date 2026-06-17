@@ -11,9 +11,11 @@ interface DropHandlers {
 }
 
 // Where a dimension sits in the pivot layout. The editable grid puts exactly one
-// dimension on rows and one on columns; every other dimension is a filter pinned
-// to a single member (the cube is always fully covered).
-export type AxisRole = 'rows' | 'columns' | 'filters'
+// dimension on rows and one on columns; every other dimension is pinned to a
+// single member (the cube is always fully covered) and shown either as an active
+// Filter or parked under Unused. Unused and Filters behave identically for the
+// query; the split is organizational, so a parked dimension is out of the way.
+export type AxisRole = 'rows' | 'columns' | 'filters' | 'unused'
 
 /** The set applied to a row/column axis: a named saved subset resolved to its
  * member list, or null for every member of the dimension. */
@@ -35,6 +37,7 @@ export default function PivotFields({
   rowDim,
   colDim,
   context,
+  unused,
   subsetsByDim,
   axisSet,
   onPlace,
@@ -46,6 +49,7 @@ export default function PivotFields({
   rowDim: string
   colDim: string
   context: Record<string, string>
+  unused: Set<string>
   subsetsByDim: Record<string, SubsetDto[]>
   axisSet: Record<string, AxisSet | null>
   onPlace: (dim: string, role: AxisRole) => void
@@ -54,7 +58,9 @@ export default function PivotFields({
   onNewSet: (dim: string) => void
 }) {
   const [over, setOver] = useState<AxisRole | null>(null)
-  const filterDims = dimensions.filter((d) => d.name !== rowDim && d.name !== colDim)
+  const offAxis = dimensions.filter((d) => d.name !== rowDim && d.name !== colDim)
+  const filterDims = offAxis.filter((d) => !unused.has(d.name))
+  const unusedDims = offAxis.filter((d) => unused.has(d.name))
 
   const dropProps = (role: AxisRole): DropHandlers => ({
     onDragOver: (e: DragEvent) => {
@@ -104,6 +110,23 @@ export default function PivotFields({
             <FilterChip
               key={d.name}
               dim={d}
+              zone="filters"
+              member={context[d.name] ?? ''}
+              onPlace={onPlace}
+              onContextMember={onContextMember}
+            />
+          ))
+        )}
+      </Zone>
+      <Zone role="unused" label="Unused" over={over === 'unused'} dropProps={dropProps('unused')}>
+        {unusedDims.length === 0 ? (
+          <span className="pivot-zone__empty">Drag a dimension here to set it aside</span>
+        ) : (
+          unusedDims.map((d) => (
+            <FilterChip
+              key={d.name}
+              dim={d}
+              zone="unused"
               member={context[d.name] ?? ''}
               onPlace={onPlace}
               onContextMember={onContextMember}
@@ -213,6 +236,9 @@ function AxisChip({
             <DM.Item className="menu__item" onSelect={() => onPlace(dim, 'filters')}>
               Filters
             </DM.Item>
+            <DM.Item className="menu__item" onSelect={() => onPlace(dim, 'unused')}>
+              Unused
+            </DM.Item>
           </DM.Content>
         </DM.Portal>
       </DM.Root>
@@ -222,15 +248,19 @@ function AxisChip({
 
 function FilterChip({
   dim,
+  zone,
   member,
   onPlace,
   onContextMember,
 }: {
   dim: DimensionDto
+  zone: 'filters' | 'unused'
   member: string
   onPlace: (dim: string, role: AxisRole) => void
   onContextMember: (dim: string, member: string) => void
 }) {
+  const other: AxisRole = zone === 'filters' ? 'unused' : 'filters'
+  const otherLabel = zone === 'filters' ? 'Unused' : 'Filters'
   return (
     <div className="pivot-chip pivot-chip--filter" {...dragProps(dim.name)}>
       <span className="pivot-chip__handle" aria-hidden="true">
@@ -257,6 +287,9 @@ function FilterChip({
             </DM.Item>
             <DM.Item className="menu__item" onSelect={() => onPlace(dim.name, 'columns')}>
               Columns
+            </DM.Item>
+            <DM.Item className="menu__item" onSelect={() => onPlace(dim.name, other)}>
+              {otherLabel}
             </DM.Item>
           </DM.Content>
         </DM.Portal>

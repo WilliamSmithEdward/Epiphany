@@ -29,6 +29,14 @@ function cellKey(row: string, col: string): string {
   return `${row} ${col}`
 }
 
+/** Return a copy of `s` without `key` (or `s` unchanged if it was absent). */
+function deleteFrom(s: Set<string>, key: string): Set<string> {
+  if (!s.has(key)) return s
+  const n = new Set(s)
+  n.delete(key)
+  return n
+}
+
 /** One row in the (possibly drilled-down) row axis: a dimension member with its
  * nesting depth and whether it can be expanded to reveal children. */
 interface VisibleRow {
@@ -110,6 +118,9 @@ export default function PivotGrid({
   // Which consolidation members on the row / column axes are expanded (drill-down).
   const [expandedRows, setExpandedRows] = useState<Set<string>>(() => new Set())
   const [expandedCols, setExpandedCols] = useState<Set<string>>(() => new Set())
+  // Dimensions parked in the "Unused" zone (still pinned to a member via context,
+  // just kept out of the active Filters list). Purely an organizational split.
+  const [unused, setUnused] = useState<Set<string>>(() => new Set())
   // Saved subsets per dimension (for the "select a set" menu on each axis chip).
   const [subsetsByDim, setSubsetsByDim] = useState<Record<string, SubsetDto[]>>({})
   // The member set applied to an axis dimension, resolved to a member list; a
@@ -143,6 +154,7 @@ export default function PivotGrid({
     // Clear a prior cube's error so switching cubes / retrying isn't blocked.
     setError(null)
     setAxisSet({})
+    setUnused(new Set())
     getCube(cube)
       .then((loaded) => {
         if (cancelled) return
@@ -287,15 +299,18 @@ export default function PivotGrid({
     [detail],
   )
 
-  // Re-pivot: move a dimension onto Rows, Columns, or Filters. Rows and Columns
-  // always hold exactly one dimension, so a drop swaps with the current occupant
-  // (axis<->axis) or trades places with a filter; moving an axis dimension to
-  // Filters promotes the first filter onto the vacated axis.
+  // Re-pivot: move a dimension onto Rows, Columns, Filters, or Unused. Rows and
+  // Columns always hold exactly one dimension, so a drop swaps with the current
+  // occupant (axis<->axis) or trades places with an off-axis dimension; moving an
+  // axis dimension off promotes the first off-axis dimension onto the vacated
+  // axis. Filters and Unused are both off-axis (member-pinned); the only
+  // difference is whether the dimension is parked in the Unused set.
   const placeDimension = useCallback(
     (dim: string, role: AxisRole) => {
       if (!detail) return
       if (role === 'rows') {
         if (dim === rowDim) return
+        setUnused((u) => deleteFrom(u, dim))
         if (dim === colDim) {
           setColDim(rowDim)
           setRowDim(dim)
@@ -308,8 +323,11 @@ export default function PivotGrid({
           n[rowDim] = defaultMember(rowDim)
           return n
         })
-      } else if (role === 'columns') {
+        return
+      }
+      if (role === 'columns') {
         if (dim === colDim) return
+        setUnused((u) => deleteFrom(u, dim))
         if (dim === rowDim) {
           setRowDim(colDim)
           setColDim(dim)
@@ -322,14 +340,15 @@ export default function PivotGrid({
           n[colDim] = defaultMember(colDim)
           return n
         })
-      } else {
-        // role === 'filters'
-        if (dim !== rowDim && dim !== colDim) return // already a filter
-        const filters = detail.dimensions
+        return
+      }
+      // 'filters' or 'unused': off-axis, member-pinned roles.
+      if (dim === rowDim || dim === colDim) {
+        const offAxis = detail.dimensions
           .map((d) => d.name)
           .filter((n) => n !== rowDim && n !== colDim)
-        if (filters.length === 0) return // a 2-D cube needs both axes filled
-        const promote = filters[0]
+        if (offAxis.length === 0) return // a 2-D cube needs both axes filled
+        const promote = offAxis[0]
         if (dim === rowDim) setRowDim(promote)
         else setColDim(promote)
         setContext((c) => {
@@ -338,7 +357,15 @@ export default function PivotGrid({
           n[dim] = defaultMember(dim)
           return n
         })
+        // The promoted dimension is now on an axis, so it can no longer be parked.
+        setUnused((u) => {
+          const n = deleteFrom(u, promote)
+          return role === 'unused' ? new Set(n).add(dim) : deleteFrom(n, dim)
+        })
+        return
       }
+      // dim is already off-axis: just park or un-park it.
+      setUnused((u) => (role === 'unused' ? new Set(u).add(dim) : deleteFrom(u, dim)))
     },
     [detail, rowDim, colDim, defaultMember],
   )
@@ -513,6 +540,7 @@ export default function PivotGrid({
         rowDim={rowDim}
         colDim={colDim}
         context={context}
+        unused={unused}
         subsetsByDim={subsetsByDim}
         axisSet={axisSet}
         onPlace={placeDimension}
