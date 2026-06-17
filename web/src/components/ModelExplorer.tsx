@@ -348,17 +348,8 @@ function rootNodes(isAdmin: boolean): Node[] {
       loader: schedulesByCube,
     },
   ]
-  if (isAdmin) {
-    roots.push({
-      id: 'root:admin',
-      label: 'Administration',
-      icon: '⚿',
-      loader: async () => [
-        { id: 'overview', label: 'Server overview', icon: '◷', selection: { kind: 'overview' } },
-        { id: 'security', label: 'Security & audit', icon: '⚿', selection: { kind: 'security' } },
-      ],
-    })
-  }
+  // Administration is not a model object, so it no longer lives in the tree; it
+  // opens from a top-bar button (admin only) into its own view (see CubeApp).
   return roots
 }
 

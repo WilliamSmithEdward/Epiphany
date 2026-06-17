@@ -626,6 +626,44 @@
 .appbar__search {
   color: var(--color-text-muted);
 }
+/* The button already spaces its children with a flex gap; drop the kbd's own
+   margin so "Search" and the shortcut chip are not doubly separated. */
+.appbar__search .kbd {
+  margin-left: 0;
+}
+
+/* Administration: its own full-width view (no model tree), reached from the
+   top-bar button, with a Back control and an Overview / Security toggle. */
+.admin-view__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.admin-view__nav {
+  display: inline-flex;
+  gap: var(--space-1);
+  padding: 2px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.admin-view__nav .seg {
+  padding: var(--space-1) var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+.admin-view__nav .seg.is-active {
+  background: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: var(--shadow-sm);
+}
 .kbd {
   margin-left: var(--space-2);
   padding: 0 var(--space-1);

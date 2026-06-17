@@ -44,6 +44,13 @@ import {
   type Command,
 } from '../ui'
 
+// The command-palette shortcut hint, shown platform-appropriately (the binding
+// itself accepts Cmd or Ctrl; only the label differs). Avoids the Mac ⌘ symbol
+// on Windows/Linux.
+const IS_MAC =
+  typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '')
+const PALETTE_HINT = IS_MAC ? '⌘K' : 'Ctrl K'
+
 /** The cube a selection targets, or null for cube-independent surfaces. */
 function cubeOf(s: Selection | null): string | null {
   if (!s) return null
@@ -131,6 +138,9 @@ export default function CubeApp({
   const [conn, setConn] = useState<'connecting' | 'live' | 'offline'>('connecting')
   const [reload, setReload] = useState(0)
   const [pwOpen, setPwOpen] = useState(false)
+  // Administration is its own view (admin only), opened from the top bar rather
+  // than the model tree; null means the normal model workspace is shown.
+  const [adminView, setAdminView] = useState<null | 'overview' | 'security'>(null)
   const palette = useCommandPalette()
   const confirm = useConfirm()
   // The active detail pane reports unsaved edits here; navigating away (tree,
@@ -462,8 +472,8 @@ export default function CubeApp({
     list.push({ id: 'new:flow', label: 'New flow…', group: 'Create', run: () => onAction('new-flow', {}) })
     list.push({ id: 'new:schedule', label: 'New schedule…', group: 'Create', run: () => onAction('new-schedule', {}) })
     if (isAdmin) {
-      list.push({ id: 'go:overview', label: 'Go to Server overview', group: 'Admin', run: () => navigate({ kind: 'overview' }, {}) })
-      list.push({ id: 'go:security', label: 'Go to Security & audit', group: 'Admin', run: () => navigate({ kind: 'security' }, {}) })
+      list.push({ id: 'go:overview', label: 'Go to Server overview', group: 'Admin', run: () => setAdminView('overview') })
+      list.push({ id: 'go:security', label: 'Go to Security & audit', group: 'Admin', run: () => setAdminView('security') })
     }
     list.push({ id: 'pw', label: 'Change password', group: 'Account', run: () => setPwOpen(true) })
     list.push({ id: 'signout', label: 'Sign out', group: 'Account', run: signOut })
@@ -518,13 +528,24 @@ export default function CubeApp({
           })}
         </nav>
         <span className="appbar__spacer" />
+        {isAdmin ? (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="appbar__admin"
+            onClick={() => setAdminView('overview')}
+            aria-pressed={adminView !== null}
+          >
+            Administration
+          </Button>
+        ) : null}
         <Button
           variant="ghost"
           size="sm"
           className="appbar__search"
           onClick={() => palette.setOpen(true)}
         >
-          Search<kbd className="kbd">⌘K</kbd>
+          Search<kbd className="kbd">{PALETTE_HINT}</kbd>
         </Button>
         <span role="status" aria-live="polite">
           <Tooltip
@@ -565,86 +586,120 @@ export default function CubeApp({
       </header>
 
       <div className="shell__body">
-        <ModelExplorer
-          selection={selection}
-          onSelect={(s) => navigate(s, {})}
-          isAdmin={isAdmin}
-          reloadSignal={reload}
-          onAction={onAction}
-        />
-
-        <main className="content">
-          {error ? (
-            <p className="error" role="alert">
-              {error}
-            </p>
-          ) : null}
-          <WelcomeCard username={username} isAdmin={isAdmin} hasCubes={cubes.length > 0} />
-
-          {showSandbox && cube ? (
-            <SandboxBar key={cube} cube={cube} onChange={bumpReload} />
-          ) : null}
-
-          {selection === null ? (
-            <EmptyState icon="▤" title="Pick an object to open">
-              {cubes.length === 0
-                ? isAdmin
-                  ? 'No cubes yet. Create one from the Cubes section to get started.'
-                  : 'No objects are available to you yet. Ask an administrator for access.'
-                : 'Choose a cube, dimension, flow, or schedule from the explorer on the left to open it.'}
-            </EmptyState>
-          ) : selection.kind === 'overview' ? (
-            <ServerOverview />
-          ) : selection.kind === 'security' ? (
-            <SecurityWorkspace />
-          ) : selection.kind === 'dimension' ? (
-            <DimensionsWorkspace
-              reloadSignal={reload}
-              initialDimId={nav.dimId}
-              autoNew={nav.autoNew}
-              navSignal={nav.signal}
-            />
-          ) : selection.kind === 'cube' && cube ? (
-            <PivotGrid cube={cube} reloadSignal={reload} />
-          ) : selection.kind === 'cube-dimension' && cube ? (
-            <ModelWorkspace
-              cube={cube}
-              reloadSignal={reload}
+        {adminView ? (
+          <main className="content admin-view">
+            <div className="admin-view__bar">
+              <Button variant="ghost" size="sm" onClick={() => setAdminView(null)}>
+                &larr; Back
+              </Button>
+              <div className="admin-view__nav" role="tablist" aria-label="Administration">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={adminView === 'overview'}
+                  className={`seg${adminView === 'overview' ? ' is-active' : ''}`}
+                  onClick={() => setAdminView('overview')}
+                >
+                  Server overview
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={adminView === 'security'}
+                  className={`seg${adminView === 'security' ? ' is-active' : ''}`}
+                  onClick={() => setAdminView('security')}
+                >
+                  Security &amp; audit
+                </button>
+              </div>
+            </div>
+            {error ? (
+              <p className="error" role="alert">
+                {error}
+              </p>
+            ) : null}
+            {adminView === 'overview' ? <ServerOverview /> : <SecurityWorkspace />}
+          </main>
+        ) : (
+          <>
+            <ModelExplorer
+              selection={selection}
+              onSelect={(s) => navigate(s, {})}
               isAdmin={isAdmin}
-              onCubeCreated={onCubeCreated}
-              initialDim={selection.dim || nav.dim}
-              autoNew={nav.autoNew}
-              navSignal={nav.signal}
-            />
-          ) : (selection.kind === 'cube-views' || selection.kind === 'view') && cube ? (
-            <ViewWorkspace
-              cube={cube}
               reloadSignal={reload}
-              initialView={selection.kind === 'view' ? selection.view : nav.view}
-              autoNew={nav.autoNew}
-              navSignal={nav.signal}
+              onAction={onAction}
             />
-          ) : selection.kind === 'cube-rules' && cube ? (
-            <RulesWorkspace cube={cube} reloadSignal={reload} onDirtyChange={setPaneDirty} />
-          ) : selection.kind === 'flow' && cube ? (
-            <FlowsWorkspace
-              cube={cube}
-              reloadSignal={reload}
-              isAdmin={isAdmin}
-              initialFlow={selection.flow || nav.flow}
-              autoNew={nav.autoNew}
-              navSignal={nav.signal}
-            />
-          ) : selection.kind === 'schedule' && cube ? (
-            <JobsWorkspace
-              cube={cube}
-              reloadSignal={reload}
-              initialJob={selection.job || nav.job}
-              autoNew={nav.autoNew}
-              navSignal={nav.signal}
-            />
-          ) : null}
-        </main>
+
+            <main className="content">
+              {error ? (
+                <p className="error" role="alert">
+                  {error}
+                </p>
+              ) : null}
+              <WelcomeCard username={username} isAdmin={isAdmin} hasCubes={cubes.length > 0} />
+
+              {showSandbox && cube ? (
+                <SandboxBar key={cube} cube={cube} onChange={bumpReload} />
+              ) : null}
+
+              {selection === null ? (
+                <EmptyState icon="▤" title="Pick an object to open">
+                  {cubes.length === 0
+                    ? isAdmin
+                      ? 'No cubes yet. Create one from the Cubes section to get started.'
+                      : 'No objects are available to you yet. Ask an administrator for access.'
+                    : 'Choose a cube, dimension, flow, or schedule from the explorer on the left to open it.'}
+                </EmptyState>
+              ) : selection.kind === 'dimension' ? (
+                <DimensionsWorkspace
+                  reloadSignal={reload}
+                  initialDimId={nav.dimId}
+                  autoNew={nav.autoNew}
+                  navSignal={nav.signal}
+                />
+              ) : selection.kind === 'cube' && cube ? (
+                <PivotGrid cube={cube} reloadSignal={reload} />
+              ) : selection.kind === 'cube-dimension' && cube ? (
+                <ModelWorkspace
+                  cube={cube}
+                  reloadSignal={reload}
+                  isAdmin={isAdmin}
+                  onCubeCreated={onCubeCreated}
+                  initialDim={selection.dim || nav.dim}
+                  autoNew={nav.autoNew}
+                  navSignal={nav.signal}
+                />
+              ) : (selection.kind === 'cube-views' || selection.kind === 'view') && cube ? (
+                <ViewWorkspace
+                  cube={cube}
+                  reloadSignal={reload}
+                  initialView={selection.kind === 'view' ? selection.view : nav.view}
+                  autoNew={nav.autoNew}
+                  navSignal={nav.signal}
+                />
+              ) : selection.kind === 'cube-rules' && cube ? (
+                <RulesWorkspace cube={cube} reloadSignal={reload} onDirtyChange={setPaneDirty} />
+              ) : selection.kind === 'flow' && cube ? (
+                <FlowsWorkspace
+                  cube={cube}
+                  reloadSignal={reload}
+                  isAdmin={isAdmin}
+                  initialFlow={selection.flow || nav.flow}
+                  autoNew={nav.autoNew}
+                  navSignal={nav.signal}
+                />
+              ) : selection.kind === 'schedule' && cube ? (
+                <JobsWorkspace
+                  cube={cube}
+                  reloadSignal={reload}
+                  initialJob={selection.job || nav.job}
+                  autoNew={nav.autoNew}
+                  navSignal={nav.signal}
+                />
+              ) : null}
+            </main>
+          </>
+        )}
       </div>
 
       <CommandPalette open={palette.open} onOpenChange={palette.setOpen} commands={commands} />
