@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   explainCell,
   getCube,
@@ -8,6 +8,7 @@ import {
   type CellDto,
   type Coord,
   type CubeDetail,
+  type DimensionDto,
   type SpreadMethod,
   type TraceDto,
 } from '../api/client'
@@ -16,6 +17,62 @@ import { TraceView } from './TraceView'
 
 function cellKey(row: string, col: string): string {
   return `${row} ${col}`
+}
+
+/** One row in the (possibly drilled-down) row axis: a dimension member with its
+ * nesting depth and whether it can be expanded to reveal children. */
+interface VisibleRow {
+  name: string
+  depth: number
+  expandable: boolean
+}
+
+/** Build the consolidation forest for a dimension: an ordered child list per
+ * parent, and the set of roots (members that are no one's child). Children keep
+ * the dimension's own element order so the grid is deterministic. */
+function buildForest(dim: DimensionDto | undefined): {
+  roots: string[]
+  childrenOf: Map<string, string[]>
+} {
+  const childrenOf = new Map<string, string[]>()
+  const childSet = new Set<string>()
+  if (dim) {
+    const order = new Map(dim.elements.map((el, i) => [el.name, i] as const))
+    for (const e of dim.edges) {
+      const arr = childrenOf.get(e.parent)
+      if (arr) arr.push(e.child)
+      else childrenOf.set(e.parent, [e.child])
+      childSet.add(e.child)
+    }
+    for (const arr of childrenOf.values()) {
+      arr.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
+    }
+  }
+  const roots = dim ? dim.elements.filter((el) => !childSet.has(el.name)).map((el) => el.name) : []
+  return { roots, childrenOf }
+}
+
+/** Flatten the forest into the rows that are currently visible, honoring the
+ * expanded set. A member with children gets a twisty; expanding it inserts its
+ * children one level deeper. An `ancestry` guard makes alternate-rollup DAGs
+ * (a member reachable from two parents) safe against cycles. */
+function flattenForest(
+  roots: string[],
+  childrenOf: Map<string, string[]>,
+  expanded: Set<string>,
+): VisibleRow[] {
+  const out: VisibleRow[] = []
+  const visit = (name: string, depth: number, ancestry: Set<string>) => {
+    const kids = childrenOf.get(name)
+    const expandable = !!kids && kids.length > 0
+    out.push({ name, depth, expandable })
+    if (expandable && expanded.has(name) && !ancestry.has(name)) {
+      const next = new Set(ancestry).add(name)
+      for (const child of kids) visit(child, depth + 1, next)
+    }
+  }
+  for (const r of roots) visit(r, 0, new Set())
+  return out
 }
 
 export default function PivotGrid({ cube, reloadSignal }: { cube: string; reloadSignal: number }) {
@@ -31,6 +88,8 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
   // 'off' is the disabled sentinel; a Radix Select.Item value may never be the
   // empty string, so the "off" option carries a real value.
   const [spreadMode, setSpreadMode] = useState<'off' | SpreadMethod>('off')
+  // Which consolidation members on the row axis are expanded (drill-down).
+  const [expandedRows, setExpandedRows] = useState<Set<string>>(() => new Set())
   const gridRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -71,9 +130,31 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     [context, rowDim, colDim],
   )
 
+  // Drill-down state belongs to a single (cube, row dimension) view; reset it
+  // when either changes so a stale expansion never carries over.
+  useEffect(() => {
+    setExpandedRows(new Set())
+  }, [cube, rowDim])
+
+  const rowDimDto = detail?.dimensions.find((d) => d.name === rowDim)
+  const { roots, childrenOf } = useMemo(() => buildForest(rowDimDto), [rowDimDto])
+  const visibleRows = useMemo(
+    () => flattenForest(roots, childrenOf, expandedRows),
+    [roots, childrenOf, expandedRows],
+  )
+
+  const toggleRow = useCallback((name: string) => {
+    setExpandedRows((s) => {
+      const n = new Set(s)
+      if (n.has(name)) n.delete(name)
+      else n.add(name)
+      return n
+    })
+  }, [])
+
   const refresh = useCallback(async () => {
     if (!detail || !rowDim || !colDim) return
-    const rows = detail.dimensions.find((d) => d.name === rowDim)?.elements ?? []
+    const rows = visibleRows
     const cols = detail.dimensions.find((d) => d.name === colDim)?.elements ?? []
     const coords: Coord[] = []
     for (const r of rows) {
@@ -96,7 +177,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to read cells')
     }
-  }, [cube, detail, rowDim, colDim, coordFor])
+  }, [cube, detail, rowDim, colDim, coordFor, visibleRows])
 
   useEffect(() => {
     void refresh()
@@ -174,7 +255,6 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     return <p className="banner" role="status">Loading {cube}…</p>
   }
 
-  const rowMembers = detail.dimensions.find((d) => d.name === rowDim)?.elements ?? []
   const colMembers = detail.dimensions.find((d) => d.name === colDim)?.elements ?? []
   const otherDims = detail.dimensions.filter((d) => d.name !== rowDim && d.name !== colDim)
   const dimOptions = detail.dimensions.map((d) => ({ value: d.name, label: d.name }))
@@ -247,10 +327,28 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
             </tr>
           </thead>
           <tbody>
-            {rowMembers.map((r, ri) => (
-              <tr key={r.name}>
+            {visibleRows.map((r, ri) => (
+              <tr key={`${r.name}#${ri}`}>
                 <th className="rowhead" scope="row">
-                  {r.name}
+                  <span
+                    className="pivot__rowhead-inner"
+                    style={{ paddingInlineStart: `${r.depth * 16}px` }}
+                  >
+                    {r.expandable ? (
+                      <button
+                        type="button"
+                        className="pivot__twisty"
+                        aria-expanded={expandedRows.has(r.name)}
+                        aria-label={`${expandedRows.has(r.name) ? 'Collapse' : 'Expand'} ${r.name}`}
+                        onClick={() => toggleRow(r.name)}
+                      >
+                        {expandedRows.has(r.name) ? '▾' : '▸'}
+                      </button>
+                    ) : (
+                      <span className="pivot__twisty pivot__twisty--leaf" aria-hidden="true" />
+                    )}
+                    <span className="pivot__rowhead-label">{r.name}</span>
+                  </span>
                 </th>
                 {colMembers.map((c, ci) => {
                   const cell = cells.get(cellKey(r.name, c.name))

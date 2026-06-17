@@ -751,10 +751,10 @@ li[role='treeitem']:focus-visible > .tree__row {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1rem;
-  flex: 0 0 1rem;
+  width: 1.25rem;
+  flex: 0 0 1.25rem;
   color: var(--color-text-subtle);
-  font-size: 0.7em;
+  font-size: 0.95em;
 }
 .tree__icon {
   display: inline-flex;
@@ -1065,7 +1065,25 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
 .grid-wrap table.pivot {
   border: none;
   border-radius: 0;
-  width: 100%;
+  /* Size to content, not the container: columns fit their data/header (with
+     padding) rather than stretching to fill the panel. The grid-wrap scrolls
+     when the data is wider than the panel. */
+  width: auto;
+  table-layout: auto;
+}
+/* Each column is at least readable but otherwise hugs its widest cell. Cells do
+   not wrap, so a column's width tracks its header or its longest value. */
+.grid-wrap table.pivot th,
+.grid-wrap table.pivot td {
+  white-space: nowrap;
+}
+.grid-wrap table.pivot thead th[scope='col'] {
+  min-width: 4.5rem;
+  text-align: right;
+}
+.grid-wrap table.pivot th.rowhead {
+  min-width: 8rem;
+  text-align: left;
 }
 .grid-wrap table.pivot thead th {
   position: sticky;
@@ -1082,6 +1100,41 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
 }
 .grid-wrap table.pivot th.corner {
   z-index: 3;
+}
+
+/* Hierarchical row headers (drill-down): a consolidation member expands in
+   place to show its children, indented one level deeper. */
+.pivot__rowhead-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.pivot__twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 1.25rem;
+  width: 1.25rem;
+  height: 1.25rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-subtle);
+  font-size: 0.95em;
+  line-height: 1;
+  cursor: pointer;
+}
+.pivot__twisty:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+.pivot__twisty--leaf {
+  cursor: default;
+}
+.pivot__rowhead-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Multi-cue cell affordances (ADR-0020): editable vs calculated. */
