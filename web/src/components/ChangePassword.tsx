@@ -44,9 +44,10 @@ export default function ChangePassword({
   return (
     <form className="pw-form" onSubmit={(event) => void submit(event)}>
       <Field label="Current password">
-        {(id) => (
+        {(id, a11y) => (
           <Input
             id={id}
+            {...a11y}
             type="password"
             value={current}
             autoComplete="current-password"
@@ -56,29 +57,37 @@ export default function ChangePassword({
         )}
       </Field>
       <Field label="New password" hint="At least 12 characters; avoid common passwords.">
-        {(id) => (
+        {(id, a11y) => (
           <Input
             id={id}
+            {...a11y}
             type="password"
             value={next}
             autoComplete="new-password"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={
+              error ? `pw-error ${a11y['aria-describedby'] ?? ''}`.trim() : a11y['aria-describedby']
+            }
             onChange={(e) => setNext(e.target.value)}
           />
         )}
       </Field>
       <Field label="Confirm new password">
-        {(id) => (
+        {(id, a11y) => (
           <Input
             id={id}
+            {...a11y}
             type="password"
             value={confirm}
             autoComplete="new-password"
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? 'pw-error' : undefined}
             onChange={(e) => setConfirm(e.target.value)}
           />
         )}
       </Field>
       {error ? (
-        <p className="field__msg field__msg--error" role="alert">
+        <p id="pw-error" className="field__msg field__msg--error" role="alert">
           {error}
         </p>
       ) : null}

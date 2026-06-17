@@ -15,7 +15,7 @@ import {
   type TestReportDto,
   type TraceDto,
 } from '../api/client'
-import { CodeEditor } from '../ui'
+import { CodeEditor, useConfirm } from '../ui'
 import { appendTemplate, RULE_TEMPLATES } from '../templates'
 import { TestReport } from './TestReport'
 
@@ -32,6 +32,7 @@ export default function RulesWorkspace({
   cube: string
   reloadSignal: number
 }) {
+  const confirm = useConfirm()
   const [detail, setDetail] = useState<CubeDetail | null>(null)
   const [source, setSource] = useState('')
   const [saved, setSaved] = useState('')
@@ -95,16 +96,19 @@ export default function RulesWorkspace({
       <section className="rules-editor">
         <div className="rules-editor-head">
           <h3>Rules</h3>
-          {preview?.ok === false ? (
-            <span className="error">
-              {preview.line ? `Line ${preview.line}, col ${preview.column}: ` : ''}
-              {preview.message}
-            </span>
-          ) : source.trim() === '' ? (
-            <span className="muted">No rules yet</span>
-          ) : (
-            <span className="ok">Valid</span>
-          )}
+          <span
+            role="status"
+            aria-live="polite"
+            className={
+              preview?.ok === false ? 'error' : source.trim() === '' ? 'muted' : 'ok'
+            }
+          >
+            {preview?.ok === false
+              ? `${preview.line ? `Line ${preview.line}, col ${preview.column}: ` : ''}${preview.message}`
+              : source.trim() === ''
+                ? 'No rules yet'
+                : 'Valid'}
+          </span>
           <select
             className="template-pick"
             value=""
@@ -132,7 +136,7 @@ export default function RulesWorkspace({
           rows={12}
           errorLine={preview?.ok === false ? preview.line : null}
         />
-        {saveError ? <p className="error">{saveError}</p> : null}
+        {saveError ? <p className="error" role="alert">{saveError}</p> : null}
         <div className="actions">
           <button
             className="primary"
@@ -141,7 +145,20 @@ export default function RulesWorkspace({
           >
             {saving ? 'Saving...' : 'Save rules'}
           </button>
-          <button disabled={!dirty} onClick={() => setSource(saved)}>
+          <button
+            disabled={!dirty}
+            onClick={() => {
+              if (!dirty) return
+              void confirm({
+                title: 'Discard changes',
+                body: 'Discard unsaved rule changes? Your edits since the last save will be lost.',
+                confirmLabel: 'Discard',
+                danger: true,
+              }).then((ok) => {
+                if (ok) setSource(saved)
+              })
+            }}
+          >
             Revert
           </button>
           {savedNote ? <span className="ok">Saved</span> : null}

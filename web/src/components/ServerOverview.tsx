@@ -99,14 +99,15 @@ export default function ServerOverview() {
           <p className="muted">No runs yet.</p>
         ) : (
           <table className="overview-table">
+            <caption className="sr-only">Recent runs</caption>
             <thead>
               <tr>
-                <th>State</th>
-                <th>Cube</th>
-                <th>Target</th>
-                <th>When</th>
-                <th>By</th>
-                <th>Result</th>
+                <th scope="col">State</th>
+                <th scope="col">Cube</th>
+                <th scope="col">Target</th>
+                <th scope="col">When</th>
+                <th scope="col">By</th>
+                <th scope="col">Result</th>
               </tr>
             </thead>
             <tbody>
@@ -120,13 +121,13 @@ export default function ServerOverview() {
                   </td>
                   <td>{formatTime(r.fire_millis)}</td>
                   <td>{r.principal}</td>
-                  <td>
-                    {r.error ? (
+                  {r.error ? (
+                    <td>
                       <span className="error">{r.error}</span>
-                    ) : (
-                      `${r.cells_written} cells`
-                    )}
-                  </td>
+                    </td>
+                  ) : (
+                    <td className="num">{`${r.cells_written.toLocaleString()} cells`}</td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -153,9 +154,24 @@ export default function ServerOverview() {
 }
 
 function Stat({ label, value, tone }: { label: string; value: string; tone?: 'danger' | 'warn' | 'neutral' }) {
+  const alert = tone && tone !== 'neutral'
   return (
     <div className="overview-stat">
-      <div className={`overview-stat__value${tone && tone !== 'neutral' ? ` is-${tone}` : ''}`}>{value}</div>
+      <div className={`overview-stat__value${alert ? ` is-${tone}` : ''}`}>
+        {tone === 'danger' ? (
+          <span className="overview-stat__icon" aria-hidden="true">
+            ✕{' '}
+          </span>
+        ) : tone === 'warn' ? (
+          <span className="overview-stat__icon" aria-hidden="true">
+            ⚠{' '}
+          </span>
+        ) : null}
+        {alert ? (
+          <span className="sr-only">{tone === 'danger' ? 'alert: ' : 'warning: '}</span>
+        ) : null}
+        {value}
+      </div>
       <div className="overview-stat__label">{label}</div>
     </div>
   )

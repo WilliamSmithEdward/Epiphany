@@ -1141,7 +1141,15 @@
 }
 .model-dim.is-active {
   border-color: var(--color-accent);
-  box-shadow: 0 0 0 1px var(--color-accent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+.model-dim.is-active .model-dim__name {
+  font-weight: var(--weight-semibold);
+}
+.saved-view.is-active {
+  font-weight: var(--weight-semibold);
+  border-color: var(--color-accent);
+  box-shadow: inset 3px 0 0 var(--color-accent);
 }
 .model-dim__name {
   font-weight: var(--weight-medium);
@@ -1326,6 +1334,11 @@
 .overview-table th {
   color: var(--color-text-muted);
   font-weight: 600;
+}
+.overview-table td.num,
+.overview-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* --- Welcome card + login hint (W5 onboarding) --- */

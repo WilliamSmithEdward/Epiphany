@@ -69,6 +69,7 @@ export default function ViewBuilder({
                 <td>
                   <select
                     value={cfg.placement}
+                    aria-label={`Place ${dim.name} on`}
                     onChange={(e) =>
                       onConfigChange(dim.name, { placement: e.target.value as Placement })
                     }
@@ -82,6 +83,7 @@ export default function ViewBuilder({
                   {cfg.placement === 'context' ? (
                     <select
                       value={cfg.contextMember}
+                      aria-label={`Context member for ${dim.name}`}
                       onChange={(e) => onConfigChange(dim.name, { contextMember: e.target.value })}
                     >
                       {dim.elements.map((el) => (
@@ -93,6 +95,7 @@ export default function ViewBuilder({
                   ) : (
                     <select
                       value={cfg.source}
+                      aria-label={`Members for ${dim.name}`}
                       onChange={(e) => onConfigChange(dim.name, { source: e.target.value })}
                     >
                       <option value={ALL_MEMBERS}>All members</option>
@@ -126,7 +129,7 @@ export default function ViewBuilder({
         </label>
         <label>
           Name
-          <input value={name} onChange={(e) => onNameChange(e.target.value)} placeholder="Save as..." />
+          <input value={name} onChange={(e) => onNameChange(e.target.value)} placeholder="e.g. Q4 plan" />
         </label>
         <label>
           Scope

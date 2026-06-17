@@ -99,6 +99,7 @@ export default function ModelWorkspace({
               key={d.name}
               type="button"
               className={d.name === dimName ? 'model-dim is-active' : 'model-dim'}
+              aria-pressed={d.name === dimName}
               onClick={() => setDimName(d.name)}
             >
               <span className="model-dim__name">{d.name}</span>
@@ -443,6 +444,8 @@ function NewCubeDialog({
   const [dims, setDims] = useState<DraftDimension[]>([newDraft()])
   const [library, setLibrary] = useState<SharedDimensionSummary[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
+  const [dimErrors, setDimErrors] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState(false)
 
   // Load the shared dimension library so dimensions can be added by reference.
@@ -460,16 +463,20 @@ function NewCubeDialog({
   }
 
   async function create() {
+    setNameError(undefined)
+    setDimErrors({})
+    setError(null)
     const cubeName = name.trim()
     if (cubeName === '') {
-      setError('Give the cube a name.')
+      setNameError('Give the cube a name.')
       return
     }
     const dimensions: NewDimension[] = []
-    for (const d of dims) {
+    for (let i = 0; i < dims.length; i++) {
+      const d = dims[i]
       if (d.source === 'reference') {
         if (d.ref === null) {
-          setError('Pick a shared dimension, or switch it to define inline.')
+          setDimErrors({ [i]: 'Pick a shared dimension, or switch it to define inline.' })
           return
         }
         const shared = library.find((s) => s.id === d.ref)
@@ -478,7 +485,7 @@ function NewCubeDialog({
       }
       const dn = d.name.trim()
       if (dn === '') {
-        setError('Every dimension needs a name.')
+        setDimErrors({ [i]: 'Every dimension needs a name.' })
         return
       }
       const members = d.members
@@ -486,7 +493,7 @@ function NewCubeDialog({
         .map((m) => m.trim())
         .filter((m) => m !== '')
       if (members.length === 0) {
-        setError(`Dimension "${dn}" needs at least one member.`)
+        setDimErrors({ [i]: `Dimension "${dn}" needs at least one member.` })
         return
       }
       const elements = members.map((m) => ({ name: m, kind: 'numeric' as ElementKind }))
@@ -531,9 +538,15 @@ function NewCubeDialog({
       }
     >
       <div className="new-cube">
-        <Field label="Cube name" hint="For example Sales or Budget.">
-          {(id) => (
-            <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="Sales" />
+        <Field label="Cube name" hint="For example Sales or Budget." error={nameError}>
+          {(id, a11y) => (
+            <Input
+              id={id}
+              {...a11y}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Sales"
+            />
           )}
         </Field>
 
@@ -561,6 +574,8 @@ function NewCubeDialog({
                     onChange={(e) => update(i, { name: e.target.value })}
                     placeholder={`Dimension ${i + 1} name (e.g. Region)`}
                     aria-label={`Dimension ${i + 1} name`}
+                    aria-invalid={dimErrors[i] ? true : undefined}
+                    aria-describedby={dimErrors[i] ? `new-cube-dim-${i}-err` : undefined}
                   />
                 ) : (
                   <Select
@@ -577,6 +592,7 @@ function NewCubeDialog({
                     className="icon-btn"
                     onClick={() => setDims((ds) => ds.filter((_, j) => j !== i))}
                     title="Remove dimension"
+                    aria-label={`Remove dimension ${i + 1}`}
                   >
                     ✕
                   </button>
@@ -589,6 +605,8 @@ function NewCubeDialog({
                     onChange={(e) => update(i, { members: e.target.value })}
                     placeholder={'Members, one per line\nNorth\nSouth'}
                     aria-label={`Dimension ${i + 1} members`}
+                    aria-invalid={dimErrors[i] ? true : undefined}
+                    aria-describedby={dimErrors[i] ? `new-cube-dim-${i}-err` : undefined}
                     rows={3}
                   />
                   <Switch
@@ -604,6 +622,15 @@ function NewCubeDialog({
                   library updates every cube that references it.
                 </p>
               )}
+              {dimErrors[i] ? (
+                <p
+                  id={`new-cube-dim-${i}-err`}
+                  className="field__msg field__msg--error"
+                  role="alert"
+                >
+                  {dimErrors[i]}
+                </p>
+              ) : null}
             </div>
           ))}
           <Button

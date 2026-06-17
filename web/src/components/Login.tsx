@@ -44,29 +44,35 @@ export default function Login({
           <p className="login__tagline">Multidimensional planning &amp; analytics</p>
         </div>
         <Field label="Username">
-          {(id) => (
+          {(id, a11y) => (
             <Input
               id={id}
+              {...a11y}
               value={username}
               autoComplete="username"
               autoFocus
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? 'login-error' : undefined}
               onChange={(e) => setUsername(e.target.value)}
             />
           )}
         </Field>
         <Field label="Password">
-          {(id) => (
+          {(id, a11y) => (
             <Input
               id={id}
+              {...a11y}
               type="password"
               value={password}
               autoComplete="current-password"
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? 'login-error' : undefined}
               onChange={(e) => setPassword(e.target.value)}
             />
           )}
         </Field>
         {error ? (
-          <p className="field__msg field__msg--error" role="alert">
+          <p id="login-error" className="field__msg field__msg--error" role="alert">
             {error}
           </p>
         ) : null}

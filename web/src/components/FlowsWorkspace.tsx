@@ -24,7 +24,7 @@ import {
   type RunReport,
   type TestReportDto,
 } from '../api/client'
-import { CodeEditor } from '../ui'
+import { CodeEditor, Field, Input, Textarea, useConfirm } from '../ui'
 import { appendTemplate, FLOW_TEMPLATES } from '../templates'
 import { TestReport } from './TestReport'
 
@@ -49,6 +49,7 @@ export default function FlowsWorkspace({
   reloadSignal: number
   isAdmin: boolean
 }) {
+  const confirm = useConfirm()
   const [detail, setDetail] = useState<CubeDetail | null>(null)
   const [flows, setFlows] = useState<FlowDto[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -120,6 +121,13 @@ export default function FlowsWorkspace({
   }
 
   async function remove(flowName: string) {
+    const ok = await confirm({
+      title: 'Delete flow',
+      body: `Delete flow "${flowName}"? This cannot be undone, and any schedule that runs it will fail.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await deleteFlow(cube, flowName)
       if (selected === flowName) newFlow()
@@ -142,7 +150,12 @@ export default function FlowsWorkspace({
               <button className={f.name === selected ? 'active' : ''} onClick={() => openFlow(f)}>
                 {f.name}
               </button>
-              <button className="link" onClick={() => void remove(f.name)} title="Delete">
+              <button
+                className="link"
+                onClick={() => void remove(f.name)}
+                title="Delete"
+                aria-label={`Delete flow ${f.name}`}
+              >
                 x
               </button>
             </li>
@@ -157,16 +170,19 @@ export default function FlowsWorkspace({
             Name
             <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. load_sales" />
           </label>
-          {preview?.ok === false ? (
-            <span className="error">
-              {preview.line ? `Line ${preview.line}, col ${preview.column}: ` : ''}
-              {preview.message}
-            </span>
-          ) : source.trim() === '' ? (
-            <span className="muted">Empty</span>
-          ) : (
-            <span className="ok">Valid</span>
-          )}
+          <span
+            role="status"
+            aria-live="polite"
+            className={
+              preview?.ok === false ? 'error' : source.trim() === '' ? 'muted' : 'ok'
+            }
+          >
+            {preview?.ok === false
+              ? `${preview.line ? `Line ${preview.line}, col ${preview.column}: ` : ''}${preview.message}`
+              : source.trim() === ''
+                ? 'Empty'
+                : 'Valid'}
+          </span>
           <select
             className="template-pick"
             value=""
@@ -292,6 +308,7 @@ function RunPanel({
 // ---- connection admin (command connectors) ----
 
 function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: number }) {
+  const confirm = useConfirm()
   const [connections, setConnections] = useState<ConnectionDto[]>([])
   const [kind, setKind] = useState<'command' | 'http'>('command')
   const [name, setName] = useState('')
@@ -377,6 +394,13 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
   }
 
   async function remove(connName: string) {
+    const ok = await confirm({
+      title: 'Delete data source',
+      body: `Delete data source "${connName}"? Flows or scheduled jobs that read from it will fail until you re-create it. This cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await deleteConnection(cube, connName)
       if (preview?.name === connName) setPreview(null)
@@ -418,7 +442,12 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
             >
               {testing === c.name ? 'testing…' : 'test'}
             </button>{' '}
-            <button className="link" onClick={() => void remove(c.name)} title="Delete">
+            <button
+              className="link"
+              onClick={() => void remove(c.name)}
+              title="Delete"
+              aria-label={`Delete data source ${c.name}`}
+            >
               x
             </button>
             {preview?.name === c.name ? <PreviewTable data={preview.data} /> : null}
@@ -432,51 +461,101 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
         using it in a flow.
       </p>
       <div className="conn-form">
-        <label className="check">
-          <span>Kind</span>
-          <select value={kind} onChange={(e) => setKind(e.target.value as 'command' | 'http')}>
-            <option value="command">command</option>
-            <option value="http">http</option>
-          </select>
-        </label>
-        <input value={name} placeholder="name" onChange={(e) => setName(e.target.value)} />
+        <Field label="Kind">
+          {(id, a11y) => (
+            <select
+              id={id}
+              {...a11y}
+              value={kind}
+              onChange={(e) => setKind(e.target.value as 'command' | 'http')}
+            >
+              <option value="command">command</option>
+              <option value="http">http</option>
+            </select>
+          )}
+        </Field>
+        <Field label="Name">
+          {(id, a11y) => (
+            <Input
+              id={id}
+              {...a11y}
+              value={name}
+              placeholder="orders_csv"
+              onChange={(e) => setName(e.target.value)}
+            />
+          )}
+        </Field>
         {kind === 'command' ? (
           <>
-            <input
-              value={program}
-              placeholder="program (e.g. python)"
-              onChange={(e) => setProgram(e.target.value)}
-            />
-            <textarea
-              value={args}
-              placeholder={'one argument per line\nscripts/extract.py\n--region=North'}
-              onChange={(e) => setArgs(e.target.value)}
-              rows={3}
-            />
-            <input
-              value={workingDir}
-              placeholder="working directory (optional, absolute path)"
-              onChange={(e) => setWorkingDir(e.target.value)}
-            />
+            <Field label="Program">
+              {(id, a11y) => (
+                <Input
+                  id={id}
+                  {...a11y}
+                  value={program}
+                  placeholder="program (e.g. python)"
+                  onChange={(e) => setProgram(e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Arguments">
+              {(id, a11y) => (
+                <Textarea
+                  id={id}
+                  {...a11y}
+                  value={args}
+                  placeholder={'one argument per line\nscripts/extract.py\n--region=North'}
+                  onChange={(e) => setArgs(e.target.value)}
+                  rows={3}
+                />
+              )}
+            </Field>
+            <Field label="Working directory">
+              {(id, a11y) => (
+                <Input
+                  id={id}
+                  {...a11y}
+                  value={workingDir}
+                  placeholder="optional, absolute path"
+                  onChange={(e) => setWorkingDir(e.target.value)}
+                />
+              )}
+            </Field>
           </>
         ) : (
           <>
-            <input
-              value={url}
-              placeholder="https://api.example.com/data.csv (host must be allowlisted)"
-              onChange={(e) => setUrl(e.target.value)}
-            />
-            <input
-              value={authSecret}
-              placeholder="bearer-token secret name (optional)"
-              onChange={(e) => setAuthSecret(e.target.value)}
-            />
+            <Field label="URL">
+              {(id, a11y) => (
+                <Input
+                  id={id}
+                  {...a11y}
+                  value={url}
+                  placeholder="https://api.example.com/data.csv (host must be allowlisted)"
+                  onChange={(e) => setUrl(e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Bearer-token secret name">
+              {(id, a11y) => (
+                <Input
+                  id={id}
+                  {...a11y}
+                  value={authSecret}
+                  placeholder="optional"
+                  onChange={(e) => setAuthSecret(e.target.value)}
+                />
+              )}
+            </Field>
           </>
         )}
-        <select value={format} onChange={(e) => setFormat(e.target.value)}>
-          <option value="csv">csv</option>
-          <option value="json">json</option>
-        </select>
+        <Field label="Format">
+          {(id, a11y) => (
+            <select id={id} {...a11y} value={format} onChange={(e) => setFormat(e.target.value)}>
+              <option value="csv">csv</option>
+              <option value="json">json</option>
+            </select>
+          )}
+        </Field>
         <button className="primary" disabled={saving} onClick={() => void add()}>
           {saving ? 'Saving...' : 'Add data source'}
         </button>
@@ -490,6 +569,7 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
 /** Manage the named HTTP credentials (ADR-0030; admin). Values are write-only:
  * the list shows names only, and a value is never returned after saving. */
 function SecretsPanel() {
+  const confirm = useConfirm()
   const [names, setNames] = useState<string[]>([])
   const [name, setName] = useState('')
   const [value, setValue] = useState('')
@@ -526,6 +606,13 @@ function SecretsPanel() {
   }
 
   async function remove(secretName: string) {
+    const ok = await confirm({
+      title: 'Delete secret',
+      body: `Delete secret "${secretName}"? The value cannot be recovered, and any HTTP connection that references it will stop working.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     try {
       await deleteSecret(secretName)
       load()
@@ -545,7 +632,12 @@ function SecretsPanel() {
         {names.map((n) => (
           <li key={n}>
             <strong>{n}</strong>{' '}
-            <button className="link" onClick={() => void remove(n)} title="Delete">
+            <button
+              className="link"
+              onClick={() => void remove(n)}
+              title="Delete"
+              aria-label={`Delete secret ${n}`}
+            >
               x
             </button>
           </li>
@@ -553,17 +645,29 @@ function SecretsPanel() {
         {names.length === 0 ? <li className="muted">No secrets</li> : null}
       </ul>
       <div className="conn-form">
-        <input
-          value={name}
-          placeholder="secret name (e.g. rates_token)"
-          onChange={(e) => setName(e.target.value)}
-        />
-        <input
-          type="password"
-          value={value}
-          placeholder="value (bearer token, or user:password for basic)"
-          onChange={(e) => setValue(e.target.value)}
-        />
+        <Field label="Secret name">
+          {(id, a11y) => (
+            <Input
+              id={id}
+              {...a11y}
+              value={name}
+              placeholder="e.g. rates_token"
+              onChange={(e) => setName(e.target.value)}
+            />
+          )}
+        </Field>
+        <Field label="Value">
+          {(id, a11y) => (
+            <Input
+              id={id}
+              {...a11y}
+              type="password"
+              value={value}
+              placeholder="bearer token, or user:password for basic"
+              onChange={(e) => setValue(e.target.value)}
+            />
+          )}
+        </Field>
         <button disabled={busy} onClick={() => void add()}>
           {busy ? 'Saving...' : 'Add secret'}
         </button>

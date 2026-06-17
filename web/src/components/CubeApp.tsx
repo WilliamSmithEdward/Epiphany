@@ -170,7 +170,9 @@ export default function CubeApp({
           <span className="crumbs__sep" aria-hidden="true">
             ›
           </span>
-          <span className="crumbs__seg crumbs__seg--current">{sectionLabel}</span>
+          <span className="crumbs__seg crumbs__seg--current" aria-current="page">
+            {sectionLabel}
+          </span>
         </nav>
         <span className="appbar__spacer" />
         <Button
@@ -181,13 +183,15 @@ export default function CubeApp({
         >
           Search<kbd className="kbd">⌘K</kbd>
         </Button>
-        <Tooltip content={live ? 'Live updates connected' : 'Offline - reconnecting'}>
-          <span>
-            <Badge tone={live ? 'success' : 'neutral'} dot>
-              {live ? 'Live' : 'Offline'}
-            </Badge>
-          </span>
-        </Tooltip>
+        <span role="status" aria-live="polite">
+          <Tooltip content={live ? 'Live updates connected' : 'Offline - reconnecting'}>
+            <span>
+              <Badge tone={live ? 'success' : 'neutral'} dot>
+                {live ? 'Live' : 'Offline'}
+              </Badge>
+            </span>
+          </Tooltip>
+        </span>
         <ThemeToggle />
         <Menu
           trigger={
@@ -239,6 +243,7 @@ export default function CubeApp({
                     key={n.id}
                     type="button"
                     className={section === n.id ? 'nav__item is-active' : 'nav__item'}
+                    aria-current={section === n.id ? 'page' : undefined}
                     onClick={() => setSection(n.id)}
                   >
                     <span className="nav__glyph" aria-hidden="true">

@@ -376,6 +376,12 @@ table.pivot th.rowhead {
   text-align: left;
 }
 
+.placements td.num,
+.placements th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .field-row {
   display: flex;
   gap: 1rem;
@@ -440,7 +446,11 @@ table.pivot th.rowhead {
 }
 
 .twisty {
-  width: 1.4rem;
+  min-width: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: 4px;
@@ -448,7 +458,7 @@ table.pivot th.rowhead {
 
 .twisty-spacer {
   display: inline-block;
-  width: 1.4rem;
+  width: 24px;
 }
 
 .picker {

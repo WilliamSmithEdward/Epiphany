@@ -30,24 +30,35 @@ export function Field({
   label: ReactNode
   hint?: ReactNode
   error?: ReactNode
-  /** Render-prop receiving the generated id to bind the control's `id`. */
-  children: (id: string) => ReactNode
+  /**
+   * Render-prop receiving the generated id plus the accessibility props
+   * (`aria-describedby` / `aria-invalid`) to spread onto the control so the
+   * hint/error is programmatically associated and invalid state is exposed.
+   */
+  children: (
+    id: string,
+    a11y: { 'aria-describedby'?: string; 'aria-invalid'?: boolean },
+  ) => ReactNode
   className?: string
 }) {
   const id = useId()
-  const hintId = `${id}-hint`
+  const msgId = `${id}-msg`
+  const a11y = {
+    'aria-describedby': error || hint ? msgId : undefined,
+    'aria-invalid': error ? true : undefined,
+  }
   return (
     <div className={cx('field', className)}>
       <label className="field__label" htmlFor={id}>
         {label}
       </label>
-      {children(id)}
+      {children(id, a11y)}
       {error ? (
-        <p className="field__msg field__msg--error" id={hintId}>
+        <p className="field__msg field__msg--error" id={msgId} role="alert">
           {error}
         </p>
       ) : hint ? (
-        <p className="field__msg field__msg--hint" id={hintId}>
+        <p className="field__msg field__msg--hint" id={msgId}>
           {hint}
         </p>
       ) : null}

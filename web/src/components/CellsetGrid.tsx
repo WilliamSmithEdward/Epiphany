@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { writeCell, type CellsetDto, type Coord } from '../api/client'
 import { computeHeaderSpans } from '../model/tree'
 
@@ -14,6 +15,7 @@ export default function CellsetGrid({
   cellset: CellsetDto
   onChanged: () => void
 }) {
+  const [error, setError] = useState<string | null>(null)
   const rowDims = cellset.row_dimensions.length
   const colLevels = cellset.column_dimensions.length
   const ncols = Math.max(1, cellset.column_tuples.length)
@@ -39,79 +41,95 @@ export default function CellsetGrid({
     return coord
   }
 
+  function cellLabel(r: number, c: number): string {
+    const rowName = (cellset.row_tuples[r] ?? []).map((m) => m.name).join(' / ')
+    const colName = (cellset.column_tuples[c] ?? []).map((m) => m.name).join(' / ')
+    return [rowName, colName].filter(Boolean).join(' × ') || 'Value'
+  }
+
   async function commit(r: number, c: number, previous: string, next: string) {
     if (next === previous) return
     try {
+      setError(null)
       await writeCell(cube, coordFor(r, c), next)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not save the cell')
     } finally {
       onChanged()
     }
   }
 
   return (
-    <table className="pivot cellset">
-      <thead>
-        {colLevels === 0 ? (
-          <tr>
-            <th className="corner" colSpan={cornerCols} />
-            <th>Value</th>
-          </tr>
-        ) : (
-          colHeader.map((row, level) => (
-            <tr key={level}>
-              {level === 0 ? (
-                <th className="corner" colSpan={cornerCols} rowSpan={colLevels} />
-              ) : null}
-              {row.map((span, i) => (
-                <th key={i} colSpan={span.span}>
-                  {span.name}
+    <div className="grid-wrap">
+      {error ? <p className="error" role="alert">{error}</p> : null}
+      <table className="pivot cellset">
+        <caption className="sr-only">{`Cells for ${cube}`}</caption>
+        <thead>
+          {colLevels === 0 ? (
+            <tr>
+              <th className="corner" colSpan={cornerCols} />
+              <th scope="col">Value</th>
+            </tr>
+          ) : (
+            colHeader.map((row, level) => (
+              <tr key={level}>
+                {level === 0 ? (
+                  <th className="corner" colSpan={cornerCols} rowSpan={colLevels} />
+                ) : null}
+                {row.map((span, i) => (
+                  <th key={i} scope="col" colSpan={span.span}>
+                    {span.name}
+                  </th>
+                ))}
+              </tr>
+            ))
+          )}
+        </thead>
+        <tbody>
+          {cellset.row_tuples.map((_, r) => (
+            <tr key={r}>
+              {rowHeaderAt[r].map((h, i) => (
+                <th key={i} scope="row" className="rowhead" rowSpan={h.rowSpan}>
+                  {h.name}
                 </th>
               ))}
-            </tr>
-          ))
-        )}
-      </thead>
-      <tbody>
-        {cellset.row_tuples.map((_, r) => (
-          <tr key={r}>
-            {rowHeaderAt[r].map((h, i) => (
-              <th key={i} className="rowhead" rowSpan={h.rowSpan}>
-                {h.name}
-              </th>
-            ))}
-            {Array.from({ length: ncols }, (_, c) => {
-              const cell = cellset.cells[r * ncols + c]
-              if (!cell) return <td key={c} className="cell" />
-              if (!cell.editable) {
+              {Array.from({ length: ncols }, (_, c) => {
+                const cell = cellset.cells[r * ncols + c]
+                if (!cell) return <td key={c} className="cell" />
+                if (!cell.editable) {
+                  return (
+                    <td
+                      key={c}
+                      className={cell.overlaid ? 'cell consolidated overlaid' : 'cell consolidated'}
+                    >
+                      {cell.value ?? ''}
+                    </td>
+                  )
+                }
                 return (
                   <td
                     key={c}
-                    className={cell.overlaid ? 'cell consolidated overlaid' : 'cell consolidated'}
+                    className={cell.overlaid ? 'cell overlaid' : 'cell'}
+                    title={cell.overlaid ? 'Uncommitted what-if value' : undefined}
                   >
-                    {cell.value ?? ''}
+                    <input
+                      key={cell.value ?? ''}
+                      aria-label={cellLabel(r, c)}
+                      defaultValue={cell.value ?? ''}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') e.currentTarget.blur()
+                      }}
+                      onBlur={(e) =>
+                        void commit(r, c, cell.value ?? '', e.currentTarget.value.trim())
+                      }
+                    />
                   </td>
                 )
-              }
-              return (
-                <td
-                  key={c}
-                  className={cell.overlaid ? 'cell overlaid' : 'cell'}
-                  title={cell.overlaid ? 'Uncommitted what-if value' : undefined}
-                >
-                  <input
-                    key={cell.value ?? ''}
-                    defaultValue={cell.value ?? ''}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') e.currentTarget.blur()
-                    }}
-                    onBlur={(e) => void commit(r, c, cell.value ?? '', e.currentTarget.value.trim())}
-                  />
-                </td>
-              )
-            })}
-          </tr>
-        ))}
-      </tbody>
-    </table>
+              })}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { queryAudit, type AuditRecordDto } from '../api/client'
 
 // The audit action tokens the server emits (ADR-0010), for the filter dropdown.
@@ -32,19 +32,27 @@ export default function AuditViewer() {
   const [actor, setActor] = useState('')
   const [action, setAction] = useState('')
   const [outcome, setOutcome] = useState<'' | 'allowed' | 'denied'>('')
+  const [loading, setLoading] = useState(false)
+  // Read the actor at query time so the load effect does not re-run on every
+  // keystroke; the actor query is run explicitly on blur, Enter, and Refresh.
+  const actorRef = useRef(actor)
+  actorRef.current = actor
 
   const load = useCallback(() => {
     setError(null)
+    setLoading(true)
     queryAudit({
-      actor: actor.trim() || undefined,
+      actor: actorRef.current.trim() || undefined,
       action: action || undefined,
       outcome: outcome || undefined,
       limit: 500,
     })
       .then(setRecords)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load audit log'))
-  }, [actor, action, outcome])
+      .finally(() => setLoading(false))
+  }, [action, outcome])
 
+  // The selects fire immediately; the actor text field does not (see above).
   useEffect(load, [load])
 
   return (
@@ -54,7 +62,15 @@ export default function AuditViewer() {
       <div className="field-row">
         <label>
           Actor
-          <input value={actor} onChange={(e) => setActor(e.target.value)} placeholder="any" />
+          <input
+            value={actor}
+            onChange={(e) => setActor(e.target.value)}
+            onBlur={load}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') load()
+            }}
+            placeholder="any"
+          />
         </label>
         <label>
           Action
@@ -84,22 +100,34 @@ export default function AuditViewer() {
           Refresh
         </button>
       </div>
-      {records.length === 0 ? <p className="muted">No matching records.</p> : null}
+      {loading ? (
+        <p className="banner" role="status" aria-live="polite">
+          Loading audit records…
+        </p>
+      ) : records.length === 0 ? (
+        <p className="muted">No matching records.</p>
+      ) : null}
+      <p role="status" aria-live="polite" className="muted">
+        {loading || records.length === 0
+          ? ''
+          : `${records.length} record${records.length === 1 ? '' : 's'}`}
+      </p>
       <table className="placements">
+        <caption className="sr-only">Audit records</caption>
         <thead>
           <tr>
-            <th>Seq</th>
-            <th>Time</th>
-            <th>Actor</th>
-            <th>Action</th>
-            <th>Target</th>
-            <th>Outcome</th>
+            <th scope="col" className="num">Seq</th>
+            <th scope="col">Time</th>
+            <th scope="col">Actor</th>
+            <th scope="col">Action</th>
+            <th scope="col">Target</th>
+            <th scope="col">Outcome</th>
           </tr>
         </thead>
         <tbody>
           {records.map((r) => (
             <tr key={r.seq}>
-              <td>{r.seq}</td>
+              <td className="num">{r.seq}</td>
               <td>{formatTime(r.timestamp_millis)}</td>
               <td>{r.actor}</td>
               <td>{r.action}</td>

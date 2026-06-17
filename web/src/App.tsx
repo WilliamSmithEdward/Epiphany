@@ -3,7 +3,7 @@ import Login from './components/Login'
 import CubeApp from './components/CubeApp'
 import ChangePassword from './components/ChangePassword'
 import ThemeToggle from './ui/ThemeToggle'
-import { TooltipProvider } from './ui'
+import { TooltipProvider, ConfirmProvider } from './ui'
 
 interface Session {
   username: string
@@ -17,6 +17,7 @@ export default function App() {
 
   return (
     <TooltipProvider>
+      <ConfirmProvider>
       {!session ? (
         <Login
           onLoggedIn={(username, isAdmin, mustChange) =>
@@ -49,6 +50,7 @@ export default function App() {
           onLogout={() => setSession(null)}
         />
       )}
+      </ConfirmProvider>
     </TooltipProvider>
   )
 }

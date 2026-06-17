@@ -64,6 +64,7 @@ export function CommandPalette({
           <input
             ref={inputRef}
             className="cmdk__input"
+            aria-label="Search cubes, sections, and actions"
             placeholder="Search cubes, sections, actions…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -80,6 +81,11 @@ export function CommandPalette({
               }
             }}
           />
+          <div className="sr-only" role="status" aria-live="polite">
+            {results.length === 0
+              ? 'No matches'
+              : `${results.length} result${results.length === 1 ? '' : 's'}`}
+          </div>
           <ul className="cmdk__list" role="listbox">
             {results.length === 0 ? (
               <li className="cmdk__empty">No matches</li>

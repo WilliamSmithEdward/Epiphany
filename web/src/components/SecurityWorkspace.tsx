@@ -20,6 +20,7 @@ import {
   type UserDto,
 } from '../api/client'
 import AuditViewer from './AuditViewer'
+import { useConfirm } from '../ui'
 
 type Tab = 'users' | 'groups' | 'roles' | 'elements' | 'audit'
 
@@ -56,19 +57,39 @@ export default function SecurityWorkspace() {
   return (
     <div>
       <div className="tabs">
-        <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')}>
+        <button
+          className={tab === 'users' ? 'active' : ''}
+          aria-current={tab === 'users' ? 'true' : undefined}
+          onClick={() => setTab('users')}
+        >
           Users
         </button>
-        <button className={tab === 'groups' ? 'active' : ''} onClick={() => setTab('groups')}>
+        <button
+          className={tab === 'groups' ? 'active' : ''}
+          aria-current={tab === 'groups' ? 'true' : undefined}
+          onClick={() => setTab('groups')}
+        >
           Groups
         </button>
-        <button className={tab === 'roles' ? 'active' : ''} onClick={() => setTab('roles')}>
+        <button
+          className={tab === 'roles' ? 'active' : ''}
+          aria-current={tab === 'roles' ? 'true' : undefined}
+          onClick={() => setTab('roles')}
+        >
           Roles
         </button>
-        <button className={tab === 'elements' ? 'active' : ''} onClick={() => setTab('elements')}>
+        <button
+          className={tab === 'elements' ? 'active' : ''}
+          aria-current={tab === 'elements' ? 'true' : undefined}
+          onClick={() => setTab('elements')}
+        >
           Element access
         </button>
-        <button className={tab === 'audit' ? 'active' : ''} onClick={() => setTab('audit')}>
+        <button
+          className={tab === 'audit' ? 'active' : ''}
+          aria-current={tab === 'audit' ? 'true' : undefined}
+          onClick={() => setTab('audit')}
+        >
           Audit
         </button>
       </div>
@@ -95,6 +116,7 @@ function useAction(reload: () => void, setError: (m: string | null) => void) {
 }
 
 function UsersTab() {
+  const confirm = useConfirm()
   const [users, setUsers] = useState<UserDto[]>([])
   const [error, setError] = useState<string | null>(null)
   const [drafts, setDrafts] = useState<Record<string, string>>({})
@@ -146,13 +168,16 @@ function UsersTab() {
         </p>
       ) : null}
       <table className="placements">
+        <caption className="sr-only">Users</caption>
         <thead>
           <tr>
-            <th>Username</th>
-            <th>Admin</th>
-            <th>Groups (comma-separated)</th>
-            <th>Password reset</th>
-            <th />
+            <th scope="col">Username</th>
+            <th scope="col">Admin</th>
+            <th scope="col">Groups (comma-separated)</th>
+            <th scope="col">Password reset</th>
+            <th scope="col">
+              <span className="sr-only">Actions</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -160,16 +185,30 @@ function UsersTab() {
             const draft = drafts[u.username] ?? u.groups.join(', ')
             return (
               <tr key={u.username}>
-                <td>{u.username}</td>
+                <th scope="row">{u.username}</th>
                 <td>
                   <input
                     type="checkbox"
+                    aria-label={`Administrator: ${u.username}`}
                     checked={u.is_admin}
-                    onChange={(e) => act(() => patchUser(u.username, { is_admin: e.target.checked }))}
+                    onChange={(e) => {
+                      const next = e.target.checked
+                      void confirm({
+                        title: next ? 'Grant administrator' : 'Revoke administrator',
+                        body: next
+                          ? `Make "${u.username}" an administrator? They will gain full control over the server.`
+                          : `Remove administrator rights from "${u.username}"?`,
+                        confirmLabel: next ? 'Make admin' : 'Remove admin',
+                        danger: !next,
+                      }).then((ok) => {
+                        if (ok) act(() => patchUser(u.username, { is_admin: next }))
+                      })
+                    }}
                   />
                 </td>
                 <td>
                   <input
+                    aria-label={`Groups for ${u.username}`}
                     value={draft}
                     onChange={(e) => setDrafts({ ...drafts, [u.username]: e.target.value })}
                   />
@@ -184,6 +223,7 @@ function UsersTab() {
                 <td>
                   <input
                     type="password"
+                    aria-label={`New password for ${u.username}`}
                     placeholder="new password"
                     value={pw[u.username] ?? ''}
                     onChange={(e) => setPw({ ...pw, [u.username]: e.target.value })}
@@ -202,7 +242,20 @@ function UsersTab() {
                   <button onClick={() => void resetTemp(u.username)}>Reset to temp</button>
                 </td>
                 <td>
-                  <button onClick={() => act(() => deleteUser(u.username))}>Delete</button>
+                  <button
+                    onClick={() =>
+                      void confirm({
+                        title: 'Delete user',
+                        body: `Permanently delete user "${u.username}"? This cannot be undone.`,
+                        confirmLabel: 'Delete',
+                        danger: true,
+                      }).then((ok) => {
+                        if (ok) act(() => deleteUser(u.username))
+                      })
+                    }
+                  >
+                    Delete
+                  </button>
                 </td>
               </tr>
             )
@@ -256,6 +309,7 @@ function UsersTab() {
 }
 
 function GroupsTab() {
+  const confirm = useConfirm()
   const [groups, setGroups] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
   const [name, setName] = useState('')
@@ -277,9 +331,22 @@ function GroupsTab() {
         <tbody>
           {groups.map((g) => (
             <tr key={g}>
-              <td>{g}</td>
+              <th scope="row">{g}</th>
               <td>
-                <button onClick={() => act(() => deleteGroup(g))}>Delete</button>
+                <button
+                  onClick={() =>
+                    void confirm({
+                      title: 'Delete group',
+                      body: `Delete group "${g}"? Members will lose any access granted through it. This cannot be undone.`,
+                      confirmLabel: 'Delete',
+                      danger: true,
+                    }).then((ok) => {
+                      if (ok) act(() => deleteGroup(g))
+                    })
+                  }
+                >
+                  Delete
+                </button>
               </td>
             </tr>
           ))}
@@ -310,6 +377,7 @@ function GroupsTab() {
 }
 
 function RolesTab() {
+  const confirm = useConfirm()
   const [grants, setGrants] = useState<GrantDto[]>([])
   const [error, setError] = useState<string | null>(null)
   const [subjectKind, setSubjectKind] = useState<SubjectKind>('group')
@@ -338,13 +406,16 @@ function RolesTab() {
       </p>
       {error ? <p className="error" role="alert">{error}</p> : null}
       <table className="placements">
+        <caption className="sr-only">Role grants</caption>
         <thead>
           <tr>
-            <th>Subject</th>
-            <th>Scope</th>
-            <th>Kind</th>
-            <th>Level</th>
-            <th />
+            <th scope="col">Subject</th>
+            <th scope="col">Scope</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Level</th>
+            <th scope="col">
+              <span className="sr-only">Actions</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -359,7 +430,14 @@ function RolesTab() {
               <td>
                 <button
                   onClick={() =>
-                    act(() => setGrant({ ...g, level: 'none' as AccessLevel }))
+                    void confirm({
+                      title: 'Revoke role',
+                      body: `Revoke ${g.subject_kind}: ${g.subject} → ${g.kind} on ${g.scope === 'global' ? 'all cubes' : g.cube}?`,
+                      confirmLabel: 'Revoke',
+                      danger: true,
+                    }).then((ok) => {
+                      if (ok) act(() => setGrant({ ...g, level: 'none' as AccessLevel }))
+                    })
                   }
                 >
                   Revoke
@@ -468,6 +546,7 @@ function RolesTab() {
 }
 
 function ElementAclTab() {
+  const confirm = useConfirm()
   const [grants, setGrants] = useState<ElementGrantDto[]>([])
   const [error, setError] = useState<string | null>(null)
   const [cube, setCube] = useState('')
@@ -494,14 +573,17 @@ function ElementAclTab() {
       </p>
       {error ? <p className="error" role="alert">{error}</p> : null}
       <table className="placements">
+        <caption className="sr-only">Element access</caption>
         <thead>
           <tr>
-            <th>Cube</th>
-            <th>Dimension</th>
-            <th>Element</th>
-            <th>Subject</th>
-            <th>Level</th>
-            <th />
+            <th scope="col">Cube</th>
+            <th scope="col">Dimension</th>
+            <th scope="col">Element</th>
+            <th scope="col">Subject</th>
+            <th scope="col">Level</th>
+            <th scope="col">
+              <span className="sr-only">Actions</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -515,7 +597,18 @@ function ElementAclTab() {
               </td>
               <td>{g.level}</td>
               <td>
-                <button onClick={() => act(() => putElementAcl({ ...g, level: 'none' }))}>
+                <button
+                  onClick={() =>
+                    void confirm({
+                      title: 'Revoke element access',
+                      body: `Revoke ${g.subject_kind}: ${g.subject} access to ${g.cube}/${g.dimension}/${g.element}? Everyone else will remain restricted from this member.`,
+                      confirmLabel: 'Revoke',
+                      danger: true,
+                    }).then((ok) => {
+                      if (ok) act(() => putElementAcl({ ...g, level: 'none' }))
+                    })
+                  }
+                >
                   Revoke
                 </button>
               </td>

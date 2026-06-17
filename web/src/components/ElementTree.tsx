@@ -39,6 +39,7 @@ function TreeItem({
           <button
             type="button"
             className="twisty"
+            aria-expanded={open}
             aria-label={open ? 'Collapse' : 'Expand'}
             onClick={() => setOpen((o) => !o)}
           >

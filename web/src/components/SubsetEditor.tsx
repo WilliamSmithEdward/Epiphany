@@ -8,6 +8,7 @@ import {
   type Visibility,
 } from '../api/client'
 import { buildElementTree } from '../model/tree'
+import { Tabs, TabPanel } from '../ui'
 import ElementTree from './ElementTree'
 
 // Create a subset for one dimension. Two modes: a default tree picker producing a
@@ -105,40 +106,44 @@ export default function SubsetEditor({
         </label>
       </div>
 
-      <div className="tabs">
-        <button className={tab === 'pick' ? 'active' : ''} onClick={() => setTab('pick')}>
-          Pick members
-        </button>
-        <button className={tab === 'mdx' ? 'active' : ''} onClick={() => setTab('mdx')}>
-          Advanced (MDX)
-        </button>
-      </div>
-
-      {tab === 'pick' ? (
-        <div className="picker">
-          <ElementTree nodes={tree} selected={picked} onToggle={toggle} />
-          <p className="muted">{picked.size} selected</p>
-        </div>
-      ) : (
-        <div className="mdx">
-          <textarea
-            value={mdx}
-            onChange={(e) => setMdx(e.target.value)}
-            placeholder="e.g. {[Region].[Total].Children}"
-            rows={3}
-          />
-          {previewError ? (
-            <p className="error">{previewError}</p>
-          ) : (
-            <p className="muted">Resolves to {preview.length} members</p>
-          )}
-          <ul className="member-preview">
-            {preview.slice(0, 50).map((m) => (
-              <li key={m.name}>{m.name}</li>
-            ))}
-          </ul>
-        </div>
-      )}
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(v as 'pick' | 'mdx')}
+        items={[
+          { value: 'pick', label: 'Pick members' },
+          { value: 'mdx', label: 'Advanced (MDX)' },
+        ]}
+      >
+        <TabPanel value="pick">
+          <div className="picker">
+            <ElementTree nodes={tree} selected={picked} onToggle={toggle} />
+            <p className="muted">{picked.size} selected</p>
+          </div>
+        </TabPanel>
+        <TabPanel value="mdx">
+          <div className="mdx">
+            <textarea
+              value={mdx}
+              onChange={(e) => setMdx(e.target.value)}
+              placeholder="e.g. {[Region].[Total].Children}"
+              aria-label="MDX expression"
+              rows={3}
+            />
+            <p className={previewError ? 'error' : 'muted'} role="status" aria-live="polite">
+              {previewError
+                ? previewError
+                : mdx.trim()
+                  ? `Resolves to ${preview.length} members`
+                  : ''}
+            </p>
+            <ul className="member-preview">
+              {preview.slice(0, 50).map((m) => (
+                <li key={m.name}>{m.name}</li>
+              ))}
+            </ul>
+          </div>
+        </TabPanel>
+      </Tabs>
 
       {error ? <p className="error" role="alert">{error}</p> : null}
       <div className="actions">

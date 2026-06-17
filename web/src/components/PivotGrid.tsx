@@ -243,6 +243,8 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
                       cell={cell}
                       r={ri}
                       c={ci}
+                      rowName={r.name}
+                      colName={c.name}
                       spreadMode={spreadMode}
                       onCommit={(next) => void commit(r.name, c.name, cell?.value ?? '', next)}
                       onSpread={(next) => void spread(r.name, c.name, next)}
@@ -283,6 +285,8 @@ function CellView({
   cell,
   r,
   c,
+  rowName,
+  colName,
   spreadMode,
   onCommit,
   onSpread,
@@ -292,12 +296,15 @@ function CellView({
   cell: CellDto | undefined
   r: number
   c: number
+  rowName: string
+  colName: string
   spreadMode: 'off' | SpreadMethod
   onCommit: (next: string) => void
   onSpread: (next: string) => void
   onNav: (r: number, c: number) => void
   onDrill: () => void
 }) {
+  const cellLabel = `${rowName} ${colName}`
   if (!cell || !cell.editable) {
     // With spreading on, a calculated (total) cell accepts a value to distribute
     // across its leaves; otherwise it stays a click-to-explain calculated value.
@@ -308,6 +315,7 @@ function CellView({
             key={`spread-${cell.value ?? ''}`}
             data-r={r}
             data-c={c}
+            aria-label={`Spread ${cellLabel}`}
             defaultValue=""
             placeholder={spreadMode === 'clear' ? '↵ clear' : cell.value ?? ''}
             inputMode="decimal"
@@ -354,6 +362,7 @@ function CellView({
         key={cell.value ?? ''}
         data-r={r}
         data-c={c}
+        aria-label={cellLabel}
         defaultValue={cell.value ?? ''}
         inputMode="decimal"
         onKeyDown={(e) => {

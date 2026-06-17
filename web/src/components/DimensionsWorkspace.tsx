@@ -9,7 +9,19 @@ import {
   type SharedDimensionDetail,
   type SharedDimensionSummary,
 } from '../api/client'
-import { Badge, Button, Card, Dialog, EmptyState, Field, Input, Select, Switch, Textarea } from '../ui'
+import {
+  Badge,
+  Button,
+  Card,
+  Dialog,
+  EmptyState,
+  Field,
+  Input,
+  Select,
+  Switch,
+  Textarea,
+  useConfirm,
+} from '../ui'
 
 const KIND_OPTIONS = [
   { value: 'numeric', label: 'Number (input cell)' },
@@ -105,6 +117,7 @@ export default function DimensionsWorkspace({ reloadSignal }: { reloadSignal: nu
                 key={d.id}
                 type="button"
                 className={d.id === selectedId ? 'model-dim is-active' : 'model-dim'}
+                aria-pressed={d.id === selectedId}
                 onClick={() => setSelectedId(d.id)}
               >
                 <span className="model-dim__name">{d.name}</span>
@@ -136,6 +149,7 @@ export default function DimensionsWorkspace({ reloadSignal }: { reloadSignal: nu
 // ---- editor for one shared dimension ----
 
 function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () => void }) {
+  const confirm = useConfirm()
   const [detail, setDetail] = useState<SharedDimensionDetail | null>(null)
   const [memberName, setMemberName] = useState('')
   const [memberKind, setMemberKind] = useState<ElementKind>('numeric')
@@ -208,6 +222,13 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
   }
 
   async function remove() {
+    const ok = await confirm({
+      title: 'Delete shared dimension',
+      body: `Delete shared dimension "${detail?.name ?? ''}"? This permanently removes the dimension and cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     setBusy(true)
     setError(null)
     try {
@@ -356,12 +377,15 @@ function NewDimensionDialog({
   const [members, setMembers] = useState('')
   const [total, setTotal] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [fieldErrors, setFieldErrors] = useState<{ name?: string; members?: string }>({})
   const [busy, setBusy] = useState(false)
 
   async function create() {
+    setFieldErrors({})
+    setError(null)
     const dn = name.trim()
     if (dn === '') {
-      setError('Give the dimension a name.')
+      setFieldErrors({ name: 'Give the dimension a name.' })
       return
     }
     const memberList = members
@@ -369,7 +393,7 @@ function NewDimensionDialog({
       .map((m) => m.trim())
       .filter((m) => m !== '')
     if (memberList.length === 0) {
-      setError('Add at least one member, one per line.')
+      setFieldErrors({ members: 'Add at least one member, one per line.' })
       return
     }
     const elements = memberList.map((m) => ({ name: m, kind: 'numeric' as ElementKind }))
@@ -412,15 +436,26 @@ function NewDimensionDialog({
       }
     >
       <div className="new-cube">
-        <Field label="Dimension name" hint="For example Product or Region.">
-          {(id) => (
-            <Input id={id} value={name} onChange={(e) => setName(e.target.value)} placeholder="Product" />
+        <Field
+          label="Dimension name"
+          hint="For example Product or Region."
+          error={fieldErrors.name}
+        >
+          {(id, a11y) => (
+            <Input
+              id={id}
+              {...a11y}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Product"
+            />
           )}
         </Field>
-        <Field label="Members" hint="One per line.">
-          {(id) => (
+        <Field label="Members" hint="One per line." error={fieldErrors.members}>
+          {(id, a11y) => (
             <Textarea
               id={id}
+              {...a11y}
               value={members}
               onChange={(e) => setMembers(e.target.value)}
               placeholder={'Widget\nGadget'}

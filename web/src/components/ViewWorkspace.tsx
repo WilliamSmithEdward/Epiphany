@@ -30,6 +30,9 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
   const [config, setConfig] = useState<Record<string, DimConfig>>({})
   const [suppress, setSuppress] = useState(false)
   const [name, setName] = useState('')
+  // The saved view currently applied to the builder, for the you-are-here cue.
+  // Cleared whenever the builder is edited away from that view.
+  const [openViewName, setOpenViewName] = useState<string | null>(null)
   const [visibility, setVisibility] = useState<Visibility>('public')
   const [cellset, setCellset] = useState<CellsetDto | null>(null)
   const [editorDim, setEditorDim] = useState<string | null>(null)
@@ -115,6 +118,7 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
 
   function updateConfig(dim: string, partial: Partial<DimConfig>) {
     setConfig((current) => ({ ...current, [dim]: { ...current[dim], ...partial } }))
+    setOpenViewName(null)
   }
 
   async function save() {
@@ -143,6 +147,7 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
       setVisibility(view.visibility)
       setSuppress(view.suppress_zeros)
       setCellset(await executeView(cube, viewName))
+      setOpenViewName(viewName)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not open the view')
@@ -197,7 +202,11 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
           <ul className="saved-views">
             {savedViews.map((v) => (
               <li key={v.name}>
-                <button onClick={() => void openView(v.name)}>
+                <button
+                  className={v.name === openViewName ? 'saved-view is-active' : 'saved-view'}
+                  aria-current={v.name === openViewName ? 'true' : undefined}
+                  onClick={() => void openView(v.name)}
+                >
                   {v.name} <small>{v.visibility === 'private' ? 'only me' : 'shared'}</small>
                 </button>
               </li>
@@ -225,9 +234,15 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
             config={config}
             onConfigChange={updateConfig}
             suppress={suppress}
-            onSuppressChange={setSuppress}
+            onSuppressChange={(v) => {
+              setSuppress(v)
+              setOpenViewName(null)
+            }}
             name={name}
-            onNameChange={setName}
+            onNameChange={(v) => {
+              setName(v)
+              setOpenViewName(null)
+            }}
             visibility={visibility}
             onVisibilityChange={setVisibility}
             onRun={() => void run()}

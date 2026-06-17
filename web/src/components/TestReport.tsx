@@ -6,7 +6,7 @@ import type { TestReportDto } from '../api/client'
 export function TestReport({ report }: { report: TestReportDto }) {
   return (
     <div className="test-report">
-      <p className={report.all_passed ? 'ok' : 'error'}>
+      <p role="status" className={report.all_passed ? 'ok' : 'error'}>
         {report.all_passed
           ? `All ${report.outcomes.length} tests passed`
           : `${report.outcomes.filter((o) => !o.passed).length} of ${report.outcomes.length} failed`}

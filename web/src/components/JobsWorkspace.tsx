@@ -10,7 +10,7 @@ import {
   type JobDto,
   type RunDto,
 } from '../api/client'
-import { Badge, Button, Card, EmptyState, Field, Input, Select, Switch } from '../ui'
+import { Badge, Button, Card, EmptyState, Field, Input, Select, Switch, useConfirm } from '../ui'
 
 // Friendly interval units. every_millis on the wire is always milliseconds; the
 // editor lets a planner think in seconds / minutes / hours / days instead.
@@ -70,6 +70,7 @@ export default function JobsWorkspace({
   cube: string
   reloadSignal: number
 }) {
+  const confirm = useConfirm()
   const [jobs, setJobs] = useState<JobDto[]>([])
   const [flows, setFlows] = useState<FlowDto[]>([])
   const [runs, setRuns] = useState<RunDto[]>([])
@@ -166,6 +167,13 @@ export default function JobsWorkspace({
   }
 
   async function remove(name: string) {
+    const ok = await confirm({
+      title: 'Delete schedule',
+      body: `Delete schedule "${name}"? This permanently removes the schedule and cannot be undone.`,
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!ok) return
     setError(null)
     try {
       await deleteJob(cube, name)
@@ -256,9 +264,10 @@ export default function JobsWorkspace({
         ) : (
           <div className="job-editor">
             <Field label="Name" hint="A short label, for example refresh_actuals.">
-              {(id) => (
+              {(id, a11y) => (
                 <Input
                   id={id}
+                  {...a11y}
                   value={draft.name}
                   onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
                   placeholder="refresh_actuals"
@@ -274,6 +283,7 @@ export default function JobsWorkspace({
                   type="number"
                   min={1}
                   className="job-interval__count"
+                  aria-label="Run interval count"
                   value={String(draft.count)}
                   onChange={(e) =>
                     setDraft((d) => ({ ...d, count: Math.max(1, Number(e.target.value) || 1) }))
@@ -308,6 +318,7 @@ export default function JobsWorkspace({
                           disabled={i === 0}
                           onClick={() => moveStep(i, -1)}
                           title="Move up"
+                          aria-label="Move step up"
                         >
                           ↑
                         </button>
@@ -317,6 +328,7 @@ export default function JobsWorkspace({
                           disabled={i === draft.steps.length - 1}
                           onClick={() => moveStep(i, 1)}
                           title="Move down"
+                          aria-label="Move step down"
                         >
                           ↓
                         </button>
@@ -325,6 +337,7 @@ export default function JobsWorkspace({
                           className="icon-btn"
                           onClick={() => removeStep(i)}
                           title="Remove step"
+                          aria-label="Remove step"
                         >
                           ✕
                         </button>
@@ -383,15 +396,16 @@ export default function JobsWorkspace({
         ) : (
           <div className="run-table-wrap">
             <table className="run-table">
+              <caption className="sr-only">Recent runs</caption>
               <thead>
                 <tr>
-                  <th>Status</th>
-                  <th>Target</th>
-                  <th>When</th>
-                  <th className="num">Rows</th>
-                  <th className="num">Cells</th>
-                  <th className="num">Elements</th>
-                  <th>By</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Target</th>
+                  <th scope="col">When</th>
+                  <th scope="col" className="num">Rows</th>
+                  <th scope="col" className="num">Cells</th>
+                  <th scope="col" className="num">Elements</th>
+                  <th scope="col">By</th>
                 </tr>
               </thead>
               <tbody>
