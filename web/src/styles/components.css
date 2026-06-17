@@ -351,6 +351,32 @@
 .dialog--xl {
   max-width: 72rem;
 }
+
+/* Member-sets manager (CRUD list of a dimension's saved subsets). */
+.sets-manager__bar {
+  margin-bottom: var(--space-3);
+}
+.sets-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: var(--space-3);
+}
+.sets-table th,
+.sets-table td {
+  text-align: left;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.sets-table thead th {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-subtle);
+}
+.sets-table__actions {
+  text-align: right;
+  white-space: nowrap;
+}
 .dialog__head {
   display: flex;
   align-items: center;

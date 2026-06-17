@@ -48,6 +48,7 @@ export type NodeAction =
   | 'add-member'
   | 'add-rollup'
   | 'edit-attributes'
+  | 'manage-sets'
   | 'open-rules'
   | 'register-dimension'
   | 'grow-dimension'
@@ -149,6 +150,7 @@ function elementNodes(
  * three labels that all open the same multi-section pane at its top. */
 const CUBE_DIM_MENU: NodeMenuItem[] = [
   { action: 'edit-attributes', label: 'Edit dimension…' },
+  { action: 'manage-sets', label: 'Manage sets…' },
 ]
 
 async function cubeChildren(cube: string): Promise<Node[]> {

@@ -21,6 +21,7 @@ import ModelExplorer, {
 } from './ModelExplorer'
 import PivotGrid from './PivotGrid'
 import RulesWorkspace from './RulesWorkspace'
+import SetsManager from './SetsManager'
 import SandboxBar from './SandboxBar'
 import SecurityWorkspace from './SecurityWorkspace'
 import ServerOverview from './ServerOverview'
@@ -141,6 +142,8 @@ export default function CubeApp({
   // Administration is its own view (admin only), opened from the top bar rather
   // than the model tree; null means the normal model workspace is shown.
   const [adminView, setAdminView] = useState<null | 'overview' | 'security'>(null)
+  // The (cube, dimension) whose member-sets manager dialog is open, if any.
+  const [setsFor, setSetsFor] = useState<{ cube: string; dim: string } | null>(null)
   const palette = useCommandPalette()
   const confirm = useConfirm()
   // The active detail pane reports unsaved edits here; navigating away (tree,
@@ -362,6 +365,10 @@ export default function CubeApp({
           return
         case 'open-rules':
           if (ctx.cube) navigate({ kind: 'cube-rules', cube: ctx.cube }, {})
+          return
+        case 'manage-sets':
+          // The member-sets CRUD dialog for a cube dimension.
+          if (ctx.cube && ctx.dim) setSetsFor({ cube: ctx.cube, dim: ctx.dim })
           return
         case 'add-view':
           if (ctx.cube) navigate({ kind: 'cube-views', cube: ctx.cube }, { autoNew: true })
@@ -710,6 +717,25 @@ export default function CubeApp({
           onCancel={() => setPwOpen(false)}
           onDone={() => setPwOpen(false)}
         />
+      </Dialog>
+
+      <Dialog
+        open={setsFor !== null}
+        onOpenChange={(open) => {
+          if (!open) setSetsFor(null)
+        }}
+        title={setsFor ? `Sets in ${setsFor.dim}` : 'Sets'}
+        description="Saved member selections you can apply to a cube view axis."
+        size="lg"
+      >
+        {setsFor ? (
+          <SetsManager
+            cube={setsFor.cube}
+            dimName={setsFor.dim}
+            onClose={() => setSetsFor(null)}
+            onChanged={bumpReload}
+          />
+        ) : null}
       </Dialog>
     </div>
   )

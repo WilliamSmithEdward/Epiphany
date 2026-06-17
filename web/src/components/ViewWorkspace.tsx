@@ -6,6 +6,7 @@ import {
   getCube,
   getView,
   listSubsets,
+  updateView,
   type AxisSpecDef,
   type CellsetDto,
   type ContextEntry,
@@ -50,6 +51,9 @@ export default function ViewWorkspace({
   const [editorDim, setEditorDim] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // The name of the saved view currently open (so re-saving updates it in place
+  // rather than failing on a duplicate name); null for an unsaved draft.
+  const [openedName, setOpenedName] = useState<string | null>(null)
 
   const loadSubsets = useCallback(
     async (loaded: CubeDetail) => {
@@ -102,6 +106,7 @@ export default function ViewWorkspace({
       setSuppress(false)
       setCellset(null)
       setConfig(computeDefaults(detail))
+      setOpenedName(null)
       setError(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -157,7 +162,13 @@ export default function ViewWorkspace({
     }
     setBusy(true)
     try {
-      await createView(cube, { ...buildDef(), name: name.trim(), visibility })
+      const trimmed = name.trim()
+      if (openedName && openedName === trimmed) {
+        await updateView(cube, openedName, { ...buildDef(), name: trimmed, visibility })
+      } else {
+        await createView(cube, { ...buildDef(), name: trimmed, visibility })
+        setOpenedName(trimmed)
+      }
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the view')
@@ -173,6 +184,7 @@ export default function ViewWorkspace({
         const view = await getView(cube, viewName)
         applyView(view)
         setName(view.name)
+        setOpenedName(view.name)
         setVisibility(view.visibility)
         setSuppress(view.suppress_zeros)
         setCellset(await executeView(cube, viewName))

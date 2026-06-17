@@ -2,33 +2,39 @@ import { useEffect, useState } from 'react'
 import {
   createSubset,
   previewMdx,
+  updateSubset,
   type DimensionDto,
   type MemberDto,
   type SubsetDef,
+  type SubsetDto,
   type Visibility,
 } from '../api/client'
 import { Tabs, TabPanel } from '../ui'
 import MemberSetPicker from './MemberSetPicker'
 
-// Create a subset for one dimension. Two modes: a default tree picker producing a
-// static member list, and an opt-in MDX expression with a live resolved-members
-// preview. On save it POSTs the subset and calls onSaved with its name.
+// Create or edit a subset for one dimension. Two modes: a default tree picker
+// producing a static member list, and an opt-in MDX expression with a live
+// resolved-members preview. On save it POSTs (or PUTs, when `existing` is given)
+// the subset and calls onSaved with its name.
 export default function SubsetEditor({
   cube,
   dimension,
+  existing,
   onSaved,
   onCancel,
 }: {
   cube: string
   dimension: DimensionDto
+  /** When set, edit this subset in place (PUT) instead of creating a new one. */
+  existing?: SubsetDto
   onSaved: (name: string) => void
   onCancel: () => void
 }) {
-  const [tab, setTab] = useState<'pick' | 'mdx'>('pick')
-  const [name, setName] = useState('')
-  const [visibility, setVisibility] = useState<Visibility>('public')
-  const [included, setIncluded] = useState<string[]>([])
-  const [mdx, setMdx] = useState('')
+  const [tab, setTab] = useState<'pick' | 'mdx'>(existing?.kind === 'dynamic' ? 'mdx' : 'pick')
+  const [name, setName] = useState(existing?.name ?? '')
+  const [visibility, setVisibility] = useState<Visibility>(existing?.visibility ?? 'public')
+  const [included, setIncluded] = useState<string[]>(existing?.members ?? [])
+  const [mdx, setMdx] = useState(existing?.mdx ?? '')
   const [preview, setPreview] = useState<MemberDto[]>([])
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -71,7 +77,9 @@ export default function SubsetEditor({
         : { name: name.trim(), visibility, kind: 'static', members: included }
     setSaving(true)
     try {
-      const saved = await createSubset(cube, dimension.name, def)
+      const saved = existing
+        ? await updateSubset(cube, dimension.name, existing.name, def)
+        : await createSubset(cube, dimension.name, def)
       onSaved(saved.name)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the subset')
@@ -82,11 +90,16 @@ export default function SubsetEditor({
 
   return (
     <div className="editor">
-      <h3>New subset of {dimension.name}</h3>
+      <h3>{existing ? `Edit set ${existing.name}` : `New set of ${dimension.name}`}</h3>
       <div className="field-row">
         <label>
           Name
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Key regions" />
+          <input
+            value={name}
+            disabled={Boolean(existing)}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. Key regions"
+          />
         </label>
         <label>
           Scope
@@ -136,7 +149,7 @@ export default function SubsetEditor({
       {error ? <p className="error" role="alert">{error}</p> : null}
       <div className="actions">
         <button className="primary" disabled={saving} onClick={() => void save()}>
-          Save subset
+          {existing ? 'Save changes' : 'Save set'}
         </button>
         <button onClick={onCancel}>Cancel</button>
       </div>
