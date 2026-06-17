@@ -615,7 +615,7 @@ export default function ModelExplorer({
           aria-label={node.badge ? accLabel : undefined}
           data-node-id={node.id}
           tabIndex={focusId === node.id ? 0 : -1}
-          onClick={() => { setFocusId(node.id); activate(node) }}
+          onClick={(e) => { e.stopPropagation(); setFocusId(node.id); activate(node) }}
           onKeyDown={(e) => onKeyDown(e, node)}
           onContextMenu={
             hasMenu
