@@ -207,6 +207,31 @@ export default function PivotGrid({
     })
   }, [])
 
+  // Row drill-down level controls. Only meaningful when the row axis is a
+  // consolidation hierarchy (no explicit member set applied).
+  const rowHierarchical = !rowSet && childrenOf.size > 0
+  const rowExpandAll = () => setExpandedRows(new Set(childrenOf.keys()))
+  const rowCollapseAll = () => setExpandedRows(new Set())
+  // Expand to the next level: open every currently-visible collapsed parent (the
+  // frontier), revealing one more level each click.
+  const rowExpandNext = () =>
+    setExpandedRows((cur) => {
+      const next = new Set(cur)
+      for (const r of visibleRows) if (r.expandable && !next.has(r.name)) next.add(r.name)
+      return next
+    })
+  // Collapse to the previous level: close the deepest currently-expanded parents.
+  const rowCollapsePrev = () => {
+    let maxDepth = -1
+    for (const r of visibleRows) if (expandedRows.has(r.name)) maxDepth = Math.max(maxDepth, r.depth)
+    if (maxDepth < 0) return
+    setExpandedRows((cur) => {
+      const next = new Set(cur)
+      for (const r of visibleRows) if (r.depth === maxDepth && next.has(r.name)) next.delete(r.name)
+      return next
+    })
+  }
+
   // Default filter member for a dimension (its first element).
   const defaultMember = useCallback(
     (dimName: string) => detail?.dimensions.find((d) => d.name === dimName)?.elements[0]?.name ?? '',
@@ -471,6 +496,23 @@ export default function PivotGrid({
             ariaLabel="Spread mode"
           />
         </label>
+        {rowHierarchical ? (
+          <div className="grid-levels" role="group" aria-label="Row levels">
+            <span className="grid-levels__label">Rows</span>
+            <Button variant="ghost" size="sm" onClick={rowExpandNext} title="Expand to the next level">
+              + level
+            </Button>
+            <Button variant="ghost" size="sm" onClick={rowCollapsePrev} title="Collapse to the previous level">
+              - level
+            </Button>
+            <Button variant="ghost" size="sm" onClick={rowExpandAll} title="Expand all rows">
+              Expand all
+            </Button>
+            <Button variant="ghost" size="sm" onClick={rowCollapseAll} title="Collapse all rows">
+              Collapse all
+            </Button>
+          </div>
+        ) : null}
         <span className="grid-toolbar__spacer" />
         <Button variant="ghost" size="sm" icon="◫" onClick={() => { setSaveError(null); setSaveOpen(true) }}>
           Save view

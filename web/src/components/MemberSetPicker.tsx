@@ -1,6 +1,6 @@
 import { useMemo, useState, type DragEvent } from 'react'
 import type { DimensionDto } from '../api/client'
-import { buildElementTree } from '../model/tree'
+import { buildElementTree, type TreeNode } from '../model/tree'
 import ElementTree from './ElementTree'
 
 /**
@@ -24,6 +24,67 @@ export default function MemberSetPicker({
   const [leftSelected, setLeftSelected] = useState<Set<string>>(() => new Set())
   const [search, setSearch] = useState('')
   const [dragIndex, setDragIndex] = useState<number | null>(null)
+  // Controlled expansion of the available tree (by node path), so the level
+  // controls can expand/collapse all or one level at a time.
+  const [treeExpanded, setTreeExpanded] = useState<Set<string>>(() => new Set())
+
+  // Every expandable node's path (a parent with children), for "expand all".
+  const allExpandablePaths = useMemo(() => {
+    const out = new Set<string>()
+    const walk = (ns: TreeNode[]) =>
+      ns.forEach((n) => {
+        if (n.children.length) {
+          out.add(n.path)
+          walk(n.children)
+        }
+      })
+    walk(tree)
+    return out
+  }, [tree])
+  const hasHierarchy = allExpandablePaths.size > 0
+
+  const treeExpandAll = () => setTreeExpanded(new Set(allExpandablePaths))
+  const treeCollapseAll = () => setTreeExpanded(new Set())
+  // Expand the frontier: open every visible collapsed parent, one level per click.
+  const treeExpandNext = () =>
+    setTreeExpanded((cur) => {
+      const next = new Set(cur)
+      const walk = (ns: TreeNode[], parentOpen: boolean) =>
+        ns.forEach((n) => {
+          if (parentOpen && n.children.length && !cur.has(n.path)) next.add(n.path)
+          walk(n.children, parentOpen && cur.has(n.path))
+        })
+      walk(tree, true)
+      return next
+    })
+  // Collapse the deepest currently-expanded level.
+  const treeCollapsePrev = () => {
+    let maxDepth = -1
+    const measure = (ns: TreeNode[], depth: number, parentOpen: boolean) =>
+      ns.forEach((n) => {
+        if (parentOpen && treeExpanded.has(n.path)) maxDepth = Math.max(maxDepth, depth)
+        measure(n.children, depth + 1, parentOpen && treeExpanded.has(n.path))
+      })
+    measure(tree, 0, true)
+    if (maxDepth < 0) return
+    setTreeExpanded((cur) => {
+      const next = new Set(cur)
+      const collapse = (ns: TreeNode[], depth: number, parentOpen: boolean) =>
+        ns.forEach((n) => {
+          if (parentOpen && cur.has(n.path) && depth === maxDepth) next.delete(n.path)
+          collapse(n.children, depth + 1, parentOpen && cur.has(n.path))
+        })
+      collapse(tree, 0, true)
+      return next
+    })
+  }
+  const toggleExpand = (path: string) =>
+    setTreeExpanded((cur) => {
+      const next = new Set(cur)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
 
   // Dimension order: for stable add ordering and the "model order" sort.
   const order = useMemo(
@@ -126,6 +187,22 @@ export default function MemberSetPicker({
             </button>
           ) : null}
         </div>
+        {hasHierarchy && !q ? (
+          <div className="set-picker__levels" role="group" aria-label="Expand levels">
+            <button type="button" onClick={treeExpandNext} title="Expand to the next level">
+              + level
+            </button>
+            <button type="button" onClick={treeCollapsePrev} title="Collapse to the previous level">
+              - level
+            </button>
+            <button type="button" onClick={treeExpandAll} title="Expand all">
+              Expand all
+            </button>
+            <button type="button" onClick={treeCollapseAll} title="Collapse all">
+              Collapse all
+            </button>
+          </div>
+        ) : null}
         <div className="set-picker__list">
           {q ? (
             matches.length === 0 ? (
@@ -147,7 +224,13 @@ export default function MemberSetPicker({
               </ul>
             )
           ) : (
-            <ElementTree nodes={tree} selected={leftSelected} onToggle={toggleLeft} />
+            <ElementTree
+              nodes={tree}
+              selected={leftSelected}
+              onToggle={toggleLeft}
+              expanded={treeExpanded}
+              onToggleExpand={toggleExpand}
+            />
           )}
         </div>
         <p className="muted">{leftSelected.size} selected</p>

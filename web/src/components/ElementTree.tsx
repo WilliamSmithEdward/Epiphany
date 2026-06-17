@@ -3,19 +3,34 @@ import type { TreeNode } from '../model/tree'
 
 // A recursive element picker: consolidated nodes expand/collapse; every node has
 // a checkbox that toggles membership by element name. Leaves cannot expand.
+// Expansion is controlled when `expanded`/`onToggleExpand` are supplied (keyed by
+// node path, so a member under two parents expands independently per branch),
+// which lets a parent drive expand-all / collapse-all / level controls; otherwise
+// each node keeps its own open state.
 export default function ElementTree({
   nodes,
   selected,
   onToggle,
+  expanded,
+  onToggleExpand,
 }: {
   nodes: TreeNode[]
   selected: Set<string>
   onToggle: (name: string) => void
+  expanded?: Set<string>
+  onToggleExpand?: (path: string) => void
 }) {
   return (
     <ul className="tree">
       {nodes.map((node) => (
-        <TreeItem key={node.path} node={node} selected={selected} onToggle={onToggle} />
+        <TreeItem
+          key={node.path}
+          node={node}
+          selected={selected}
+          onToggle={onToggle}
+          expanded={expanded}
+          onToggleExpand={onToggleExpand}
+        />
       ))}
     </ul>
   )
@@ -25,12 +40,18 @@ function TreeItem({
   node,
   selected,
   onToggle,
+  expanded,
+  onToggleExpand,
 }: {
   node: TreeNode
   selected: Set<string>
   onToggle: (name: string) => void
+  expanded?: Set<string>
+  onToggleExpand?: (path: string) => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [localOpen, setLocalOpen] = useState(false)
+  const open = expanded ? expanded.has(node.path) : localOpen
+  const toggle = () => (expanded ? onToggleExpand?.(node.path) : setLocalOpen((o) => !o))
   const expandable = node.children.length > 0
   return (
     <li>
@@ -41,9 +62,9 @@ function TreeItem({
             className="twisty"
             aria-expanded={open}
             aria-label={open ? 'Collapse' : 'Expand'}
-            onClick={() => setOpen((o) => !o)}
+            onClick={toggle}
           >
-            {open ? '−' : '+'}
+            {open ? '-' : '+'}
           </button>
         ) : (
           <span className="twisty-spacer" />
@@ -61,7 +82,14 @@ function TreeItem({
       {expandable && open ? (
         <ul className="tree">
           {node.children.map((child) => (
-            <TreeItem key={child.path} node={child} selected={selected} onToggle={onToggle} />
+            <TreeItem
+              key={child.path}
+              node={child}
+              selected={selected}
+              onToggle={onToggle}
+              expanded={expanded}
+              onToggleExpand={onToggleExpand}
+            />
           ))}
         </ul>
       ) : null}

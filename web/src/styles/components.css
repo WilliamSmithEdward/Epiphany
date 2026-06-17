@@ -1096,6 +1096,18 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
 .grid-toolbar__spacer {
   flex: 1;
 }
+/* Row drill-down level controls in the pivot toolbar. */
+.grid-levels {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.grid-levels__label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-subtle);
+}
 
 /* Pivot field tray: drag dimensions between Rows / Columns / Filters zones. */
 .pivot-fields {
@@ -1210,13 +1222,15 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
   box-sizing: border-box;
 }
 .set-picker__presets,
-.set-picker__sortbar {
+.set-picker__sortbar,
+.set-picker__levels {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1);
 }
 .set-picker__presets button,
-.set-picker__sortbar button {
+.set-picker__sortbar button,
+.set-picker__levels button {
   font-size: var(--text-xs);
   padding: 2px var(--space-2);
   border: 1px solid var(--color-border);
