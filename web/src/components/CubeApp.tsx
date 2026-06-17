@@ -52,6 +52,54 @@ const IS_MAC =
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '')
 const PALETTE_HINT = IS_MAC ? '⌘K' : 'Ctrl K'
 
+/** The per-tab navigation intent: the "open this specific item / start a new
+ * one" hint a tree action carries into the destination workspace. `signal`
+ * bumps on every navigation so a workspace re-applies the intent even when the
+ * cube (and thus the component) is unchanged. */
+interface NavIntent {
+  signal: number
+  autoNew?: boolean
+  flow?: string
+  view?: string
+  job?: string
+  dim?: string
+  dimId?: number
+}
+
+/** One open tab: a selection plus the latest nav intent for its pane. */
+interface Tab {
+  id: string
+  selection: Selection
+  nav: NavIntent
+}
+
+/** A stable id for a selection, used as the tab key. Mirrors ModelExplorer's
+ * selectionId so the tree's selected-row highlight tracks the active tab. */
+function tabId(s: Selection): string {
+  switch (s.kind) {
+    case 'cube':
+      return `cube:${s.cube}`
+    case 'cube-dimension':
+      return `cube:${s.cube}/dim:${s.dim}`
+    case 'cube-views':
+      return `cube:${s.cube}/views`
+    case 'view':
+      return `cube:${s.cube}/views/${s.view}`
+    case 'cube-rules':
+      return `cube:${s.cube}/rules`
+    case 'dimension':
+      return `dim:${s.id}`
+    case 'flow':
+      return `flow:${s.cube}/${s.flow}`
+    case 'schedule':
+      return `sched:${s.cube}/${s.job}`
+    case 'overview':
+      return 'overview'
+    case 'security':
+      return 'security'
+  }
+}
+
 /** The cube a selection targets, or null for cube-independent surfaces. */
 function cubeOf(s: Selection | null): string | null {
   if (!s) return null
@@ -133,7 +181,10 @@ export default function CubeApp({
   onLogout: () => void
 }) {
   const [cubes, setCubes] = useState<CubeSummary[]>([])
-  const [selection, setSelection] = useState<Selection | null>(null)
+  // Each opened object is a tab; the active tab's selection + nav drive the
+  // content routing. Start with zero tabs (object-centric empty state).
+  const [tabs, setTabs] = useState<Tab[]>([])
+  const [activeId, setActiveId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Three-state so a still-connecting socket is never reported as "Offline".
   const [conn, setConn] = useState<'connecting' | 'live' | 'offline'>('connecting')
@@ -151,31 +202,41 @@ export default function CubeApp({
   // one-click selection cannot silently discard work.
   const paneDirty = useRef(false)
 
-  // The "open this specific item / start a new one" intent a tree action carries
-  // into the destination workspace. `signal` bumps on every navigation so a
-  // workspace re-applies the intent even when the cube (and thus the component)
-  // is unchanged (e.g. re-clicking the same flow, or "New flow" twice).
-  const [nav, setNav] = useState<{
-    signal: number
-    autoNew?: boolean
-    flow?: string
-    view?: string
-    job?: string
-    dim?: string
-    dimId?: number
-  }>({ signal: 0 })
+  // The active tab (its selection + nav intent drive the content routing).
+  const activeTab = useMemo(
+    () => tabs.find((t) => t.id === activeId) ?? null,
+    [tabs, activeId],
+  )
+  const selection = activeTab?.selection ?? null
 
-  // Navigate to a detail pane and hand it a fresh intent. Always bumps the
-  // signal so the destination re-applies (open the item / open the new-form).
-  // If the current pane has unsaved edits, confirm before discarding them.
+  // Open-or-activate a tab and hand its pane a fresh intent. If a tab for this
+  // selection already exists, make it active and bump its nav signal (merging
+  // the new intent); otherwise push a new tab. Always bumps the signal so the
+  // destination re-applies the intent (open the item / open the new-form).
+  // Re-targeting the SAME already-active tab re-applies the intent without a
+  // dirty prompt; any other switch/open confirms first when the current pane
+  // has unsaved edits, so a one-click navigation cannot silently discard work.
   const navigate = useCallback(
-    (next: Selection, intent: Omit<typeof nav, 'signal'> = {}) => {
+    (next: Selection, intent: Omit<NavIntent, 'signal'> = {}) => {
+      const id = tabId(next)
       const go = () => {
         paneDirty.current = false
-        setNav((n) => ({ signal: n.signal + 1, ...intent }))
-        setSelection(next)
+        setTabs((list) => {
+          const existing = list.find((t) => t.id === id)
+          if (existing) {
+            return list.map((t) =>
+              t.id === id
+                ? { ...t, selection: next, nav: { signal: t.nav.signal + 1, ...intent } }
+                : t,
+            )
+          }
+          return [...list, { id, selection: next, nav: { signal: 1, ...intent } }]
+        })
+        setActiveId(id)
       }
-      if (!paneDirty.current) {
+      // Re-targeting the already-active tab never loses other-pane work, so it
+      // re-applies the intent immediately without a dirty prompt.
+      if (id === activeId || !paneDirty.current) {
         go()
         return
       }
@@ -189,21 +250,52 @@ export default function CubeApp({
         if (ok) go()
       })()
     },
-    [confirm],
+    [confirm, activeId],
   )
 
-  const loadCubes = useCallback((select?: string) => {
-    listCubes()
-      .then((list) => {
-        setCubes(list)
-        setSelection((current) => {
-          if (select) return { kind: 'cube', cube: select }
-          // Object-centric launch: land on the "pick an object" empty state
-          // rather than auto-opening the first cube. An existing selection is
-          // preserved (e.g. when the cube list reloads after a change).
-          return current
+  // Close a tab. If it is removed: when it was the active tab, activate the
+  // neighbor (prefer the one to the left, else the right, else null -> empty
+  // state). Closing the active tab while its pane is dirty confirms first.
+  const closeTab = useCallback(
+    (id: string) => {
+      const remove = () => {
+        setTabs((list) => {
+          const idx = list.findIndex((t) => t.id === id)
+          if (idx === -1) return list
+          const next = list.filter((t) => t.id !== id)
+          setActiveId((cur) => {
+            if (cur !== id) return cur
+            // Reactivating means a fresh mount, so the (now closed) dirty pane
+            // cannot leak edits forward.
+            paneDirty.current = false
+            const neighbor = next[idx - 1] ?? next[idx] ?? null
+            return neighbor ? neighbor.id : null
+          })
+          return next
         })
-      })
+      }
+      if (id !== activeId || !paneDirty.current) {
+        remove()
+        return
+      }
+      void (async () => {
+        const ok = await confirm({
+          title: 'Discard unsaved changes',
+          body: 'You have unsaved edits in this pane. Discard them and close the tab?',
+          confirmLabel: 'Discard',
+          danger: true,
+        })
+        if (ok) remove()
+      })()
+    },
+    [confirm, activeId],
+  )
+
+  // Object-centric launch: never auto-open a cube/tab on load. The cube list
+  // backs the explorer + command palette; opening is always an explicit action.
+  const loadCubes = useCallback(() => {
+    listCubes()
+      .then((list) => setCubes(list))
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : 'Failed to load cubes'),
       )
@@ -220,13 +312,14 @@ export default function CubeApp({
     paneDirty.current = dirty
   }, [])
 
-  // After a cube is created, refresh and open its structure.
+  // After a cube is created, refresh the cube list and open its tab.
   const onCubeCreated = useCallback(
     (name: string) => {
-      loadCubes(name)
+      loadCubes()
       bumpReload()
+      navigate({ kind: 'cube', cube: name }, {})
     },
-    [loadCubes, bumpReload],
+    [loadCubes, bumpReload, navigate],
   )
 
   // Dispatch a tree context-menu action. Two kinds of action:
@@ -487,7 +580,7 @@ export default function CubeApp({
     return list
   }, [cubes, isAdmin, signOut, navigate, onAction])
 
-  const segs = crumbs(selection, { autoNew: nav.autoNew })
+  const segs = crumbs(selection, { autoNew: activeTab?.nav.autoNew })
   const cube = cubeOf(selection)
   const showSandbox =
     selection?.kind === 'cube' ||
@@ -638,6 +731,41 @@ export default function CubeApp({
             />
 
             <main className="content">
+              {tabs.length > 0 ? (
+                <div className="objtabs" role="tablist" aria-label="Open objects">
+                  {tabs.map((t) => {
+                    const segsForTab = crumbs(t.selection, { autoNew: t.nav.autoNew })
+                    const label = segsForTab[segsForTab.length - 1]?.label ?? 'Untitled'
+                    const isActive = t.id === activeId
+                    return (
+                      <div
+                        key={t.id}
+                        className={`objtab${isActive ? ' is-active' : ''}`}
+                        aria-current={isActive ? 'page' : undefined}
+                      >
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={isActive}
+                          className="objtab__label"
+                          onClick={() => navigate(t.selection, {})}
+                        >
+                          {label}
+                        </button>
+                        <button
+                          type="button"
+                          className="objtab__close"
+                          aria-label={`Close ${label}`}
+                          onClick={() => closeTab(t.id)}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : null}
+
               {error ? (
                 <p className="error" role="alert">
                   {error}
@@ -649,7 +777,7 @@ export default function CubeApp({
                 <SandboxBar key={cube} cube={cube} onChange={bumpReload} />
               ) : null}
 
-              {selection === null ? (
+              {activeTab === null ? (
                 <EmptyState icon="▤" title="Pick an object to open">
                   {cubes.length === 0
                     ? isAdmin
@@ -657,51 +785,51 @@ export default function CubeApp({
                       : 'No objects are available to you yet. Ask an administrator for access.'
                     : 'Choose a cube, dimension, flow, or schedule from the explorer on the left to open it.'}
                 </EmptyState>
-              ) : selection.kind === 'dimension' ? (
+              ) : activeTab.selection.kind === 'dimension' ? (
                 <DimensionsWorkspace
                   reloadSignal={reload}
-                  initialDimId={nav.dimId}
-                  autoNew={nav.autoNew}
-                  navSignal={nav.signal}
+                  initialDimId={activeTab.nav.dimId}
+                  autoNew={activeTab.nav.autoNew}
+                  navSignal={activeTab.nav.signal}
                 />
-              ) : selection.kind === 'cube' && cube ? (
+              ) : activeTab.selection.kind === 'cube' && cube ? (
                 <PivotGrid cube={cube} reloadSignal={reload} onModelChange={bumpReload} />
-              ) : selection.kind === 'cube-dimension' && cube ? (
+              ) : activeTab.selection.kind === 'cube-dimension' && cube ? (
                 <ModelWorkspace
                   cube={cube}
                   reloadSignal={reload}
                   isAdmin={isAdmin}
                   onCubeCreated={onCubeCreated}
-                  initialDim={selection.dim || nav.dim}
-                  autoNew={nav.autoNew}
-                  navSignal={nav.signal}
+                  initialDim={activeTab.selection.dim || activeTab.nav.dim}
+                  autoNew={activeTab.nav.autoNew}
+                  navSignal={activeTab.nav.signal}
                 />
-              ) : (selection.kind === 'cube-views' || selection.kind === 'view') && cube ? (
+              ) : (activeTab.selection.kind === 'cube-views' || activeTab.selection.kind === 'view') && cube ? (
                 <ViewWorkspace
                   cube={cube}
                   reloadSignal={reload}
-                  initialView={selection.kind === 'view' ? selection.view : nav.view}
-                  autoNew={nav.autoNew}
-                  navSignal={nav.signal}
+                  initialView={activeTab.selection.kind === 'view' ? activeTab.selection.view : activeTab.nav.view}
+                  autoNew={activeTab.nav.autoNew}
+                  navSignal={activeTab.nav.signal}
                 />
-              ) : selection.kind === 'cube-rules' && cube ? (
+              ) : activeTab.selection.kind === 'cube-rules' && cube ? (
                 <RulesWorkspace cube={cube} reloadSignal={reload} onDirtyChange={setPaneDirty} />
-              ) : selection.kind === 'flow' && cube ? (
+              ) : activeTab.selection.kind === 'flow' && cube ? (
                 <FlowsWorkspace
                   cube={cube}
                   reloadSignal={reload}
                   isAdmin={isAdmin}
-                  initialFlow={selection.flow || nav.flow}
-                  autoNew={nav.autoNew}
-                  navSignal={nav.signal}
+                  initialFlow={activeTab.selection.flow || activeTab.nav.flow}
+                  autoNew={activeTab.nav.autoNew}
+                  navSignal={activeTab.nav.signal}
                 />
-              ) : selection.kind === 'schedule' && cube ? (
+              ) : activeTab.selection.kind === 'schedule' && cube ? (
                 <JobsWorkspace
                   cube={cube}
                   reloadSignal={reload}
-                  initialJob={selection.job || nav.job}
-                  autoNew={nav.autoNew}
-                  navSignal={nav.signal}
+                  initialJob={activeTab.selection.job || activeTab.nav.job}
+                  autoNew={activeTab.nav.autoNew}
+                  navSignal={activeTab.nav.signal}
                 />
               ) : null}
             </main>
