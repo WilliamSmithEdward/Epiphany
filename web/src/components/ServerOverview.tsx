@@ -142,7 +142,7 @@ export default function ServerOverview() {
           <ul className="coord-list">
             {denials.map((d) => (
               <li key={d.seq}>
-                <strong>{d.actor}</strong> — {d.action} on {d.object_kind}
+                <strong>{d.actor}</strong>: {d.action} on {d.object_kind}
                 {d.target ? ` (${d.target})` : ''} · {formatTime(d.timestamp_millis)}
               </li>
             ))}
@@ -179,7 +179,7 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'da
 
 function hitRate(cache: ViewCacheStats): string {
   const total = cache.hits + cache.misses
-  if (total === 0) return '—'
+  if (total === 0) return 'n/a'
   return `${Math.round((cache.hits / total) * 100)}%`
 }
 

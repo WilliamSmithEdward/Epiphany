@@ -160,7 +160,7 @@ function UsersTab() {
       {error ? <p className="error" role="alert">{error}</p> : null}
       {temp ? (
         <p className="banner" role="status">
-          Temporary password for <strong>{temp.user}</strong>: <code>{temp.password}</code> — share
+          Temporary password for <strong>{temp.user}</strong>: <code>{temp.password}</code>. Share
           it securely. It will not be shown again, and {temp.user} must choose a new password at
           next sign-in.{' '}
           <button onClick={() => void navigator.clipboard?.writeText(temp.password)}>Copy</button>{' '}

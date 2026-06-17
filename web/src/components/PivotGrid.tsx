@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  createView,
   explainCell,
   getCube,
   listSubsets,
@@ -7,13 +8,17 @@ import {
   readCells,
   spreadCells,
   writeCell,
+  type AxisSpecDef,
   type CellDto,
+  type ContextEntry,
   type Coord,
   type CubeDetail,
   type DimensionDto,
   type SpreadMethod,
   type SubsetDto,
   type TraceDto,
+  type ViewDef,
+  type Visibility,
 } from '../api/client'
 import { Button, Dialog, Select } from '../ui'
 import PivotFields, { type AxisRole, type AxisSet } from './PivotFields'
@@ -80,7 +85,16 @@ function flattenForest(
   return out
 }
 
-export default function PivotGrid({ cube, reloadSignal }: { cube: string; reloadSignal: number }) {
+export default function PivotGrid({
+  cube,
+  reloadSignal,
+  onModelChange,
+}: {
+  cube: string
+  reloadSignal: number
+  /** Called after the layout is saved as a View, so the explorer can refresh. */
+  onModelChange?: () => void
+}) {
   const [detail, setDetail] = useState<CubeDetail | null>(null)
   const [rowDim, setRowDim] = useState('')
   const [colDim, setColDim] = useState('')
@@ -102,6 +116,12 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
   const [axisSet, setAxisSet] = useState<Record<string, AxisSet | null>>({})
   // The dimension whose set editor (SubsetEditor) dialog is open, if any.
   const [subsetEditorDim, setSubsetEditorDim] = useState<string | null>(null)
+  // "Save view" dialog: persist the current layout as a named, shared/private View.
+  const [saveOpen, setSaveOpen] = useState(false)
+  const [saveName, setSaveName] = useState('')
+  const [saveVis, setSaveVis] = useState<Visibility>('private')
+  const [saveBusy, setSaveBusy] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
 
   // Load (or reload) the saved subsets for every dimension, so each axis chip's
@@ -270,6 +290,41 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     [cube],
   )
 
+  // Capture the current layout as a saved View definition: each axis is the
+  // chosen member set (a named subset) or all members; every other dimension is
+  // a single-member context (filter). Mirrors the Views builder's contract.
+  const buildViewDef = useCallback((): ViewDef => {
+    const axisSpec = (dimName: string): AxisSpecDef => {
+      const set = axisSet[dimName]
+      if (set) return { dimension: dimName, type: 'subset', subset: set.name }
+      const members = detail?.dimensions.find((d) => d.name === dimName)?.elements.map((e) => e.name) ?? []
+      return { dimension: dimName, type: 'members', members }
+    }
+    const ctx: ContextEntry[] = (detail?.dimensions ?? [])
+      .filter((d) => d.name !== rowDim && d.name !== colDim)
+      .map((d) => ({ dimension: d.name, member: context[d.name] ?? d.elements[0]?.name ?? '' }))
+    return { rows: [axisSpec(rowDim)], columns: [axisSpec(colDim)], context: ctx, suppress_zeros: false }
+  }, [detail, rowDim, colDim, context, axisSet])
+
+  const saveView = useCallback(async () => {
+    if (saveName.trim() === '') {
+      setSaveError('Name the view before saving.')
+      return
+    }
+    setSaveBusy(true)
+    try {
+      await createView(cube, { ...buildViewDef(), name: saveName.trim(), visibility: saveVis })
+      setSaveOpen(false)
+      setSaveName('')
+      setSaveError(null)
+      onModelChange?.()
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Could not save the view')
+    } finally {
+      setSaveBusy(false)
+    }
+  }, [cube, buildViewDef, saveName, saveVis, onModelChange])
+
   const refresh = useCallback(async () => {
     if (!detail || !rowDim || !colDim) return
     const rows = visibleRows
@@ -417,6 +472,9 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
           />
         </label>
         <span className="grid-toolbar__spacer" />
+        <Button variant="ghost" size="sm" icon="◫" onClick={() => { setSaveError(null); setSaveOpen(true) }}>
+          Save view
+        </Button>
         <Button variant="ghost" size="sm" icon="↻" onClick={() => void refresh()}>
           Refresh
         </Button>
@@ -538,6 +596,49 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
           />
         </Dialog>
       ) : null}
+      <Dialog
+        open={saveOpen}
+        onOpenChange={setSaveOpen}
+        title="Save view"
+        description="Save the current rows, columns, filters, and member sets as a reusable view."
+        size="sm"
+      >
+        <div className="pw-form">
+          <label className="field">
+            <span className="field__label">View name</span>
+            <input
+              value={saveName}
+              placeholder="e.g. Q1 by region"
+              onChange={(e) => setSaveName(e.target.value)}
+            />
+          </label>
+          <label className="field">
+            <span className="field__label">Who can see it</span>
+            <Select
+              value={saveVis}
+              onValueChange={(v) => setSaveVis(v as Visibility)}
+              options={[
+                { value: 'private', label: 'Only me' },
+                { value: 'public', label: 'Everyone' },
+              ]}
+              ariaLabel="View visibility"
+            />
+          </label>
+          {saveError ? (
+            <p className="error" role="alert">
+              {saveError}
+            </p>
+          ) : null}
+          <div className="pw-form__actions">
+            <Button variant="ghost" size="sm" onClick={() => setSaveOpen(false)}>
+              Cancel
+            </Button>
+            <Button size="sm" disabled={saveBusy} onClick={() => void saveView()}>
+              Save view
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   )
 }
@@ -602,7 +703,7 @@ function CellView({
     return (
       <td
         className={cell?.overlaid ? 'cell calc overlaid' : 'cell calc'}
-        title="Calculated value — click to see how it is calculated"
+        title="Calculated value. Click to see how it is calculated."
       >
         {hasValue ? (
           <button type="button" className="cell-drill" onClick={onDrill}>
@@ -617,7 +718,7 @@ function CellView({
   return (
     <td
       className={cell.overlaid ? 'cell editable overlaid' : 'cell editable'}
-      title={cell.overlaid ? 'Uncommitted what-if value' : 'Editable — type a value, Enter to save'}
+      title={cell.overlaid ? 'Uncommitted what-if value' : 'Editable. Type a value, then Enter to save.'}
     >
       <input
         key={cell.value ?? ''}

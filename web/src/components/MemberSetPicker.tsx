@@ -183,10 +183,10 @@ export default function MemberSetPicker({
             Model order
           </button>
           <button type="button" onClick={() => sortBy('az')}>
-            A&ndash;Z
+            A-Z
           </button>
           <button type="button" onClick={() => sortBy('za')}>
-            Z&ndash;A
+            Z-A
           </button>
           {value.length > 0 ? (
             <button type="button" onClick={() => onChange([])}>

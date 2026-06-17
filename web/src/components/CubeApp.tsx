@@ -151,7 +151,7 @@ export default function CubeApp({
   // The "open this specific item / start a new one" intent a tree action carries
   // into the destination workspace. `signal` bumps on every navigation so a
   // workspace re-applies the intent even when the cube (and thus the component)
-  // is unchanged — e.g. re-clicking the same flow, or "New flow…" twice.
+  // is unchanged (e.g. re-clicking the same flow, or "New flow" twice).
   const [nav, setNav] = useState<{
     signal: number
     autoNew?: boolean
@@ -430,7 +430,7 @@ export default function CubeApp({
       .finally(onLogout)
   }, [onLogout])
 
-  // Command palette: keep parity with the tree IA — open any cube, jump to the
+  // Command palette: keep parity with the tree IA. Open any cube, jump to the
   // resource-type roots, invoke the same create actions, reach admin surfaces.
   // Plain selections funnel through navigate() so stale nav intent is cleared.
   const commands = useMemo<Command[]>(() => {
@@ -658,7 +658,7 @@ export default function CubeApp({
                   navSignal={nav.signal}
                 />
               ) : selection.kind === 'cube' && cube ? (
-                <PivotGrid cube={cube} reloadSignal={reload} />
+                <PivotGrid cube={cube} reloadSignal={reload} onModelChange={bumpReload} />
               ) : selection.kind === 'cube-dimension' && cube ? (
                 <ModelWorkspace
                   cube={cube}
