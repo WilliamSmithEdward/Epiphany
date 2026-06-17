@@ -207,6 +207,11 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/dimensions/{id}/elements",
             post(dimension_routes::grow_dimension),
         )
+        // Promote a cube's embedded dimension into the global registry (ADR-0031).
+        .route(
+            "/api/v1/cubes/{cube}/dimensions/{dim}/promote",
+            post(dimension_routes::promote_dimension),
+        )
         // Model editing (ADR-0021): add members/edges and define/set attributes.
         .route(
             "/api/v1/cubes/{cube}/elements",

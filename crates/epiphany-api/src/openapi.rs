@@ -135,6 +135,16 @@ fn document() -> Value {
                     "422": { "description": "Unknown dimension, kind conflict, non-consolidated parent, or cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
                 }
             }},
+            "/api/v1/cubes/{cube}/dimensions/{dim}/promote": { "post": {
+                "summary": "Promote a cube's embedded dimension into the global registry so other cubes can reference it (ADR-0031)",
+                "security": bearer(),
+                "parameters": [cube_param(), dim_param()],
+                "responses": {
+                    "200": { "description": "The new global dimension id, name, and generation" },
+                    "404": { "description": "Unknown cube or dimension", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+                    "409": { "description": "The dimension is already a global dimension", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
+            }},
             "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}": { "put": {
                 "summary": "Define an attribute on a dimension (text, numeric, or alias; ADR-0021)",
                 "security": bearer(),
@@ -908,6 +918,7 @@ mod tests {
         "/api/v1/cubes/{cube}/cells/batch",
         "/api/v1/cubes/{cube}/cells/spread",
         "/api/v1/cubes/{cube}/elements",
+        "/api/v1/cubes/{cube}/dimensions/{dim}/promote",
         "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}",
         "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}/values",
         "/api/v1/cubes/{cube}/dimensions/{dim}/subsets",

@@ -14,11 +14,11 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use epiphany_core::{EdgeSpec, ElementSpec};
-use epiphany_engine::{DimensionError, DimensionId};
+use epiphany_engine::{DimensionError, DimensionId, PromoteError};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_kind_access};
+use crate::authz::{audit, require_cube_access, require_kind_access};
 use crate::model_routes::{
     build_dimension_def, parse_element_kind, validate_name, ElementMemberDto, LocalEdgeDto,
 };
@@ -139,6 +139,19 @@ fn map_dimension_error(e: DimensionError) -> ApiError {
             "shared dimension is referenced by {} cube(s) and cannot be deleted: {}",
             cubes.len(),
             cubes.join(", ")
+        )),
+    }
+}
+
+fn map_promote_error(e: PromoteError) -> ApiError {
+    match e {
+        PromoteError::UnknownCube(cube) => ApiError::not_found(format!("unknown cube '{cube}'")),
+        PromoteError::UnknownDimension { cube, dimension } => {
+            ApiError::not_found(format!("cube '{cube}' has no dimension '{dimension}'"))
+        }
+        PromoteError::AlreadyGlobal(id) => ApiError::conflict(format!(
+            "dimension is already a global dimension (#{})",
+            id.0
         )),
     }
 }
@@ -349,4 +362,50 @@ pub(crate) async fn delete_dimension(
         true,
     );
     Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+/// `POST /api/v1/cubes/{cube}/dimensions/{dim}/promote` -> promote a cube's
+/// embedded dimension into the global registry (ADR-0031 Phase 1), so it can be
+/// referenced by other cubes. The cube keeps its own data unchanged; only the
+/// dimension's identity becomes global. Requires global `Dimension` `Write` (it
+/// creates a global dimension) and `Read` on the cube. A dimension that is
+/// already registry-backed for the cube is a 409.
+pub(crate) async fn promote_dimension(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Path((cube, dim)): Path<(String, String)>,
+) -> Result<Json<RegisteredDto>, ApiError> {
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Dimension,
+        None,
+        AccessLevel::Write,
+    )?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    let id = state
+        .engine
+        .promote_cube_dimension(&cube, &dim)
+        .map_err(map_promote_error)?;
+    // The cube's data/version is unchanged, but its dimension is now
+    // registry-backed; broadcast so connected explorers refresh the dimension
+    // list (the dimension moves from "lives in cube" to a global entry).
+    if let Some(version) = state.engine.version(&cube) {
+        let _ = state.events.send(crate::ws::ChangeEvent::ObjectsChanged {
+            cube: cube.clone(),
+            version,
+        });
+    }
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectCreate,
+        Some(&ObjectRef::global(ObjectKind::Dimension, &dim)),
+        true,
+    );
+    Ok(Json(RegisteredDto {
+        id: id.0,
+        name: dim,
+        generation: 0,
+    }))
 }

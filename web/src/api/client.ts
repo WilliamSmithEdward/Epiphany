@@ -976,6 +976,19 @@ export async function deleteDimension(id: number): Promise<void> {
   return request<void>('DELETE', `/api/v1/dimensions/${id}`)
 }
 
+/** Promote a cube's embedded dimension into the global registry (ADR-0031) so
+ * other cubes can reference it; resolves with the new global dimension id. The
+ * cube keeps its data unchanged. 409 if the dimension is already global. */
+export async function promoteDimension(
+  cube: string,
+  dim: string,
+): Promise<{ id: number; name: string; generation: number }> {
+  return request(
+    'POST',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/dimensions/${encodeURIComponent(dim)}/promote`,
+  )
+}
+
 // ---- security administration (Phase 7, ADR-0015 + ADR-0010, admin only) ----
 
 export type AccessLevel = 'none' | 'read' | 'write' | 'admin'

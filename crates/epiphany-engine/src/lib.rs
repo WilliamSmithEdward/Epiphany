@@ -126,6 +126,35 @@ impl std::fmt::Display for DimensionError {
 
 impl std::error::Error for DimensionError {}
 
+/// Why promoting a cube's embedded dimension into the global registry failed
+/// (ADR-0031 Phase 0/1).
+#[derive(Debug)]
+pub enum PromoteError {
+    /// No cube by that name (or it is not readable).
+    UnknownCube(String),
+    /// The cube has no dimension by that name.
+    UnknownDimension { cube: String, dimension: String },
+    /// The dimension is already a global (registry-backed) dimension for this
+    /// cube, so there is nothing to promote.
+    AlreadyGlobal(DimensionId),
+}
+
+impl std::fmt::Display for PromoteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PromoteError::UnknownCube(cube) => write!(f, "unknown cube '{cube}'"),
+            PromoteError::UnknownDimension { cube, dimension } => {
+                write!(f, "cube '{cube}' has no dimension '{dimension}'")
+            }
+            PromoteError::AlreadyGlobal(id) => {
+                write!(f, "dimension is already a global dimension (#{})", id.0)
+            }
+        }
+    }
+}
+
+impl std::error::Error for PromoteError {}
+
 /// Flatten a `DimensionDef` into the `ElementSpec`/`EdgeSpec` lists `define_elements`
 /// expects, stamping each with the dimension's name (ADR-0024 fan-out/reconcile).
 fn def_to_specs(def: &DimensionDef) -> (Vec<ElementSpec>, Vec<EdgeSpec>) {
@@ -566,6 +595,60 @@ impl Engine {
         self.dimensions.store(Arc::new(next));
         self.persist_registry();
         Ok(())
+    }
+
+    /// Promote a cube's embedded dimension into the global registry (ADR-0031
+    /// Phase 1): register a copy of the cube's current dimension as a global
+    /// dimension and attach the cube as its first referrer, so the dimension
+    /// becomes referenceable by other cubes while this cube keeps its own data
+    /// unchanged (the materialized-reference model: the cube still owns its copy,
+    /// the registry now owns the identity). A dimension that is already
+    /// registry-backed for this cube returns `AlreadyGlobal`. Holds `dim_topology`
+    /// so the mint, register, attach, and persist are one critical section.
+    pub fn promote_cube_dimension(
+        &self,
+        cube: &str,
+        dim_name: &str,
+    ) -> Result<DimensionId, PromoteError> {
+        let _topo = self
+            .dim_topology
+            .lock()
+            .expect("dim_topology mutex poisoned");
+        // The cube's current dimension definition (its elements, hierarchy, and
+        // attributes) becomes the canonical registry copy.
+        let snapshot = self
+            .snapshot(cube)
+            .ok_or_else(|| PromoteError::UnknownCube(cube.to_string()))?;
+        let dimension = snapshot
+            .cube()
+            .dimensions()
+            .iter()
+            .find(|d| d.name() == dim_name)
+            .ok_or_else(|| PromoteError::UnknownDimension {
+                cube: cube.to_string(),
+                dimension: dim_name.to_string(),
+            })?
+            .clone();
+        // Already global for this cube? (a registry dimension of this name that the
+        // cube already references). Nothing to promote.
+        {
+            let registry = self.dimensions.load();
+            if let Some(existing) = registry.all().into_iter().find_map(|s| {
+                (s.dimension.name() == dim_name
+                    && registry.referencing(s.id).iter().any(|c| c == cube))
+                .then_some(s.id)
+            }) {
+                return Err(PromoteError::AlreadyGlobal(existing));
+            }
+        }
+        // Mint a fresh id, register the copy, and attach the cube as a referrer.
+        let id = DimensionId(self.next_dim_id.fetch_add(1, Ordering::SeqCst));
+        let mut next = (**self.dimensions.load()).clone();
+        next.put(Arc::new(SharedDimension::new(id, dimension)));
+        next.attach(id, cube);
+        self.dimensions.store(Arc::new(next));
+        self.persist_registry();
+        Ok(id)
     }
 
     /// If `cube`'s dimension named `dim_name` is a materialized reference to a

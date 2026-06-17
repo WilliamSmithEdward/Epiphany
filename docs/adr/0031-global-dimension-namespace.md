@@ -1,6 +1,6 @@
 # ADR-0031: Global dimension namespace (one list, no shared/local split)
 
-- **Status:** Accepted (design lock; Phase 0 realized)
+- **Status:** Accepted (design lock; Phases 0 and 1 realized)
 - **Date:** 2026-06-17
 - **Deciders:** Epiphany maintainers
 - **Phase:** Post-roadmap (model architecture)
@@ -70,11 +70,14 @@ identity-exposure layer over the ADR-0024 registry, not a new storage model.
   favor of "dimension"/"global dimension". No storage, security, or read-path
   change. This fixes the empty-section bug and removes the distinction the user
   objected to.
-- **Phase 1 (follow-up): promote an embedded dimension into the registry.** A
-  one-click "make this dimension global" that registers the cube's embedded
+- **Phase 1 (done): promote an embedded dimension into the registry.** A
+  one-click "Make global" (tree action `promote-dimension` ->
+  `POST /cubes/{cube}/dimensions/{dim}/promote`) registers the cube's embedded
   dimension and attaches the originating cube to it (back-reference recorded, no
   duplicate, append-only and idempotent), so an existing dimension becomes
-  referenceable by future cubes without a data migration.
+  referenceable by future cubes without a data migration. The cube keeps its own
+  data unchanged; only the dimension's identity becomes global. Promoting an
+  already-global dimension is a 409.
 - **Phase 2+ (deferred, from ADR-0024):** `DimensionId`-keyed, fail-closed
   element security; optional pure-reference read path; eager cross-cube repack
   behind the benchmark gate.
@@ -105,7 +108,10 @@ identity-exposure layer over the ADR-0024 registry, not a new storage model.
 - The split is not fully gone under the hood: an embedded-only dimension is not
   yet referenceable by another cube until promoted (Phase 1). The UI states this
   plainly (provenance shown) rather than implying a capability that is not there.
-- Validation: a backend test asserts cube-detail carries `Some(id)` for a
-  registry-backed dimension and `None` for an embedded-only one; the web union
-  and routing are verified in the browser against the demo model; `cargo fmt`,
-  `clippy`, the Rust suite, and the web typecheck/lint gates stay green.
+- Validation: backend tests assert cube-detail carries `Some(id)` for a
+  registry-backed dimension and `None` for an embedded-only one, and that
+  promoting an embedded dimension makes cube-detail report its id, lists it in
+  the library, lets another cube reference it, and 409s on a second promote; the
+  web union, routing, and promote flow are verified against the demo model;
+  `cargo fmt`, `clippy`, the Rust suite, and the web typecheck/lint gates stay
+  green.

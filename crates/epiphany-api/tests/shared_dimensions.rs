@@ -379,6 +379,128 @@ async fn register_reference_grow_and_recover() {
 }
 
 #[tokio::test]
+async fn promote_an_embedded_dimension_into_the_global_registry() {
+    // ADR-0031 Phase 1: a cube's embedded dimension can be promoted into the
+    // global registry, after which cube detail reports its id, the library lists
+    // it, and another cube can reference it by id. Promoting again is a 409.
+    let dir = data_dir("promote");
+    let app = build_app(&dir);
+    let modeler = login(&app, "modeler").await;
+    let admin = login(&app, "admin").await;
+
+    // A cube whose dimensions are all embedded (inline), none registry-backed.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes",
+        &modeler,
+        Some(json!({
+            "name": "Plain",
+            "dimensions": [
+                {
+                    "name": "Org",
+                    "elements": [
+                        { "name": "HQ", "kind": "numeric" },
+                        { "name": "Branch", "kind": "numeric" },
+                        { "name": "AllOrg", "kind": "consolidated" }
+                    ],
+                    "edges": [
+                        { "parent": "AllOrg", "child": "HQ", "weight": 1 },
+                        { "parent": "AllOrg", "child": "Branch", "weight": 1 }
+                    ]
+                },
+                { "name": "Measure", "elements": [{ "name": "Amount", "kind": "numeric" }] }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "create cube with embedded dimensions"
+    );
+
+    // Before promotion the embedded dimension carries no global id.
+    let (_, before) = call(&app, "GET", "/api/v1/cubes/Plain", &admin, None).await;
+    assert!(cube_dimension(&before, "Org")["id"].is_null());
+
+    // Promote it: the cube keeps its data, the registry gains the dimension.
+    let (status, promoted) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Plain/dimensions/Org/promote",
+        &modeler,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "promote embedded dimension");
+    let org_id = promoted["id"].as_u64().unwrap();
+
+    // Now cube detail reports the global id, the cube keeps every member, and the
+    // library lists it with this cube as its sole reference.
+    let (_, after) = call(&app, "GET", "/api/v1/cubes/Plain", &admin, None).await;
+    assert_eq!(cube_dimension(&after, "Org")["id"].as_u64(), Some(org_id));
+    assert!(member_names(cube_dimension(&after, "Org")).contains(&"HQ".to_string()));
+    let (_, detail) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/dimensions/{org_id}"),
+        &modeler,
+        None,
+    )
+    .await;
+    assert_eq!(
+        detail["references"].as_array().unwrap().len(),
+        1,
+        "promoted dimension references its origin cube"
+    );
+
+    // Another cube can now reference the promoted dimension by id.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes",
+        &modeler,
+        Some(json!({
+            "name": "Plan2",
+            "dimensions": [
+                { "ref": org_id },
+                { "name": "Measure", "elements": [{ "name": "Amount", "kind": "numeric" }] }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reference the promoted dimension");
+    let (_, detail) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/dimensions/{org_id}"),
+        &modeler,
+        None,
+    )
+    .await;
+    let mut refs: Vec<&str> = detail["references"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap())
+        .collect();
+    refs.sort_unstable();
+    assert_eq!(refs, vec!["Plain", "Plan2"]);
+
+    // Promoting the same (now registry-backed) dimension again is a conflict.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Plain/dimensions/Org/promote",
+        &modeler,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "already global");
+}
+
+#[tokio::test]
 async fn library_is_gated_on_the_dimension_permission() {
     let dir = data_dir("authz");
     let app = build_app(&dir);

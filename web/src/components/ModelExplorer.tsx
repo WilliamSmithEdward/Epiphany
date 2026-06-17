@@ -51,6 +51,7 @@ export type NodeAction =
   | 'add-rollup'
   | 'edit-attributes'
   | 'manage-sets'
+  | 'promote-dimension'
   | 'open-rules'
   | 'register-dimension'
   | 'grow-dimension'
@@ -338,7 +339,9 @@ async function dimensionNamespace(): Promise<Node[]> {
     badge: cube, // provenance: the cube this dimension currently lives in
     badgeTitle: `Lives in cube ${cube}`,
     selection: { kind: 'cube-dimension', cube, dim: d.name },
-    menu: CUBE_DIM_MENU,
+    // An embedded dimension can be promoted into the global registry so other
+    // cubes can reference it (ADR-0031 Phase 1), alongside the usual edit/sets.
+    menu: [...CUBE_DIM_MENU, { action: 'promote-dimension', label: 'Make global…' }],
     actionCtx: { cube, dim: d.name },
     loader: async () =>
       elementNodes(`cube:${cube}/dim:${d.name}`, d.elements, CUBE_DIM_MENU, { cube, dim: d.name }),

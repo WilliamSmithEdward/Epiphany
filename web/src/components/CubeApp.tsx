@@ -7,6 +7,7 @@ import {
   deleteView,
   listCubes,
   logout,
+  promoteDimension,
   runJob,
   type CubeSummary,
 } from '../api/client'
@@ -463,6 +464,28 @@ export default function CubeApp({
           // The member-sets CRUD dialog for a cube dimension.
           if (ctx.cube && ctx.dim) setSetsFor({ cube: ctx.cube, dim: ctx.dim })
           return
+        case 'promote-dimension': {
+          // Promote a cube's embedded dimension into the global registry so other
+          // cubes can reference it (ADR-0031). Confirms first since it changes the
+          // dimension from cube-local to global (a one-way, append-only step).
+          if (!ctx.cube || !ctx.dim) return
+          const { cube: c, dim: d } = ctx
+          void (async () => {
+            const ok = await confirm({
+              title: 'Make dimension global',
+              body: `Make "${d}" a global dimension? It stays in ${c} with the same data, and other cubes can then reuse it. Editing it later updates every cube that references it.`,
+              confirmLabel: 'Make global',
+            })
+            if (!ok) return
+            try {
+              await promoteDimension(c, d)
+              bumpReload()
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Could not make the dimension global')
+            }
+          })()
+          return
+        }
         case 'add-view':
           if (ctx.cube) navigate({ kind: 'cube-views', cube: ctx.cube }, { autoNew: true })
           return
