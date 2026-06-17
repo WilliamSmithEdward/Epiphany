@@ -1055,6 +1055,91 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
 .grid-toolbar__spacer {
   flex: 1;
 }
+
+/* Pivot field tray: drag dimensions between Rows / Columns / Filters zones. */
+.pivot-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+.pivot-zone {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  flex: 1 1 12rem;
+  min-width: 12rem;
+  padding: var(--space-3);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  transition: border-color var(--duration-fast) var(--ease), background var(--duration-fast) var(--ease);
+}
+.pivot-zone--over {
+  border-color: var(--color-accent);
+  border-style: solid;
+  background: var(--color-surface-2);
+}
+.pivot-zone__label {
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-subtle);
+}
+.pivot-zone__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-height: 2rem;
+}
+.pivot-zone__empty {
+  font-size: var(--text-sm);
+  color: var(--color-text-subtle);
+  align-self: center;
+}
+.pivot-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+  cursor: grab;
+}
+.pivot-chip:active {
+  cursor: grabbing;
+}
+.pivot-chip__handle {
+  color: var(--color-text-subtle);
+  cursor: grab;
+}
+.pivot-chip__name {
+  font-weight: 600;
+}
+.pivot-chip__set {
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  padding-inline-start: var(--space-2);
+  border-inline-start: 1px solid var(--color-border);
+}
+.pivot-chip__menu {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-subtle);
+  cursor: pointer;
+}
+.pivot-chip__menu:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text);
+}
 .grid-wrap {
   overflow: auto;
   max-height: calc(100vh - 17rem);

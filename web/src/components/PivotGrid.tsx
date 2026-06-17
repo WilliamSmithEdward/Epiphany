@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   explainCell,
   getCube,
+  listSubsets,
+  previewMdx,
   readCells,
   spreadCells,
   writeCell,
@@ -10,9 +12,12 @@ import {
   type CubeDetail,
   type DimensionDto,
   type SpreadMethod,
+  type SubsetDto,
   type TraceDto,
 } from '../api/client'
 import { Button, Dialog, Select } from '../ui'
+import PivotFields, { type AxisRole, type AxisSet } from './PivotFields'
+import SubsetEditor from './SubsetEditor'
 import { TraceView } from './TraceView'
 
 function cellKey(row: string, col: string): string {
@@ -90,12 +95,33 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
   const [spreadMode, setSpreadMode] = useState<'off' | SpreadMethod>('off')
   // Which consolidation members on the row axis are expanded (drill-down).
   const [expandedRows, setExpandedRows] = useState<Set<string>>(() => new Set())
+  // Saved subsets per dimension (for the "select a set" menu on each axis chip).
+  const [subsetsByDim, setSubsetsByDim] = useState<Record<string, SubsetDto[]>>({})
+  // The member set applied to an axis dimension, resolved to a member list; a
+  // missing/null entry means "all members" (the default, with drill-down).
+  const [axisSet, setAxisSet] = useState<Record<string, AxisSet | null>>({})
+  // The dimension whose set editor (SubsetEditor) dialog is open, if any.
+  const [subsetEditorDim, setSubsetEditorDim] = useState<string | null>(null)
   const gridRef = useRef<HTMLDivElement>(null)
+
+  // Load (or reload) the saved subsets for every dimension, so each axis chip's
+  // "select a set" menu is current (used on first load and after a new set saves).
+  const loadSubsets = useCallback(async (dims: DimensionDto[]) => {
+    const pairs = await Promise.all(
+      dims.map((d) =>
+        listSubsets(cube, d.name)
+          .then((ss) => [d.name, ss] as const)
+          .catch(() => [d.name, [] as SubsetDto[]] as const),
+      ),
+    )
+    return Object.fromEntries(pairs)
+  }, [cube])
 
   useEffect(() => {
     let cancelled = false
     // Clear a prior cube's error so switching cubes / retrying isn't blocked.
     setError(null)
+    setAxisSet({})
     getCube(cube)
       .then((loaded) => {
         if (cancelled) return
@@ -112,6 +138,9 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
           }
         }
         setContext(ctx)
+        void loadSubsets(dims).then((m) => {
+          if (!cancelled) setSubsetsByDim(m)
+        })
       })
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : 'Failed to load cube'),
@@ -119,7 +148,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     return () => {
       cancelled = true
     }
-  }, [cube, retryKey])
+  }, [cube, retryKey, loadSubsets])
 
   const coordFor = useCallback(
     (rowMember: string, colMember: string): Coord => ({
@@ -136,11 +165,17 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     setExpandedRows(new Set())
   }, [cube, rowDim])
 
+  const rowSet = axisSet[rowDim] ?? null
   const rowDimDto = detail?.dimensions.find((d) => d.name === rowDim)
   const { roots, childrenOf } = useMemo(() => buildForest(rowDimDto), [rowDimDto])
   const visibleRows = useMemo(
-    () => flattenForest(roots, childrenOf, expandedRows),
-    [roots, childrenOf, expandedRows],
+    () =>
+      // A set is an explicit member list, shown flat; with no set, the row axis is
+      // the full dimension as a drill-down forest.
+      rowSet
+        ? rowSet.members.map((name) => ({ name, depth: 0, expandable: false }))
+        : flattenForest(roots, childrenOf, expandedRows),
+    [rowSet, roots, childrenOf, expandedRows],
   )
 
   const toggleRow = useCallback((name: string) => {
@@ -152,10 +187,98 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     })
   }, [])
 
+  // Default filter member for a dimension (its first element).
+  const defaultMember = useCallback(
+    (dimName: string) => detail?.dimensions.find((d) => d.name === dimName)?.elements[0]?.name ?? '',
+    [detail],
+  )
+
+  // Re-pivot: move a dimension onto Rows, Columns, or Filters. Rows and Columns
+  // always hold exactly one dimension, so a drop swaps with the current occupant
+  // (axis<->axis) or trades places with a filter; moving an axis dimension to
+  // Filters promotes the first filter onto the vacated axis.
+  const placeDimension = useCallback(
+    (dim: string, role: AxisRole) => {
+      if (!detail) return
+      if (role === 'rows') {
+        if (dim === rowDim) return
+        if (dim === colDim) {
+          setColDim(rowDim)
+          setRowDim(dim)
+          return
+        }
+        setRowDim(dim)
+        setContext((c) => {
+          const n = { ...c }
+          delete n[dim]
+          n[rowDim] = defaultMember(rowDim)
+          return n
+        })
+      } else if (role === 'columns') {
+        if (dim === colDim) return
+        if (dim === rowDim) {
+          setRowDim(colDim)
+          setColDim(dim)
+          return
+        }
+        setColDim(dim)
+        setContext((c) => {
+          const n = { ...c }
+          delete n[dim]
+          n[colDim] = defaultMember(colDim)
+          return n
+        })
+      } else {
+        // role === 'filters'
+        if (dim !== rowDim && dim !== colDim) return // already a filter
+        const filters = detail.dimensions
+          .map((d) => d.name)
+          .filter((n) => n !== rowDim && n !== colDim)
+        if (filters.length === 0) return // a 2-D cube needs both axes filled
+        const promote = filters[0]
+        if (dim === rowDim) setRowDim(promote)
+        else setColDim(promote)
+        setContext((c) => {
+          const n = { ...c }
+          delete n[promote]
+          n[dim] = defaultMember(dim)
+          return n
+        })
+      }
+    },
+    [detail, rowDim, colDim, defaultMember],
+  )
+
+  // Apply a member set to an axis dimension (null clears it back to all members).
+  // Dynamic (MDX) subsets are resolved to a concrete member list on selection.
+  const pickSet = useCallback(
+    async (dim: string, subset: SubsetDto | null) => {
+      if (!subset) {
+        setAxisSet((s) => ({ ...s, [dim]: null }))
+        return
+      }
+      let members = subset.members
+      if ((!members || members.length === 0) && subset.mdx) {
+        try {
+          members = (await previewMdx(cube, dim, subset.mdx)).map((m) => m.name)
+        } catch {
+          members = []
+        }
+      }
+      setAxisSet((s) => ({ ...s, [dim]: { name: subset.name, members } }))
+    },
+    [cube],
+  )
+
   const refresh = useCallback(async () => {
     if (!detail || !rowDim || !colDim) return
     const rows = visibleRows
-    const cols = detail.dimensions.find((d) => d.name === colDim)?.elements ?? []
+    const colSet = axisSet[colDim] ?? null
+    const cols = (
+      colSet
+        ? colSet.members
+        : (detail.dimensions.find((d) => d.name === colDim)?.elements ?? []).map((e) => e.name)
+    ).map((name) => ({ name }))
     const coords: Coord[] = []
     for (const r of rows) {
       for (const c of cols) {
@@ -177,7 +300,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to read cells')
     }
-  }, [cube, detail, rowDim, colDim, coordFor, visibleRows])
+  }, [cube, detail, rowDim, colDim, coordFor, visibleRows, axisSet])
 
   useEffect(() => {
     void refresh()
@@ -255,32 +378,29 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     return <p className="banner" role="status">Loading {cube}…</p>
   }
 
-  const colMembers = detail.dimensions.find((d) => d.name === colDim)?.elements ?? []
-  const otherDims = detail.dimensions.filter((d) => d.name !== rowDim && d.name !== colDim)
-  const dimOptions = detail.dimensions.map((d) => ({ value: d.name, label: d.name }))
+  const colSet = axisSet[colDim] ?? null
+  const colMembers: { name: string }[] = colSet
+    ? colSet.members.map((name) => ({ name }))
+    : (detail.dimensions.find((d) => d.name === colDim)?.elements ?? [])
+  const editorDimDto = subsetEditorDim
+    ? (detail.dimensions.find((d) => d.name === subsetEditorDim) ?? null)
+    : null
 
   return (
     <div>
+      <PivotFields
+        dimensions={detail.dimensions}
+        rowDim={rowDim}
+        colDim={colDim}
+        context={context}
+        subsetsByDim={subsetsByDim}
+        axisSet={axisSet}
+        onPlace={placeDimension}
+        onContextMember={(dim, v) => setContext((c) => ({ ...c, [dim]: v }))}
+        onPickSet={(dim, subset) => void pickSet(dim, subset)}
+        onNewSet={(dim) => setSubsetEditorDim(dim)}
+      />
       <div className="grid-toolbar">
-        <label className="grid-axis">
-          <span>Rows</span>
-          <Select value={rowDim} onValueChange={setRowDim} options={dimOptions} ariaLabel="Row dimension" />
-        </label>
-        <label className="grid-axis">
-          <span>Columns</span>
-          <Select value={colDim} onValueChange={setColDim} options={dimOptions} ariaLabel="Column dimension" />
-        </label>
-        {otherDims.map((d) => (
-          <label className="grid-axis" key={d.name}>
-            <span>{d.name}</span>
-            <Select
-              value={context[d.name] ?? ''}
-              onValueChange={(v) => setContext((c) => ({ ...c, [d.name]: v }))}
-              options={d.elements.map((el) => ({ value: el.name, label: el.name }))}
-              ariaLabel={`${d.name} member`}
-            />
-          </label>
-        ))}
         <label className="grid-axis">
           <span>Spread</span>
           <Select
@@ -390,6 +510,32 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
           ) : (
             <p className="muted">Loading provenance…</p>
           )}
+        </Dialog>
+      ) : null}
+      {editorDimDto ? (
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setSubsetEditorDim(null)
+          }}
+          title={`Member set for ${editorDimDto.name}`}
+          description="Pick the members this axis should show, then save the set to reuse it."
+          size="lg"
+        >
+          <SubsetEditor
+            cube={cube}
+            dimension={editorDimDto}
+            onSaved={(name) => {
+              const dim = editorDimDto.name
+              setSubsetEditorDim(null)
+              void loadSubsets(detail.dimensions).then((m) => {
+                setSubsetsByDim(m)
+                const created = m[dim]?.find((s) => s.name === name) ?? null
+                if (created) void pickSet(dim, created)
+              })
+            }}
+            onCancel={() => setSubsetEditorDim(null)}
+          />
         </Dialog>
       ) : null}
     </div>
