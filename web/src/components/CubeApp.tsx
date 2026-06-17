@@ -159,7 +159,7 @@ function crumbs(s: Selection | null, opts: { autoNew?: boolean } = {}): Crumb[] 
     case 'cube-rules':
       return [cubesRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: 'Rules & feeders', to: null }]
     case 'dimension':
-      return [dimsRoot, { label: s.name || (opts.autoNew ? 'New shared dimension' : 'Dimension'), to: null }]
+      return [dimsRoot, { label: s.name || (opts.autoNew ? 'New global dimension' : 'Dimension'), to: null }]
     case 'flow':
       return [flowsRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: s.flow || 'New flow', to: null }]
     case 'schedule':
@@ -402,8 +402,8 @@ export default function CubeApp({
           const label = ctx.dim ?? `#${id}`
           void (async () => {
             const ok = await confirm({
-              title: 'Delete shared dimension',
-              body: `Delete shared dimension "${label}"? This permanently removes it and cannot be undone.`,
+              title: 'Delete dimension',
+              body: `Delete dimension "${label}"? This permanently removes it and cannot be undone.`,
               confirmLabel: 'Delete',
               danger: true,
             })
@@ -549,7 +549,7 @@ export default function CubeApp({
       id: 'go:dimensions',
       label: 'Go to Dimensions',
       group: 'Go to',
-      keywords: 'shared library',
+      keywords: 'global library reusable',
       run: () => navigate({ kind: 'dimension', id: -1, name: '' }, {}),
     })
     list.push({
@@ -568,7 +568,7 @@ export default function CubeApp({
     if (isAdmin) {
       list.push({ id: 'new:cube', label: 'New cube…', group: 'Create', run: () => onAction('new-cube', {}) })
     }
-    list.push({ id: 'new:dimension', label: 'Register shared dimension…', group: 'Create', run: () => onAction('register-dimension', {}) })
+    list.push({ id: 'new:dimension', label: 'New global dimension…', group: 'Create', run: () => onAction('register-dimension', {}) })
     list.push({ id: 'new:flow', label: 'New flow…', group: 'Create', run: () => onAction('new-flow', {}) })
     list.push({ id: 'new:schedule', label: 'New schedule…', group: 'Create', run: () => onAction('new-schedule', {}) })
     if (isAdmin) {

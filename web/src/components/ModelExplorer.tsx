@@ -16,19 +16,21 @@ import {
   listFlows,
   listJobs,
   listViews,
+  type DimensionDto,
+  type SharedDimensionSummary,
 } from '../api/client'
 
 // What the tree currently has open in the detail pane. The IA is cube-centric
 // (research-validated): cube-owned objects (its dimensions, views, rules+feeders)
-// nest under the cube; shared dimensions, flows, and schedules are their own
-// resource-type roots (flows/schedules grouped by their owning cube).
+// nest under the cube; the global dimension namespace, flows, and schedules are
+// their own resource-type roots (flows/schedules grouped by their owning cube).
 export type Selection =
   | { kind: 'cube'; cube: string } // the cube's data (pivot grid)
   | { kind: 'cube-dimension'; cube: string; dim: string } // a cube's dimension
   | { kind: 'cube-views'; cube: string } // the cube's views manager
   | { kind: 'view'; cube: string; view: string } // one saved view, opened
   | { kind: 'cube-rules'; cube: string } // the cube's rules + feeders
-  | { kind: 'dimension'; id: number; name: string } // a shared library dimension
+  | { kind: 'dimension'; id: number; name: string } // a global (registry) dimension
   | { kind: 'flow'; cube: string; flow: string }
   | { kind: 'schedule'; cube: string; job: string }
   | { kind: 'overview' }
@@ -85,8 +87,10 @@ interface Node {
   id: string
   label: string
   icon: string
-  /** A short qualifier shown after the label (e.g. "shared", "12"). */
+  /** A short qualifier shown after the label (e.g. a reference count "2", or a
+   * provenance cube name). `badgeTitle` is its tooltip / accessible expansion. */
   badge?: string
+  badgeTitle?: string
   /** What activating this node opens; absent for pure grouping nodes. */
   selection?: Selection
   /** Present => the node is expandable; called once on first expand. */
@@ -282,6 +286,85 @@ async function schedulesByCube(): Promise<Node[]> {
   }))
 }
 
+/** The "Dimensions" section: one global namespace (ADR-0031). Lists the registry
+ * (global) dimensions, then every cube's embedded-only dimensions, presented
+ * together. A registry dimension routes to the dimension editor and is
+ * referenceable by any cube; an embedded-only one routes to its cube's model
+ * editor and shows that cube as provenance. Cubes the caller cannot read are
+ * skipped (their getCube 403s), so the list never leaks a denied cube. */
+async function dimensionNamespace(): Promise<Node[]> {
+  const registryNode = (d: SharedDimensionSummary): Node => ({
+    id: `dim:${d.id}`,
+    label: d.name,
+    icon: '⬡',
+    // The reference count (how many cubes use it), not a shared/local flag.
+    badge: d.references.length > 0 ? String(d.references.length) : undefined,
+    badgeTitle:
+      d.references.length === 1
+        ? 'Used by 1 cube'
+        : `Used by ${d.references.length} cubes`,
+    selection: { kind: 'dimension', id: d.id, name: d.name },
+    // Delete is only offered when the dimension is unreferenced; the backend
+    // rejects deleting a referenced one (409) anyway.
+    menu: [
+      { action: 'add-member', label: 'Add member…' },
+      { action: 'grow-dimension', label: 'Grow…' },
+      {
+        action: 'delete-dimension',
+        label: 'Delete…',
+        danger: true,
+        disabled: d.references.length > 0,
+      },
+    ],
+    actionCtx: { dimId: d.id, dim: d.name },
+    loader: async () => {
+      const detail = await getDimension(d.id)
+      return elementNodes(
+        `dim:${d.id}`,
+        detail.elements,
+        [
+          { action: 'add-member', label: 'Add member…' },
+          { action: 'grow-dimension', label: 'Grow…' },
+        ],
+        { dimId: d.id, dim: d.name },
+      )
+    },
+  })
+
+  const embeddedNode = (cube: string, d: DimensionDto): Node => ({
+    id: `cube:${cube}/dim:${d.name}`,
+    label: d.name,
+    icon: '⬡',
+    badge: cube, // provenance: the cube this dimension currently lives in
+    badgeTitle: `Lives in cube ${cube}`,
+    selection: { kind: 'cube-dimension', cube, dim: d.name },
+    menu: CUBE_DIM_MENU,
+    actionCtx: { cube, dim: d.name },
+    loader: async () =>
+      elementNodes(`cube:${cube}/dim:${d.name}`, d.elements, CUBE_DIM_MENU, { cube, dim: d.name }),
+  })
+
+  const [registry, cubes] = await Promise.all([listDimensions(), listCubes()])
+  // Read each cube's dimensions; tolerate a denied cube (skip it).
+  const details = await Promise.all(
+    cubes.map((c) =>
+      getCube(c.name).then(
+        (detail) => ({ cube: c.name, detail }),
+        () => null,
+      ),
+    ),
+  )
+  const embedded: Node[] = []
+  for (const entry of details) {
+    if (!entry) continue
+    for (const d of entry.detail.dimensions) {
+      if (d.id !== undefined) continue // registry-backed: shown via its registry entry
+      embedded.push(embeddedNode(entry.cube, d))
+    }
+  }
+  return [...registry.map(registryNode), ...embedded]
+}
+
 /** The static top-level roots (resource-type grouping). */
 function rootNodes(isAdmin: boolean): Node[] {
   const roots: Node[] = [
@@ -297,41 +380,15 @@ function rootNodes(isAdmin: boolean): Node[] {
       id: 'root:dimensions',
       label: 'Dimensions',
       icon: '⬡',
-      menu: [{ action: 'register-dimension', label: 'Register shared dimension…' }],
+      menu: [{ action: 'register-dimension', label: 'New global dimension…' }],
       actionCtx: {},
-      loader: async () =>
-        (await listDimensions()).map((d) => ({
-          id: `dim:${d.id}`,
-          label: d.name,
-          icon: '⬡',
-          badge: 'shared',
-          selection: { kind: 'dimension', id: d.id, name: d.name } as Selection,
-          // Delete is only offered when the shared dimension is unreferenced;
-          // the backend rejects deleting a referenced one (409) anyway.
-          menu: [
-            { action: 'add-member', label: 'Add member…' },
-            { action: 'grow-dimension', label: 'Grow…' },
-            {
-              action: 'delete-dimension',
-              label: 'Delete…',
-              danger: true,
-              disabled: d.references.length > 0,
-            },
-          ] as NodeMenuItem[],
-          actionCtx: { dimId: d.id, dim: d.name },
-          loader: async () => {
-            const detail = await getDimension(d.id)
-            return elementNodes(
-              `dim:${d.id}`,
-              detail.elements,
-              [
-                { action: 'add-member', label: 'Add member…' },
-                { action: 'grow-dimension', label: 'Grow…' },
-              ],
-              { dimId: d.id, dim: d.name },
-            )
-          },
-        })),
+      // Global dimension namespace (ADR-0031): one list = the registry (global)
+      // dimensions plus every cube's embedded-only dimensions, presented
+      // together with no shared/local distinction. A registry-backed cube
+      // dimension carries an id and is shown once via its registry entry; an
+      // embedded-only one (no id) is shown with its cube as provenance and opens
+      // that cube's model editor.
+      loader: dimensionNamespace,
     },
     {
       id: 'root:flows',
@@ -603,7 +660,7 @@ export default function ModelExplorer({
       const hasMenu = Boolean(onAction && node.menu && node.menu.length > 0)
       const isLoading = loading.has(node.id)
       const loadError = errorById[node.id]
-      const accLabel = node.badge ? `${node.label}, ${node.badge} dimension` : node.label
+      const accLabel = node.badge ? `${node.label}, ${node.badgeTitle ?? node.badge}` : node.label
       return (
         <li
           key={node.id}
@@ -637,7 +694,7 @@ export default function ModelExplorer({
             <span className="tree__icon" aria-hidden="true">{node.icon}</span>
             <span className="tree__label">{node.label}</span>
             {node.badge ? (
-              <span className="tree__badge" title="Shared dimension" aria-hidden="true">
+              <span className="tree__badge" title={node.badgeTitle ?? node.badge} aria-hidden="true">
                 {node.badge}
               </span>
             ) : null}

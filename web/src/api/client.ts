@@ -19,6 +19,10 @@ export interface EdgeDto {
 
 export interface DimensionDto {
   name: string
+  /** The global dimension id when this cube dimension is backed by the registry
+   * (ADR-0024/0031); absent for a cube-embedded-only dimension. Lets the explorer
+   * present one global dimension namespace and route edits to the right place. */
+  id?: number
   elements: ElementDto[]
   edges: EdgeDto[]
   /** Attributes defined on this dimension (ADR-0021). Absent on older servers. */

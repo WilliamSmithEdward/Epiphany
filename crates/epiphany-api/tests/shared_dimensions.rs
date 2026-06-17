@@ -252,6 +252,19 @@ async fn register_reference_grow_and_recover() {
     let (_, sales) = call(&app, "GET", "/api/v1/cubes/Sales", &admin, None).await;
     assert!(member_names(cube_dimension(&sales, "Product")).contains(&"Widget".to_string()));
 
+    // ADR-0031: cube detail exposes the global dimension id for a registry-backed
+    // dimension, and omits it for a cube-embedded-only one, so the web can present
+    // one global dimension namespace and route edits to the right place.
+    assert_eq!(
+        cube_dimension(&sales, "Product")["id"].as_u64(),
+        Some(product_id),
+        "registry-backed dimension carries its global id"
+    );
+    assert!(
+        cube_dimension(&sales, "Measure")["id"].is_null(),
+        "embedded-only dimension has no global id"
+    );
+
     // Grow the shared dimension: a new member fans out to both cubes.
     let (status, grown) = call(
         &app,

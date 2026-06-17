@@ -67,6 +67,12 @@ pub struct AttributeDto {
 #[derive(Debug, Serialize)]
 pub struct DimensionDto {
     pub name: String,
+    /// The global dimension id when this cube dimension is backed by the
+    /// registry (ADR-0024/0031); `None` for a cube-embedded-only dimension that
+    /// is not yet part of the global namespace. Lets the web present one global
+    /// dimension list and route edits to the right place.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<u64>,
     pub elements: Vec<ElementDto>,
     pub edges: Vec<EdgeDto>,
     #[serde(default)]

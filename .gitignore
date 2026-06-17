@@ -37,3 +37,6 @@ coverage/
 Thumbs.db
 ehthumbs.db
 desktop.ini
+
+# local dev backend data (verification only, not tracked)
+.dev-data/

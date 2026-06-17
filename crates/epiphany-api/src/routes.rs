@@ -68,10 +68,22 @@ pub(crate) async fn get_cube(
     // elements denied to them, so denied members (and any edge touching them) are
     // suppressed from the cube structure, just as from a member enumeration.
     let mask = element_mask(&state, &auth, &snap);
-    Ok(Json(cube_detail(snap.cube(), mask.as_ref())))
+    // The global dimension id (ADR-0024/0031) when a dimension is registry-backed,
+    // so the web can present one global dimension list and route edits correctly.
+    let backing = |dim_name: &str| {
+        state
+            .engine
+            .dimension_backing(&cube, dim_name)
+            .map(|id| id.0)
+    };
+    Ok(Json(cube_detail(snap.cube(), mask.as_ref(), backing)))
 }
 
-fn cube_detail(cube: &Cube, mask: Option<&ElementMask>) -> CubeDetailDto {
+fn cube_detail(
+    cube: &Cube,
+    mask: Option<&ElementMask>,
+    backing: impl Fn(&str) -> Option<u64>,
+) -> CubeDetailDto {
     let dimensions = cube
         .dimensions()
         .iter()
@@ -80,6 +92,7 @@ fn cube_detail(cube: &Cube, mask: Option<&ElementMask>) -> CubeDetailDto {
             let denied = |idx: u32| mask.is_some_and(|m| m.denies_member(cube, d, idx));
             DimensionDto {
                 name: dim.name().to_string(),
+                id: backing(dim.name()),
                 elements: dim
                     .iter_elements()
                     .enumerate()

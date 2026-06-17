@@ -496,7 +496,7 @@ function NewCubeDialog({
       const d = dims[i]
       if (d.source === 'reference') {
         if (d.ref === null) {
-          setDimErrors({ [i]: 'Pick a shared dimension, or switch it to define inline.' })
+          setDimErrors({ [i]: 'Pick a dimension, or switch it to define inline.' })
           return
         }
         const shared = library.find((s) => s.id === d.ref)
@@ -583,7 +583,7 @@ function NewCubeDialog({
                     }
                     options={[
                       { value: 'inline', label: 'Define here' },
-                      { value: 'reference', label: 'Reuse shared dimension' },
+                      { value: 'reference', label: 'Reuse a global dimension' },
                     ]}
                     ariaLabel={`Dimension ${i + 1} source`}
                   />
@@ -602,8 +602,8 @@ function NewCubeDialog({
                     value={d.ref !== null ? String(d.ref) : undefined}
                     onValueChange={(v) => update(i, { ref: Number(v) })}
                     options={libraryOptions}
-                    placeholder="Pick a shared dimension…"
-                    ariaLabel={`Dimension ${i + 1} shared dimension`}
+                    placeholder="Pick a dimension…"
+                    ariaLabel={`Dimension ${i + 1} reuse a global dimension`}
                   />
                 )}
                 {dims.length > 1 ? (
@@ -638,8 +638,8 @@ function NewCubeDialog({
                 </>
               ) : (
                 <p className="field__msg field__msg--hint">
-                  This dimension reuses a shared definition from the library. Editing it later in the
-                  library updates every cube that references it.
+                  This dimension reuses a global dimension. Editing it later updates every cube that
+                  references it.
                 </p>
               )}
               {dimErrors[i] ? (

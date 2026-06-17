@@ -107,31 +107,30 @@ export default function DimensionsWorkspace({
 
   if (forbidden) {
     return (
-      <EmptyState icon="⬡" title="No access to the dimension library">
-        You do not have access to the shared dimension library yet. Ask an administrator to grant you
-        access.
+      <EmptyState icon="⬡" title="No access to dimensions">
+        You do not have access to dimensions yet. Ask an administrator to grant you access.
       </EmptyState>
     )
   }
 
   if (!list) {
-    return <p className="banner" role="status">Loading the dimension library…</p>
+    return <p className="banner" role="status">Loading dimensions…</p>
   }
 
   return (
     <div className="model-workspace">
       <Card
-        title="Dimension library"
-        subtitle="Reusable dimensions shared across cubes. Editing one updates every cube that references it."
+        title="Global dimensions"
+        subtitle="Dimensions you can reuse across cubes. Editing one updates every cube that references it."
         actions={
           <Button size="sm" variant="primary" onClick={() => setShowNew(true)}>
-            New shared dimension
+            New dimension
           </Button>
         }
       >
         {error ? <p className="error" role="alert">{error}</p> : null}
         {list.length === 0 ? (
-          <EmptyState icon="⬡" title="No shared dimensions yet">
+          <EmptyState icon="⬡" title="No global dimensions yet">
             Register a dimension here, then reference it when you create a cube. One edit keeps every
             cube that uses it consistent.
           </EmptyState>
@@ -248,8 +247,8 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
 
   async function remove() {
     const ok = await confirm({
-      title: 'Delete shared dimension',
-      body: `Delete shared dimension "${detail?.name ?? ''}"? This permanently removes the dimension and cannot be undone.`,
+      title: 'Delete dimension',
+      body: `Delete dimension "${detail?.name ?? ''}"? This permanently removes the dimension and cannot be undone.`,
       confirmLabel: 'Delete',
       danger: true,
     })
@@ -269,7 +268,7 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
 
   return (
     <Card
-      title={`Shared dimension: ${detail.name}`}
+      title={`Dimension: ${detail.name}`}
       subtitle={
         detail.references.length > 0
           ? `Generation ${detail.generation}. Used by ${detail.references.join(', ')}. Changes fan out to all of them.`
@@ -282,7 +281,7 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
           disabled={busy || !unreferenced}
           title={
             unreferenced
-              ? 'Delete this shared dimension'
+              ? 'Delete this dimension'
               : 'Referenced by one or more cubes; cannot delete'
           }
           onClick={() => void remove()}
@@ -446,7 +445,7 @@ function NewDimensionDialog({
       onOpenChange={(o) => {
         if (!o) onClose()
       }}
-      title="Register a shared dimension"
+      title="New global dimension"
       description="Define a dimension once here, then reference it from any cube. Editing it later updates every cube that uses it."
       size="md"
       footer={
