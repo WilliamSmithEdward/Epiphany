@@ -185,8 +185,10 @@ export default function CubeApp({
         setCubes(list)
         setSelection((current) => {
           if (select) return { kind: 'cube', cube: select }
-          if (current) return current
-          return list[0] ? { kind: 'cube', cube: list[0].name } : null
+          // Object-centric launch: land on the "pick an object" empty state
+          // rather than auto-opening the first cube. An existing selection is
+          // preserved (e.g. when the cube list reloads after a change).
+          return current
         })
       })
       .catch((err: unknown) =>
@@ -347,6 +349,9 @@ export default function CubeApp({
           // Open the cube's data model (ModelWorkspace defaults to its first
           // dimension when none is named).
           if (ctx.cube) navigate({ kind: 'cube-dimension', cube: ctx.cube, dim: '' }, {})
+          return
+        case 'open-rules':
+          if (ctx.cube) navigate({ kind: 'cube-rules', cube: ctx.cube }, {})
           return
         case 'add-view':
           if (ctx.cube) navigate({ kind: 'cube-views', cube: ctx.cube }, { autoNew: true })
@@ -581,12 +586,12 @@ export default function CubeApp({
           ) : null}
 
           {selection === null ? (
-            <EmptyState icon="▤" title="Nothing selected">
+            <EmptyState icon="▤" title="Pick an object to open">
               {cubes.length === 0
                 ? isAdmin
                   ? 'No cubes yet. Create one from the Cubes section to get started.'
-                  : 'No cubes are available to you yet. Ask an administrator for access.'
-                : 'Pick a cube or object from the explorer on the left.'}
+                  : 'No objects are available to you yet. Ask an administrator for access.'
+                : 'Choose a cube, dimension, flow, or schedule from the explorer on the left to open it.'}
             </EmptyState>
           ) : selection.kind === 'overview' ? (
             <ServerOverview />

@@ -49,7 +49,8 @@ export default function WelcomeCard({
         <li>
           {hasCubes ? (
             <>
-              <strong>Pick a cube</strong> from the sidebar to get started.
+              <strong>Pick any object</strong> from the tree on the left &mdash; a cube, dimension,
+              flow, or schedule &mdash; to open it.
             </>
           ) : isAdmin ? (
             <>

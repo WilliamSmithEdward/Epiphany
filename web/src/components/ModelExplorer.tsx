@@ -48,6 +48,7 @@ export type NodeAction =
   | 'add-member'
   | 'add-rollup'
   | 'edit-attributes'
+  | 'open-rules'
   | 'register-dimension'
   | 'grow-dimension'
   | 'delete-dimension'
@@ -126,11 +127,18 @@ function selectionId(s: Selection): string {
 
 // ---- node builders (each returns the children for a parent) ----
 
-function elementNodes(prefix: string, elements: { name: string; kind: string }[]): Node[] {
+function elementNodes(
+  prefix: string,
+  elements: { name: string; kind: string }[],
+  menu?: NodeMenuItem[],
+  actionCtx?: ActionContext,
+): Node[] {
   return elements.map((el) => ({
     id: `${prefix}/el:${el.name}`,
     label: el.name,
     icon: el.kind === 'consolidated' ? '◇' : el.kind === 'string' ? '"' : '·',
+    menu,
+    actionCtx,
   }))
 }
 
@@ -159,7 +167,11 @@ async function cubeChildren(cube: string): Promise<Node[]> {
         selection: { kind: 'cube-dimension', cube, dim: d.name },
         menu: CUBE_DIM_MENU,
         actionCtx: { cube, dim: d.name },
-        loader: async () => elementNodes(`cube:${cube}/dim:${d.name}`, d.elements),
+        loader: async () =>
+          elementNodes(`cube:${cube}/dim:${d.name}`, d.elements, CUBE_DIM_MENU, {
+            cube,
+            dim: d.name,
+          }),
       })),
   }
   const views: Node = {
@@ -189,6 +201,8 @@ async function cubeChildren(cube: string): Promise<Node[]> {
     label: 'Rules & feeders',
     icon: 'Σ',
     selection: { kind: 'cube-rules', cube },
+    menu: [{ action: 'open-rules', label: 'Edit rules & feeders' }],
+    actionCtx: { cube },
   }
   return [dims, views, rules]
 }
@@ -305,7 +319,15 @@ function rootNodes(isAdmin: boolean): Node[] {
           actionCtx: { dimId: d.id, dim: d.name },
           loader: async () => {
             const detail = await getDimension(d.id)
-            return elementNodes(`dim:${d.id}`, detail.elements)
+            return elementNodes(
+              `dim:${d.id}`,
+              detail.elements,
+              [
+                { action: 'add-member', label: 'Add member…' },
+                { action: 'grow-dimension', label: 'Grow…' },
+              ],
+              { dimId: d.id, dim: d.name },
+            )
           },
         })),
     },
