@@ -1374,6 +1374,13 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
   align-items: center;
   gap: var(--space-1);
 }
+/* Column header with an optional drill-down twisty. Sits at the right edge to
+   match the right-aligned numeric columns. */
+.pivot__colhead {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
 .pivot__twisty {
   display: inline-flex;
   align-items: center;

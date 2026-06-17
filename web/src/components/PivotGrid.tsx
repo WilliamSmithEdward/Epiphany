@@ -107,8 +107,9 @@ export default function PivotGrid({
   // 'off' is the disabled sentinel; a Radix Select.Item value may never be the
   // empty string, so the "off" option carries a real value.
   const [spreadMode, setSpreadMode] = useState<'off' | SpreadMethod>('off')
-  // Which consolidation members on the row axis are expanded (drill-down).
+  // Which consolidation members on the row / column axes are expanded (drill-down).
   const [expandedRows, setExpandedRows] = useState<Set<string>>(() => new Set())
+  const [expandedCols, setExpandedCols] = useState<Set<string>>(() => new Set())
   // Saved subsets per dimension (for the "select a set" menu on each axis chip).
   const [subsetsByDim, setSubsetsByDim] = useState<Record<string, SubsetDto[]>>({})
   // The member set applied to an axis dimension, resolved to a member list; a
@@ -184,6 +185,9 @@ export default function PivotGrid({
   useEffect(() => {
     setExpandedRows(new Set())
   }, [cube, rowDim])
+  useEffect(() => {
+    setExpandedCols(new Set())
+  }, [cube, colDim])
 
   const rowSet = axisSet[rowDim] ?? null
   const rowDimDto = detail?.dimensions.find((d) => d.name === rowDim)
@@ -228,6 +232,51 @@ export default function PivotGrid({
     setExpandedRows((cur) => {
       const next = new Set(cur)
       for (const r of visibleRows) if (r.depth === maxDepth && next.has(r.name)) next.delete(r.name)
+      return next
+    })
+  }
+
+  // Column axis drill-down: the mirror of the row hierarchy. Expanding a
+  // consolidation inserts its children as further columns to the right.
+  const colSet = axisSet[colDim] ?? null
+  const colDimDto = detail?.dimensions.find((d) => d.name === colDim)
+  const { roots: colRoots, childrenOf: colChildrenOf } = useMemo(
+    () => buildForest(colDimDto),
+    [colDimDto],
+  )
+  const visibleCols = useMemo(
+    () =>
+      colSet
+        ? colSet.members.map((name) => ({ name, depth: 0, expandable: false }))
+        : flattenForest(colRoots, colChildrenOf, expandedCols),
+    [colSet, colRoots, colChildrenOf, expandedCols],
+  )
+
+  const toggleCol = useCallback((name: string) => {
+    setExpandedCols((s) => {
+      const n = new Set(s)
+      if (n.has(name)) n.delete(name)
+      else n.add(name)
+      return n
+    })
+  }, [])
+
+  const colHierarchical = !colSet && colChildrenOf.size > 0
+  const colExpandAll = () => setExpandedCols(new Set(colChildrenOf.keys()))
+  const colCollapseAll = () => setExpandedCols(new Set())
+  const colExpandNext = () =>
+    setExpandedCols((cur) => {
+      const next = new Set(cur)
+      for (const c of visibleCols) if (c.expandable && !next.has(c.name)) next.add(c.name)
+      return next
+    })
+  const colCollapsePrev = () => {
+    let maxDepth = -1
+    for (const c of visibleCols) if (expandedCols.has(c.name)) maxDepth = Math.max(maxDepth, c.depth)
+    if (maxDepth < 0) return
+    setExpandedCols((cur) => {
+      const next = new Set(cur)
+      for (const c of visibleCols) if (c.depth === maxDepth && next.has(c.name)) next.delete(c.name)
       return next
     })
   }
@@ -353,12 +402,7 @@ export default function PivotGrid({
   const refresh = useCallback(async () => {
     if (!detail || !rowDim || !colDim) return
     const rows = visibleRows
-    const colSet = axisSet[colDim] ?? null
-    const cols = (
-      colSet
-        ? colSet.members
-        : (detail.dimensions.find((d) => d.name === colDim)?.elements ?? []).map((e) => e.name)
-    ).map((name) => ({ name }))
+    const cols = visibleCols
     const coords: Coord[] = []
     for (const r of rows) {
       for (const c of cols) {
@@ -380,7 +424,7 @@ export default function PivotGrid({
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to read cells')
     }
-  }, [cube, detail, rowDim, colDim, coordFor, visibleRows, axisSet])
+  }, [cube, detail, rowDim, colDim, coordFor, visibleRows, visibleCols])
 
   useEffect(() => {
     void refresh()
@@ -458,10 +502,6 @@ export default function PivotGrid({
     return <p className="banner" role="status">Loading {cube}…</p>
   }
 
-  const colSet = axisSet[colDim] ?? null
-  const colMembers: { name: string }[] = colSet
-    ? colSet.members.map((name) => ({ name }))
-    : (detail.dimensions.find((d) => d.name === colDim)?.elements ?? [])
   const editorDimDto = subsetEditorDim
     ? (detail.dimensions.find((d) => d.name === subsetEditorDim) ?? null)
     : null
@@ -513,6 +553,23 @@ export default function PivotGrid({
             </Button>
           </div>
         ) : null}
+        {colHierarchical ? (
+          <div className="grid-levels" role="group" aria-label="Column levels">
+            <span className="grid-levels__label">Columns</span>
+            <Button variant="ghost" size="sm" onClick={colExpandNext} title="Expand to the next level">
+              + level
+            </Button>
+            <Button variant="ghost" size="sm" onClick={colCollapsePrev} title="Collapse to the previous level">
+              - level
+            </Button>
+            <Button variant="ghost" size="sm" onClick={colExpandAll} title="Expand all columns">
+              Expand all
+            </Button>
+            <Button variant="ghost" size="sm" onClick={colCollapseAll} title="Collapse all columns">
+              Collapse all
+            </Button>
+          </div>
+        ) : null}
         <span className="grid-toolbar__spacer" />
         <Button variant="ghost" size="sm" icon="◫" onClick={() => { setSaveError(null); setSaveOpen(true) }}>
           Save view
@@ -539,9 +596,22 @@ export default function PivotGrid({
               <th className="corner">
                 {rowDim} / {colDim}
               </th>
-              {colMembers.map((c) => (
-                <th key={c.name} scope="col">
-                  {c.name}
+              {visibleCols.map((c, ci) => (
+                <th key={`${c.name}#${ci}`} scope="col">
+                  <span className="pivot__colhead">
+                    {c.expandable ? (
+                      <button
+                        type="button"
+                        className="pivot__twisty"
+                        aria-expanded={expandedCols.has(c.name)}
+                        aria-label={`${expandedCols.has(c.name) ? 'Collapse' : 'Expand'} ${c.name}`}
+                        onClick={() => toggleCol(c.name)}
+                      >
+                        {expandedCols.has(c.name) ? '▾' : '▸'}
+                      </button>
+                    ) : null}
+                    <span className="pivot__colhead-label">{c.name}</span>
+                  </span>
                 </th>
               ))}
             </tr>
@@ -570,11 +640,11 @@ export default function PivotGrid({
                     <span className="pivot__rowhead-label">{r.name}</span>
                   </span>
                 </th>
-                {colMembers.map((c, ci) => {
+                {visibleCols.map((c, ci) => {
                   const cell = cells.get(cellKey(r.name, c.name))
                   return (
                     <CellView
-                      key={c.name}
+                      key={`${c.name}#${ci}`}
                       cell={cell}
                       r={ri}
                       c={ci}
