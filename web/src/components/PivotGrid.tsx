@@ -37,6 +37,37 @@ function deleteFrom(s: Set<string>, key: string): Set<string> {
   return n
 }
 
+/** A bracket-quoted MDX identifier ( ] is escaped as ]] ). */
+function mdxId(name: string): string {
+  return `[${name.replace(/]/g, ']]')}]`
+}
+
+/** Build the MDX query the current layout represents: the visible column members
+ * on COLUMNS, the visible row members on ROWS, and every off-axis dimension as a
+ * single-member slicer in WHERE. */
+function buildMdxQuery(opts: {
+  cube: string
+  rowDim: string
+  colDim: string
+  rowMembers: string[]
+  colMembers: string[]
+  slicers: { dim: string; member: string }[]
+}): string {
+  const member = (dim: string, m: string) => `${mdxId(dim)}.${mdxId(m)}`
+  const cols = opts.colMembers.map((m) => member(opts.colDim, m)).join(', ')
+  const rows = opts.rowMembers.map((m) => member(opts.rowDim, m)).join(', ')
+  const lines = [
+    'SELECT',
+    `  { ${cols} } ON COLUMNS,`,
+    `  { ${rows} } ON ROWS`,
+    `FROM ${mdxId(opts.cube)}`,
+  ]
+  if (opts.slicers.length > 0) {
+    lines.push(`WHERE ( ${opts.slicers.map((s) => member(s.dim, s.member)).join(', ')} )`)
+  }
+  return lines.join('\n')
+}
+
 /** One row in the (possibly drilled-down) row axis: a dimension member with its
  * nesting depth and whether it can be expanded to reveal children. */
 interface VisibleRow {
@@ -134,6 +165,8 @@ export default function PivotGrid({
   const [saveVis, setSaveVis] = useState<Visibility>('private')
   const [saveBusy, setSaveBusy] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  // "Show MDX" dialog: previews the query the current layout generates.
+  const [mdxOpen, setMdxOpen] = useState(false)
   const gridRef = useRef<HTMLDivElement>(null)
 
   // Load (or reload) the saved subsets for every dimension, so each axis chip's
@@ -533,6 +566,17 @@ export default function PivotGrid({
     ? (detail.dimensions.find((d) => d.name === subsetEditorDim) ?? null)
     : null
 
+  const mdxQuery = buildMdxQuery({
+    cube,
+    rowDim,
+    colDim,
+    rowMembers: visibleRows.map((r) => r.name),
+    colMembers: visibleCols.map((c) => c.name),
+    slicers: detail.dimensions
+      .filter((d) => d.name !== rowDim && d.name !== colDim)
+      .map((d) => ({ dim: d.name, member: context[d.name] ?? d.elements[0]?.name ?? '' })),
+  })
+
   return (
     <div>
       <PivotFields
@@ -601,6 +645,9 @@ export default function PivotGrid({
         <span className="grid-toolbar__spacer" />
         <Button variant="ghost" size="sm" icon="◫" onClick={() => { setSaveError(null); setSaveOpen(true) }}>
           Save view
+        </Button>
+        <Button variant="ghost" size="sm" icon="∑" onClick={() => setMdxOpen(true)}>
+          Show MDX
         </Button>
         <Button variant="ghost" size="sm" icon="↻" onClick={() => void refresh()}>
           Refresh
@@ -777,6 +824,28 @@ export default function PivotGrid({
               Save view
             </Button>
           </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={mdxOpen}
+        onOpenChange={setMdxOpen}
+        title="MDX for this view"
+        description="The query the current rows, columns, filters, and sets generate."
+        size="md"
+      >
+        <pre className="mdx-preview">{mdxQuery}</pre>
+        <div className="pw-form__actions">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void navigator.clipboard?.writeText(mdxQuery)}
+          >
+            Copy
+          </Button>
+          <Button size="sm" onClick={() => setMdxOpen(false)}>
+            Close
+          </Button>
         </div>
       </Dialog>
     </div>
