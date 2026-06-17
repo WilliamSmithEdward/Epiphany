@@ -46,11 +46,20 @@ export default function ModelWorkspace({
   reloadSignal,
   isAdmin,
   onCubeCreated,
+  initialDim,
+  autoNew,
+  navSignal,
 }: {
   cube: string
   reloadSignal: number
   isAdmin: boolean
   onCubeCreated: (name: string) => void
+  /** Focus this dimension on mount / when it changes (from the tree). */
+  initialDim?: string
+  /** Open the New-cube wizard immediately (the tree's "New cube…" action). */
+  autoNew?: boolean
+  /** Bumped by the navigator to re-apply initialDim/autoNew when unchanged. */
+  navSignal?: number
 }) {
   const [detail, setDetail] = useState<CubeDetail | null>(null)
   const [dimName, setDimName] = useState('')
@@ -69,6 +78,17 @@ export default function ModelWorkspace({
   useEffect(() => {
     load()
   }, [load, reloadSignal])
+
+  // Focus the dimension the navigator (tree) asked for. navSignal lets re-clicking
+  // the same dimension re-focus it.
+  useEffect(() => {
+    if (initialDim) setDimName(initialDim)
+  }, [cube, initialDim, navSignal])
+
+  // Open the New-cube wizard when the tree's "New cube…" action navigates here.
+  useEffect(() => {
+    if (autoNew) setShowNewCube(true)
+  }, [autoNew, navSignal])
 
   const dimension = useMemo(
     () => detail?.dimensions.find((d) => d.name === dimName) ?? null,

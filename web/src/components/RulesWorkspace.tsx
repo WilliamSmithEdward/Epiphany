@@ -28,9 +28,13 @@ import { TestReport } from './TestReport'
 export default function RulesWorkspace({
   cube,
   reloadSignal,
+  onDirtyChange,
 }: {
   cube: string
   reloadSignal: number
+  /** Reports unsaved-edit state up so the navigator can guard against silently
+   * discarding rule source when the user clicks away in the tree. */
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const confirm = useConfirm()
   const [detail, setDetail] = useState<CubeDetail | null>(null)
@@ -74,6 +78,13 @@ export default function RulesWorkspace({
   }, [cube, source])
 
   const dirty = source !== saved
+
+  // Report dirtiness up so the navigator can confirm before discarding edits;
+  // clear it on unmount so a stale "dirty" never blocks the next navigation.
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+    return () => onDirtyChange?.(false)
+  }, [dirty, onDirtyChange])
 
   async function save() {
     setSaving(true)

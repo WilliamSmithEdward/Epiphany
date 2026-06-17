@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   deleteConnection,
-  deleteFlow,
   deleteSecret,
   getCube,
   importCsv,
@@ -19,7 +18,6 @@ import {
   type ConnectionDto,
   type ConnectionPreview,
   type CubeDetail,
-  type FlowDto,
   type FlowPreview,
   type RunReport,
   type TestReportDto,
@@ -44,14 +42,22 @@ export default function FlowsWorkspace({
   cube,
   reloadSignal,
   isAdmin,
+  initialFlow,
+  autoNew,
+  navSignal,
 }: {
   cube: string
   reloadSignal: number
   isAdmin: boolean
+  /** Open this flow in the editor on mount / when it changes (from the tree). */
+  initialFlow?: string
+  /** Start with a blank "new flow" form (the tree's "New flow…" action). */
+  autoNew?: boolean
+  /** Bumped by the navigator to re-apply initialFlow/autoNew even when the
+   * cube is unchanged (e.g. clicking the same flow twice). */
+  navSignal?: number
 }) {
-  const confirm = useConfirm()
   const [detail, setDetail] = useState<CubeDetail | null>(null)
-  const [flows, setFlows] = useState<FlowDto[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [source, setSource] = useState(STARTER)
@@ -60,17 +66,52 @@ export default function FlowsWorkspace({
   const [saving, setSaving] = useState(false)
 
   const load = useCallback(() => {
-    Promise.all([getCube(cube), listFlows(cube)])
-      .then(([d, fs]) => {
-        setDetail(d)
-        setFlows(fs)
-      })
+    getCube(cube)
+      .then(setDetail)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load'))
   }, [cube])
 
   useEffect(() => {
     load()
   }, [load, reloadSignal])
+
+  // Open the flow the navigator (tree) asked for, or a blank form for "New flow".
+  // Driven by cube/initialFlow/autoNew/navSignal so re-clicking re-applies it.
+  useEffect(() => {
+    if (autoNew) {
+      setSelected(null)
+      setName('')
+      setSource(STARTER)
+      setError(null)
+      return
+    }
+    if (!initialFlow) return
+    let live = true
+    listFlows(cube)
+      .then((fs) => {
+        if (!live) return
+        const f = fs.find((x) => x.name === initialFlow)
+        if (f) {
+          setSelected(f.name)
+          setName(f.name)
+          setSource(f.source)
+          setError(null)
+        } else {
+          // The requested flow is gone (e.g. deleted in another tab). Don't
+          // leave a stale editor implying it is open; reset and say so.
+          setSelected(null)
+          setName('')
+          setSource(STARTER)
+          setError(`Flow "${initialFlow}" was not found; it may have been deleted.`)
+        }
+      })
+      .catch((e: unknown) =>
+        setError(e instanceof Error ? e.message : `Could not open flow "${initialFlow}".`),
+      )
+    return () => {
+      live = false
+    }
+  }, [cube, initialFlow, autoNew, navSignal])
 
   // Debounced validation of the edited source.
   useEffect(() => {
@@ -87,20 +128,6 @@ export default function FlowsWorkspace({
     }, 300)
     return () => clearTimeout(handle)
   }, [cube, source])
-
-  function openFlow(f: FlowDto) {
-    setSelected(f.name)
-    setName(f.name)
-    setSource(f.source)
-    setError(null)
-  }
-
-  function newFlow() {
-    setSelected(null)
-    setName('')
-    setSource(STARTER)
-    setError(null)
-  }
 
   async function save() {
     if (name.trim() === '') {
@@ -120,51 +147,15 @@ export default function FlowsWorkspace({
     }
   }
 
-  async function remove(flowName: string) {
-    const ok = await confirm({
-      title: 'Delete flow',
-      body: `Delete flow "${flowName}"? This cannot be undone, and any schedule that runs it will fail.`,
-      confirmLabel: 'Delete',
-      danger: true,
-    })
-    if (!ok) return
-    try {
-      await deleteFlow(cube, flowName)
-      if (selected === flowName) newFlow()
-      load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not delete the flow')
-    }
-  }
-
   return (
     <div className="flows-workspace">
-      <section className="flow-list">
-        <div className="rules-editor-head">
-          <h3>Flows</h3>
-          <button onClick={newFlow}>New</button>
-        </div>
-        <ul className="saved-views">
-          {flows.map((f) => (
-            <li key={f.name}>
-              <button className={f.name === selected ? 'active' : ''} onClick={() => openFlow(f)}>
-                {f.name}
-              </button>
-              <button
-                className="link"
-                onClick={() => void remove(f.name)}
-                title="Delete"
-                aria-label={`Delete flow ${f.name}`}
-              >
-                x
-              </button>
-            </li>
-          ))}
-          {flows.length === 0 ? <li className="muted">No flows yet</li> : null}
-        </ul>
-      </section>
-
+      {/* The object explorer (tree) is the navigator: pick, open, create, run, and
+          delete flows from its context menus. This pane is the editor + runner for
+          the flow the tree opened (or a blank "new flow" form). */}
       <section className="flow-editor">
+        <div className="rules-editor-head">
+          <h3>{selected ? `Flow: ${selected}` : 'New flow'}</h3>
+        </div>
         <div className="field-row">
           <label>
             Name

@@ -1,9 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { connectWs, listCubes, logout, type CubeSummary } from '../api/client'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  connectWs,
+  deleteDimension,
+  deleteFlow,
+  deleteJob,
+  deleteView,
+  listCubes,
+  logout,
+  runJob,
+  type CubeSummary,
+} from '../api/client'
 import DimensionsWorkspace from './DimensionsWorkspace'
 import FlowsWorkspace from './FlowsWorkspace'
 import JobsWorkspace from './JobsWorkspace'
 import ModelWorkspace from './ModelWorkspace'
+import ModelExplorer, {
+  type ActionContext,
+  type NodeAction,
+  type Selection,
+} from './ModelExplorer'
 import PivotGrid from './PivotGrid'
 import RulesWorkspace from './RulesWorkspace'
 import SandboxBar from './SandboxBar'
@@ -22,43 +37,83 @@ import {
   MenuItem,
   MenuLabel,
   MenuSeparator,
-  Select,
   ThemeToggle,
   Tooltip,
   useCommandPalette,
+  useConfirm,
   type Command,
 } from '../ui'
 
-type Section =
-  | 'data'
-  | 'model'
-  | 'dimensions'
-  | 'views'
-  | 'rules'
-  | 'flows'
-  | 'jobs'
-  | 'overview'
-  | 'admin'
-
-interface NavItem {
-  id: Section
-  label: string
-  glyph: string
-  group: string
-  admin?: boolean
+/** The cube a selection targets, or null for cube-independent surfaces. */
+function cubeOf(s: Selection | null): string | null {
+  if (!s) return null
+  switch (s.kind) {
+    case 'cube':
+    case 'cube-dimension':
+    case 'cube-views':
+    case 'view':
+    case 'cube-rules':
+    case 'flow':
+    case 'schedule':
+      return s.cube
+    default:
+      return null
+  }
 }
 
-const NAV: NavItem[] = [
-  { id: 'data', label: 'Data', glyph: '▦', group: 'Workspace' },
-  { id: 'model', label: 'Model', glyph: '◳', group: 'Workspace' },
-  { id: 'dimensions', label: 'Dimensions', glyph: '⬡', group: 'Workspace' },
-  { id: 'views', label: 'Views', glyph: '◫', group: 'Workspace' },
-  { id: 'rules', label: 'Rules', glyph: 'Σ', group: 'Workspace' },
-  { id: 'flows', label: 'Flows', glyph: '⇄', group: 'Workspace' },
-  { id: 'jobs', label: 'Schedules', glyph: '⏱', group: 'Workspace' },
-  { id: 'overview', label: 'Server overview', glyph: '◷', group: 'Administration', admin: true },
-  { id: 'admin', label: 'Security & audit', glyph: '⚿', group: 'Administration', admin: true },
-]
+/** One breadcrumb step: a label plus the Selection to navigate to when an
+ * ancestor crumb is clicked. `to` is null for the current page (last crumb)
+ * and for non-navigable roots (e.g. the bare "Cubes" / "Administration" word).*/
+interface Crumb {
+  label: string
+  to: Selection | null
+}
+
+/** Breadcrumb steps for the current selection (last one is the current page).
+ * Ancestors carry a navigation target; the create/new states get a real label
+ * (driven by the nav intent) so the current crumb is never blank. */
+function crumbs(s: Selection | null, opts: { autoNew?: boolean } = {}): Crumb[] {
+  const cubesRoot: Crumb = { label: 'Cubes', to: null }
+  const dimsRoot: Crumb = { label: 'Dimensions', to: null }
+  const flowsRoot: Crumb = { label: 'Flows', to: null }
+  const schedRoot: Crumb = { label: 'Schedules', to: null }
+  const adminRoot: Crumb = { label: 'Administration', to: null }
+  if (!s) return [{ label: 'Home', to: null }]
+  switch (s.kind) {
+    case 'cube':
+      return [cubesRoot, { label: s.cube, to: null }]
+    case 'cube-dimension':
+      // A named dim is a specific dimension under the cube. An empty dim means
+      // either the new-cube wizard (autoNew) or the cube's model editor focused
+      // on its first dimension ("Edit dimensions…").
+      return s.dim
+        ? [cubesRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: s.dim, to: null }]
+        : opts.autoNew
+          ? [cubesRoot, { label: 'New cube', to: null }]
+          : [cubesRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: 'Dimensions', to: null }]
+    case 'cube-views':
+      return [cubesRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: 'Views', to: null }]
+    case 'view':
+      return [
+        cubesRoot,
+        { label: s.cube, to: { kind: 'cube', cube: s.cube } },
+        { label: 'Views', to: { kind: 'cube-views', cube: s.cube } },
+        { label: s.view, to: null },
+      ]
+    case 'cube-rules':
+      return [cubesRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: 'Rules & feeders', to: null }]
+    case 'dimension':
+      return [dimsRoot, { label: s.name || (opts.autoNew ? 'New shared dimension' : 'Dimension'), to: null }]
+    case 'flow':
+      return [flowsRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: s.flow || 'New flow', to: null }]
+    case 'schedule':
+      return [schedRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: s.job || 'New schedule', to: null }]
+    case 'overview':
+      return [adminRoot, { label: 'Server overview', to: null }]
+    case 'security':
+      return [adminRoot, { label: 'Security & audit', to: null }]
+  }
+}
 
 export default function CubeApp({
   username,
@@ -70,19 +125,69 @@ export default function CubeApp({
   onLogout: () => void
 }) {
   const [cubes, setCubes] = useState<CubeSummary[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
-  const [section, setSection] = useState<Section>('data')
+  const [selection, setSelection] = useState<Selection | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [live, setLive] = useState(false)
+  // Three-state so a still-connecting socket is never reported as "Offline".
+  const [conn, setConn] = useState<'connecting' | 'live' | 'offline'>('connecting')
   const [reload, setReload] = useState(0)
   const [pwOpen, setPwOpen] = useState(false)
   const palette = useCommandPalette()
+  const confirm = useConfirm()
+  // The active detail pane reports unsaved edits here; navigating away (tree,
+  // breadcrumb, palette, all funnel through navigate()) confirms first so a
+  // one-click selection cannot silently discard work.
+  const paneDirty = useRef(false)
+
+  // The "open this specific item / start a new one" intent a tree action carries
+  // into the destination workspace. `signal` bumps on every navigation so a
+  // workspace re-applies the intent even when the cube (and thus the component)
+  // is unchanged — e.g. re-clicking the same flow, or "New flow…" twice.
+  const [nav, setNav] = useState<{
+    signal: number
+    autoNew?: boolean
+    flow?: string
+    view?: string
+    job?: string
+    dim?: string
+    dimId?: number
+  }>({ signal: 0 })
+
+  // Navigate to a detail pane and hand it a fresh intent. Always bumps the
+  // signal so the destination re-applies (open the item / open the new-form).
+  // If the current pane has unsaved edits, confirm before discarding them.
+  const navigate = useCallback(
+    (next: Selection, intent: Omit<typeof nav, 'signal'> = {}) => {
+      const go = () => {
+        paneDirty.current = false
+        setNav((n) => ({ signal: n.signal + 1, ...intent }))
+        setSelection(next)
+      }
+      if (!paneDirty.current) {
+        go()
+        return
+      }
+      void (async () => {
+        const ok = await confirm({
+          title: 'Discard unsaved changes',
+          body: 'You have unsaved edits in this pane. Discard them and continue?',
+          confirmLabel: 'Discard',
+          danger: true,
+        })
+        if (ok) go()
+      })()
+    },
+    [confirm],
+  )
 
   const loadCubes = useCallback((select?: string) => {
     listCubes()
       .then((list) => {
         setCubes(list)
-        setSelected((current) => select ?? current ?? list[0]?.name ?? null)
+        setSelection((current) => {
+          if (select) return { kind: 'cube', cube: select }
+          if (current) return current
+          return list[0] ? { kind: 'cube', cube: list[0].name } : null
+        })
       })
       .catch((err: unknown) =>
         setError(err instanceof Error ? err.message : 'Failed to load cubes'),
@@ -93,11 +198,204 @@ export default function CubeApp({
     loadCubes()
   }, [loadCubes])
 
-  // After a cube is created, refresh the list and jump to its model.
-  const onCubeCreated = useCallback((name: string) => {
-    loadCubes(name)
-    setSection('model')
-  }, [loadCubes])
+  const bumpReload = useCallback(() => setReload((n) => n + 1), [])
+
+  // Stable so it does not retrigger the pane's onDirtyChange effect each render.
+  const setPaneDirty = useCallback((dirty: boolean) => {
+    paneDirty.current = dirty
+  }, [])
+
+  // After a cube is created, refresh and open its structure.
+  const onCubeCreated = useCallback(
+    (name: string) => {
+      loadCubes(name)
+      bumpReload()
+    },
+    [loadCubes, bumpReload],
+  )
+
+  // Dispatch a tree context-menu action. Two kinds of action:
+  //   - DIRECT: a single backend call (delete/run) confirmed when destructive,
+  //     then bumpReload() so the tree + open detail refresh.
+  //   - NAVIGATE: open the workspace that hosts the relevant form and hand it an
+  //     intent (open this item / start a new one). The append-only create/edit
+  //     forms already live inside those workspaces, so we reuse them.
+  const onAction = useCallback(
+    (action: NodeAction, ctx: ActionContext) => {
+      // Flows/schedules belong to a cube; a root-level "New…" resolves one from
+      // the context, the current selection, then the first available cube.
+      const resolveCube = () => ctx.cube ?? cubeOf(selection) ?? cubes[0]?.name ?? null
+
+      switch (action) {
+        // ---- direct, destructive (confirm first) ----
+        case 'delete-view': {
+          if (!ctx.cube || !ctx.view) return
+          const { cube: c, view: v } = ctx
+          void (async () => {
+            const ok = await confirm({
+              title: 'Delete view',
+              body: `Delete view "${v}" from ${c}? This cannot be undone.`,
+              confirmLabel: 'Delete',
+              danger: true,
+            })
+            if (!ok) return
+            try {
+              await deleteView(c, v)
+              bumpReload()
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Could not delete the view')
+            }
+          })()
+          return
+        }
+        case 'delete-flow': {
+          if (!ctx.cube || !ctx.flow) return
+          const { cube: c, flow: f } = ctx
+          void (async () => {
+            const ok = await confirm({
+              title: 'Delete flow',
+              body: `Delete flow "${f}" from ${c}? This cannot be undone, and any schedule that runs it will fail.`,
+              confirmLabel: 'Delete',
+              danger: true,
+            })
+            if (!ok) return
+            try {
+              await deleteFlow(c, f)
+              bumpReload()
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Could not delete the flow')
+            }
+          })()
+          return
+        }
+        case 'delete-schedule': {
+          if (!ctx.cube || !ctx.job) return
+          const { cube: c, job: j } = ctx
+          void (async () => {
+            const ok = await confirm({
+              title: 'Delete schedule',
+              body: `Delete schedule "${j}" from ${c}? This permanently removes the schedule and cannot be undone.`,
+              confirmLabel: 'Delete',
+              danger: true,
+            })
+            if (!ok) return
+            try {
+              await deleteJob(c, j)
+              bumpReload()
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Could not delete the schedule')
+            }
+          })()
+          return
+        }
+        case 'delete-dimension': {
+          if (ctx.dimId === undefined) return
+          const id = ctx.dimId
+          const label = ctx.dim ?? `#${id}`
+          void (async () => {
+            const ok = await confirm({
+              title: 'Delete shared dimension',
+              body: `Delete shared dimension "${label}"? This permanently removes it and cannot be undone.`,
+              confirmLabel: 'Delete',
+              danger: true,
+            })
+            if (!ok) return
+            try {
+              await deleteDimension(id)
+              bumpReload()
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Could not delete the dimension')
+            }
+          })()
+          return
+        }
+
+        // ---- direct, non-destructive ----
+        case 'run-schedule': {
+          if (!ctx.cube || !ctx.job) return
+          const { cube: c, job: j } = ctx
+          void (async () => {
+            try {
+              await runJob(c, j)
+              bumpReload()
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Could not run the schedule')
+            }
+          })()
+          return
+        }
+        // Running a flow needs a CSV/connection payload, so navigate to its run
+        // panel rather than guessing one (the run panel is in FlowsWorkspace).
+        case 'run-flow':
+        case 'open-flow':
+          if (ctx.cube && ctx.flow) navigate({ kind: 'flow', cube: ctx.cube, flow: ctx.flow }, { flow: ctx.flow })
+          return
+
+        // ---- navigate to an existing create/edit form ----
+        case 'new-cube':
+          // The New-cube wizard lives in ModelWorkspace (a cube-dimension view).
+          // Use the current/first cube only as the host to render it. On a fresh
+          // install with zero cubes there is no host to render against; tell the
+          // admin rather than silently doing nothing.
+          {
+            const host = resolveCube()
+            if (host) navigate({ kind: 'cube-dimension', cube: host, dim: '' }, { autoNew: true })
+            else setError('Creating the first cube requires an existing cube to host the wizard. This will be available once at least one cube exists.')
+          }
+          return
+        case 'open-model':
+          // Open the cube's data model (ModelWorkspace defaults to its first
+          // dimension when none is named).
+          if (ctx.cube) navigate({ kind: 'cube-dimension', cube: ctx.cube, dim: '' }, {})
+          return
+        case 'add-view':
+          if (ctx.cube) navigate({ kind: 'cube-views', cube: ctx.cube }, { autoNew: true })
+          return
+        case 'open-view':
+          if (ctx.cube && ctx.view) navigate({ kind: 'view', cube: ctx.cube, view: ctx.view }, { view: ctx.view })
+          return
+        case 'add-member':
+        case 'add-rollup':
+        case 'edit-attributes':
+          // The cube-dimension editor always shows the member/roll-up/attribute
+          // forms; focus the chosen dimension. For a shared dimension, focus it
+          // in the library (its editor shows the same add forms).
+          if (ctx.cube && ctx.dim) {
+            navigate({ kind: 'cube-dimension', cube: ctx.cube, dim: ctx.dim }, { dim: ctx.dim })
+          } else if (ctx.dimId !== undefined) {
+            navigate(
+              { kind: 'dimension', id: ctx.dimId, name: ctx.dim ?? '' },
+              { dimId: ctx.dimId },
+            )
+          }
+          return
+        case 'grow-dimension':
+          if (ctx.dimId !== undefined) {
+            navigate({ kind: 'dimension', id: ctx.dimId, name: ctx.dim ?? '' }, { dimId: ctx.dimId })
+          }
+          return
+        case 'register-dimension':
+          navigate({ kind: 'dimension', id: -1, name: '' }, { autoNew: true })
+          return
+        case 'new-flow': {
+          const host = resolveCube()
+          if (host) navigate({ kind: 'flow', cube: host, flow: '' }, { autoNew: true })
+          else setError('Create a cube first, then add flows to it.')
+          return
+        }
+        case 'new-schedule': {
+          const host = resolveCube()
+          if (host) navigate({ kind: 'schedule', cube: host, job: '' }, { autoNew: true })
+          else setError('Create a cube first, then add schedules to it.')
+          return
+        }
+        case 'open-schedule':
+          if (ctx.cube && ctx.job) navigate({ kind: 'schedule', cube: ctx.cube, job: ctx.job }, { job: ctx.job })
+          return
+      }
+    },
+    [confirm, navigate, bumpReload, selection, cubes],
+  )
 
   useEffect(() => {
     const socket = connectWs((event) => {
@@ -105,8 +403,9 @@ export default function CubeApp({
         setReload((n) => n + 1)
       }
     })
-    socket.onopen = () => setLive(true)
-    socket.onclose = () => setLive(false)
+    socket.onopen = () => setConn('live')
+    socket.onclose = () => setConn('offline')
+    socket.onerror = () => setConn('offline')
     return () => socket.close()
   }, [])
 
@@ -116,11 +415,9 @@ export default function CubeApp({
       .finally(onLogout)
   }, [onLogout])
 
-  const bumpReload = useCallback(() => setReload((n) => n + 1), [])
-
-  const visibleNav = NAV.filter((n) => !n.admin || isAdmin)
-
-  // Command palette: switch cube, jump to a section, sign out.
+  // Command palette: keep parity with the tree IA — open any cube, jump to the
+  // resource-type roots, invoke the same create actions, reach admin surfaces.
+  // Plain selections funnel through navigate() so stale nav intent is cleared.
   const commands = useMemo<Command[]>(() => {
     const list: Command[] = []
     for (const cube of cubes) {
@@ -128,27 +425,54 @@ export default function CubeApp({
         id: `cube:${cube.name}`,
         label: `Open cube: ${cube.name}`,
         group: 'Cube',
-        keywords: 'switch select',
-        run: () => {
-          setSelected(cube.name)
-          if (section === 'admin') setSection('data')
-        },
+        keywords: 'switch select data',
+        run: () => navigate({ kind: 'cube', cube: cube.name }, {}),
       })
     }
-    for (const n of visibleNav) {
-      list.push({
-        id: `go:${n.id}`,
-        label: `Go to ${n.label}`,
-        group: 'Navigate',
-        run: () => setSection(n.id),
-      })
+    // Resource-type roots (mirror the tree's Dimensions / Flows / Schedules).
+    list.push({
+      id: 'go:dimensions',
+      label: 'Go to Dimensions',
+      group: 'Go to',
+      keywords: 'shared library',
+      run: () => navigate({ kind: 'dimension', id: -1, name: '' }, {}),
+    })
+    list.push({
+      id: 'go:flows',
+      label: 'Go to Flows',
+      group: 'Go to',
+      run: () => onAction('new-flow', {}),
+    })
+    list.push({
+      id: 'go:schedules',
+      label: 'Go to Schedules',
+      group: 'Go to',
+      run: () => onAction('new-schedule', {}),
+    })
+    // Create actions, dispatched through the same handler the tree uses.
+    if (isAdmin) {
+      list.push({ id: 'new:cube', label: 'New cube…', group: 'Create', run: () => onAction('new-cube', {}) })
     }
+    list.push({ id: 'new:dimension', label: 'Register shared dimension…', group: 'Create', run: () => onAction('register-dimension', {}) })
+    list.push({ id: 'new:flow', label: 'New flow…', group: 'Create', run: () => onAction('new-flow', {}) })
+    list.push({ id: 'new:schedule', label: 'New schedule…', group: 'Create', run: () => onAction('new-schedule', {}) })
+    if (isAdmin) {
+      list.push({ id: 'go:overview', label: 'Go to Server overview', group: 'Admin', run: () => navigate({ kind: 'overview' }, {}) })
+      list.push({ id: 'go:security', label: 'Go to Security & audit', group: 'Admin', run: () => navigate({ kind: 'security' }, {}) })
+    }
+    list.push({ id: 'pw', label: 'Change password', group: 'Account', run: () => setPwOpen(true) })
     list.push({ id: 'signout', label: 'Sign out', group: 'Account', run: signOut })
     return list
-    // visibleNav is derived from isAdmin (stable); cubes/section drive the set.
-  }, [cubes, section, signOut, visibleNav])
+  }, [cubes, isAdmin, signOut, navigate, onAction])
 
-  const sectionLabel = NAV.find((n) => n.id === section)?.label ?? ''
+  const segs = crumbs(selection, { autoNew: nav.autoNew })
+  const cube = cubeOf(selection)
+  const showSandbox =
+    selection?.kind === 'cube' ||
+    selection?.kind === 'cube-views' ||
+    selection?.kind === 'view' ||
+    selection?.kind === 'cube-dimension' ||
+    selection?.kind === 'cube-rules'
 
   return (
     <div className="shell">
@@ -160,19 +484,33 @@ export default function CubeApp({
           <span className="appbar__name">Epiphany</span>
         </div>
         <nav className="crumbs" aria-label="Breadcrumb">
-          {section === 'admin' || section === 'overview' ? (
-            <span className="crumbs__seg">Administration</span>
-          ) : section === 'dimensions' ? (
-            <span className="crumbs__seg">Library</span>
-          ) : selected ? (
-            <span className="crumbs__seg">{selected}</span>
-          ) : null}
-          <span className="crumbs__sep" aria-hidden="true">
-            ›
-          </span>
-          <span className="crumbs__seg crumbs__seg--current" aria-current="page">
-            {sectionLabel}
-          </span>
+          {segs.map((seg, i) => {
+            const isLast = i === segs.length - 1
+            return (
+              <span key={i}>
+                {isLast ? (
+                  <span className="crumbs__seg crumbs__seg--current" aria-current="page">
+                    {seg.label}
+                  </span>
+                ) : seg.to ? (
+                  <button
+                    type="button"
+                    className="crumbs__seg crumbs__link"
+                    onClick={() => navigate(seg.to as Selection, {})}
+                  >
+                    {seg.label}
+                  </button>
+                ) : (
+                  <span className="crumbs__seg">{seg.label}</span>
+                )}
+                {isLast ? null : (
+                  <span className="crumbs__sep" aria-hidden="true">
+                    ›
+                  </span>
+                )}
+              </span>
+            )
+          })}
         </nav>
         <span className="appbar__spacer" />
         <Button
@@ -184,10 +522,18 @@ export default function CubeApp({
           Search<kbd className="kbd">⌘K</kbd>
         </Button>
         <span role="status" aria-live="polite">
-          <Tooltip content={live ? 'Live updates connected' : 'Offline - reconnecting'}>
+          <Tooltip
+            content={
+              conn === 'live'
+                ? 'Live updates connected'
+                : conn === 'connecting'
+                  ? 'Connecting to live updates…'
+                  : 'Offline - reconnecting'
+            }
+          >
             <span>
-              <Badge tone={live ? 'success' : 'neutral'} dot>
-                {live ? 'Live' : 'Offline'}
+              <Badge tone={conn === 'live' ? 'success' : 'neutral'} dot>
+                {conn === 'live' ? 'Live' : conn === 'connecting' ? 'Connecting…' : 'Offline'}
               </Badge>
             </span>
           </Tooltip>
@@ -214,48 +560,13 @@ export default function CubeApp({
       </header>
 
       <div className="shell__body">
-        <nav className="nav" aria-label="Sections">
-          <div className="nav__cube">
-            <span className="nav__cube-label">Cube</span>
-            {cubes.length > 0 ? (
-              <Select
-                value={selected ?? undefined}
-                onValueChange={(v) => {
-                  setSelected(v)
-                  if (section === 'admin') setSection('data')
-                }}
-                options={cubes.map((c) => ({ value: c.name, label: c.name }))}
-                ariaLabel="Select cube"
-                className="nav__cube-select"
-              />
-            ) : (
-              <span className="muted">No cubes</span>
-            )}
-          </div>
-          {['Workspace', 'Administration'].map((group) => {
-            const items = visibleNav.filter((n) => n.group === group)
-            if (items.length === 0) return null
-            return (
-              <div className="nav__group" key={group}>
-                <div className="nav__group-title">{group}</div>
-                {items.map((n) => (
-                  <button
-                    key={n.id}
-                    type="button"
-                    className={section === n.id ? 'nav__item is-active' : 'nav__item'}
-                    aria-current={section === n.id ? 'page' : undefined}
-                    onClick={() => setSection(n.id)}
-                  >
-                    <span className="nav__glyph" aria-hidden="true">
-                      {n.glyph}
-                    </span>
-                    {n.label}
-                  </button>
-                ))}
-              </div>
-            )
-          })}
-        </nav>
+        <ModelExplorer
+          selection={selection}
+          onSelect={(s) => navigate(s, {})}
+          isAdmin={isAdmin}
+          reloadSignal={reload}
+          onAction={onAction}
+        />
 
         <main className="content">
           {error ? (
@@ -264,53 +575,74 @@ export default function CubeApp({
             </p>
           ) : null}
           <WelcomeCard username={username} isAdmin={isAdmin} hasCubes={cubes.length > 0} />
-          {section === 'admin' && isAdmin ? (
-            <SecurityWorkspace />
-          ) : section === 'overview' && isAdmin ? (
-            <ServerOverview />
-          ) : section === 'dimensions' ? (
-            <DimensionsWorkspace reloadSignal={reload} />
-          ) : selected ? (
-            <>
-              {section === 'data' || section === 'views' ? (
-                <SandboxBar key={selected} cube={selected} onChange={bumpReload} />
-              ) : null}
-              {section === 'data' ? (
-                <PivotGrid cube={selected} reloadSignal={reload} />
-              ) : section === 'model' ? (
-                <ModelWorkspace
-                  cube={selected}
-                  reloadSignal={reload}
-                  isAdmin={isAdmin}
-                  onCubeCreated={onCubeCreated}
-                />
-              ) : section === 'views' ? (
-                <ViewWorkspace cube={selected} reloadSignal={reload} />
-              ) : section === 'rules' ? (
-                <RulesWorkspace cube={selected} reloadSignal={reload} />
-              ) : section === 'flows' ? (
-                <FlowsWorkspace cube={selected} reloadSignal={reload} isAdmin={isAdmin} />
-              ) : (
-                <JobsWorkspace cube={selected} reloadSignal={reload} />
-              )}
-            </>
-          ) : (
-            <EmptyState icon="▦" title="No cube selected">
+
+          {showSandbox && cube ? (
+            <SandboxBar key={cube} cube={cube} onChange={bumpReload} />
+          ) : null}
+
+          {selection === null ? (
+            <EmptyState icon="▤" title="Nothing selected">
               {cubes.length === 0
                 ? isAdmin
-                  ? 'No cubes yet. Create one in Model to get started.'
+                  ? 'No cubes yet. Create one from the Cubes section to get started.'
                   : 'No cubes are available to you yet. Ask an administrator for access.'
-                : 'Pick a cube from the sidebar to begin.'}
+                : 'Pick a cube or object from the explorer on the left.'}
             </EmptyState>
-          )}
+          ) : selection.kind === 'overview' ? (
+            <ServerOverview />
+          ) : selection.kind === 'security' ? (
+            <SecurityWorkspace />
+          ) : selection.kind === 'dimension' ? (
+            <DimensionsWorkspace
+              reloadSignal={reload}
+              initialDimId={nav.dimId}
+              autoNew={nav.autoNew}
+              navSignal={nav.signal}
+            />
+          ) : selection.kind === 'cube' && cube ? (
+            <PivotGrid cube={cube} reloadSignal={reload} />
+          ) : selection.kind === 'cube-dimension' && cube ? (
+            <ModelWorkspace
+              cube={cube}
+              reloadSignal={reload}
+              isAdmin={isAdmin}
+              onCubeCreated={onCubeCreated}
+              initialDim={selection.dim || nav.dim}
+              autoNew={nav.autoNew}
+              navSignal={nav.signal}
+            />
+          ) : (selection.kind === 'cube-views' || selection.kind === 'view') && cube ? (
+            <ViewWorkspace
+              cube={cube}
+              reloadSignal={reload}
+              initialView={selection.kind === 'view' ? selection.view : nav.view}
+              autoNew={nav.autoNew}
+              navSignal={nav.signal}
+            />
+          ) : selection.kind === 'cube-rules' && cube ? (
+            <RulesWorkspace cube={cube} reloadSignal={reload} onDirtyChange={setPaneDirty} />
+          ) : selection.kind === 'flow' && cube ? (
+            <FlowsWorkspace
+              cube={cube}
+              reloadSignal={reload}
+              isAdmin={isAdmin}
+              initialFlow={selection.flow || nav.flow}
+              autoNew={nav.autoNew}
+              navSignal={nav.signal}
+            />
+          ) : selection.kind === 'schedule' && cube ? (
+            <JobsWorkspace
+              cube={cube}
+              reloadSignal={reload}
+              initialJob={selection.job || nav.job}
+              autoNew={nav.autoNew}
+              navSignal={nav.signal}
+            />
+          ) : null}
         </main>
       </div>
 
-      <CommandPalette
-        open={palette.open}
-        onOpenChange={palette.setOpen}
-        commands={commands}
-      />
+      <CommandPalette open={palette.open} onOpenChange={palette.setOpen} commands={commands} />
 
       <Dialog open={pwOpen} onOpenChange={setPwOpen} title="Change password" size="sm">
         <ChangePassword

@@ -26,6 +26,8 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
   const [cells, setCells] = useState<Map<string, CellDto>>(new Map())
   const [error, setError] = useState<string | null>(null)
   const [drill, setDrill] = useState<{ label: string; trace: TraceDto | null } | null>(null)
+  // Bumped to re-run the initial load after an error (the Retry affordance).
+  const [retryKey, setRetryKey] = useState(0)
   // 'off' is the disabled sentinel; a Radix Select.Item value may never be the
   // empty string, so the "off" option carries a real value.
   const [spreadMode, setSpreadMode] = useState<'off' | SpreadMethod>('off')
@@ -33,6 +35,8 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
 
   useEffect(() => {
     let cancelled = false
+    // Clear a prior cube's error so switching cubes / retrying isn't blocked.
+    setError(null)
     getCube(cube)
       .then((loaded) => {
         if (cancelled) return
@@ -56,7 +60,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     return () => {
       cancelled = true
     }
-  }, [cube])
+  }, [cube, retryKey])
 
   const coordFor = useCallback(
     (rowMember: string, colMember: string): Coord => ({
@@ -152,6 +156,19 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
     target?.focus()
     target?.select()
   }, [])
+
+  // Surface an initial-load failure instead of an endless loading banner; the
+  // error <p> further down is unreachable while detail is null. Recoverable.
+  if (error && !detail) {
+    return (
+      <p className="error" role="alert">
+        {error}{' '}
+        <Button variant="ghost" size="sm" onClick={() => setRetryKey((k) => k + 1)}>
+          Retry
+        </Button>
+      </p>
+    )
+  }
 
   if (!detail) {
     return <p className="banner" role="status">Loading {cube}…</p>

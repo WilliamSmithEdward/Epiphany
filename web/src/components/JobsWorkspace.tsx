@@ -1,16 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
-  deleteJob,
   listFlows,
   listJobs,
   listRuns,
   putJob,
   runJob,
   type FlowDto,
-  type JobDto,
   type RunDto,
 } from '../api/client'
-import { Badge, Button, Card, EmptyState, Field, Input, Select, Switch, useConfirm } from '../ui'
+import { Badge, Button, Card, Field, Input, Select, Switch } from '../ui'
 
 // Friendly interval units. every_millis on the wire is always milliseconds; the
 // editor lets a planner think in seconds / minutes / hours / days instead.
@@ -31,12 +29,6 @@ function splitInterval(ms: number): { count: number; unit: UnitKey } {
     }
   }
   return { count: Math.max(1, Math.round(ms / 1000)), unit: 'seconds' }
-}
-
-function humanizeInterval(ms: number): string {
-  const { count, unit } = splitInterval(ms)
-  const noun = count === 1 ? unit.replace(/s$/, '') : unit
-  return `every ${count} ${noun}`
 }
 
 function humanizeTime(ms: number): string {
@@ -66,12 +58,20 @@ const BLANK = { name: '', steps: [] as string[], count: 5, unit: 'minutes' as Un
 export default function JobsWorkspace({
   cube,
   reloadSignal,
+  initialJob,
+  autoNew,
+  navSignal,
 }: {
   cube: string
   reloadSignal: number
+  /** Open this schedule in the editor on mount / when it changes (from the tree). */
+  initialJob?: string
+  /** Start with a blank "new schedule" form (the tree's "New schedule…" action). */
+  autoNew?: boolean
+  /** Bumped by the navigator to re-apply initialJob/autoNew when the cube is
+   * unchanged (e.g. re-clicking the same schedule). */
+  navSignal?: number
 }) {
-  const confirm = useConfirm()
-  const [jobs, setJobs] = useState<JobDto[]>([])
   const [flows, setFlows] = useState<FlowDto[]>([])
   const [runs, setRuns] = useState<RunDto[]>([])
   const [selected, setSelected] = useState<string | null>(null)
@@ -81,9 +81,8 @@ export default function JobsWorkspace({
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(() => {
-    Promise.all([listJobs(cube), listFlows(cube), listRuns(cube)])
-      .then(([j, f, r]) => {
-        setJobs(j)
+    Promise.all([listFlows(cube), listRuns(cube)])
+      .then(([f, r]) => {
         setFlows(f)
         setRuns(r)
       })
@@ -94,20 +93,35 @@ export default function JobsWorkspace({
     load()
   }, [load, reloadSignal])
 
-  function newJob() {
-    setSelected(null)
-    setDraft({ ...BLANK })
-    setStepPick('')
-    setError(null)
-  }
-
-  function openJob(job: JobDto) {
-    const { count, unit } = splitInterval(job.every_millis)
-    setSelected(job.name)
-    setDraft({ name: job.name, steps: [...job.steps], count, unit, enabled: job.enabled })
-    setStepPick('')
-    setError(null)
-  }
+  // Open the schedule the navigator (tree) asked for, or a blank "new schedule"
+  // form. Driven by cube/initialJob/autoNew/navSignal so re-clicking re-applies.
+  useEffect(() => {
+    if (autoNew) {
+      setSelected(null)
+      setDraft({ ...BLANK })
+      setStepPick('')
+      setError(null)
+      return
+    }
+    if (!initialJob) return
+    let live = true
+    listJobs(cube)
+      .then((js) => {
+        if (!live) return
+        const job = js.find((j) => j.name === initialJob)
+        if (job) {
+          const { count, unit } = splitInterval(job.every_millis)
+          setSelected(job.name)
+          setDraft({ name: job.name, steps: [...job.steps], count, unit, enabled: job.enabled })
+          setStepPick('')
+          setError(null)
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+  }, [cube, initialJob, autoNew, navSignal])
 
   const flowOptions = useMemo(
     () => flows.map((f) => ({ value: f.name, label: f.name })),
@@ -166,24 +180,6 @@ export default function JobsWorkspace({
     }
   }
 
-  async function remove(name: string) {
-    const ok = await confirm({
-      title: 'Delete schedule',
-      body: `Delete schedule "${name}"? This permanently removes the schedule and cannot be undone.`,
-      confirmLabel: 'Delete',
-      danger: true,
-    })
-    if (!ok) return
-    setError(null)
-    try {
-      await deleteJob(cube, name)
-      if (selected === name) newJob()
-      load()
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not delete the schedule')
-    }
-  }
-
   async function kick(name: string) {
     setBusy(true)
     setError(null)
@@ -201,60 +197,9 @@ export default function JobsWorkspace({
 
   return (
     <div className="jobs-workspace">
-      <Card
-        title="Schedules"
-        subtitle="Run a sequence of flows automatically on a fixed interval."
-        actions={
-          <Button size="sm" variant="primary" onClick={newJob}>
-            New schedule
-          </Button>
-        }
-      >
-        {jobs.length === 0 ? (
-          <EmptyState icon="⏱" title="No schedules yet">
-            A schedule runs one or more of this cube&apos;s flows on a repeating interval, for
-            example to refresh data every morning. Create one to get started.
-          </EmptyState>
-        ) : (
-          <ul className="job-list">
-            {jobs.map((job) => (
-              <li
-                key={job.name}
-                className={job.name === selected ? 'job-row is-active' : 'job-row'}
-              >
-                <button type="button" className="job-row__main" onClick={() => openJob(job)}>
-                  <span className="job-row__name">{job.name}</span>
-                  <span className="job-row__meta">
-                    {humanizeInterval(job.every_millis)} &middot; {job.steps.length}{' '}
-                    {job.steps.length === 1 ? 'step' : 'steps'}
-                  </span>
-                </button>
-                <Badge tone={job.enabled ? 'success' : 'neutral'} dot>
-                  {job.enabled ? 'Active' : 'Paused'}
-                </Badge>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  disabled={busy}
-                  onClick={() => void kick(job.name)}
-                  title="Run this schedule now"
-                >
-                  Run now
-                </Button>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => void remove(job.name)}
-                  title="Delete this schedule"
-                >
-                  Delete
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
+      {/* The object explorer (tree) is the navigator: pick, create, run, and
+          delete schedules from its context menus. This pane edits the schedule
+          the tree opened (or a blank "new schedule" form). */}
       <Card title={selected ? `Edit "${selected}"` : 'New schedule'}>
         {noFlows ? (
           <p className="muted">

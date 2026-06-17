@@ -671,6 +671,24 @@
   color: var(--color-text);
   font-weight: var(--weight-medium);
 }
+/* Ancestor crumbs are clickable wayfinding links; only the current page is
+   non-clickable. A <button> avoids needing an href in this SPA. */
+.crumbs__link {
+  font: inherit;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--color-accent);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.crumbs__link:hover {
+  text-decoration: underline;
+}
+.crumbs__link:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
 .crumbs__sep {
   color: var(--color-text-subtle);
 }
@@ -683,6 +701,171 @@
   background: var(--color-surface);
   padding: var(--space-4) var(--space-3);
   overflow: auto;
+}
+
+/* ---- model explorer tree (object explorer sidebar) ---- */
+.tree {
+  width: 268px;
+  flex: 0 0 268px;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
+  padding: var(--space-2) var(--space-1);
+  overflow: auto;
+  user-select: none;
+}
+.tree__root,
+.tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tree__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--color-text);
+  white-space: nowrap;
+}
+.tree__row:hover {
+  background: var(--color-surface-2);
+}
+.tree__row.is-selected {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-weight: var(--weight-medium);
+}
+/* The focusable element is the <li role="treeitem"> (roving tabindex lives
+   there); the row div is a purely visual wrapper. Key the focus ring off the
+   li so it tracks the element that actually takes DOM focus. */
+li[role='treeitem']:focus {
+  outline: none;
+}
+li[role='treeitem']:focus-visible > .tree__row {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.tree__twisty {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  flex: 0 0 1rem;
+  color: var(--color-text-subtle);
+  font-size: 0.7em;
+}
+.tree__icon {
+  display: inline-flex;
+  justify-content: center;
+  width: 1.1rem;
+  flex: 0 0 1.1rem;
+  color: var(--color-text-subtle);
+}
+.tree__label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree__badge {
+  margin-inline-start: var(--space-1);
+  font-size: var(--text-xs);
+  /* text-muted (neutral-500) clears 4.5:1 on surface-2 in both themes;
+     text-subtle (neutral-400) did not. */
+  color: var(--color-text-muted);
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+}
+.tree__spinner {
+  margin-inline-start: auto;
+  color: var(--color-text-subtle);
+}
+.tree__actions {
+  margin-inline-start: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.4rem;
+  height: 1.4rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-subtle);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  /* Hidden until the row is hovered/focused or its menu is open, so the tree
+     stays uncluttered while remaining keyboard-reachable. */
+  opacity: 0;
+}
+.tree__row:hover .tree__actions,
+.tree__row:focus-within .tree__actions,
+li[role='treeitem']:focus-visible > .tree__row .tree__actions,
+.tree__actions:focus-visible,
+.tree__actions[data-state='open'] {
+  opacity: 1;
+}
+.tree__actions:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+.tree__actions:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+/* Cube search lives ABOVE the tree (a sibling of role="tree", not inside it),
+   so the tree stays a single composite tab stop. */
+.tree__toolbar {
+  padding: var(--space-1) var(--space-2) var(--space-2);
+}
+.tree__search-input {
+  width: 100%;
+  font: inherit;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+/* Non-interactive status / placeholder rows ("No flows yet", zero-results,
+   load errors): muted text, not part of the keyboard-navigable tree. */
+.tree__empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+.tree__error {
+  color: var(--color-danger);
+  white-space: normal;
+}
+.tree__error-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree__retry {
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--text-xs);
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+}
+.tree__retry:hover {
+  background: var(--color-surface-2);
+}
+.tree__retry:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
 }
 .nav__cube {
   display: flex;

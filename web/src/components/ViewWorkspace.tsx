@@ -6,7 +6,6 @@ import {
   getCube,
   getView,
   listSubsets,
-  listViews,
   type AxisSpecDef,
   type CellsetDto,
   type ContextEntry,
@@ -19,20 +18,33 @@ import {
 import CellsetGrid from './CellsetGrid'
 import SubsetEditor from './SubsetEditor'
 import ViewBuilder, { ALL_MEMBERS, type DimConfig } from './ViewBuilder'
+import { EmptyState } from '../ui'
 
 // The Views workspace: define subsets, build a (nested) view, run it to a
 // cellset, save it, and reopen saved views. The binding contract is proven by
 // the Rust acceptance suite; this surfaces it for point-and-click use.
-export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; reloadSignal: number }) {
+export default function ViewWorkspace({
+  cube,
+  reloadSignal,
+  initialView,
+  autoNew,
+  navSignal,
+}: {
+  cube: string
+  reloadSignal: number
+  /** Open this saved view on mount / when it changes (from the tree). */
+  initialView?: string
+  /** Start with a blank "new view" draft (the tree's "Add view…" action), even
+   * when a saved view was already open in this persisted instance. */
+  autoNew?: boolean
+  /** Bumped by the navigator to re-open initialView when the cube is unchanged. */
+  navSignal?: number
+}) {
   const [detail, setDetail] = useState<CubeDetail | null>(null)
   const [subsetsByDim, setSubsetsByDim] = useState<Record<string, SubsetDto[]>>({})
-  const [savedViews, setSavedViews] = useState<ViewDto[]>([])
   const [config, setConfig] = useState<Record<string, DimConfig>>({})
   const [suppress, setSuppress] = useState(false)
   const [name, setName] = useState('')
-  // The saved view currently applied to the builder, for the you-are-here cue.
-  // Cleared whenever the builder is edited away from that view.
-  const [openViewName, setOpenViewName] = useState<string | null>(null)
   const [visibility, setVisibility] = useState<Visibility>('public')
   const [cellset, setCellset] = useState<CellsetDto | null>(null)
   const [editorDim, setEditorDim] = useState<string | null>(null)
@@ -49,6 +61,20 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
     [cube],
   )
 
+  // The positional default placements for a freshly-loaded / blank view.
+  const computeDefaults = useCallback((loaded: CubeDetail): Record<string, DimConfig> => {
+    const defaults: Record<string, DimConfig> = {}
+    loaded.dimensions.forEach((dim, i) => {
+      const placement = i === 0 ? 'rows' : i === 1 ? 'columns' : 'context'
+      defaults[dim.name] = {
+        placement,
+        source: ALL_MEMBERS,
+        contextMember: dim.elements[0]?.name ?? '',
+      }
+    })
+    return defaults
+  }, [])
+
   // Load structure, default placements, subsets, and saved views per cube.
   useEffect(() => {
     let cancelled = false
@@ -57,25 +83,29 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
       .then(async (loaded) => {
         if (cancelled) return
         setDetail(loaded)
-        const defaults: Record<string, DimConfig> = {}
-        loaded.dimensions.forEach((dim, i) => {
-          const placement = i === 0 ? 'rows' : i === 1 ? 'columns' : 'context'
-          defaults[dim.name] = {
-            placement,
-            source: ALL_MEMBERS,
-            contextMember: dim.elements[0]?.name ?? '',
-          }
-        })
-        setConfig(defaults)
+        setConfig(computeDefaults(loaded))
         await loadSubsets(loaded)
-        const views = await listViews(cube)
-        if (!cancelled) setSavedViews(views)
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Failed to load cube'))
     return () => {
       cancelled = true
     }
-  }, [cube, loadSubsets])
+  }, [cube, loadSubsets, computeDefaults])
+
+  // The tree's "Add view…" action starts a blank draft even when a saved view
+  // was already open in this persisted instance. Driven by navSignal so it
+  // re-applies on every such action. Mirrors FlowsWorkspace/JobsWorkspace.
+  useEffect(() => {
+    if (autoNew && detail) {
+      setName('')
+      setVisibility('public')
+      setSuppress(false)
+      setCellset(null)
+      setConfig(computeDefaults(detail))
+      setError(null)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cube, autoNew, navSignal, detail])
 
   const buildDef = useCallback((): ViewDef => {
     const rows: AxisSpecDef[] = []
@@ -118,7 +148,6 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
 
   function updateConfig(dim: string, partial: Partial<DimConfig>) {
     setConfig((current) => ({ ...current, [dim]: { ...current[dim], ...partial } }))
-    setOpenViewName(null)
   }
 
   async function save() {
@@ -129,7 +158,6 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
     setBusy(true)
     try {
       await createView(cube, { ...buildDef(), name: name.trim(), visibility })
-      setSavedViews(await listViews(cube))
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the view')
@@ -138,23 +166,35 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
     }
   }
 
-  async function openView(viewName: string) {
-    setBusy(true)
-    try {
-      const view = await getView(cube, viewName)
-      applyView(view)
-      setName(view.name)
-      setVisibility(view.visibility)
-      setSuppress(view.suppress_zeros)
-      setCellset(await executeView(cube, viewName))
-      setOpenViewName(viewName)
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not open the view')
-    } finally {
-      setBusy(false)
-    }
-  }
+  const openView = useCallback(
+    async (viewName: string) => {
+      setBusy(true)
+      try {
+        const view = await getView(cube, viewName)
+        applyView(view)
+        setName(view.name)
+        setVisibility(view.visibility)
+        setSuppress(view.suppress_zeros)
+        setCellset(await executeView(cube, viewName))
+        setError(null)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Could not open the view')
+      } finally {
+        setBusy(false)
+      }
+    },
+    // applyView reads detail via closure; intentionally not a dependency to
+    // avoid re-creating the callback on every config change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cube],
+  )
+
+  // Open the saved view the navigator (tree) asked for. Driven by
+  // cube/initialView/navSignal so re-clicking the same view re-opens it.
+  useEffect(() => {
+    if (initialView) void openView(initialView)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cube, initialView, navSignal])
 
   function applyView(view: ViewDto) {
     setConfig((current) => {
@@ -194,26 +234,8 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
 
   return (
     <div className="workspace">
-      <div className="workspace-side">
-        <h3>Saved views</h3>
-        {savedViews.length === 0 ? (
-          <p className="muted">None yet.</p>
-        ) : (
-          <ul className="saved-views">
-            {savedViews.map((v) => (
-              <li key={v.name}>
-                <button
-                  className={v.name === openViewName ? 'saved-view is-active' : 'saved-view'}
-                  aria-current={v.name === openViewName ? 'true' : undefined}
-                  onClick={() => void openView(v.name)}
-                >
-                  {v.name} <small>{v.visibility === 'private' ? 'only me' : 'shared'}</small>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
+      {/* The object explorer (tree) lists and opens saved views via its context
+          menus; this pane builds/edits the open view and renders its cellset. */}
       <div className="workspace-main">
         {editorDimension ? (
           <SubsetEditor
@@ -228,28 +250,30 @@ export default function ViewWorkspace({ cube, reloadSignal }: { cube: string; re
             }}
           />
         ) : (
-          <ViewBuilder
-            dimensions={detail.dimensions}
-            subsetsByDim={subsetsByDim}
-            config={config}
-            onConfigChange={updateConfig}
-            suppress={suppress}
-            onSuppressChange={(v) => {
-              setSuppress(v)
-              setOpenViewName(null)
-            }}
-            name={name}
-            onNameChange={(v) => {
-              setName(v)
-              setOpenViewName(null)
-            }}
-            visibility={visibility}
-            onVisibilityChange={setVisibility}
-            onRun={() => void run()}
-            onSave={() => void save()}
-            onNewSubset={(dim) => setEditorDim(dim)}
-            busy={busy}
-          />
+          <>
+            {cellset === null && name === '' ? (
+              <EmptyState icon="◫" title="Build a view">
+                Arrange dimensions on rows and columns below, then Run, or open a saved view from the
+                explorer on the left.
+              </EmptyState>
+            ) : null}
+            <ViewBuilder
+              dimensions={detail.dimensions}
+              subsetsByDim={subsetsByDim}
+              config={config}
+              onConfigChange={updateConfig}
+              suppress={suppress}
+              onSuppressChange={setSuppress}
+              name={name}
+              onNameChange={setName}
+              visibility={visibility}
+              onVisibilityChange={setVisibility}
+              onRun={() => void run()}
+              onSave={() => void save()}
+              onNewSubset={(dim) => setEditorDim(dim)}
+              busy={busy}
+            />
+          </>
         )}
         {error ? <p className="error" role="alert">{error}</p> : null}
         {cellset ? (

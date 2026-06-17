@@ -45,7 +45,20 @@ function kindBadge(kind: ElementKind) {
 // out to every cube that references it, so they never drift. Append-only:
 // members and edges are added, never removed. Gated server-side on the global
 // Dimension permission; a user without it sees the access notice.
-export default function DimensionsWorkspace({ reloadSignal }: { reloadSignal: number }) {
+export default function DimensionsWorkspace({
+  reloadSignal,
+  initialDimId,
+  autoNew,
+  navSignal,
+}: {
+  reloadSignal: number
+  /** Focus this shared dimension on mount / when it changes (from the tree). */
+  initialDimId?: number
+  /** Open the register-dimension wizard immediately (the tree's action). */
+  autoNew?: boolean
+  /** Bumped by the navigator to re-apply initialDimId/autoNew when unchanged. */
+  navSignal?: number
+}) {
   const [list, setList] = useState<SharedDimensionSummary[] | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -74,6 +87,18 @@ export default function DimensionsWorkspace({ reloadSignal }: { reloadSignal: nu
   useEffect(() => {
     load()
   }, [load, reloadSignal])
+
+  // Focus the shared dimension the navigator (tree) asked for. navSignal lets
+  // re-clicking the same one re-focus it.
+  useEffect(() => {
+    if (initialDimId !== undefined) setSelectedId(initialDimId)
+  }, [initialDimId, navSignal])
+
+  // Open the register wizard when the tree's "Register shared dimension…" action
+  // navigates here.
+  useEffect(() => {
+    if (autoNew) setShowNew(true)
+  }, [autoNew, navSignal])
 
   const selected = useMemo(
     () => (selectedId !== null ? list?.find((d) => d.id === selectedId) ?? null : null),
