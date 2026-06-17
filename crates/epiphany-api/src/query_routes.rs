@@ -714,9 +714,6 @@ fn forbidden() -> ApiError {
     )
 }
 
-/// Build the API cellset from the core cellset, re-resolving each tuple member to
-/// its element kind and deriving per-cell `editable` (a cell is editable only if
-/// every member across its row tuple, column tuple, and the context is a leaf).
 /// Reconstruct a cell's full coordinate (as element indices) from its row tuple,
 /// column tuple, and the context, for checking against a sandbox's overrides.
 /// `None` if any member does not resolve.

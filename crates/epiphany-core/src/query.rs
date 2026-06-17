@@ -224,6 +224,25 @@ pub(crate) fn dimension_by_name<'a>(
         })
 }
 
+/// Resolve member names to an ordered, de-duplicated list of element indices.
+///
+/// Names resolve in order (first occurrence wins); an unresolved name yields
+/// [`QueryError::UnknownMember`].
+fn resolve_members(dim: &Dimension, names: &[String]) -> Result<Vec<u32>, QueryError> {
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for name in names {
+        let idx = dim.resolve(name).ok_or_else(|| QueryError::UnknownMember {
+            dimension: dim.name().to_string(),
+            member: name.clone(),
+        })?;
+        if seen.insert(idx) {
+            out.push(idx);
+        }
+    }
+    Ok(out)
+}
+
 /// Resolve a subset to an ordered, de-duplicated list of element indices.
 ///
 /// Static subsets resolve member names in author order (first occurrence wins);
@@ -235,20 +254,7 @@ pub fn resolve_subset(
 ) -> Result<Vec<u32>, QueryError> {
     let dim = dimension_by_name(cube, &subset.dimension)?;
     match &subset.kind {
-        SubsetKind::Static { members } => {
-            let mut out = Vec::new();
-            let mut seen = HashSet::new();
-            for name in members {
-                let idx = dim.resolve(name).ok_or_else(|| QueryError::UnknownMember {
-                    dimension: dim.name().to_string(),
-                    member: name.clone(),
-                })?;
-                if seen.insert(idx) {
-                    out.push(idx);
-                }
-            }
-            Ok(out)
-        }
+        SubsetKind::Static { members } => resolve_members(dim, members),
         SubsetKind::Dynamic { mdx } => eval.eval_set(cube, dim, mdx),
     }
 }
@@ -832,18 +838,7 @@ fn resolve_axis<'a>(
             }
             AxisSpec::Members { dimension, members } => {
                 let dim = dimension_by_name(cube, dimension)?;
-                let mut out = Vec::new();
-                let mut seen = HashSet::new();
-                for m in members {
-                    let idx = dim.resolve(m).ok_or_else(|| QueryError::UnknownMember {
-                        dimension: dim.name().to_string(),
-                        member: m.clone(),
-                    })?;
-                    if seen.insert(idx) {
-                        out.push(idx);
-                    }
-                }
-                out
+                resolve_members(dim, members)?
             }
         };
         dimensions.push(spec.dimension().to_string());

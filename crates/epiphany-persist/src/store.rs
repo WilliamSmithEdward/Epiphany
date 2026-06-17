@@ -117,9 +117,7 @@ pub struct Store {
     dir: PathBuf,
     model: Model,
     wal: File,
-    uncheckpointed: u64,
     sync_on_write: bool,
-    checkpoint_after: u64,
 }
 
 impl Store {
@@ -135,9 +133,7 @@ impl Store {
             dir,
             model,
             wal,
-            uncheckpointed: 0,
             sync_on_write: true,
-            checkpoint_after: 0,
         })
     }
 
@@ -173,9 +169,7 @@ impl Store {
             dir,
             model,
             wal,
-            uncheckpointed: 0,
             sync_on_write: true,
-            checkpoint_after: 0,
         })
     }
 
@@ -200,12 +194,6 @@ impl Store {
         self.sync_on_write = on;
     }
 
-    /// Automatically checkpoint after this many writes (0 disables it; the
-    /// default). A checkpoint bounds WAL growth and recovery time.
-    pub fn set_auto_checkpoint(&mut self, after: u64) {
-        self.checkpoint_after = after;
-    }
-
     /// The cube, for reads.
     pub fn cube(&self) -> &Cube {
         &self.model.cube
@@ -218,8 +206,7 @@ impl Store {
 
     /// Write a leaf cell: apply it to the in-memory cube and append it to the
     /// WAL. The model validates the coordinate first, so a rejected write is
-    /// never logged. May trigger an automatic checkpoint (see
-    /// [`set_auto_checkpoint`](Self::set_auto_checkpoint)).
+    /// never logged.
     pub fn set_leaf(&mut self, coord: &[u32], value: Fixed) -> Result<(), PersistError> {
         self.model.cube.set_leaf(coord, value)?;
         let framed = wal::encode(&Record::SetLeaf {
@@ -230,16 +217,11 @@ impl Store {
         if self.sync_on_write {
             self.wal.sync_data()?;
         }
-        self.uncheckpointed += 1;
-        if self.checkpoint_after != 0 && self.uncheckpointed >= self.checkpoint_after {
-            self.checkpoint()?;
-        }
         Ok(())
     }
 
     /// Write a string cell: apply it to the in-memory cube and append it to the
-    /// WAL. Like [`set_leaf`](Self::set_leaf), the model validates first and may
-    /// trigger an automatic checkpoint.
+    /// WAL. Like [`set_leaf`](Self::set_leaf), the model validates first.
     pub fn set_string(&mut self, coord: &[u32], value: &str) -> Result<(), PersistError> {
         self.model.cube.set_string(coord, value)?;
         let framed = wal::encode(&Record::SetString {
@@ -250,10 +232,6 @@ impl Store {
         if self.sync_on_write {
             self.wal.sync_data()?;
         }
-        self.uncheckpointed += 1;
-        if self.checkpoint_after != 0 && self.uncheckpointed >= self.checkpoint_after {
-            self.checkpoint()?;
-        }
         Ok(())
     }
 
@@ -263,7 +241,6 @@ impl Store {
     /// untouched. On success the framed batch (begin .. records .. end) is
     /// appended as one WAL unit with a single fsync, then the trial is adopted; a
     /// batch torn by a crash before its end marker is discarded whole on recovery.
-    /// Counts as one auto-checkpoint step.
     pub fn set_batch(&mut self, writes: &[CellWrite]) -> Result<(), PersistError> {
         // 1. Validate + apply to a throwaway clone; abort the whole batch on error.
         let mut trial = self.model.cube.clone();
@@ -298,10 +275,6 @@ impl Store {
         }
         // 3. Adopt the validated trial; the WAL already reflects it durably.
         self.model.cube = trial;
-        self.uncheckpointed += 1;
-        if self.checkpoint_after != 0 && self.uncheckpointed >= self.checkpoint_after {
-            self.checkpoint()?;
-        }
         Ok(())
     }
 
@@ -315,7 +288,6 @@ impl Store {
         self.wal.seek(SeekFrom::Start(0))?;
         self.wal.write_all(&wal::header())?;
         self.wal.sync_data()?;
-        self.uncheckpointed = 0;
         Ok(())
     }
 
@@ -628,13 +600,6 @@ impl Store {
             .cube
             .set_attribute_values(dimension, attribute, values)?;
         self.checkpoint()
-    }
-
-    /// Flush and fsync the WAL. Useful when [`set_sync`](Self::set_sync) is off.
-    pub fn flush(&mut self) -> Result<(), PersistError> {
-        self.wal.flush()?;
-        self.wal.sync_data()?;
-        Ok(())
     }
 }
 

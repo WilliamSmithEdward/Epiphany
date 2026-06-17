@@ -335,10 +335,6 @@ export async function listSubsets(cube: string, dim: string): Promise<SubsetDto[
   return result.subsets
 }
 
-export async function getSubset(cube: string, dim: string, name: string): Promise<SubsetDto> {
-  return request<SubsetDto>('GET', `${dimBase(cube, dim)}/subsets/${encodeURIComponent(name)}`)
-}
-
 export async function createSubset(cube: string, dim: string, def: SubsetDef): Promise<SubsetDto> {
   return request<SubsetDto>('POST', `${dimBase(cube, dim)}/subsets`, def)
 }
@@ -354,14 +350,6 @@ export async function updateSubset(
 
 export async function deleteSubset(cube: string, dim: string, name: string): Promise<void> {
   return request<void>('DELETE', `${dimBase(cube, dim)}/subsets/${encodeURIComponent(name)}`)
-}
-
-export async function subsetMembers(cube: string, dim: string, name: string): Promise<MemberDto[]> {
-  const result = await request<{ members: MemberDto[] }>(
-    'GET',
-    `${dimBase(cube, dim)}/subsets/${encodeURIComponent(name)}/members`,
-  )
-  return result.members
 }
 
 export async function previewSubset(cube: string, dim: string, def: SubsetDef): Promise<MemberDto[]> {
@@ -426,29 +414,24 @@ export interface RulesDto {
   source: string
 }
 
-/** The structured result of validating a rule source without saving it. */
-export type RulePreview =
+/** The structured result of validating a source (rule or flow) without saving it. */
+export type SourcePreview =
   | { ok: true }
   | { ok: false; message: string; line?: number; column?: number }
 
-export async function getRules(cube: string): Promise<RulesDto> {
-  return request<RulesDto>('GET', `/api/v1/cubes/${encodeURIComponent(cube)}/rules`)
-}
-
-export async function putRules(cube: string, source: string): Promise<RulesDto> {
-  return request<RulesDto>('PUT', `/api/v1/cubes/${encodeURIComponent(cube)}/rules`, { source })
-}
+/** The structured result of validating a rule source without saving it. */
+export type RulePreview = SourcePreview
 
 /**
- * Validate a rule source (parse + compile) without saving. A parse/compile
- * failure resolves to `{ ok: false }` with the message and, when the server
- * located it, the 1-based line/column - so the editor can mark the error
- * inline rather than throwing.
+ * POST `{ source }` to `path` and convert a parse/compile failure into a
+ * structured `{ ok: false }` value (with the message and, when located, the
+ * 1-based line/column) instead of throwing, so an editor can mark the error
+ * inline. A 401 still clears the token and throws (the session expired).
  */
-export async function previewRules(cube: string, source: string): Promise<RulePreview> {
+async function previewSource(path: string, source: string): Promise<SourcePreview> {
   const headers: Record<string, string> = { 'content-type': 'application/json' }
   if (token) headers['authorization'] = `Bearer ${token}`
-  const response = await fetch(`/api/v1/cubes/${encodeURIComponent(cube)}/rules/preview`, {
+  const response = await fetch(path, {
     method: 'POST',
     headers,
     body: JSON.stringify({ source }),
@@ -473,7 +456,25 @@ export async function previewRules(cube: string, source: string): Promise<RulePr
   }
 }
 
-export type ExplainDepth = 'full' | 'immediate' | string
+export async function getRules(cube: string): Promise<RulesDto> {
+  return request<RulesDto>('GET', `/api/v1/cubes/${encodeURIComponent(cube)}/rules`)
+}
+
+export async function putRules(cube: string, source: string): Promise<RulesDto> {
+  return request<RulesDto>('PUT', `/api/v1/cubes/${encodeURIComponent(cube)}/rules`, { source })
+}
+
+/**
+ * Validate a rule source (parse + compile) without saving. A parse/compile
+ * failure resolves to `{ ok: false }` with the message and, when the server
+ * located it, the 1-based line/column - so the editor can mark the error
+ * inline rather than throwing.
+ */
+export async function previewRules(cube: string, source: string): Promise<RulePreview> {
+  return previewSource(`/api/v1/cubes/${encodeURIComponent(cube)}/rules/preview`, source)
+}
+
+export type ExplainDepth = 'full' | 'immediate'
 
 /** One node of a provenance ("explain") trace. */
 export interface TraceDto {
@@ -591,9 +592,7 @@ export interface FlowDto {
 }
 
 /** The structured result of validating a flow source without saving it. */
-export type FlowPreview =
-  | { ok: true }
-  | { ok: false; message: string; line?: number; column?: number }
+export type FlowPreview = SourcePreview
 
 /** A flow run report. */
 export interface RunReport {
@@ -626,31 +625,7 @@ export async function deleteFlow(cube: string, name: string): Promise<void> {
  * editor can mark the error inline rather than throwing.
  */
 export async function previewFlow(cube: string, source: string): Promise<FlowPreview> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
-  if (token) headers['authorization'] = `Bearer ${token}`
-  const response = await fetch(`${flowBase(cube)}/preview`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ source }),
-  })
-  if (response.ok) return { ok: true }
-  if (response.status === 401) {
-    setToken(null)
-    throw new Error('Your session has expired. Please sign in again.')
-  }
-  try {
-    const parsed = (await response.json()) as {
-      error?: { message?: string; details?: { line?: number; column?: number } }
-    }
-    return {
-      ok: false,
-      message: parsed.error?.message ?? `Validation failed (${response.status})`,
-      line: parsed.error?.details?.line,
-      column: parsed.error?.details?.column,
-    }
-  } catch {
-    return { ok: false, message: `Validation failed (${response.status})` }
-  }
+  return previewSource(`${flowBase(cube)}/preview`, source)
 }
 
 /** Run a flow over inline CSV (`input`) or a named `connection`. */

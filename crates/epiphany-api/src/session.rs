@@ -113,8 +113,8 @@ impl SessionStore {
 
     /// Revoke every session belonging to `username` EXCEPT `keep` (e.g. on a
     /// password change, ADR-0017): every token issued before the change stops
-    /// working at once, while the caller's current session — which just proved the
-    /// correct current password — stays alive so the change does not log them out.
+    /// working at once, while the caller's current session (which just proved the
+    /// correct current password) stays alive so the change does not log them out.
     /// Returns how many were revoked.
     pub fn revoke_user_except(&mut self, username: &str, keep: &str) -> usize {
         let before = self.sessions.len();

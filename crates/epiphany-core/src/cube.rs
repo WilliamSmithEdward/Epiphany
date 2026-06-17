@@ -302,7 +302,6 @@ pub struct DimensionDef {
 }
 
 impl Cube {
-    /// Create a cube from an ordered, non-empty list of dimensions.
     /// Build a brand-new cube from dimension definitions (ADR-0021), with full
     /// validation: at least one dimension, no duplicate dimension names, and the
     /// same element/edge checks as [`extend_schema`](Self::extend_schema)
@@ -347,6 +346,7 @@ impl Cube {
         Ok(cube)
     }
 
+    /// Create a cube from an ordered, non-empty list of pre-built dimensions.
     pub fn new(name: impl Into<String>, dimensions: Vec<Dimension>) -> Result<Self, ModelError> {
         if dimensions.is_empty() {
             return Err(ModelError::EmptyCube);

@@ -103,12 +103,12 @@ fn document() -> Value {
             "/api/v1/dimensions/{id}": {
                 "get": {
                     "summary": "A shared dimension's full definition", "security": bearer(),
-                    "parameters": [id_param()],
+                    "parameters": [dim_id_param()],
                     "responses": ok("The shared dimension")
                 },
                 "delete": {
                     "summary": "Delete an unreferenced shared dimension (ADR-0024)", "security": bearer(),
-                    "parameters": [id_param()],
+                    "parameters": [dim_id_param()],
                     "responses": {
                         "200": { "description": "Deleted" },
                         "409": { "description": "Still referenced by one or more cubes", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
@@ -118,7 +118,7 @@ fn document() -> Value {
             "/api/v1/dimensions/{id}/elements": { "post": {
                 "summary": "Append members/edges to a shared dimension; fans out to every referencing cube (ADR-0024)",
                 "security": bearer(),
-                "parameters": [id_param()],
+                "parameters": [dim_id_param()],
                 "requestBody": json_body("#/components/schemas/GrowDimensionRequest"),
                 "responses": {
                     "200": { "description": "The new generation and the cubes the change fanned out to" },
@@ -876,6 +876,13 @@ fn id_param() -> Value {
     json!({
         "name": "id", "in": "path", "required": true,
         "schema": { "type": "string" }
+    })
+}
+
+fn dim_id_param() -> Value {
+    json!({
+        "name": "id", "in": "path", "required": true,
+        "schema": { "type": "integer", "format": "int64" }
     })
 }
 

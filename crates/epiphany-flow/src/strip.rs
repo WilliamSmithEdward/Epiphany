@@ -460,7 +460,7 @@ impl Stripper {
     }
 
     fn strip_type_alias(&mut self, start: usize) -> Result<(), StripError> {
-        // `type X ... = ... ;` — balance brackets, stop at the top-level `;` (or
+        // `type X ... = ... ;` - balance brackets, stop at the top-level `;` (or
         // end of a line with no nesting, as a fallback).
         let mut depth: i32 = 0;
         while self.i < self.src.len() {

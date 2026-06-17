@@ -15,4 +15,4 @@ pub use ast::{
 };
 pub use error::{ParseErrorKind, RuleParseError};
 pub use lexer::Span;
-pub use parser::{parse, parse_rule};
+pub use parser::parse;

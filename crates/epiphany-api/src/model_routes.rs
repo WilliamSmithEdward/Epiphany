@@ -154,10 +154,7 @@ pub(crate) fn validate_name(kind: &str, name: &str) -> Result<(), ApiError> {
             format!("{kind} name '{name}' must not have leading or trailing spaces"),
         ));
     }
-    if name
-        .chars()
-        .any(|c| c.is_control() || matches!(c, '\n' | '\r' | '\t'))
-    {
+    if name.chars().any(|c| c.is_control()) {
         return Err(ApiError::unprocessable(
             "INVALID_NAME",
             format!("{kind} name contains a control character"),

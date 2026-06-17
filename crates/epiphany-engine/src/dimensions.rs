@@ -178,26 +178,9 @@ impl DimensionRegistry {
         self.refs.entry(id).or_default().insert(cube.to_string());
     }
 
-    /// Drop a cube's reference to `id`.
-    pub fn detach(&mut self, id: DimensionId, cube: &str) {
-        if let Some(set) = self.refs.get_mut(&id) {
-            set.remove(cube);
-        }
-    }
-
-    /// Whether any cube references `id` (a referenced dimension cannot be deleted).
-    pub fn is_referenced(&self, id: DimensionId) -> bool {
-        self.refs.get(&id).is_some_and(|set| !set.is_empty())
-    }
-
     /// The cubes referencing `id`, sorted.
     pub fn referencing(&self, id: DimensionId) -> Vec<String> {
         self.refs.get(&id).into_iter().flatten().cloned().collect()
-    }
-
-    /// All dimension ids, in sorted order.
-    pub fn ids(&self) -> Vec<DimensionId> {
-        self.by_id.keys().copied().collect()
     }
 
     /// All shared dimensions, in id order (for persistence).
@@ -302,19 +285,14 @@ mod tests {
         let id = DimensionId(7);
         reg.put(Arc::new(SharedDimension::new(id, region())));
         assert_eq!(reg.len(), 1);
-        assert!(!reg.is_referenced(id));
+        assert!(reg.referencing(id).is_empty());
 
         reg.attach(id, "Sales");
         reg.attach(id, "Budget");
-        assert!(reg.is_referenced(id));
+        assert!(!reg.referencing(id).is_empty());
         assert_eq!(
             reg.referencing(id),
             vec!["Budget".to_string(), "Sales".to_string()]
         );
-
-        reg.detach(id, "Sales");
-        assert!(reg.is_referenced(id)); // Budget still references it
-        reg.detach(id, "Budget");
-        assert!(!reg.is_referenced(id)); // now unreferenced -> deletable
     }
 }

@@ -426,10 +426,6 @@ fn header() -> [u8; 8] {
     h
 }
 
-/// Rewrite the ledger file to exactly `records` (a compaction), crash-safely:
-/// write a sibling temp file (header + framed records), fsync, rename over the
-/// path, and return a fresh append-positioned handle. A crash before the rename
-/// leaves the original file intact.
 /// Restrict the ledger to owner-only access (`0600`) on Unix (ADR-0017); a no-op
 /// elsewhere, where the data directory's inherited ACL governs.
 fn restrict_to_owner(path: &Path) -> io::Result<()> {
@@ -460,6 +456,10 @@ fn set_owner_only(opts: &mut OpenOptions) {
     }
 }
 
+/// Rewrite the ledger file to exactly `records` (a compaction), crash-safely:
+/// write a sibling temp file (header + framed records), fsync, rename over the
+/// path, and return a fresh append-positioned handle. A crash before the rename
+/// leaves the original file intact.
 fn rewrite_file(path: &Path, records: &[RunRecord]) -> io::Result<File> {
     let tmp = path.with_extension("compact");
     {

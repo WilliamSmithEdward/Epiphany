@@ -80,11 +80,6 @@ impl DeterministicRng {
         z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
         z ^ (z >> 31)
     }
-
-    /// Next float in `[0, 1)`, using 53 bits of mantissa.
-    pub fn next_f64(&mut self) -> f64 {
-        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-    }
 }
 
 /// A deterministic, monotonic id generator.
@@ -150,15 +145,6 @@ mod tests {
         let mut a = DeterministicRng::new(1);
         let mut b = DeterministicRng::new(2);
         assert_ne!(a.next_u64(), b.next_u64());
-    }
-
-    #[test]
-    fn rng_floats_are_in_unit_interval() {
-        let mut r = DeterministicRng::new(7);
-        for _ in 0..1000 {
-            let x = r.next_f64();
-            assert!((0.0..1.0).contains(&x));
-        }
     }
 
     #[test]

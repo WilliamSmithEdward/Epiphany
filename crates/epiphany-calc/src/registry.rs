@@ -48,11 +48,6 @@ impl VecRegistry {
     pub fn new(cubes: Vec<Cube>) -> Self {
         Self { cubes }
     }
-
-    /// The cubes, in ordinal order.
-    pub fn cubes(&self) -> &[Cube] {
-        &self.cubes
-    }
 }
 
 impl CubeRegistry for VecRegistry {

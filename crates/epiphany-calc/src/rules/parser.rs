@@ -52,25 +52,6 @@ pub fn parse(src: &str) -> Result<RuleDoc, RuleParseError> {
     Ok(RuleDoc { rules })
 }
 
-/// Parse exactly one rule statement, rejecting trailing input.
-pub fn parse_rule(src: &str) -> Result<Rule, RuleParseError> {
-    let toks = lex(src)?;
-    let mut parser = Parser {
-        toks,
-        pos: 0,
-        end: src.len(),
-        depth: 0,
-    };
-    let rule = parser.parse_rule()?;
-    if parser.pos < parser.toks.len() {
-        return Err(RuleParseError::new(
-            ParseErrorKind::TrailingInput,
-            parser.toks[parser.pos].span,
-        ));
-    }
-    Ok(rule)
-}
-
 /// Maximum nesting depth for expressions and conditions. A stack-exhaustion
 /// guard, not a real limit: hand-authored rules nest a handful of levels deep,
 /// far below this. A fixed safety backstop, not an operational tuning knob.
@@ -728,13 +709,6 @@ mod tests {
             parse("['M':'x'] = Bogus('a');").unwrap_err().kind,
             ParseErrorKind::UnknownFunction(n) if n == "Bogus"
         ));
-        // Trailing input on parse_rule.
-        assert_eq!(
-            parse_rule("['M':'x'] = 1; ['M':'y'] = 2;")
-                .unwrap_err()
-                .kind,
-            ParseErrorKind::TrailingInput
-        );
         // A bad selector.
         assert!(matches!(
             parse("['M': 99] = 1;").unwrap_err().kind,

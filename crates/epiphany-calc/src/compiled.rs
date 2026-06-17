@@ -82,17 +82,6 @@ impl CompiledArea {
         }
         true
     }
-
-    /// Whether two areas can select a common coordinate (used for the static
-    /// dependency graph). Areas of different rank never intersect.
-    pub fn intersects(&self, other: &CompiledArea) -> bool {
-        self.per_dim.len() == other.per_dim.len()
-            && self
-                .per_dim
-                .iter()
-                .zip(&other.per_dim)
-                .all(|(a, b)| a.intersects(b))
-    }
 }
 
 /// A per-dimension membership predicate.
@@ -102,28 +91,6 @@ pub enum DimPredicate {
     Any,
     /// One of a sorted set of element indices.
     OneOf(Vec<u32>),
-}
-
-impl DimPredicate {
-    /// Whether two predicates share at least one element (conservative: `Any`
-    /// intersects anything, used only by the static dependency graph).
-    pub fn intersects(&self, other: &DimPredicate) -> bool {
-        match (self, other) {
-            (DimPredicate::Any, _) | (_, DimPredicate::Any) => true,
-            (DimPredicate::OneOf(a), DimPredicate::OneOf(b)) => {
-                // Both sorted: a linear merge-style membership check.
-                let (mut i, mut j) = (0, 0);
-                while i < a.len() && j < b.len() {
-                    match a[i].cmp(&b[j]) {
-                        std::cmp::Ordering::Less => i += 1,
-                        std::cmp::Ordering::Greater => j += 1,
-                        std::cmp::Ordering::Equal => return true,
-                    }
-                }
-                false
-            }
-        }
-    }
 }
 
 /// A resolved value expression (numeric for M4).
@@ -228,13 +195,6 @@ pub enum CompileError {
     },
     /// A numeric literal could not be parsed (e.g. more than four decimals).
     InvalidNumber { text: String, span: Span },
-    /// A reference addressed a cube with the wrong number of dimensions.
-    AddressRank {
-        cube: String,
-        expected: usize,
-        got: usize,
-        span: Span,
-    },
     /// A parseable-but-deferred construct (string formula, text function,
     /// by-attribute override, cross-cube name mapping) is not supported in M4.
     Unsupported { feature: String, span: Span },
@@ -249,7 +209,6 @@ impl CompileError {
             | CompileError::UnknownMember { span, .. }
             | CompileError::UnknownAttribute { span, .. }
             | CompileError::InvalidNumber { span, .. }
-            | CompileError::AddressRank { span, .. }
             | CompileError::Unsupported { span, .. } => *span,
         }
     }
@@ -274,15 +233,6 @@ impl fmt::Display for CompileError {
                 "unknown attribute '{attribute}' on dimension '{dimension}'"
             ),
             CompileError::InvalidNumber { text, .. } => write!(f, "invalid number '{text}'"),
-            CompileError::AddressRank {
-                cube,
-                expected,
-                got,
-                ..
-            } => write!(
-                f,
-                "reference to cube '{cube}' has {got} dimensions but the cube has {expected}"
-            ),
             CompileError::Unsupported { feature, .. } => {
                 write!(f, "{feature} is not supported yet")
             }

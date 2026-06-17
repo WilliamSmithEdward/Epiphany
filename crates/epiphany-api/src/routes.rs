@@ -63,10 +63,7 @@ pub(crate) async fn get_cube(
     Path(cube): Path<String>,
 ) -> Result<Json<CubeDetailDto>, ApiError> {
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
-    let snap = state
-        .engine
-        .snapshot(&cube)
-        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
+    let snap = snapshot(&state, &cube)?;
     // Element security (ADR-0015): a non-admin must not learn the names of
     // elements denied to them, so denied members (and any edge touching them) are
     // suppressed from the cube structure, just as from a member enumeration.
@@ -162,10 +159,7 @@ pub(crate) async fn read_cells(
     Json(req): Json<ReadCellsRequest>,
 ) -> Result<Json<ReadCellsResponse>, ApiError> {
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
-    let snap = state
-        .engine
-        .snapshot(&cube)
-        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
+    let snap = snapshot(&state, &cube)?;
     let cube_ref = snap.cube();
     // An active sandbox (X-Epiphany-Sandbox) overlays its what-if leaves beneath
     // the rules, so values recompute over them (ADR-0014); absent it, base.
@@ -204,10 +198,7 @@ pub(crate) async fn write_cell(
     // write is rejected before anything is staged.
     require_element_write(&state, &auth, &cube, &req.coord)?;
     let (write, sandbox_name) = {
-        let snap = state
-            .engine
-            .snapshot(&cube)
-            .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
+        let snap = snapshot(&state, &cube)?;
         let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
         (
             build_write(snap.cube(), &req.coord, &req.value)?,
@@ -261,10 +252,7 @@ pub(crate) async fn batch_write(
         require_element_write(&state, &auth, &cube, &w.coord)?;
     }
     let (writes, sandbox_name) = {
-        let snap = state
-            .engine
-            .snapshot(&cube)
-            .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
+        let snap = snapshot(&state, &cube)?;
         let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
         let cube_ref = snap.cube();
         let writes = req
@@ -312,10 +300,7 @@ pub(crate) async fn spread_cells(
         ApiError::unprocessable("INVALID_NUMBER", format!("invalid number '{}'", req.value))
     })?;
 
-    let snap = state
-        .engine
-        .snapshot(&cube)
-        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
+    let snap = snapshot(&state, &cube)?;
     let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
     let resolved = resolve(snap.cube(), &req.target)?;
     if resolved.has_string {

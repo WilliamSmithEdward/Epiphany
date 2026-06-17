@@ -49,17 +49,6 @@ impl MemberRef {
     pub fn name(&self) -> &str {
         self.path.last().map(String::as_str).unwrap_or("")
     }
-
-    /// The optional dimension qualifier (the segment before the name), used to
-    /// validate that `[Dim]` matches the evaluating dimension.
-    pub fn qualifier(&self) -> Option<&str> {
-        let len = self.path.len();
-        if len >= 2 {
-            Some(self.path[len - 2].as_str())
-        } else {
-            None
-        }
-    }
 }
 
 /// Sort direction for `Order`. The `B` forms break hierarchy (a flat sort);

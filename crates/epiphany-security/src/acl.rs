@@ -159,16 +159,6 @@ pub enum Scope {
     Cube(String),
 }
 
-impl Scope {
-    /// The cube this scope names, if specific.
-    pub fn cube(&self) -> Option<&str> {
-        match self {
-            Scope::Global => None,
-            Scope::Cube(name) => Some(name),
-        }
-    }
-}
-
 /// The grants on one object (or element): per-user and per-group access levels.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AccessList {

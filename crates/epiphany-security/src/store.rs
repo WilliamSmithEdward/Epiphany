@@ -125,7 +125,7 @@ pub struct SecurityStore {
     fast_kdf: bool,
     /// A precomputed Argon2 hash of a fixed non-secret string, verified on the
     /// login path when a username does NOT exist so an unknown user costs the same
-    /// one Argon2 verify as a known user with a wrong password — closing the
+    /// one Argon2 verify as a known user with a wrong password, closing the
     /// user-enumeration timing channel (ADR-0017). Computed at the store's own KDF
     /// cost so the dummy verify matches the real verify in both test and prod.
     dummy_hash: String,
