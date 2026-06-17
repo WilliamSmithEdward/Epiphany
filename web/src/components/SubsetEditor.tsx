@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   createSubset,
   previewMdx,
@@ -7,9 +7,8 @@ import {
   type SubsetDef,
   type Visibility,
 } from '../api/client'
-import { buildElementTree } from '../model/tree'
 import { Tabs, TabPanel } from '../ui'
-import ElementTree from './ElementTree'
+import MemberSetPicker from './MemberSetPicker'
 
 // Create a subset for one dimension. Two modes: a default tree picker producing a
 // static member list, and an opt-in MDX expression with a live resolved-members
@@ -28,14 +27,12 @@ export default function SubsetEditor({
   const [tab, setTab] = useState<'pick' | 'mdx'>('pick')
   const [name, setName] = useState('')
   const [visibility, setVisibility] = useState<Visibility>('public')
-  const [picked, setPicked] = useState<Set<string>>(new Set())
+  const [included, setIncluded] = useState<string[]>([])
   const [mdx, setMdx] = useState('')
   const [preview, setPreview] = useState<MemberDto[]>([])
   const [previewError, setPreviewError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-
-  const tree = useMemo(() => buildElementTree(dimension), [dimension])
 
   // Debounced live preview of the MDX expression.
   useEffect(() => {
@@ -58,26 +55,20 @@ export default function SubsetEditor({
     return () => clearTimeout(handle)
   }, [cube, dimension.name, mdx, tab])
 
-  function toggle(member: string) {
-    setPicked((current) => {
-      const next = new Set(current)
-      if (next.has(member)) next.delete(member)
-      else next.add(member)
-      return next
-    })
-  }
-
   async function save() {
     if (name.trim() === '') {
       setError('Please name the subset.')
       return
     }
-    // Keep the static member list in dimension (definition) order.
-    const ordered = dimension.elements.map((e) => e.name).filter((n) => picked.has(n))
+    if (tab === 'pick' && included.length === 0) {
+      setError('Add at least one member to the set.')
+      return
+    }
+    // The included list is already in the order the user arranged.
     const def: SubsetDef =
       tab === 'mdx'
         ? { name: name.trim(), visibility, kind: 'dynamic', mdx }
-        : { name: name.trim(), visibility, kind: 'static', members: ordered }
+        : { name: name.trim(), visibility, kind: 'static', members: included }
     setSaving(true)
     try {
       const saved = await createSubset(cube, dimension.name, def)
@@ -115,10 +106,7 @@ export default function SubsetEditor({
         ]}
       >
         <TabPanel value="pick">
-          <div className="picker">
-            <ElementTree nodes={tree} selected={picked} onToggle={toggle} />
-            <p className="muted">{picked.size} selected</p>
-          </div>
+          <MemberSetPicker dimension={dimension} value={included} onChange={setIncluded} />
         </TabPanel>
         <TabPanel value="mdx">
           <div className="mdx">

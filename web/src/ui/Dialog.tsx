@@ -17,7 +17,7 @@ export function Dialog({
   description?: ReactNode
   children: ReactNode
   footer?: ReactNode
-  size?: 'sm' | 'md' | 'lg'
+  size?: 'sm' | 'md' | 'lg' | 'xl'
 }) {
   return (
     <RD.Root open={open} onOpenChange={onOpenChange}>

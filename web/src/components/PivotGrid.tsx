@@ -520,7 +520,7 @@ export default function PivotGrid({ cube, reloadSignal }: { cube: string; reload
           }}
           title={`Member set for ${editorDimDto.name}`}
           description="Pick the members this axis should show, then save the set to reuse it."
-          size="lg"
+          size="xl"
         >
           <SubsetEditor
             cube={cube}
