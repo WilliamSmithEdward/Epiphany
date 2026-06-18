@@ -118,6 +118,60 @@ no longer offers a flat toggle.
   editor confirms before such edits, and the ops are transactional so a rejected
   edit changes nothing.
 
+## Drag-and-drop interaction model (research-grounded follow-up)
+
+A study of hierarchical drag-and-drop editing (Nielsen Norman Group drag-and-drop
+guidance; the W3C WAI-ARIA Authoring Practices tree and treegrid patterns + WCAG
+2.2 SC 2.5.7 Dragging Movements; the dnd-kit and react-beautiful-dnd keyboard
+models; and the Oracle shared-member / alternate-hierarchy model) settles the
+editor's gestures:
+
+- **Three drop zones per row**: the top third inserts the dragged member BEFORE the
+  target (an insertion-line indicator), the bottom third inserts it AFTER (insertion
+  line), and the middle third nests it AS A CHILD of the target (a container
+  highlight, not a line). The active hit area extends slightly past the visible
+  zone, and hovering a collapsed consolidation expands it so its children become
+  drop targets.
+- **Within vs into**: before/after among siblings is a reorder; the middle zone is a
+  nest. Distinct indicators (line vs highlight) keep the two unambiguous.
+- **Into is additive (share), not move**: dropping a member into a consolidation
+  ADDS that parent edge and keeps the member's existing parents (the Oracle
+  shared-member model for alternate hierarchies), matching decision-2 `AddChild`.
+  A true move is "remove from the old parent, then add to the new".
+- **Out of a consolidation removes ONE edge, not the member**: dragging a member out
+  (to the root area) or the row action "Remove from this consolidation" removes just
+  that parent edge, leaving the member, its data, and its other parents intact; if
+  it was the member's last parent it becomes a root. This is distinct from Delete
+  (which removes the member) and from "Detach to top level" (which removes all of a
+  member's parent edges at once). It needs a `RemoveChild { parent, child }`
+  structural op.
+- **Delete is intent-aware (remove from a parent vs delete from the dimension)**:
+  Delete on a member that is a child of one or more consolidations does not delete
+  immediately; it offers a choice. "Remove from consolidations" opens a popup listing
+  every consolidation the member belongs to, each with a checkbox, and unlinks only
+  the checked edges (one `RemoveChild` each), keeping the member and all its data.
+  "Delete from dimension" is the destructive `delete` op: it removes the member, every
+  consolidation membership, and all data stored on it, behind an explicit "all data
+  will be lost" confirm. A root member, having no parents to choose between, takes the
+  "delete from dimension" path directly. This makes the common intent (stop a member
+  rolling up into a consolidation) non-destructive and the rare intent (erase the
+  member) deliberate.
+- **Keyboard parity is mandatory (WCAG 2.2 SC 2.5.7, Level AA)**: every drag gesture
+  has a non-drag equivalent in the row's context/overflow menu (move before / after,
+  add as child, remove from this consolidation, detach, convert, delete). The tree
+  is a single tab stop with roving tabindex; Right expands/into, Left collapses/to
+  parent; a draggable row carries `aria-roledescription` and `aria-describedby`
+  instructions; keyboard pick-up/drop is Space then arrows then Escape-to-cancel.
+- **Safeguards**: a drop that would create a cycle is rejected with feedback (the
+  engine already rejects it); destructive edits (delete, a convert that clears
+  values) confirm; each edit is a normal committed version, so revert is by editing
+  back (undo is deferred).
+
+Status: shipped. The additive `AddChild` (into), before/after reorder (within),
+`RemoveChild` (out of one consolidation, by drag-out or the row menu), the
+intent-aware Delete (remove-from-consolidations popup vs delete-from-dimension), and
+the keyboard/indicator polish are all implemented.
+
 ## Deferred
 
 Undo/redo of structural edits (each edit is a normal version, so external revert

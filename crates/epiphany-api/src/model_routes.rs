@@ -109,6 +109,7 @@ struct AttributeValueDto {
 /// - `{ "op": "reorder", "new_order": [..] }`
 /// - `{ "op": "reparent", "child": "..", "new_parent": ".."|null, "weight": 1 }`
 /// - `{ "op": "add_child", "parent": "..", "child": "..", "weight": 1 }`
+/// - `{ "op": "remove_child", "parent": "..", "child": ".." }`
 /// - `{ "op": "set_kind", "element": "..", "kind": "numeric"|"string"|"consolidated" }`
 /// - `{ "op": "delete", "element": ".." }`
 /// - `{ "op": "insert", "name": "..", "kind": "..", "position": { "at": "end"|"before"|"after", "ref": ".." } }`
@@ -131,6 +132,10 @@ pub(crate) enum DimensionEditBody {
         child: String,
         #[serde(default = "one")]
         weight: i64,
+    },
+    RemoveChild {
+        parent: String,
+        child: String,
     },
     SetKind {
         element: String,
@@ -191,6 +196,9 @@ impl DimensionEditBody {
                 child,
                 weight,
             },
+            DimensionEditBody::RemoveChild { parent, child } => {
+                DimensionEdit::RemoveChild { parent, child }
+            }
             DimensionEditBody::SetKind { element, kind } => DimensionEdit::SetKind {
                 element,
                 kind: parse_element_kind(&kind)?,
@@ -221,7 +229,8 @@ impl DimensionEditBody {
     /// surface or destroy values across the whole dimension, so an
     /// element-restricted caller is denied (fail-closed): they must not delete,
     /// convert, or consolidate a member whose values they cannot see. A
-    /// reorder/reparent only moves members and never destroys a value.
+    /// reorder/reparent/remove_child only moves or unlinks members and never
+    /// destroys a stored value, so they are gated by `Dimension:Write` alone.
     pub(crate) fn touches_element_data(&self) -> bool {
         matches!(
             self,

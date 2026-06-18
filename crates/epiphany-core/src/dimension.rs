@@ -296,6 +296,21 @@ impl Dimension {
         Ok(())
     }
 
+    /// Remove the single `parent -> child` consolidation edge, leaving the child
+    /// element, its other parent edges, and (in the cube) its data intact. The
+    /// parent stays a consolidation even if it becomes childless (an empty
+    /// consolidation is valid; no auto-convert). An edge-only change, so no index
+    /// change and no cell remap.
+    ///
+    /// Idempotent: if no such edge exists (already removed, or never present) it
+    /// is a no-op and returns `Ok`. Rejects out-of-range indices.
+    pub fn remove_child(&mut self, parent: u32, child: u32) -> Result<(), ModelError> {
+        self.element(child)?;
+        self.element(parent)?;
+        self.children[parent as usize].retain(|e| e.child != child);
+        Ok(())
+    }
+
     /// Does `from` reach `to` by following child edges?
     fn reaches(&self, from: u32, to: u32) -> bool {
         let mut stack = vec![from];
@@ -656,6 +671,29 @@ mod tests {
         d.add_child(big, total, 1).unwrap();
         d.add_child(big, a, 1).unwrap();
         assert_eq!(d.leaf_weights(big).unwrap(), vec![(a, 2), (b, 1)]);
+    }
+
+    #[test]
+    fn remove_child_drops_one_edge_and_is_idempotent() {
+        // East rolls up to both Total and Coastal; removing Coastal -> East leaves
+        // East under Total (and the element itself) intact.
+        let mut d = Dimension::new("Region");
+        let east = d.add_leaf("East");
+        let total = d.add_consolidated("Total");
+        let coastal = d.add_consolidated("Coastal");
+        d.add_child(total, east, 1).unwrap();
+        d.add_child(coastal, east, 1).unwrap();
+        d.remove_child(coastal, east).unwrap();
+        // Coastal no longer reaches East; Total still does; East still exists.
+        assert_eq!(d.children_of(coastal).unwrap(), Vec::<u32>::new());
+        assert_eq!(d.children_of(total).unwrap(), vec![east]);
+        assert_eq!(d.leaf_weights(total).unwrap(), vec![(east, 1)]);
+        assert_eq!(d.element(east).unwrap().kind, ElementKind::Leaf);
+        // Coastal stays a consolidation even though it is now childless.
+        assert_eq!(d.element(coastal).unwrap().kind, ElementKind::Consolidated);
+        // Idempotent: re-removing the absent edge is a no-op.
+        d.remove_child(coastal, east).unwrap();
+        assert_eq!(d.children_of(total).unwrap(), vec![east]);
     }
 
     #[test]

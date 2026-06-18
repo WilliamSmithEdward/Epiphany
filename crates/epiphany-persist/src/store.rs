@@ -584,6 +584,20 @@ impl Store {
         self.checkpoint()
     }
 
+    /// Remove the single `parent -> child` consolidation edge (keeping the member,
+    /// its cells, and its other parents), then checkpoint.
+    pub fn remove_child_element(
+        &mut self,
+        dimension: &str,
+        parent: &str,
+        child: &str,
+    ) -> Result<(), PersistError> {
+        self.model
+            .cube
+            .remove_child_element(dimension, parent, child)?;
+        self.checkpoint()
+    }
+
     /// Convert a member's kind (re-typing or clearing its cells), then checkpoint.
     pub fn set_element_kind(
         &mut self,
@@ -640,6 +654,12 @@ pub enum DimensionEdit {
         child: String,
         weight: i64,
     },
+    /// Remove the single `parent -> child` consolidation edge, keeping the child
+    /// member, its data, and its other parent edges (a member may roll up to
+    /// multiple consolidations). Idempotent when the edge is absent. Distinct from
+    /// `Reparent` with `None` (which detaches the child from EVERY parent) and from
+    /// `Delete` (which removes the member). Drops no stored value.
+    RemoveChild { parent: String, child: String },
     /// Convert `element` to `kind`.
     SetKind { element: String, kind: ElementKind },
     /// Delete `element` (rejected if it still has children).
@@ -673,6 +693,9 @@ impl Store {
                 child,
                 weight,
             } => self.add_child_element(dimension, parent, child, *weight),
+            DimensionEdit::RemoveChild { parent, child } => {
+                self.remove_child_element(dimension, parent, child)
+            }
             DimensionEdit::SetKind { element, kind } => {
                 self.set_element_kind(dimension, element, *kind)
             }

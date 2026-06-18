@@ -672,6 +672,47 @@ impl Cube {
         Ok(())
     }
 
+    /// Remove the single `parent -> child` consolidation edge in a dimension,
+    /// keeping the child element, its stored cells, and its OTHER parent edges. The
+    /// `parent` stays a consolidation even if it becomes childless (no
+    /// auto-convert). If the removed edge was the child's last incoming edge it
+    /// simply becomes a root. An edge-only change, so no cell remap.
+    ///
+    /// This is the "remove from one consolidation" operation (ADR-0036), distinct
+    /// from [`Self::reparent_element`] with `None` (which detaches the child from
+    /// EVERY parent) and from [`Self::delete_element`] (which removes the member).
+    ///
+    /// Idempotent: if the `parent -> child` edge is absent it is a no-op and
+    /// returns `Ok`. Transactional: an unknown parent or child is rejected and the
+    /// cube is unchanged.
+    pub fn remove_child_element(
+        &mut self,
+        dimension: &str,
+        parent: &str,
+        child: &str,
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.clone();
+        let dim = &mut next.dimensions[d];
+        let parent_idx = dim
+            .index_of(parent)
+            .ok_or_else(|| ModelError::ElementNotFound {
+                dimension: dimension.to_string(),
+                element: parent.to_string(),
+            })?;
+        let child_idx = dim
+            .index_of(child)
+            .ok_or_else(|| ModelError::ElementNotFound {
+                dimension: dimension.to_string(),
+                element: child.to_string(),
+            })?;
+        // Edge-only: drop just this one parent -> child edge. The child, its cells,
+        // and its other parent edges are untouched; the parent keeps its kind.
+        dim.remove_child(parent_idx, child_idx)?;
+        *self = next;
+        Ok(())
+    }
+
     /// Convert a dimension element's kind. A numeric/string change re-types the
     /// element's stored cells (an incompatible value is cleared, not crashed); a
     /// change to consolidated drops the element's stored leaf value (a
@@ -2142,17 +2183,63 @@ mod tests {
         // from any other consolidation it already rolls up to (alternate
         // hierarchies are valid), unlike reparent which detaches first.
         let mut cube = edit_cube(); // North/South/East are leaves under Total.
-        // A second consolidation; North will roll up to BOTH Total and Coastal.
-        cube.insert_element_at("Region", "Coastal", ElementKind::Consolidated, Position::AtEnd)
+                                    // A second consolidation; North will roll up to BOTH Total and Coastal.
+        cube.insert_element_at(
+            "Region",
+            "Coastal",
+            ElementKind::Consolidated,
+            Position::AtEnd,
+        )
+        .unwrap();
+        cube.add_child_element("Region", "Coastal", "North", 1)
             .unwrap();
-        cube.add_child_element("Region", "Coastal", "North", 1).unwrap();
         // North still contributes to Total (it was NOT detached): 10+20+30 = 60.
         assert_eq!(read(&cube, "Total", "Sales"), fix(60));
         // And it now also rolls up to Coastal = North's 10.
         assert_eq!(read(&cube, "Coastal", "Sales"), fix(10));
         // Idempotent: re-adding the same edge changes nothing.
-        cube.add_child_element("Region", "Coastal", "North", 1).unwrap();
+        cube.add_child_element("Region", "Coastal", "North", 1)
+            .unwrap();
         assert_eq!(read(&cube, "Coastal", "Sales"), fix(10));
+    }
+
+    #[test]
+    fn remove_child_drops_one_edge_keeps_member_and_other_parents() {
+        // ADR-0036 #136: "remove from one consolidation" drops only the named
+        // parent -> child edge. East rolls up to BOTH Total and Coastal; removing
+        // it from Coastal leaves it under Total, still holding its value.
+        let mut cube = edit_cube(); // North/South/East leaves under Total.
+        cube.insert_element_at(
+            "Region",
+            "Coastal",
+            ElementKind::Consolidated,
+            Position::AtEnd,
+        )
+        .unwrap();
+        cube.add_child_element("Region", "Coastal", "East", 1)
+            .unwrap();
+        // Sanity: East under both -> Total = 60, Coastal = East's 30.
+        assert_eq!(read(&cube, "Total", "Sales"), fix(60));
+        assert_eq!(read(&cube, "Coastal", "Sales"), fix(30));
+
+        cube.remove_child_element("Region", "Coastal", "East")
+            .unwrap();
+        // East still exists with its value, still under Total, no longer under
+        // Coastal (which stays a consolidation even though it is now childless).
+        assert!(cube.dimension(0).index_of("East").is_some());
+        assert_eq!(read(&cube, "East", "Sales"), fix(30));
+        assert_eq!(read(&cube, "Total", "Sales"), fix(60));
+        assert_eq!(read(&cube, "Coastal", "Sales"), Fixed::ZERO);
+        let coastal = cube.dimension(0).index_of("Coastal").unwrap();
+        assert_eq!(
+            cube.dimension(0).element(coastal).unwrap().kind,
+            ElementKind::Consolidated
+        );
+
+        // Idempotent: re-removing the now-absent edge is Ok and changes nothing.
+        cube.remove_child_element("Region", "Coastal", "East")
+            .unwrap();
+        assert_eq!(read(&cube, "Total", "Sales"), fix(60));
     }
 
     #[test]

@@ -1,5 +1,13 @@
 import * as DM from '@radix-ui/react-dropdown-menu'
-import { useCallback, useEffect, useMemo, useState, type DragEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type DragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from 'react'
 import {
   editCubeDimension,
   editDimensionById,
@@ -11,7 +19,7 @@ import {
   type InsertPosition,
 } from '../api/client'
 import { buildElementTree, type TreeNode } from '../model/tree'
-import { Card, Input, Select, useConfirm } from '../ui'
+import { Card, Dialog, Input, Select, useConfirm } from '../ui'
 
 // The target dimension: either a cube-embedded dimension (edited through the
 // cube route) or a registry (global) dimension (edited by id, fanning out to
@@ -47,7 +55,10 @@ type DropZone = 'before' | 'as-child' | 'after'
 
 /** A flattened, indented hierarchy row for rendering. `name` may repeat when a
  * member sits under more than one parent (alternate hierarchies), so `path`
- * keys the row while `name` drives every edit. */
+ * keys the row while `name` drives every edit. `parent` is the member's current
+ * parent on THIS row (the second-to-last path segment), or `null` when the row
+ * is a top-level root, so a drag-out / "remove from this consolidation" unlinks
+ * the right edge. */
 interface FlatRow {
   name: string
   kind: ElementKind
@@ -55,27 +66,54 @@ interface FlatRow {
   hasChildren: boolean
   expanded: boolean
   path: string
+  parent: string | null
+}
+
+/** The source of an in-flight move (drag or keyboard pick-up): the member name
+ * and the parent it is being moved out of on its origin row. */
+interface MoveSource {
+  name: string
+  parent: string | null
+}
+
+/** The current parent of a tree row is the second-to-last segment of its
+ * `/`-joined path (`Total/East` -> `Total`); a root row (`East`) has none. */
+function parentOfPath(path: string): string | null {
+  const at = path.lastIndexOf('/')
+  return at === -1 ? null : path.slice(0, at).split('/').pop() ?? null
 }
 
 /**
  * The standalone, cube-agnostic, hierarchy-only dimension editor (ADR-0036).
  * Members are rows in a tree: each row is draggable and drives structural edits
- * (reorder / reparent / add child / set kind / delete / insert) through the
- * new endpoints.
+ * (reorder / reparent / add child / remove from a consolidation / set kind /
+ * delete / insert) through the new endpoints.
  *
- * Drag-and-drop drop zones: while dragging a member over a row, the row splits
- * into thirds. The top third places the dragged member BEFORE the target, the
- * bottom third places it AFTER (both compute the full new member order and POST
- * a `reorder`), and the middle third adds the dragged member AS A CHILD of the
- * target (POST an `add_child`, which is additive: the member keeps its existing
- * parents and the backend turns a leaf/string target into a consolidation).
- * Dropping onto the empty area below the list detaches the member to a root
- * (a `reparent` with no new parent).
+ * Drag-and-drop drop zones (research-grounded, ADR-0036): while dragging a member
+ * over a row, the row splits into thirds. The top third places the dragged member
+ * BEFORE the target and the bottom third AFTER (both an insertion LINE; they
+ * compute the full new member order and POST a `reorder`), and the middle third
+ * adds the dragged member AS A CHILD of the target (a container HIGHLIGHT; POST an
+ * `add_child`, additive: the member keeps its existing parents and the backend
+ * turns a leaf/string target into a consolidation). Hovering a collapsed
+ * consolidation expands it after a short delay so its children become drop
+ * targets. Dropping onto the empty area below the list removes the member from
+ * the consolidation it was dragged out of (a `remove_child`), leaving it under
+ * its other parents; a member dragged from the root area is a no-op.
  *
- * Right-click (or the row's "..." button) opens a menu: Add member before / after
- * / as child, Convert to Numeric / String / Consolidation, Detach, and Delete.
- * The add actions take a name + kind inline. A delete, and any convert that would
- * drop stored values, confirm first.
+ * Keyboard parity (WCAG 2.2 SC 2.5.7, mandatory): the tree is a single tab stop
+ * with a roving tabindex; ArrowUp/Down move focus, ArrowRight expands or steps
+ * in, ArrowLeft collapses or steps to the parent. Space picks the focused member
+ * up; with a member picked up, ArrowUp/Down drop it before/after the focused row,
+ * and Escape cancels. Every drag gesture also has a row-menu equivalent: Move up
+ * / Move down (reorder one step), Add to a consolidation (additive add_child via
+ * an inline picker), Remove from this consolidation, Detach to top level, Convert,
+ * and Delete. Delete on a child member offers a choice: "Remove from
+ * consolidations" (a popup of its parents with checkboxes, removing only the
+ * checked edges and keeping the member and its data) or the destructive "Delete
+ * from dimension" (removes the member, every membership, and all its data, behind
+ * a confirm); a root member, having no parents, deletes from the dimension
+ * directly.
  */
 export default function DimensionEditor({
   target,
@@ -91,11 +129,20 @@ export default function DimensionEditor({
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
-  // Drag state: the member being dragged, plus the row + zone under the pointer.
-  const [dragName, setDragName] = useState<string | null>(null)
+  // Drag state: the source member + the parent it is dragged out of, plus the row
+  // and zone under the pointer.
+  const [drag, setDrag] = useState<MoveSource | null>(null)
   const [over, setOver] = useState<{ path: string; zone: DropZone } | null>(null)
   const [rootOver, setRootOver] = useState(false)
-  // The row whose context menu is open, and an in-progress inline add form.
+  // Keyboard roving tabindex + pick-up state. `focusPath` is the single tab stop;
+  // `picked` is the member picked up by Space (keyboard drag) awaiting a drop.
+  const [focusPath, setFocusPath] = useState<string | null>(null)
+  const [picked, setPicked] = useState<MoveSource | null>(null)
+  const treeRef = useRef<HTMLUListElement>(null)
+  // A pending "hover a collapsed consolidation -> expand it" timer.
+  const hoverExpand = useRef<{ path: string; timer: number } | null>(null)
+  // The row whose context menu is open, an in-progress inline add form, and the
+  // row whose "add to consolidation" picker is open.
   const [menuPath, setMenuPath] = useState<string | null>(null)
   const [adding, setAdding] = useState<{
     at: 'before' | 'after' | 'as-child'
@@ -103,6 +150,11 @@ export default function DimensionEditor({
   } | null>(null)
   const [addName, setAddName] = useState('')
   const [addKind, setAddKind] = useState<ElementKind>('numeric')
+  // The "Remove from consolidations" popup: the member being removed and the set of
+  // its parent consolidations the user has checked to unlink it from. Reached from a
+  // child member's Delete menu ("from parent"); the destructive "from dimension"
+  // path is a confirm, not this popup.
+  const [removeFrom, setRemoveFrom] = useState<{ name: string; checked: Set<string> } | null>(null)
 
   // A stable key for the load effect: re-fetch when the target identity changes.
   const targetKey =
@@ -152,6 +204,27 @@ export default function DimensionEditor({
     return m
   }, [dimension])
 
+  // member name -> every consolidation it is a child of (its parents), in element
+  // order. Drives the "Remove from consolidations" popup's checkbox list and tells
+  // a Delete whether the member is a root (no parents -> delete straight from the
+  // dimension) or a child (offer remove-from-parents vs delete-from-dimension).
+  const parentsOf = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const e of dimension?.edges ?? []) {
+      const list = m.get(e.child)
+      if (list) list.push(e.parent)
+      else m.set(e.child, [e.parent])
+    }
+    return m
+  }, [dimension])
+
+  // The consolidations a member could be added to by keyboard (every member of
+  // kind consolidated), for the "Add to consolidation" picker.
+  const consolidations = useMemo(
+    () => (dimension?.elements ?? []).filter((e) => e.kind === 'consolidated').map((e) => e.name),
+    [dimension],
+  )
+
   // The flattened, indented visible rows (expanded subtrees only).
   const rows: FlatRow[] = useMemo(() => {
     const out: FlatRow[] = []
@@ -165,6 +238,7 @@ export default function DimensionEditor({
           hasChildren: n.children.length > 0,
           expanded: isOpen,
           path: n.path,
+          parent: parentOfPath(n.path),
         })
         if (isOpen && n.children.length) walk(n.children, depth + 1)
       }
@@ -180,6 +254,29 @@ export default function DimensionEditor({
       else n.add(path)
       return n
     })
+
+  // Self-healing roving tabindex: keep exactly one focusable row. If the focused
+  // row leaves the visible set (a collapse, a reload, a structural edit), re-home
+  // focus to the first row so the tree always has one tab stop (WCAG 2.4.3).
+  useEffect(() => {
+    if (rows.length === 0) {
+      if (focusPath !== null) setFocusPath(null)
+      return
+    }
+    if (!focusPath || !rows.some((r) => r.path === focusPath)) {
+      setFocusPath(rows[0].path)
+    }
+  }, [rows, focusPath])
+
+  // Keep DOM focus on the roving-tabindex row after keyboard navigation, but only
+  // while focus is already inside the tree (so we never steal focus on load).
+  useEffect(() => {
+    if (!focusPath) return
+    const root = treeRef.current
+    if (!root || !root.contains(document.activeElement)) return
+    const el = root.querySelector<HTMLElement>(`[data-row-path="${cssEscapePath(focusPath)}"]`)
+    el?.focus()
+  }, [focusPath, rows])
 
   // Run one structural edit, then reload and surface the result. A registry
   // dimension reports which referencing cubes were also updated.
@@ -247,6 +344,16 @@ export default function DimensionEditor({
     [confirm, kindOf, runEdit],
   )
 
+  // Remove just the one `parent -> child` edge (keep the member, its data, and its
+  // other parents). A no-op when the member has no parent on the row it came from.
+  const removeChild = useCallback(
+    (parent: string | null, child: string): Promise<boolean> => {
+      if (!parent) return Promise.resolve(false)
+      return runEdit({ op: 'remove_child', parent, child })
+    },
+    [runEdit],
+  )
+
   // Resolve a drop: before/after -> reorder; as-child -> add the moved member as a
   // child of the target additively (it keeps its existing parents).
   const doDrop = useCallback(
@@ -270,6 +377,145 @@ export default function DimensionEditor({
     if (y > (rect.height * 2) / 3) return 'after'
     return 'as-child'
   }
+
+  // Cancel any pending hover-to-expand timer.
+  const clearHoverExpand = useCallback(() => {
+    if (hoverExpand.current) {
+      window.clearTimeout(hoverExpand.current.timer)
+      hoverExpand.current = null
+    }
+  }, [])
+
+  // Clear all transient drag state (used by drop, dragend, and a failed drop) so a
+  // rejected or finished drag never leaves a stuck indicator.
+  const endDrag = useCallback(() => {
+    setDrag(null)
+    setOver(null)
+    setRootOver(false)
+    clearHoverExpand()
+  }, [clearHoverExpand])
+
+  // While dragging over a collapsed consolidation, expand it after a short hover
+  // so its children become drop targets (research-grounded, ADR-0036).
+  const scheduleHoverExpand = useCallback(
+    (row: FlatRow) => {
+      if (!row.hasChildren || row.expanded) {
+        clearHoverExpand()
+        return
+      }
+      if (hoverExpand.current?.path === row.path) return
+      clearHoverExpand()
+      const timer = window.setTimeout(() => {
+        setExpanded((s) => new Set(s).add(row.path))
+        hoverExpand.current = null
+      }, 600)
+      hoverExpand.current = { path: row.path, timer }
+    },
+    [clearHoverExpand],
+  )
+
+  // Move a member one step among the FULL member order (swap it with the member
+  // immediately before/after it). This is the non-drag reorder path, so keyboard
+  // users have parity with drag before/after: it backs both the row menu's Move
+  // up / Move down and an arrow key on a picked-up member (ADR-0036).
+  const moveStep = useCallback(
+    (name: string, dir: 'up' | 'down') => {
+      setMenuPath(null)
+      const order = (dimension?.elements ?? []).map((e) => e.name)
+      const at = order.indexOf(name)
+      if (at === -1) return
+      const swap = dir === 'up' ? at - 1 : at + 1
+      if (swap < 0 || swap >= order.length) return
+      ;[order[at], order[swap]] = [order[swap], order[at]]
+      void runEdit({ op: 'reorder', new_order: order })
+    },
+    [dimension, runEdit],
+  )
+
+  // ---- keyboard tree navigation + pick-up/drop (WCAG 2.2 SC 2.5.7) ----
+
+  const onRowKeyDown = useCallback(
+    (e: ReactKeyboardEvent, row: FlatRow) => {
+      // Handle once on the focused row; stop it bubbling to ancestor <li>s.
+      e.stopPropagation()
+      const idx = rows.findIndex((r) => r.path === row.path)
+      switch (e.key) {
+        case 'ArrowDown':
+          e.preventDefault()
+          if (picked) {
+            // Move the picked member one step DOWN in the full order; it stays
+            // picked so repeated arrows walk it to its destination.
+            moveStep(picked.name, 'down')
+          } else if (idx < rows.length - 1) {
+            setFocusPath(rows[idx + 1].path)
+          }
+          break
+        case 'ArrowUp':
+          e.preventDefault()
+          if (picked) {
+            // Move the picked member one step UP in the full order.
+            moveStep(picked.name, 'up')
+          } else if (idx > 0) {
+            setFocusPath(rows[idx - 1].path)
+          }
+          break
+        case 'ArrowRight':
+          e.preventDefault()
+          if (picked) break
+          if (row.hasChildren && !row.expanded) toggleExpand(row.path)
+          else if (row.expanded && idx < rows.length - 1) setFocusPath(rows[idx + 1].path)
+          break
+        case 'ArrowLeft':
+          e.preventDefault()
+          if (picked) break
+          if (row.hasChildren && row.expanded) toggleExpand(row.path)
+          else {
+            // Step to the parent row (the nearest earlier row at a lower depth).
+            for (let j = idx - 1; j >= 0; j--) {
+              if (rows[j].depth < row.depth) {
+                setFocusPath(rows[j].path)
+                break
+              }
+            }
+          }
+          break
+        case 'Home':
+          e.preventDefault()
+          if (!picked && rows.length > 0) setFocusPath(rows[0].path)
+          break
+        case 'End':
+          e.preventDefault()
+          if (!picked && rows.length > 0) setFocusPath(rows[rows.length - 1].path)
+          break
+        case ' ':
+        case 'Enter':
+          e.preventDefault()
+          // Toggle pick-up: Space/Enter grabs the focused member; pressing it again
+          // drops it in place (releases). Arrows move a picked member one step.
+          setPicked((p) => (p && p.name === row.name ? null : { name: row.name, parent: row.parent }))
+          break
+        case 'Escape':
+          if (picked) {
+            e.preventDefault()
+            setPicked(null)
+          }
+          break
+        case 'ContextMenu':
+          e.preventDefault()
+          setMenuPath(row.path)
+          break
+        case 'F10':
+          if (e.shiftKey) {
+            e.preventDefault()
+            setMenuPath(row.path)
+          }
+          break
+        default:
+          break
+      }
+    },
+    [rows, picked, moveStep],
+  )
 
   // ---- context-menu actions ----
 
@@ -337,6 +583,7 @@ export default function DimensionEditor({
     [confirm, kindOf, runEdit],
   )
 
+  // Detach: remove the member from EVERY parent (it becomes a root), keeping it.
   const detach = useCallback(
     (name: string) => {
       setMenuPath(null)
@@ -345,7 +592,33 @@ export default function DimensionEditor({
     [runEdit],
   )
 
-  const remove = useCallback(
+  // Remove the member from ONE consolidation (the row's current parent), keeping
+  // it under any other parents. Distinct from Detach (all parents) and Delete.
+  const removeFromConsolidation = useCallback(
+    (parent: string | null, name: string) => {
+      setMenuPath(null)
+      void removeChild(parent, name)
+    },
+    [removeChild],
+  )
+
+  // Add the member to a chosen consolidation from the row menu's submenu (the
+  // no-drag equivalent of dropping into the middle zone), additive so it keeps
+  // its other parents.
+  const addToConsolidation = useCallback(
+    (parent: string, name: string) => {
+      setMenuPath(null)
+      void addChild(parent, name)
+    },
+    [addChild],
+  )
+
+  // Delete the member from the WHOLE dimension: removes it from every consolidation
+  // it belongs to AND deletes all data stored on it (the `delete` op). Destructive
+  // and irreversible here, so it confirms with an explicit "all data will be lost"
+  // warning. A root member's Delete comes straight here (it has no parents to choose
+  // between); a child member reaches it as the "from dimension" branch.
+  const deleteFromDimension = useCallback(
     async (name: string) => {
       setMenuPath(null)
       if ((childCountOf.get(name) ?? 0) > 0) {
@@ -355,9 +628,9 @@ export default function DimensionEditor({
         return
       }
       const ok = await confirm({
-        title: `Delete "${name}"`,
-        body: `Delete the member "${name}"? Any values stored on it are removed. This cannot be undone here.`,
-        confirmLabel: 'Delete',
+        title: `Delete "${name}" from the dimension`,
+        body: `This removes "${name}" from every consolidation it belongs to and permanently deletes all data stored on it. This cannot be undone here.`,
+        confirmLabel: 'Delete from dimension',
         danger: true,
       })
       if (!ok) return
@@ -365,6 +638,27 @@ export default function DimensionEditor({
     },
     [confirm, childCountOf, runEdit],
   )
+
+  // Open the "remove from consolidations" popup for a child member: the user picks
+  // which of its parent consolidations to unlink it from. Non-destructive (the
+  // member and its data stay), so no confirm here, the popup's button is the commit.
+  const openRemoveFrom = useCallback((name: string) => {
+    setMenuPath(null)
+    setRemoveFrom({ name, checked: new Set() })
+  }, [])
+
+  // Apply the popup: unlink the member from each checked consolidation (one
+  // `remove_child` edge per parent), keeping the member, its data, and any parents
+  // left unchecked. Sequential so a mid-run rejection stops and surfaces.
+  const confirmRemoveFrom = useCallback(async () => {
+    if (!removeFrom) return
+    const { name, checked } = removeFrom
+    for (const parent of checked) {
+      const ok = await runEdit({ op: 'remove_child', parent, child: name })
+      if (!ok) return
+    }
+    setRemoveFrom(null)
+  }, [removeFrom, runEdit])
 
   if (!dimension) {
     return error ? (
@@ -381,11 +675,13 @@ export default function DimensionEditor({
   }
 
   const count = dimension.elements.length
+  // The parent consolidations offered as checkboxes in the "remove from" popup.
+  const removeParents = removeFrom ? parentsOf.get(removeFrom.name) ?? [] : []
 
   return (
     <Card
       title={dimension.name}
-      subtitle="Drag a member onto another to place it before, after, or inside. Right-click a member for more actions."
+      subtitle="Drag a member onto another to place it before, after, or inside; drag it out to remove it from that consolidation. Or focus a member and press Space to pick it up, then use the arrow keys. Right-click a member for more actions."
     >
       <div className="dimedit">
         {error ? (
@@ -396,6 +692,20 @@ export default function DimensionEditor({
         {notice ? (
           <p className="banner banner--ok" role="status">
             {notice}
+          </p>
+        ) : null}
+        {/* Short keyboard instructions, referenced by every draggable row via
+            aria-describedby so a screen reader announces the no-drag gesture. */}
+        <p id="dimedit-dnd-help" className="sr-only">
+          Press Space to pick this member up, then Arrow Up or Arrow Down to move it
+          one position; press Space again or Escape to drop it. Use the actions menu
+          to add it to a consolidation, remove it from one, detach, convert, or
+          delete it.
+        </p>
+        {picked ? (
+          <p className="banner" role="status">
+            Picked up “{picked.name}”. Use Arrow Up or Arrow Down to move it one
+            position; Space drops it, Escape cancels.
           </p>
         ) : null}
 
@@ -418,59 +728,68 @@ export default function DimensionEditor({
         </div>
 
         <ul
+          ref={treeRef}
           className={`dimedit__tree${rootOver ? ' is-rootover' : ''}`}
           role="tree"
           aria-label={`Members of ${dimension.name}`}
           aria-busy={busy || undefined}
           onDragOver={(e) => {
-            // Dropping in the list's own (non-row) area detaches to a root.
-            if (dragName && e.target === e.currentTarget) {
+            // Dragging into the list's own (non-row) area is the "out of a
+            // consolidation" target: remove the member from the parent it came
+            // from. A root member dragged here is a no-op (no parent to remove).
+            if (drag && e.target === e.currentTarget) {
               e.preventDefault()
               setRootOver(true)
               setOver(null)
+              clearHoverExpand()
             }
           }}
           onDragLeave={(e) => {
             if (e.target === e.currentTarget) setRootOver(false)
           }}
           onDrop={(e) => {
-            if (dragName && e.target === e.currentTarget) {
+            if (drag && e.target === e.currentTarget) {
               e.preventDefault()
-              detach(dragName)
+              // Remove from the one consolidation it was dragged out of.
+              removeFromConsolidation(drag.parent, drag.name)
             }
-            setRootOver(false)
-            setOver(null)
-            setDragName(null)
+            endDrag()
           }}
         >
           {rows.map((r) => {
             const isOver = over?.path === r.path
             const zone = isOver ? over?.zone : undefined
+            const isPicked = picked?.name === r.name
             return (
               <li
                 key={r.path}
                 role="treeitem"
                 aria-level={r.depth + 1}
                 aria-expanded={r.hasChildren ? r.expanded : undefined}
-                className={`dimedit__row${dragName === r.name ? ' is-dragging' : ''}${
+                aria-roledescription="draggable member"
+                aria-describedby="dimedit-dnd-help"
+                aria-grabbed={isPicked || undefined}
+                data-row-path={r.path}
+                tabIndex={focusPath === r.path ? 0 : -1}
+                className={`dimedit__row${drag?.name === r.name ? ' is-dragging' : ''}${
                   isOver ? ` is-over is-over--${zone}` : ''
-                }`}
+                }${isPicked ? ' is-picked' : ''}`}
                 draggable={!busy}
+                onFocus={() => setFocusPath(r.path)}
+                onKeyDown={(e) => onRowKeyDown(e, r)}
                 onDragStart={(e) => {
-                  setDragName(r.name)
+                  setDrag({ name: r.name, parent: r.parent })
+                  setPicked(null)
                   e.dataTransfer.effectAllowed = 'move'
                 }}
-                onDragEnd={() => {
-                  setDragName(null)
-                  setOver(null)
-                  setRootOver(false)
-                }}
+                onDragEnd={endDrag}
                 onDragOver={(e) => {
-                  if (!dragName || dragName === r.name) return
+                  if (!drag || drag.name === r.name) return
                   e.preventDefault()
                   e.stopPropagation()
                   setRootOver(false)
                   const z = zoneFor(e)
+                  scheduleHoverExpand(r)
                   setOver((cur) =>
                     cur?.path === r.path && cur.zone === z ? cur : { path: r.path, zone: z },
                   )
@@ -478,9 +797,8 @@ export default function DimensionEditor({
                 onDrop={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
-                  if (dragName && over) doDrop(dragName, r.name, over.zone)
-                  setDragName(null)
-                  setOver(null)
+                  if (drag && over) doDrop(drag.name, r.name, over.zone)
+                  endDrag()
                 }}
                 onContextMenu={(e) => {
                   e.preventDefault()
@@ -495,9 +813,13 @@ export default function DimensionEditor({
                     <button
                       type="button"
                       className="dimedit__twisty"
+                      tabIndex={-1}
                       aria-label={r.expanded ? `Collapse ${r.name}` : `Expand ${r.name}`}
                       aria-expanded={r.expanded}
-                      onClick={() => toggleExpand(r.path)}
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        toggleExpand(r.path)
+                      }}
                     >
                       {r.expanded ? '▾' : '▸'}
                     </button>
@@ -515,14 +837,22 @@ export default function DimensionEditor({
                   <RowMenu
                     name={r.name}
                     kind={r.kind}
+                    isRoot={r.parent === null}
+                    currentParent={r.parent}
+                    consolidations={consolidations}
                     open={menuPath === r.path}
                     onOpenChange={(o) => setMenuPath(o ? r.path : null)}
+                    onMoveUp={() => moveStep(r.name, 'up')}
+                    onMoveDown={() => moveStep(r.name, 'down')}
                     onAddBefore={() => startAdd('before', r.name)}
                     onAddAfter={() => startAdd('after', r.name)}
                     onAddChild={() => startAdd('as-child', r.name)}
+                    onAddToConsolidation={(parent) => addToConsolidation(parent, r.name)}
                     onConvert={(k) => void convert(r.name, k)}
+                    onRemoveFromConsolidation={() => removeFromConsolidation(r.parent, r.name)}
                     onDetach={() => detach(r.name)}
-                    onDelete={() => void remove(r.name)}
+                    onRemoveFrom={() => openRemoveFrom(r.name)}
+                    onDeleteFromDimension={() => void deleteFromDimension(r.name)}
                   />
                 </div>
               </li>
@@ -579,9 +909,87 @@ export default function DimensionEditor({
             </button>
           </div>
         ) : null}
+
+        {/* "Remove from consolidations" popup: pick which parent consolidations to
+            unlink a child member from. Non-destructive (keeps the member + data). */}
+        <Dialog
+          open={removeFrom !== null}
+          onOpenChange={(o) => {
+            if (!o) setRemoveFrom(null)
+          }}
+          size="sm"
+          title={removeFrom ? `Remove “${removeFrom.name}” from consolidations` : ''}
+          description="Removing the member from a consolidation keeps the member and all its data; it only stops rolling up into that consolidation. Choose which to remove it from."
+          footer={
+            <>
+              <button
+                type="button"
+                className="dimedit__btn"
+                onClick={() => setRemoveFrom(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="dimedit__btn dimedit__btn--primary"
+                disabled={busy || !removeFrom || removeFrom.checked.size === 0}
+                onClick={() => void confirmRemoveFrom()}
+              >
+                {removeFrom && removeFrom.checked.size > 0
+                  ? `Remove from ${removeFrom.checked.size} consolidation${
+                      removeFrom.checked.size === 1 ? '' : 's'
+                    }`
+                  : 'Remove'}
+              </button>
+            </>
+          }
+        >
+          <ul
+            className="dimedit__removelist"
+            role="group"
+            aria-label="Consolidations to remove from"
+          >
+            {removeParents.map((parent) => {
+              const id = `dimedit-rm-${parent}`
+              const isChecked = removeFrom?.checked.has(parent) ?? false
+              return (
+                <li key={parent} className="dimedit__removeitem">
+                  <label htmlFor={id} className="dimedit__removelabel">
+                    <input
+                      id={id}
+                      type="checkbox"
+                      checked={isChecked}
+                      onChange={(e) =>
+                        setRemoveFrom((cur) => {
+                          if (!cur) return cur
+                          const checked = new Set(cur.checked)
+                          if (e.target.checked) checked.add(parent)
+                          else checked.delete(parent)
+                          return { ...cur, checked }
+                        })
+                      }
+                    />
+                    <span>{parent}</span>
+                  </label>
+                </li>
+              )
+            })}
+            {removeParents.length === 0 ? (
+              <li className="muted">This member is not in any consolidation.</li>
+            ) : null}
+          </ul>
+        </Dialog>
       </div>
     </Card>
   )
+}
+
+/** Escape a row path for use in a `[data-row-path="..."]` attribute selector
+ * (paths can contain `/` and arbitrary member names). Prefer the platform
+ * `CSS.escape` and fall back to escaping the quote/backslash chars. */
+function cssEscapePath(path: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(path)
+  return path.replace(/["\\]/g, '\\$&')
 }
 
 // ---- per-row context / actions menu ----
@@ -591,31 +999,51 @@ export default function DimensionEditor({
  * keyboard-reachable "..." trigger. Right-clicking the row opens the same menu
  * (the editor sets `open`), so every structural action has both a pointer and a
  * keyboard/no-drag path (ADR-0036). The convert items are disabled for the
- * current kind so the menu reads as a clear state toggle.
+ * current kind so the menu reads as a clear state toggle; "Remove from this
+ * consolidation" is disabled for a top-level root (it has no parent edge).
  */
 function RowMenu({
   name,
   kind,
+  isRoot,
+  currentParent,
+  consolidations,
   open,
   onOpenChange,
+  onMoveUp,
+  onMoveDown,
   onAddBefore,
   onAddAfter,
   onAddChild,
+  onAddToConsolidation,
   onConvert,
+  onRemoveFromConsolidation,
   onDetach,
-  onDelete,
+  onRemoveFrom,
+  onDeleteFromDimension,
 }: {
   name: string
   kind: ElementKind
+  isRoot: boolean
+  currentParent: string | null
+  consolidations: string[]
   open: boolean
   onOpenChange: (open: boolean) => void
+  onMoveUp: () => void
+  onMoveDown: () => void
   onAddBefore: () => void
   onAddAfter: () => void
   onAddChild: () => void
+  onAddToConsolidation: (parent: string) => void
   onConvert: (kind: ElementKind) => void
+  onRemoveFromConsolidation: () => void
   onDetach: () => void
-  onDelete: () => void
+  onRemoveFrom: () => void
+  onDeleteFromDimension: () => void
 }) {
+  // Consolidations this member could be added to (every consolidation except
+  // itself and the one it already sits under on this row).
+  const targets = consolidations.filter((c) => c !== name && c !== currentParent)
   return (
     <DM.Root open={open} onOpenChange={onOpenChange}>
       <DM.Trigger asChild>
@@ -623,13 +1051,22 @@ function RowMenu({
           type="button"
           className="dimedit__actions"
           aria-label={`Actions for ${name}`}
+          tabIndex={-1}
           onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
         >
           ⋯
         </button>
       </DM.Trigger>
       <DM.Portal>
         <DM.Content className="menu" align="end" sideOffset={4}>
+          <DM.Item className="menu__item" onSelect={onMoveUp}>
+            Move up
+          </DM.Item>
+          <DM.Item className="menu__item" onSelect={onMoveDown}>
+            Move down
+          </DM.Item>
+          <DM.Separator className="menu__sep" />
           <DM.Item className="menu__item" onSelect={onAddBefore}>
             Add member before
           </DM.Item>
@@ -639,6 +1076,26 @@ function RowMenu({
           <DM.Item className="menu__item" onSelect={onAddChild}>
             Add member as child
           </DM.Item>
+          {targets.length > 0 ? (
+            <DM.Sub>
+              <DM.SubTrigger className="menu__item menu__item--sub">
+                Add to consolidation
+              </DM.SubTrigger>
+              <DM.Portal>
+                <DM.SubContent className="menu" sideOffset={2} alignOffset={-4}>
+                  {targets.map((parent) => (
+                    <DM.Item
+                      key={parent}
+                      className="menu__item"
+                      onSelect={() => onAddToConsolidation(parent)}
+                    >
+                      {parent}
+                    </DM.Item>
+                  ))}
+                </DM.SubContent>
+              </DM.Portal>
+            </DM.Sub>
+          ) : null}
           <DM.Separator className="menu__sep" />
           <DM.Item
             className="menu__item"
@@ -662,12 +1119,49 @@ function RowMenu({
             Convert to Consolidation
           </DM.Item>
           <DM.Separator className="menu__sep" />
+          <DM.Item
+            className="menu__item"
+            disabled={isRoot}
+            onSelect={onRemoveFromConsolidation}
+          >
+            {isRoot ? 'Remove from this consolidation' : `Remove from "${currentParent}"`}
+          </DM.Item>
           <DM.Item className="menu__item" onSelect={onDetach}>
             Detach to top level
           </DM.Item>
-          <DM.Item className="menu__item menu__item--danger" onSelect={onDelete}>
-            Delete
-          </DM.Item>
+          <DM.Separator className="menu__sep" />
+          {isRoot ? (
+            // A root has no parents to choose between, so Delete goes straight to
+            // the destructive "from the whole dimension" path (user direction).
+            <DM.Item
+              className="menu__item menu__item--danger"
+              onSelect={onDeleteFromDimension}
+            >
+              Delete from dimension
+            </DM.Item>
+          ) : (
+            // A child can be removed from a consolidation (kept, with its data) or
+            // deleted from the dimension entirely (destructive). Offer the choice.
+            <DM.Sub>
+              <DM.SubTrigger className="menu__item menu__item--sub menu__item--danger">
+                Delete…
+              </DM.SubTrigger>
+              <DM.Portal>
+                <DM.SubContent className="menu" sideOffset={2} alignOffset={-4}>
+                  <DM.Item className="menu__item" onSelect={onRemoveFrom}>
+                    Remove from consolidations…
+                  </DM.Item>
+                  <DM.Separator className="menu__sep" />
+                  <DM.Item
+                    className="menu__item menu__item--danger"
+                    onSelect={onDeleteFromDimension}
+                  >
+                    Delete from dimension
+                  </DM.Item>
+                </DM.SubContent>
+              </DM.Portal>
+            </DM.Sub>
+          )}
         </DM.Content>
       </DM.Portal>
     </DM.Root>

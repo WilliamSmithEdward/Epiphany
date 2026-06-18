@@ -1061,11 +1061,15 @@ export interface InsertPosition {
  * `reparent` with `new_parent: null` detaches a member to a root. `add_child`
  * adds a member to a consolidation additively, keeping its existing parents (a
  * member may roll up to multiple consolidations); unlike `reparent` it never
- * detaches the child from any other consolidation. */
+ * detaches the child from any other consolidation. `remove_child` removes just
+ * the one `parent` -> `child` edge, keeping the member, its data, and its other
+ * parents (idempotent when the edge is absent); unlike `reparent: null` it does
+ * not detach every parent, and unlike `delete` it keeps the member. */
 export type DimensionEdit =
   | { op: 'reorder'; new_order: string[] }
   | { op: 'reparent'; child: string; new_parent: string | null; weight?: number }
   | { op: 'add_child'; parent: string; child: string; weight?: number }
+  | { op: 'remove_child'; parent: string; child: string }
   | { op: 'set_kind'; element: string; kind: ElementKind }
   | { op: 'delete'; element: string }
   | { op: 'insert'; name: string; kind: ElementKind; position: InsertPosition }

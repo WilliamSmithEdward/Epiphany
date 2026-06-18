@@ -232,6 +232,24 @@ impl SharedDimension {
                     next.add_child(parent_idx, child_idx, *weight)?;
                 }
             }
+            DimensionEdit::RemoveChild { parent, child } => {
+                let parent_idx =
+                    next.index_of(parent)
+                        .ok_or_else(|| ModelError::ElementNotFound {
+                            dimension: next.name().to_string(),
+                            element: parent.clone(),
+                        })?;
+                let child_idx =
+                    next.index_of(child)
+                        .ok_or_else(|| ModelError::ElementNotFound {
+                            dimension: next.name().to_string(),
+                            element: child.clone(),
+                        })?;
+                // Edge-only on the cell-less registry copy: drop just the single
+                // parent -> child edge (idempotent when absent), keeping the child
+                // and its other parents. The per-cube fan-out mirrors this.
+                next.remove_child(parent_idx, child_idx)?;
+            }
             DimensionEdit::SetKind { element, kind } => {
                 let element_idx =
                     next.index_of(element)
