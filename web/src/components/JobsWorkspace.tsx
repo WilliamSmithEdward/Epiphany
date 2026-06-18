@@ -61,6 +61,7 @@ export default function JobsWorkspace({
   initialJob,
   autoNew,
   navSignal,
+  onDirtyChange,
 }: {
   cube: string
   reloadSignal: number
@@ -71,11 +72,16 @@ export default function JobsWorkspace({
   /** Bumped by the navigator to re-apply initialJob/autoNew when the cube is
    * unchanged (e.g. re-clicking the same schedule). */
   navSignal?: number
+  /** Reports unsaved-edit state up so the navigator can guard against silently
+   * discarding an in-progress schedule when the user clicks away in the tree. */
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const [flows, setFlows] = useState<FlowDto[]>([])
   const [runs, setRuns] = useState<RunDto[]>([])
   const [selected, setSelected] = useState<string | null>(null)
   const [draft, setDraft] = useState({ ...BLANK })
+  // The last loaded/saved draft, so we can tell whether the form is dirty.
+  const [savedDraft, setSavedDraft] = useState({ ...BLANK })
   const [stepPick, setStepPick] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -99,6 +105,7 @@ export default function JobsWorkspace({
     if (autoNew) {
       setSelected(null)
       setDraft({ ...BLANK })
+      setSavedDraft({ ...BLANK })
       setStepPick('')
       setError(null)
       return
@@ -111,8 +118,10 @@ export default function JobsWorkspace({
         const job = js.find((j) => j.name === initialJob)
         if (job) {
           const { count, unit } = splitInterval(job.every_millis)
+          const loaded = { name: job.name, steps: [...job.steps], count, unit, enabled: job.enabled }
           setSelected(job.name)
-          setDraft({ name: job.name, steps: [...job.steps], count, unit, enabled: job.enabled })
+          setDraft(loaded)
+          setSavedDraft({ ...loaded, steps: [...loaded.steps] })
           setStepPick('')
           setError(null)
         }
@@ -122,6 +131,21 @@ export default function JobsWorkspace({
       live = false
     }
   }, [cube, initialJob, autoNew, navSignal])
+
+  // The form is dirty when any edited field diverges from the loaded/saved draft.
+  const dirty =
+    draft.name !== savedDraft.name ||
+    draft.count !== savedDraft.count ||
+    draft.unit !== savedDraft.unit ||
+    draft.enabled !== savedDraft.enabled ||
+    draft.steps.join('\n') !== savedDraft.steps.join('\n')
+
+  // Report dirtiness up so the navigator can confirm before discarding edits;
+  // clear it on unmount so a stale "dirty" never blocks the next navigation.
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+    return () => onDirtyChange?.(false)
+  }, [dirty, onDirtyChange])
 
   const flowOptions = useMemo(
     () => flows.map((f) => ({ value: f.name, label: f.name })),
@@ -172,6 +196,8 @@ export default function JobsWorkspace({
         enabled: draft.enabled,
       })
       setSelected(name)
+      // The saved draft becomes the new clean baseline.
+      setSavedDraft({ name: draft.name, steps: [...draft.steps], count: draft.count, unit: draft.unit, enabled: draft.enabled })
       load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save the schedule')

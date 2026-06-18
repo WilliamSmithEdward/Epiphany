@@ -45,6 +45,7 @@ export default function FlowsWorkspace({
   initialFlow,
   autoNew,
   navSignal,
+  onDirtyChange,
 }: {
   cube: string
   reloadSignal: number
@@ -56,11 +57,17 @@ export default function FlowsWorkspace({
   /** Bumped by the navigator to re-apply initialFlow/autoNew even when the
    * cube is unchanged (e.g. clicking the same flow twice). */
   navSignal?: number
+  /** Reports unsaved-edit state up so the navigator can guard against silently
+   * discarding flow source when the user clicks away in the tree. */
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const [detail, setDetail] = useState<CubeDetail | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [name, setName] = useState('')
   const [source, setSource] = useState(STARTER)
+  // The last loaded/saved name+source, so we can tell whether the form is dirty.
+  const [savedName, setSavedName] = useState('')
+  const [savedSource, setSavedSource] = useState(STARTER)
   const [preview, setPreview] = useState<FlowPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -82,6 +89,8 @@ export default function FlowsWorkspace({
       setSelected(null)
       setName('')
       setSource(STARTER)
+      setSavedName('')
+      setSavedSource(STARTER)
       setError(null)
       return
     }
@@ -95,6 +104,8 @@ export default function FlowsWorkspace({
           setSelected(f.name)
           setName(f.name)
           setSource(f.source)
+          setSavedName(f.name)
+          setSavedSource(f.source)
           setError(null)
         } else {
           // The requested flow is gone (e.g. deleted in another tab). Don't
@@ -102,6 +113,8 @@ export default function FlowsWorkspace({
           setSelected(null)
           setName('')
           setSource(STARTER)
+          setSavedName('')
+          setSavedSource(STARTER)
           setError(`Flow "${initialFlow}" was not found; it may have been deleted.`)
         }
       })
@@ -129,6 +142,15 @@ export default function FlowsWorkspace({
     return () => clearTimeout(handle)
   }, [cube, source])
 
+  const dirty = name !== savedName || source !== savedSource
+
+  // Report dirtiness up so the navigator can confirm before discarding edits;
+  // clear it on unmount so a stale "dirty" never blocks the next navigation.
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+    return () => onDirtyChange?.(false)
+  }, [dirty, onDirtyChange])
+
   async function save() {
     if (name.trim() === '') {
       setError('Please name the flow.')
@@ -139,6 +161,9 @@ export default function FlowsWorkspace({
     try {
       await putFlow(cube, name.trim(), source)
       setSelected(name.trim())
+      // The saved name+source become the new clean baseline.
+      setSavedName(name.trim())
+      setSavedSource(source)
       load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save the flow')

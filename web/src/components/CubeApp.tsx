@@ -857,6 +857,7 @@ export default function CubeApp({
                   initialView={activeTab.selection.kind === 'view' ? activeTab.selection.view : activeTab.nav.view}
                   autoNew={activeTab.nav.autoNew}
                   navSignal={activeTab.nav.signal}
+                  onDirtyChange={setPaneDirty}
                 />
               ) : activeTab.selection.kind === 'cube-rules' && cube ? (
                 <RulesWorkspace cube={cube} reloadSignal={reload} onDirtyChange={setPaneDirty} />
@@ -868,6 +869,7 @@ export default function CubeApp({
                   initialFlow={activeTab.selection.flow || activeTab.nav.flow}
                   autoNew={activeTab.nav.autoNew}
                   navSignal={activeTab.nav.signal}
+                  onDirtyChange={setPaneDirty}
                 />
               ) : activeTab.selection.kind === 'schedule' && cube ? (
                 <JobsWorkspace
@@ -876,6 +878,7 @@ export default function CubeApp({
                   initialJob={activeTab.selection.job || activeTab.nav.job}
                   autoNew={activeTab.nav.autoNew}
                   navSignal={activeTab.nav.signal}
+                  onDirtyChange={setPaneDirty}
                 />
               ) : null}
             </main>

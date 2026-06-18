@@ -30,6 +30,7 @@ export default function ViewWorkspace({
   initialView,
   autoNew,
   navSignal,
+  onDirtyChange,
 }: {
   cube: string
   reloadSignal: number
@@ -40,6 +41,9 @@ export default function ViewWorkspace({
   autoNew?: boolean
   /** Bumped by the navigator to re-open initialView when the cube is unchanged. */
   navSignal?: number
+  /** Reports unsaved-edit state up so the navigator can guard against silently
+   * discarding an in-progress view when the user clicks away in the tree. */
+  onDirtyChange?: (dirty: boolean) => void
 }) {
   const [detail, setDetail] = useState<CubeDetail | null>(null)
   const [subsetsByDim, setSubsetsByDim] = useState<Record<string, SubsetDto[]>>({})
@@ -54,6 +58,20 @@ export default function ViewWorkspace({
   // The name of the saved view currently open (so re-saving updates it in place
   // rather than failing on a duplicate name); null for an unsaved draft.
   const [openedName, setOpenedName] = useState<string | null>(null)
+  // Whether the builder has unsaved edits. The view is assembled from a config
+  // object that is also rewritten programmatically when a view is opened or the
+  // cube loads, so (unlike the rules/flow text editors) we track an explicit
+  // "touched since last clean" flag rather than diffing against a baseline: it
+  // is set on every user edit and cleared at each clean point (load, open, new,
+  // save). Running a view does not count as an edit (it leaves the def alone).
+  const [dirty, setDirty] = useState(false)
+
+  // Report dirtiness up so the navigator can confirm before discarding edits;
+  // clear it on unmount so a stale "dirty" never blocks the next navigation.
+  useEffect(() => {
+    onDirtyChange?.(dirty)
+    return () => onDirtyChange?.(false)
+  }, [dirty, onDirtyChange])
 
   const loadSubsets = useCallback(
     async (loaded: CubeDetail) => {
@@ -88,6 +106,7 @@ export default function ViewWorkspace({
         if (cancelled) return
         setDetail(loaded)
         setConfig(computeDefaults(loaded))
+        setDirty(false)
         await loadSubsets(loaded)
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Failed to load cube'))
@@ -108,6 +127,7 @@ export default function ViewWorkspace({
       setConfig(computeDefaults(detail))
       setOpenedName(null)
       setError(null)
+      setDirty(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cube, autoNew, navSignal, detail])
@@ -153,6 +173,23 @@ export default function ViewWorkspace({
 
   function updateConfig(dim: string, partial: Partial<DimConfig>) {
     setConfig((current) => ({ ...current, [dim]: { ...current[dim], ...partial } }))
+    setDirty(true)
+  }
+
+  // Builder edits (name/visibility/zero-suppression) mark the draft dirty. Kept
+  // separate from the raw setters so opening a view can set them without
+  // tripping the guard.
+  const changeName = (v: string) => {
+    setName(v)
+    setDirty(true)
+  }
+  const changeVisibility = (v: Visibility) => {
+    setVisibility(v)
+    setDirty(true)
+  }
+  const changeSuppress = (v: boolean) => {
+    setSuppress(v)
+    setDirty(true)
   }
 
   async function save() {
@@ -170,6 +207,7 @@ export default function ViewWorkspace({
         setOpenedName(trimmed)
       }
       setError(null)
+      setDirty(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the view')
     } finally {
@@ -189,6 +227,8 @@ export default function ViewWorkspace({
         setSuppress(view.suppress_zeros)
         setCellset(await executeView(cube, viewName))
         setError(null)
+        // Opening a saved view is a clean baseline, not an edit.
+        setDirty(false)
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Could not open the view')
       } finally {
@@ -275,11 +315,11 @@ export default function ViewWorkspace({
               config={config}
               onConfigChange={updateConfig}
               suppress={suppress}
-              onSuppressChange={setSuppress}
+              onSuppressChange={changeSuppress}
               name={name}
-              onNameChange={setName}
+              onNameChange={changeName}
               visibility={visibility}
-              onVisibilityChange={setVisibility}
+              onVisibilityChange={changeVisibility}
               onRun={() => void run()}
               onSave={() => void save()}
               onNewSubset={(dim) => setEditorDim(dim)}
