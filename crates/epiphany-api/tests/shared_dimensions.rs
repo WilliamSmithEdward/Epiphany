@@ -85,6 +85,50 @@ fn build_app(dir: &Path) -> Router {
         AccessLevel::Admin,
     )
     .unwrap();
+    // `reader` can register/grow dimensions and READ any cube, but has no cube
+    // Write -> promote (a structural cube mutation) must reject them (ADR-0031).
+    sec.create_user("reader", "pw", false).unwrap();
+    sec.set_grant(
+        &Subject::User("reader".into()),
+        Scope::Global,
+        ObjectKind::Dimension,
+        AccessLevel::Write,
+    )
+    .unwrap();
+    sec.set_grant(
+        &Subject::User("reader".into()),
+        Scope::Global,
+        ObjectKind::Cube,
+        AccessLevel::Read,
+    )
+    .unwrap();
+    // `restricted` can write any cube and dimensions, BUT is denied element
+    // "Branch" of dimension "Org" in cube "RCube" (the element ACL grants only
+    // modeler), so promoting that cube's dimension must reject them so element
+    // names hidden by an ACL cannot be laundered into the unmasked registry.
+    sec.create_user("restricted", "pw", false).unwrap();
+    sec.set_grant(
+        &Subject::User("restricted".into()),
+        Scope::Global,
+        ObjectKind::Dimension,
+        AccessLevel::Write,
+    )
+    .unwrap();
+    sec.set_grant(
+        &Subject::User("restricted".into()),
+        Scope::Global,
+        ObjectKind::Cube,
+        AccessLevel::Write,
+    )
+    .unwrap();
+    sec.set_element_access(
+        "RCube",
+        "Org",
+        "Branch",
+        &Subject::User("modeler".into()),
+        AccessLevel::Read,
+    )
+    .unwrap();
 
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default()))
@@ -498,6 +542,135 @@ async fn promote_an_embedded_dimension_into_the_global_registry() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT, "already global");
+}
+
+#[tokio::test]
+async fn promote_authorization_and_error_paths() {
+    // ADR-0031 review hardening: promote rejects unknown cube/dimension (404), a
+    // caller with no Dimension grant (403), a Dimension:Write caller who only has
+    // Cube:Read (403 — promote is a cube mutation), and an element-restricted
+    // caller (403 — promotion must not launder element names hidden by an ACL into
+    // the unmasked global registry).
+    let dir = data_dir("promote-authz");
+    let app = build_app(&dir);
+    let modeler = login(&app, "modeler").await;
+    let ann = login(&app, "ann").await;
+    let reader = login(&app, "reader").await;
+    let restricted = login(&app, "restricted").await;
+
+    let org_cube = |name: &str| {
+        json!({
+            "name": name,
+            "dimensions": [
+                { "name": "Org", "elements": [
+                    { "name": "HQ", "kind": "numeric" },
+                    { "name": "Branch", "kind": "numeric" },
+                    { "name": "AllOrg", "kind": "consolidated" }
+                ], "edges": [
+                    { "parent": "AllOrg", "child": "HQ", "weight": 1 },
+                    { "parent": "AllOrg", "child": "Branch", "weight": 1 }
+                ]},
+                { "name": "Measure", "elements": [{ "name": "Amount", "kind": "numeric" }] }
+            ]
+        })
+    };
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/cubes",
+            &modeler,
+            Some(org_cube("Pcube"))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/cubes",
+            &modeler,
+            Some(org_cube("RCube"))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    // 404: unknown cube / unknown dimension (modeler passes authz, engine 404s).
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/cubes/Nope/dimensions/Org/promote",
+            &modeler,
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/cubes/Pcube/dimensions/Ghost/promote",
+            &modeler,
+            None
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // 403: no Dimension grant at all.
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/cubes/Pcube/dimensions/Org/promote",
+            &ann,
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    // 403: Dimension:Write but only Cube:Read (promote mutates the cube's model).
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/cubes/Pcube/dimensions/Org/promote",
+            &reader,
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    // 403: element-restricted caller (denied "Branch" of RCube/Org).
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/v1/cubes/RCube/dimensions/Org/promote",
+            &restricted,
+            None
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+
+    // None of the rejected attempts created a registry entry.
+    let (_, list) = call(&app, "GET", "/api/v1/dimensions", &modeler, None).await;
+    assert!(
+        list.as_array().unwrap().is_empty(),
+        "rejected promotes left the registry empty"
+    );
 }
 
 #[tokio::test]

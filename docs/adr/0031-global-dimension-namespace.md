@@ -111,7 +111,54 @@ identity-exposure layer over the ADR-0024 registry, not a new storage model.
 - Validation: backend tests assert cube-detail carries `Some(id)` for a
   registry-backed dimension and `None` for an embedded-only one, and that
   promoting an embedded dimension makes cube-detail report its id, lists it in
-  the library, lets another cube reference it, and 409s on a second promote; the
-  web union, routing, and promote flow are verified against the demo model;
-  `cargo fmt`, `clippy`, the Rust suite, and the web typecheck/lint gates stay
-  green.
+  the library, lets another cube reference it, and 409s on a second promote; that
+  promote rejects an unknown cube/dimension (404), a caller with no Dimension
+  grant (403), a Cube:Read-only caller (403), and an element-restricted caller
+  (403); the web union, routing, and promote flow are verified against the demo
+  model; `cargo fmt`, `clippy`, the Rust suite, and the web typecheck/lint gates
+  stay green.
+
+## Known limitations and follow-ups (post-merge adversarial review)
+
+A multi-lens review after this work landed confirmed the points below. The
+genuine defects (promote element-security bypass, promote requiring only
+Cube:Read, the wrong-dimension tab, and the swallow-all-errors union loader) were
+fixed in place. The rest are inherent to the v1 materialized-reference model
+(ADR-0024) and are recorded here rather than papered over:
+
+- **Element security on global dimensions** is per-cube `(cube, dim, element)`,
+  so a registry dimension referenced by N cubes has no single masking context:
+  `GET /dimensions/{id}` returns the full element list to any global
+  `Dimension:Read` holder, even members an element ACL hides from them on a
+  referencing cube. Promotion now denies an element-restricted caller (so it
+  cannot create new exposure), but the standing gap is resolved only by the
+  deferred ADR-0024 Phase 3 re-key to `(DimensionId, element)` with a fail-closed
+  default (a union of the referencing cubes' masks, or a `Dimension:Admin` gate on
+  enumeration). Tracked there.
+- **Attributes are not carried to referencing cubes.** `to_dimension_def` and the
+  grow fan-out move only members and hierarchy, so a cube that references (or is
+  created from) a promoted dimension does not receive its attribute defs/values,
+  and a cube-local attribute edit on a backed dimension is not divergence-guarded.
+  The promote copy says "members and hierarchy" accordingly. Carrying attributes
+  end to end (def + fan-out + reconcile) is an ADR-0024 follow-up.
+- **The global namespace allows duplicate names** (non-merging by design), and
+  backing is resolved by `(cube, name)`. This is safe because a cube cannot hold
+  two dimensions of the same name (so it cannot reference two same-named registry
+  dimensions); two distinct cubes each owning a "Region" are simply two global
+  entries. A future id-on-cube-dimension link would remove the name dependency.
+- **Cube model-as-code export re-localizes a promoted dimension.** A cube file
+  embeds its dimensions inline with no `reference = <id>` marker, so exporting a
+  single cube and re-importing it into another deployment loses the registry
+  linkage (within one data directory the registry index reconciles references on
+  load, so a restart is fine). Recording per-dimension backing in the cube's
+  model-as-code is the follow-up.
+- **Unsaved-edit guard coverage.** Only the rules pane reports dirty state to the
+  tab/navigation discard-guard; the Flows/Views/Schedules editors do not, so a tab
+  switch can drop in-progress input there (the New-Cube wizard is a modal whose
+  focus trap already blocks a background tab click, so it is not exposed). Wiring
+  `onDirtyChange` through the remaining editing workspaces is a follow-up; it
+  predates this work (the guard shipped rules-only with the tree IA).
+- **Explorer Dimensions fan-out.** Listing the union fetches each readable cube's
+  full structure via `getCube` just to read dimension names; a lightweight
+  names+backing endpoint would avoid the N heavy reads. The per-request backing
+  cost was reduced here to a single registry pass.

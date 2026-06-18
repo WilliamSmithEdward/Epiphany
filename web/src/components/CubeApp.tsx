@@ -220,8 +220,10 @@ export default function CubeApp({
   const navigate = useCallback(
     (next: Selection, intent: Omit<NavIntent, 'signal'> = {}) => {
       const id = tabId(next)
-      const go = () => {
-        paneDirty.current = false
+      const go = (clearDirty = true) => {
+        // Reset only when we actually leave the current pane; re-targeting the
+        // active tab keeps its unsaved-edit flag so a later switch still confirms.
+        if (clearDirty) paneDirty.current = false
         setTabs((list) => {
           const existing = list.find((t) => t.id === id)
           if (existing) {
@@ -235,9 +237,14 @@ export default function CubeApp({
         })
         setActiveId(id)
       }
-      // Re-targeting the already-active tab never loses other-pane work, so it
-      // re-applies the intent immediately without a dirty prompt.
-      if (id === activeId || !paneDirty.current) {
+      // Re-targeting the already-active tab re-applies the intent in place and
+      // must NOT clear the dirty flag (the same pane stays mounted with its edits).
+      if (id === activeId) {
+        go(false)
+        return
+      }
+      // Switching to another tab with no unsaved edits proceeds immediately.
+      if (!paneDirty.current) {
         go()
         return
       }
@@ -473,13 +480,18 @@ export default function CubeApp({
           void (async () => {
             const ok = await confirm({
               title: 'Make dimension global',
-              body: `Make "${d}" a global dimension? It stays in ${c} with the same data, and other cubes can then reuse it. Editing it later updates every cube that references it.`,
+              body: `Make "${d}" a global dimension? It stays in ${c} with the same members and hierarchy, and other cubes can then reuse it; editing it later updates every cube that references it.`,
               confirmLabel: 'Make global',
             })
             if (!ok) return
             try {
-              await promoteDimension(c, d)
+              const { id } = await promoteDimension(c, d)
               bumpReload()
+              // The dimension is now a global object: open it as the global
+              // dimension and close the now-orphaned cube-local tab so there is a
+              // single tab pointing at the right (registry) editor.
+              navigate({ kind: 'dimension', id, name: d }, { dimId: id })
+              closeTab(tabId({ kind: 'cube-dimension', cube: c, dim: d }))
             } catch (e) {
               setError(e instanceof Error ? e.message : 'Could not make the dimension global')
             }
@@ -532,7 +544,7 @@ export default function CubeApp({
           return
       }
     },
-    [confirm, navigate, bumpReload, selection, cubes],
+    [confirm, navigate, closeTab, bumpReload, selection, cubes],
   )
 
   useEffect(() => {
@@ -755,22 +767,26 @@ export default function CubeApp({
 
             <main className="content">
               {tabs.length > 0 ? (
-                <div className="objtabs" role="tablist" aria-label="Open objects">
+                // A labelled group of switch-buttons, not an APG tabs widget: each
+                // is independently closable and opens a different object kind, so
+                // role=group with aria-current on the active button is the honest
+                // semantic (no tabpanel/roving-tabindex contract to fulfil).
+                <div className="objtabs" role="group" aria-label="Open objects">
                   {tabs.map((t) => {
                     const segsForTab = crumbs(t.selection, { autoNew: t.nav.autoNew })
                     const label = segsForTab[segsForTab.length - 1]?.label ?? 'Untitled'
+                    // The full breadcrumb path disambiguates tabs whose last
+                    // segment collides (e.g. a flow and a view both named "Budget")
+                    // and recovers text the chip truncates with an ellipsis.
+                    const fullPath = segsForTab.map((s) => s.label).join(' / ')
                     const isActive = t.id === activeId
                     return (
-                      <div
-                        key={t.id}
-                        className={`objtab${isActive ? ' is-active' : ''}`}
-                        aria-current={isActive ? 'page' : undefined}
-                      >
+                      <div key={t.id} className={`objtab${isActive ? ' is-active' : ''}`}>
                         <button
                           type="button"
-                          role="tab"
-                          aria-selected={isActive}
+                          aria-current={isActive ? 'true' : undefined}
                           className="objtab__label"
+                          title={fullPath}
                           onClick={() => navigate(t.selection, {})}
                         >
                           {label}
@@ -778,7 +794,7 @@ export default function CubeApp({
                         <button
                           type="button"
                           className="objtab__close"
-                          aria-label={`Close ${label}`}
+                          aria-label={`Close ${fullPath}`}
                           onClick={() => closeTab(t.id)}
                         >
                           ×
@@ -811,7 +827,14 @@ export default function CubeApp({
               ) : activeTab.selection.kind === 'dimension' ? (
                 <DimensionsWorkspace
                   reloadSignal={reload}
-                  initialDimId={activeTab.nav.dimId}
+                  // A plain tree row-click carries no nav intent, so fall back to
+                  // the tab's own selection id (id -1 is the new/placeholder draft,
+                  // which has no dimension to focus) -- otherwise the pane would
+                  // show the workspace's default dimension, not the clicked one.
+                  initialDimId={
+                    activeTab.nav.dimId ??
+                    (activeTab.selection.id >= 0 ? activeTab.selection.id : undefined)
+                  }
                   autoNew={activeTab.nav.autoNew}
                   navSignal={activeTab.nav.signal}
                 />

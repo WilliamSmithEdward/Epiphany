@@ -70,12 +70,9 @@ pub(crate) async fn get_cube(
     let mask = element_mask(&state, &auth, &snap);
     // The global dimension id (ADR-0024/0031) when a dimension is registry-backed,
     // so the web can present one global dimension list and route edits correctly.
-    let backing = |dim_name: &str| {
-        state
-            .engine
-            .dimension_backing(&cube, dim_name)
-            .map(|id| id.0)
-    };
+    // Resolved in one registry pass, then a cheap per-dimension map lookup.
+    let backings = state.engine.dimension_backings(&cube);
+    let backing = |dim_name: &str| backings.get(dim_name).map(|id| id.0);
     Ok(Json(cube_detail(snap.cube(), mask.as_ref(), backing)))
 }
 

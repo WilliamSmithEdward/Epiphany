@@ -18,12 +18,12 @@ use epiphany_engine::{DimensionError, DimensionId, PromoteError};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_cube_access, require_kind_access};
+use crate::authz::{audit, deny_if_element_restricted, require_cube_access, require_kind_access};
 use crate::model_routes::{
     build_dimension_def, parse_element_kind, validate_name, ElementMemberDto, LocalEdgeDto,
 };
 use crate::resolve::kind_str;
-use crate::routes::map_batch_error;
+use crate::routes::{map_batch_error, snapshot};
 use crate::{ApiError, AppState};
 
 // ---- request bodies ----
@@ -368,7 +368,10 @@ pub(crate) async fn delete_dimension(
 /// embedded dimension into the global registry (ADR-0031 Phase 1), so it can be
 /// referenced by other cubes. The cube keeps its own data unchanged; only the
 /// dimension's identity becomes global. Requires global `Dimension` `Write` (it
-/// creates a global dimension) and `Read` on the cube. A dimension that is
+/// creates a global dimension) and `Write` on the cube (it is a structural
+/// mutation of the cube's dimension governance, not a read). An element-restricted
+/// caller is denied: promotion would otherwise launder element names hidden from
+/// them by element ACLs into the unmasked global namespace. A dimension that is
 /// already registry-backed for the cube is a 409.
 pub(crate) async fn promote_dimension(
     auth: AuthPrincipal,
@@ -382,7 +385,11 @@ pub(crate) async fn promote_dimension(
         None,
         AccessLevel::Write,
     )?;
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    // A caller denied any member of this cube must not promote its dimension into
+    // the (unmasked) global registry, where get_dimension would expose every
+    // element name. Mirrors the rule/flow/feeder whole-cube gates.
+    deny_if_element_restricted(&state, &auth, &snapshot(&state, &cube)?)?;
     let id = state
         .engine
         .promote_cube_dimension(&cube, &dim)

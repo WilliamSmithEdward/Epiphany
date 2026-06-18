@@ -183,6 +183,31 @@ impl DimensionRegistry {
         self.refs.get(&id).into_iter().flatten().cloned().collect()
     }
 
+    /// Whether `cube` references shared dimension `id`. Zero-allocation membership
+    /// test (vs. cloning the whole referrer set with [`referencing`](Self::referencing)).
+    pub fn is_referenced_by(&self, id: DimensionId, cube: &str) -> bool {
+        self.refs.get(&id).is_some_and(|s| s.contains(cube))
+    }
+
+    /// The id of the registry dimension named `name` that `cube` references, if
+    /// any. A cube has at most one dimension of a given name, so this is unique.
+    /// Single registry pass, no per-candidate allocation.
+    pub fn backing_of(&self, cube: &str, name: &str) -> Option<DimensionId> {
+        self.by_id.values().find_map(|s| {
+            (s.dimension.name() == name && self.is_referenced_by(s.id, cube)).then_some(s.id)
+        })
+    }
+
+    /// All of `cube`'s registry-backed dimensions as name -> id, in a single pass
+    /// (vs. one full-registry scan per dimension). Used to annotate cube detail.
+    pub fn backings_for(&self, cube: &str) -> BTreeMap<String, DimensionId> {
+        self.by_id
+            .values()
+            .filter(|s| self.is_referenced_by(s.id, cube))
+            .map(|s| (s.dimension.name().to_string(), s.id))
+            .collect()
+    }
+
     /// All shared dimensions, in id order (for persistence).
     pub fn all(&self) -> Vec<Arc<SharedDimension>> {
         self.by_id.values().cloned().collect()

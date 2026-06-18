@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import {
+  ApiError,
   getCube,
   getDimension,
   listCubes,
@@ -348,12 +349,18 @@ async function dimensionNamespace(): Promise<Node[]> {
   })
 
   const [registry, cubes] = await Promise.all([listDimensions(), listCubes()])
-  // Read each cube's dimensions; tolerate a denied cube (skip it).
+  // Read each cube's dimensions. A cube the caller cannot read (403) is
+  // legitimately skipped so the list never leaks a denied cube; any other failure
+  // (500 / network) is rethrown so the tree shows "Failed to load" rather than
+  // silently dropping that cube's dimensions and implying the list is complete.
   const details = await Promise.all(
     cubes.map((c) =>
       getCube(c.name).then(
         (detail) => ({ cube: c.name, detail }),
-        () => null,
+        (err: unknown) => {
+          if (err instanceof ApiError && err.status === 403) return null
+          throw err
+        },
       ),
     ),
   )

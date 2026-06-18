@@ -631,15 +631,8 @@ impl Engine {
             .clone();
         // Already global for this cube? (a registry dimension of this name that the
         // cube already references). Nothing to promote.
-        {
-            let registry = self.dimensions.load();
-            if let Some(existing) = registry.all().into_iter().find_map(|s| {
-                (s.dimension.name() == dim_name
-                    && registry.referencing(s.id).iter().any(|c| c == cube))
-                .then_some(s.id)
-            }) {
-                return Err(PromoteError::AlreadyGlobal(existing));
-            }
+        if let Some(existing) = self.dimensions.load().backing_of(cube, dim_name) {
+            return Err(PromoteError::AlreadyGlobal(existing));
         }
         // Mint a fresh id, register the copy, and attach the cube as a referrer.
         let id = DimensionId(self.next_dim_id.fetch_add(1, Ordering::SeqCst));
@@ -658,16 +651,14 @@ impl Engine {
     /// edits to a shared dimension (they must go through the library so every
     /// referencing cube stays consistent).
     pub fn dimension_backing(&self, cube: &str, dim_name: &str) -> Option<DimensionId> {
-        let registry = self.dimensions.load();
-        registry.all().into_iter().find_map(|shared| {
-            if shared.dimension.name() == dim_name
-                && registry.referencing(shared.id).iter().any(|c| c == cube)
-            {
-                Some(shared.id)
-            } else {
-                None
-            }
-        })
+        self.dimensions.load().backing_of(cube, dim_name)
+    }
+
+    /// All of `cube`'s registry-backed dimensions as name -> id, resolved in a
+    /// single registry pass (ADR-0031). Lets cube detail annotate every dimension
+    /// with its global id without a per-dimension full-registry scan.
+    pub fn dimension_backings(&self, cube: &str) -> BTreeMap<String, DimensionId> {
+        self.dimensions.load().backings_for(cube)
     }
 
     /// The cube names, in deterministic sorted order.

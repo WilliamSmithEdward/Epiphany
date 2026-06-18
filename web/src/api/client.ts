@@ -90,6 +90,19 @@ export function getActiveSandbox(): string | null {
   return activeSandbox
 }
 
+/** A failed API call, carrying the HTTP status so callers can distinguish e.g.
+ * an authorization denial (403) from a transient server/network failure. A
+ * network error before any response has `status` undefined. */
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status?: number,
+  ) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = {}
   if (token) headers['authorization'] = `Bearer ${token}`
@@ -102,7 +115,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   })
   if (response.status === 401) {
     setToken(null)
-    throw new Error('Your session has expired. Please sign in again.')
+    throw new ApiError('Your session has expired. Please sign in again.', 401)
   }
   if (!response.ok) {
     let message = `Request failed (${response.status})`
@@ -112,7 +125,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       /* keep the default message */
     }
-    throw new Error(message)
+    throw new ApiError(message, response.status)
   }
   // A successful response may carry no body (204, or a 201 Created with no
   // payload). Only parse JSON when a body is actually present, so a bodyless
