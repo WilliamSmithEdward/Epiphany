@@ -8,8 +8,57 @@ matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/release
 
 ## [Unreleased]
 
+## [m8.8] - 2026-06-18
+
+The modeling release: native SQL sources, global multi-cube automation, and full
+dimension structural editing, on top of the connector and spreading work that
+landed after `m8.7`.
+
 ### Added
 
+- **Native SQL data sources** (ADR-0034): a flow can ingest directly from
+  PostgreSQL (tokio-postgres) or MySQL and MariaDB (mysql_async), both pure-Rust
+  over rustls/ring with no native-tls, openssl, or aws-lc-rs. Each driver is
+  behind its own off-by-default build feature and is fenced at runtime by an
+  enable flag (`EPIPHANY_ENABLE_SQL_CONNECTORS`), a host allowlist
+  (`EPIPHANY_SQL_ALLOWED_HOSTS`), a secret referenced by name, and a fixed admin
+  query; `ssl_mode` supports verify-full, require, and disable. SQL Server is
+  deferred (its current Rust driver pins a vulnerable TLS stack that fails the
+  supply-chain gate); reach it through a command connection meanwhile.
+- **Global, multi-cube, code-first automation** (ADR-0035): flows, schedules, and
+  connections moved out of per-cube models into one server-global automation
+  model. A single flow can read and write several cubes and grow several
+  dimensions in one run, owned by none of them. Data sources are UI-driven (a
+  global connection reference or a flow-scoped local connection, addressed in code
+  by bare name or `local.<name>`), while outputs stay code-first. Scheduled runs
+  execute as the flow's owner, fail-closed. Existing per-cube flows, jobs,
+  connections, and flow tests migrate into the global store on first boot.
+- **Dimension structural editing and a cube-agnostic editor** (ADR-0036): a
+  dimension is now fully editable. Reorder, reparent, convert kind, insert,
+  delete, add a member to a consolidation, and remove a member from one
+  consolidation, with every index-changing edit remapping stored cells
+  transactionally (and fanning the same remap out to every referencing cube for a
+  shared dimension). A standalone, hierarchy-only, table-driven, drag-and-drop
+  dimension editor with full keyboard parity (WCAG 2.2 SC 2.5.7): each drag
+  gesture has a row-menu equivalent, and a member is picked up with Space and
+  moved with the arrow keys. Delete is intent-aware: a member that rolls up to one
+  or more consolidations chooses between removing it from selected consolidations
+  (kept, with its data) and deleting it from the dimension (removed everywhere,
+  behind an explicit data-loss confirm); a root member deletes from the dimension
+  directly.
+- **One global dimension namespace** (ADR-0031): a single dimensions list spanning
+  the registry and cube-embedded dimensions, with a promote action to reuse an
+  embedded dimension across cubes, and attributes carried through promotion to
+  every referencing cube.
+- **Scalable member table** (ADR-0032): one shared, virtualized table backs the
+  dimension and set editors, with toggleable attribute columns, wildcard and alias
+  search, sortable columns, a flat or hierarchy view, inline attribute-value
+  editing, per-column filters, relationship set operators (children, descendants,
+  parents, ancestors, siblings, leaves-of), and keep or hide.
+- **Object-explorer overhaul**: an object-centric tree that shows the dimension
+  consolidation hierarchy and a global object search, multiple dimensions per
+  pivot axis with nested headers, an MDX previewer for the cube viewer, a tabbed
+  object workspace, and saved Views and dimension Sets.
 - **HTTP fetch connector and secret store** (ADR-0030): a flow can ingest from an
   HTTP(S) API (CSV or JSON) in addition to a command. The capability is off by
   default and bounded by a host allowlist (`EPIPHANY_ENABLE_HTTP_CONNECTORS`,
@@ -26,8 +75,38 @@ matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/release
   (if any contributing leaf is denied, the whole spread is refused). New
   `POST /api/v1/cubes/{cube}/cells/spread` endpoint and a pivot-grid spread
   control. Spreading into a weighted consolidation is refused in v1.
+- Admin reset of a user to a system-generated temporary password with a forced
+  change at next sign-in, and an unsaved-edit guard across the flow, view, and
+  schedule editors.
 - View-cache counters on the admin Server Overview dashboard (cached views,
   hits, misses, hit rate) via a new `GET /api/v1/overview` endpoint.
+
+### Security
+
+- **Fail-closed element security on global dimension reads** (ADR-0033): reading a
+  global dimension masks its members, edges, and attribute values by the union of
+  the referencing cubes' element ACLs; an unknown principal is denied. Supersedes
+  the deferred per-id re-key with no ACL-format change or migration.
+- The SQL and HTTP connectors are off by default and require an explicit build
+  feature, a runtime enable flag, and a host allowlist; their secrets are
+  referenced by name and never returned, logged, or audited. The supply chain
+  stays clean (`cargo deny --all-features check` is green).
+
+### Changed
+
+- Audience-appropriate copy: admin, developer, and first-run wording scrubbed from
+  the pre-auth and non-admin surfaces, and the operator panels gated to admins.
+- Em dashes removed from the ADRs and the GUI copy (house style).
+
+### Fixed
+
+- Explorer tree: right-click now targets the clicked object's menu, a nested-row
+  click no longer bubbles to ancestor rows (re-selecting a parent and collapsing
+  roots), and an initially-expanded node loads its children on mount.
+- Reparenting a populated leaf into a consolidation no longer leaves an orphan
+  cell that broke snapshot reload.
+- `FlowDto.name` is optional in the request body, so a name-less update no longer
+  returns 422.
 
 ## [m8.7] - 2026-06-15
 
