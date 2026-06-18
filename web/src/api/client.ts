@@ -1046,6 +1046,56 @@ export async function deleteDimension(id: number): Promise<void> {
   return request<void>('DELETE', `/api/v1/dimensions/${id}`)
 }
 
+// ---- structural dimension editing (ADR-0036) ----
+
+/** Where to place a newly inserted member, relative to an existing one (or at
+ * the end). `ref` is required for `before`/`after`. */
+export interface InsertPosition {
+  at: 'end' | 'before' | 'after'
+  ref?: string
+}
+
+/** A single structural edit on a dimension, tagged by `op` (ADR-0036). Each
+ * changes the dimension transactionally and is reflected in a new committed
+ * version. `reorder` carries a full permutation of the current member names;
+ * `reparent` with `new_parent: null` detaches a member to a root. */
+export type DimensionEdit =
+  | { op: 'reorder'; new_order: string[] }
+  | { op: 'reparent'; child: string; new_parent: string | null; weight?: number }
+  | { op: 'set_kind'; element: string; kind: ElementKind }
+  | { op: 'delete'; element: string }
+  | { op: 'insert'; name: string; kind: ElementKind; position: InsertPosition }
+
+/** Apply one structural edit to a cube-embedded dimension (ADR-0036). Resolves
+ * with the new committed version. A 422 carries the rejection reason (e.g. a
+ * non-permutation reorder or a cycle); a 403 means missing Dimension:Write or an
+ * element-security denial. */
+export async function editCubeDimension(
+  cube: string,
+  dim: string,
+  edit: DimensionEdit,
+): Promise<{ version: number }> {
+  return request<{ version: number }>(
+    'POST',
+    `/api/v1/cubes/${encodeURIComponent(cube)}/dimensions/${encodeURIComponent(dim)}/edit`,
+    edit,
+  )
+}
+
+/** Apply one structural edit to a registry (global) dimension (ADR-0036). The
+ * same remap fans out to every referencing cube, so the result names which
+ * cubes were updated (`fanned_out_to`). */
+export async function editDimensionById(
+  id: number,
+  edit: DimensionEdit,
+): Promise<{ version: number; fanned_out_to: string[] }> {
+  return request<{ version: number; fanned_out_to: string[] }>(
+    'POST',
+    `/api/v1/dimensions/${id}/edit`,
+    edit,
+  )
+}
+
 /** Promote a cube's embedded dimension into the global registry (ADR-0031) so
  * other cubes can reference it; resolves with the new global dimension id. The
  * cube keeps its data unchanged. 409 if the dimension is already global. */

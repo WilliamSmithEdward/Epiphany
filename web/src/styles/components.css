@@ -706,41 +706,66 @@
   box-shadow: var(--shadow-sm);
 }
 
-/* Open objects, each an "object tab". A horizontal, scrollable strip above the
-   pane; the active tab is visually lifted to the surface colour. Named distinctly
-   from the Radix .tabs primitive above so the two never collide. */
+/* Open objects, each an "object tab". A horizontal, scrollable tab row above the
+   pane: tabs sit on a shared bottom rule, and the active tab is lifted to the
+   surface colour with an accent underline indicator so the selected object reads
+   clearly. Named distinctly from the Radix .tabs primitive above so the two
+   never collide. */
 .objtabs {
   display: flex;
   gap: var(--space-1);
   align-items: stretch;
   margin-bottom: var(--space-4);
-  padding-bottom: var(--space-2);
   overflow-x: auto;
   border-bottom: 1px solid var(--color-border);
 }
 .objtab {
+  position: relative;
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
   max-width: 16rem;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-2);
+  margin-bottom: -1px; /* overlap the strip's bottom rule so the tab sits on it */
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-top-left-radius: var(--radius-md);
+  border-top-right-radius: var(--radius-md);
+  background: transparent;
   color: var(--color-text-muted);
+  transition:
+    background-color var(--duration) var(--ease),
+    color var(--duration) var(--ease);
+}
+.objtab:hover:not(.is-active) {
+  background: var(--color-surface-2);
+  color: var(--color-text);
 }
 .objtab.is-active {
   background: var(--color-surface);
   color: var(--color-text);
-  box-shadow: var(--shadow-sm);
+  border-color: var(--color-border);
+}
+/* The active-tab underline indicator: an accent bar bridging the bottom rule. */
+.objtab.is-active::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--color-accent);
+  border-bottom-left-radius: 1px;
+  border-bottom-right-radius: 1px;
 }
 .objtab__label {
   flex: 1 1 auto;
   min-width: 0;
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: none;
   background: none;
   color: inherit;
   font: inherit;
+  font-weight: var(--weight-medium);
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -1794,6 +1819,198 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
 .model-weight {
   width: 4.5rem;
 }
+
+/* ---- Dimension editor (ADR-0036): hierarchy-only, drag-and-drop ---- */
+.dimedit {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.dimedit__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.dimedit__addroot {
+  margin-left: auto;
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+.dimedit__addroot:hover:not(:disabled) {
+  background: var(--color-surface-2);
+}
+.dimedit__addroot:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.banner--ok {
+  color: var(--color-accent);
+}
+.dimedit__tree {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-1);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  max-height: 60vh;
+  overflow: auto;
+}
+.dimedit__tree.is-rootover {
+  outline: 2px dashed var(--color-accent);
+  outline-offset: -2px;
+}
+.dimedit__row {
+  position: relative;
+  border-radius: var(--radius-sm);
+}
+.dimedit__row.is-dragging {
+  opacity: 0.45;
+}
+/* Drop indicators: a 2px accent rule at the top (before) or bottom (after) of the
+   target row, or a soft accent fill + ring when dropping AS A CHILD. */
+.dimedit__row.is-over--before::before,
+.dimedit__row.is-over--after::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: var(--color-accent);
+  z-index: 1;
+}
+.dimedit__row.is-over--before::before {
+  top: -1px;
+}
+.dimedit__row.is-over--after::after {
+  bottom: -1px;
+}
+.dimedit__row.is-over--as-child > .dimedit__rowinner {
+  background: var(--color-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
+  border-radius: var(--radius-sm);
+}
+.dimedit__rowinner {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 0.3rem var(--space-2);
+  cursor: grab;
+}
+.dimedit__rowinner:active {
+  cursor: grabbing;
+}
+.dimedit__row:hover > .dimedit__rowinner:not(.is-over) {
+  background: var(--color-surface-2);
+  border-radius: var(--radius-sm);
+}
+.dimedit__twisty {
+  flex: none;
+  width: 1.4rem;
+  height: 1.4rem;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+.dimedit__twisty--leaf {
+  display: inline-block;
+}
+.dimedit__handle {
+  color: var(--color-text-subtle);
+  font-size: var(--text-sm);
+  cursor: grab;
+}
+.dimedit__icon {
+  width: 1.1rem;
+  text-align: center;
+  color: var(--color-text-muted);
+}
+.dimedit__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+}
+.dimedit__kind {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.dimedit__actions {
+  flex: none;
+  width: 1.6rem;
+  height: 1.6rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text-muted);
+  font-size: var(--text-md);
+  line-height: 1;
+  cursor: pointer;
+}
+.dimedit__actions:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text);
+}
+.dimedit__empty {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+}
+.dimedit__add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-2);
+}
+.dimedit__add .input {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+}
+.dimedit__btn {
+  font: inherit;
+  font-size: var(--text-sm);
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.7rem;
+  cursor: pointer;
+}
+.dimedit__btn:hover:not(:disabled) {
+  background: var(--color-surface-3);
+}
+.dimedit__btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.dimedit__btn--primary {
+  color: #fff;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+.dimedit__btn--primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
 .new-cube {
   display: flex;
   flex-direction: column;

@@ -36,6 +36,7 @@ export default function ModelWorkspace({
   reloadSignal,
   isAdmin,
   onCubeCreated,
+  onOpenDimension,
   initialDim,
   autoNew,
   navSignal,
@@ -44,6 +45,11 @@ export default function ModelWorkspace({
   reloadSignal: number
   isAdmin: boolean
   onCubeCreated: (name: string) => void
+  /** Open a dimension in the standalone structural editor (ADR-0036). The
+   * dimension cards call this so the cube model page no longer edits structure
+   * inline; the panel below keeps the append-only member / roll-up / attribute
+   * forms for the focused dimension. */
+  onOpenDimension?: (dim: string) => void
   /** Focus this dimension on mount / when it changes (from the tree). */
   initialDim?: string
   /** Open the New-cube wizard immediately (the tree's "New cube…" action). */
@@ -110,7 +116,7 @@ export default function ModelWorkspace({
               type="button"
               className={d.name === dimName ? 'model-dim is-active' : 'model-dim'}
               aria-pressed={d.name === dimName}
-              onClick={() => setDimName(d.name)}
+              onClick={() => (onOpenDimension ? onOpenDimension(d.name) : setDimName(d.name))}
             >
               <span className="model-dim__name">{d.name}</span>
               <span className="model-dim__count">
@@ -119,10 +125,16 @@ export default function ModelWorkspace({
             </button>
           ))}
         </div>
+        {onOpenDimension ? (
+          <p className="field__msg field__msg--hint">
+            Pick a dimension to open it in the editor, where you can drag members to reorder and
+            reshape the hierarchy.
+          </p>
+        ) : null}
       </Card>
 
       {dimension ? (
-        <DimensionEditor cube={cube} dimension={dimension} onChanged={load} />
+        <DimensionDetailPanel cube={cube} dimension={dimension} onChanged={load} />
       ) : (
         <EmptyState icon="◫" title="No dimension selected">
           Pick a dimension above to view and edit its members.
@@ -142,9 +154,12 @@ export default function ModelWorkspace({
   )
 }
 
-// ---- editor for one existing dimension ----
+// ---- append-only member / roll-up / attribute panel for one dimension ----
+// Structural editing (reorder, reparent, delete, kind change) lives in the
+// standalone DimensionEditor (ADR-0036); this panel keeps the additive member /
+// roll-up forms and the attribute management the structural editor does not own.
 
-function DimensionEditor({
+function DimensionDetailPanel({
   cube,
   dimension,
   onChanged,

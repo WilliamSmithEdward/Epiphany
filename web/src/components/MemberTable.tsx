@@ -44,6 +44,11 @@ interface Row {
 }
 
 type SortDir = 'asc' | 'desc'
+/** The member view modes the table can offer. `flat` lists every member;
+ * `hierarchy` follows the consolidation rollups; `leaves` lists only the leaf
+ * members (those with no children). The set editor offers all three; other
+ * callers default to flat + hierarchy. */
+type ViewMode = 'flat' | 'hierarchy' | 'leaves'
 
 /**
  * A scalable member table (ADR-0032): the members of a dimension as rows, with
@@ -70,6 +75,7 @@ export default function MemberTable({
   onSelectedChange,
   editable = false,
   onAttrEdit,
+  leavesMode = false,
 }: {
   dimension: DimensionDto
   selectable?: boolean
@@ -80,6 +86,9 @@ export default function MemberTable({
   editable?: boolean
   /** Commit an edited attribute value (only called in `editable` mode). */
   onAttrEdit?: (element: string, attribute: string, value: string) => void | Promise<void>
+  /** Offer a third "Leaves" view mode (only leaf members). The set editor turns
+   * this on; the dimension model surfaces leave it off (ADR-0036). */
+  leavesMode?: boolean
 }) {
   const attributes = useMemo(() => dimension.attributes ?? [], [dimension])
   const aliasAttrs = useMemo(() => attributes.filter((a) => a.kind === 'alias'), [attributes])
@@ -94,7 +103,7 @@ export default function MemberTable({
     editing0 ? new Set(attributes.map((a) => a.name)) : new Set(),
   )
   const [aliasLabel, setAliasLabel] = useState<string | null>(null)
-  const [mode, setMode] = useState<'flat' | 'hierarchy'>('flat')
+  const [mode, setMode] = useState<ViewMode>('flat')
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [columnsOpen, setColumnsOpen] = useState(false)
   // Per-attribute column filters (attr name -> wildcard/substring query) and
@@ -137,6 +146,12 @@ export default function MemberTable({
   )
   const tree = useMemo(() => buildElementTree(dimension), [dimension])
   const hasHierarchy = useMemo(() => dimension.edges.length > 0, [dimension])
+  // The leaf members (no outgoing consolidation edge), for the "Leaves" view.
+  const leaves = useMemo(() => {
+    const hasChild = new Set<string>()
+    for (const e of dimension.edges) hasChild.add(e.parent)
+    return new Set(dimension.elements.filter((e) => !hasChild.has(e.name)).map((e) => e.name))
+  }, [dimension])
 
   const labelOf = useCallback(
     (name: string) => (aliasLabel ? attrValues.get(aliasLabel)?.get(name) || name : name),
@@ -172,8 +187,9 @@ export default function MemberTable({
     [keepHideActive, keepHide, selected],
   )
 
-  // Any active filter forces the flat (filtered) row path, even in hierarchy mode.
-  const filtering = searching || hasColFilter || keepHideActive
+  // Any active filter forces the flat (filtered) row path, even in hierarchy
+  // mode. Leaves mode is also a flat (filtered-to-leaves) listing.
+  const filtering = searching || hasColFilter || keepHideActive || mode === 'leaves'
 
   // Commit the in-progress attribute edit (editor mode). Skips a no-op edit and
   // lets the parent surface any save error; Escape clears `editing` first so the
@@ -219,6 +235,7 @@ export default function MemberTable({
     }
     const filtered = dimension.elements.filter(
       (e) =>
+        (mode !== 'leaves' || leaves.has(e.name)) &&
         (match(e.name) || match(labelOf(e.name))) &&
         colFilterFns.every((f) => f(e.name)) &&
         passesKeepHide(e.name),
@@ -247,7 +264,7 @@ export default function MemberTable({
       expanded: false,
       path: e.name,
     }))
-  }, [mode, filtering, expanded, tree, dimension, match, labelOf, sortKey, sortDir, order, kindOf, attrValues, colFilterFns, passesKeepHide])
+  }, [mode, filtering, expanded, tree, dimension, leaves, match, labelOf, sortKey, sortDir, order, kindOf, attrValues, colFilterFns, passesKeepHide])
 
   const virtual = useVirtualRows({
     rowCount: rows.length,
@@ -415,6 +432,17 @@ export default function MemberTable({
             >
               Hierarchy
             </button>
+            {leavesMode ? (
+              <button
+                type="button"
+                aria-pressed={mode === 'leaves'}
+                className={mode === 'leaves' ? 'is-active' : ''}
+                onClick={() => setMode('leaves')}
+                title="Show only leaf members (those with no children)"
+              >
+                Leaves
+              </button>
+            ) : null}
             {mode === 'hierarchy' && !filtering ? (
               <>
                 <button type="button" onClick={expandAll} title="Expand all">

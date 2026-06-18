@@ -12,6 +12,7 @@ import {
   runSchedule,
   type CubeSummary,
 } from '../api/client'
+import DimensionEditor from './DimensionEditor'
 import DimensionsWorkspace from './DimensionsWorkspace'
 import FlowsWorkspace from './FlowsWorkspace'
 import JobsWorkspace from './JobsWorkspace'
@@ -863,29 +864,63 @@ export default function CubeApp({
                       : 'No objects are available to you yet. Ask an administrator for access.'
                     : 'Choose a cube, dimension, flow, or schedule from the explorer on the left to open it.'}
                 </EmptyState>
+              ) : activeTab.selection.kind === 'dimension' &&
+                activeTab.selection.id >= 0 &&
+                !activeTab.nav.autoNew ? (
+                // A specific registry (global) dimension: open the standalone,
+                // cube-agnostic structural editor (ADR-0036). Edits fan out to
+                // every referencing cube, surfaced in the editor's own notice.
+                <DimensionEditor
+                  key={`reg:${activeTab.selection.id}`}
+                  target={{
+                    kind: 'registry',
+                    id: activeTab.selection.id,
+                    name: activeTab.selection.name,
+                  }}
+                  onChanged={bumpReload}
+                />
               ) : activeTab.selection.kind === 'dimension' ? (
+                // The Dimensions section root (id -1) or the register wizard
+                // (autoNew): the library list + register form.
                 <DimensionsWorkspace
                   reloadSignal={reload}
-                  // A plain tree row-click carries no nav intent, so fall back to
-                  // the tab's own selection id (id -1 is the new/placeholder draft,
-                  // which has no dimension to focus) -- otherwise the pane would
-                  // show the workspace's default dimension, not the clicked one.
-                  initialDimId={
-                    activeTab.nav.dimId ??
-                    (activeTab.selection.id >= 0 ? activeTab.selection.id : undefined)
-                  }
+                  initialDimId={activeTab.nav.dimId}
                   autoNew={activeTab.nav.autoNew}
                   navSignal={activeTab.nav.signal}
+                  onOpenDimension={(id, name) =>
+                    navigate({ kind: 'dimension', id, name }, { dimId: id })
+                  }
                 />
               ) : activeTab.selection.kind === 'cube' && cube ? (
                 <PivotGrid cube={cube} reloadSignal={reload} onModelChange={bumpReload} />
+              ) : activeTab.selection.kind === 'cube-dimension' &&
+                cube &&
+                (activeTab.selection.dim || activeTab.nav.dim) &&
+                !activeTab.nav.autoNew ? (
+                // A specific cube-embedded dimension: open the standalone,
+                // cube-agnostic structural editor (ADR-0036), editing this cube's
+                // own copy through the cube route.
+                <DimensionEditor
+                  key={`cube:${cube}/${activeTab.selection.dim || activeTab.nav.dim}`}
+                  target={{
+                    kind: 'cube',
+                    cube,
+                    dim: (activeTab.selection.dim || activeTab.nav.dim) as string,
+                  }}
+                  onChanged={bumpReload}
+                />
               ) : activeTab.selection.kind === 'cube-dimension' && cube ? (
+                // No specific dimension (the cube's "Edit dimensions…" entry or the
+                // new-cube wizard): the model overview, which lists the dimensions
+                // and hosts the new-cube wizard. Its dimension cards open the editor.
                 <ModelWorkspace
                   cube={cube}
                   reloadSignal={reload}
                   isAdmin={isAdmin}
                   onCubeCreated={onCubeCreated}
-                  initialDim={activeTab.selection.dim || activeTab.nav.dim}
+                  onOpenDimension={(dim) =>
+                    navigate({ kind: 'cube-dimension', cube, dim }, { dim })
+                  }
                   autoNew={activeTab.nav.autoNew}
                   navSignal={activeTab.nav.signal}
                 />

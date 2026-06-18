@@ -196,6 +196,7 @@ export default function MemberSetPicker({
         <MemberTable
           dimension={dimension}
           selectable
+          leavesMode
           selected={leftSelected}
           onSelectedChange={setLeftSelected}
         />

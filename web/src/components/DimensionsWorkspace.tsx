@@ -40,6 +40,7 @@ export default function DimensionsWorkspace({
   initialDimId,
   autoNew,
   navSignal,
+  onOpenDimension,
 }: {
   reloadSignal: number
   /** Focus this shared dimension on mount / when it changes (from the tree). */
@@ -48,6 +49,9 @@ export default function DimensionsWorkspace({
   autoNew?: boolean
   /** Bumped by the navigator to re-apply initialDimId/autoNew when unchanged. */
   navSignal?: number
+  /** Open a dimension in the standalone structural editor (ADR-0036). The list
+   * cards call this rather than editing structure inline here. */
+  onOpenDimension?: (id: number, name: string) => void
 }) {
   const [list, setList] = useState<SharedDimensionSummary[] | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
@@ -132,7 +136,7 @@ export default function DimensionsWorkspace({
                 type="button"
                 className={d.id === selectedId ? 'model-dim is-active' : 'model-dim'}
                 aria-pressed={d.id === selectedId}
-                onClick={() => setSelectedId(d.id)}
+                onClick={() => (onOpenDimension ? onOpenDimension(d.id, d.name) : setSelectedId(d.id))}
               >
                 <span className="model-dim__name">{d.name}</span>
                 <span className="model-dim__count">
