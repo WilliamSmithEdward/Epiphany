@@ -49,6 +49,16 @@ ctx.cube('Forecast').writeCells(...)   // a second cube in the same run
 and a new `cubes()` listing the available cube names) stay on `ctx`.
 `ctx.cubeName()` is removed.
 
+**Flows also act on dimensions, not only cubes.** Because dimensions are global
+(ADR-0024/0031), `ctx.dimension(name)` returns a handle (`ensureElements`/
+`ensureElement`/`ensureConsolidated`/`addChild`) that grows the *global* dimension
+and fans the additions out to every cube that uses it (the existing
+`grow_dimension` path), so a flow can maintain a shared dimension once for all
+cubes. A cube handle's element methods still edit a cube's own embedded
+(non-registry) dimension; members of a registry-backed dimension are maintained
+through `ctx.dimension(name)`, matching the divergence guard (ADR-0024). So a flow
+acts on any mix of cubes and dimensions, owned by none.
+
 **Back-compatible default cube.** A flow carries an optional `default_cube`. When
 set, the legacy cube-less calls (`ctx.writeCells(arr)`, `ctx.ensureElements(...)`)
 target it, so existing flow bodies and the starter templates keep working; when
@@ -56,16 +66,19 @@ unset, a cube-less call errors ("name a cube with ctx.cube(...)"). `default_cube
 is a convenience target, not ownership (freely changeable), and a flow may
 ignore it and address cubes explicitly.
 
-**3. Multi-cube outcome; per-cube validate-then-apply.** `run_flow` drops its
-`cube` parameter and returns a `FlowOutcome` keyed by cube
-(`BTreeMap<String, CubeChanges>` where `CubeChanges` = staged elements + edges +
-numeric/string cells), plus the cube-agnostic logs/counts. The pure runner only
-stages per-cube changes. The API pre-validates each cube's changes against a clone
-of that cube, then applies them cube by cube. Each cube's write is transactional;
-across cubes it is sequential after a full pre-validation pass, so a partial apply
-can arise only from an unexpected mid-apply failure (documented; cross-cube atomic
-commit is a future item). Element security still applies at write time per the
-*target* cube's element ACLs.
+**3. Multi-target outcome; per-target validate-then-apply.** `run_flow` drops its
+`cube` parameter and returns a `FlowOutcome` keyed by target: a
+`BTreeMap<String, CubeChanges>` of cube writes (staged elements + edges + numeric/
+string cells) plus a `BTreeMap<String, DimChanges>` of global-dimension growth
+(elements + edges), with the cube-agnostic logs/counts. The pure runner only
+stages changes. The API pre-validates each cube's changes against a clone of that
+cube and each dimension's growth against the registry, then applies cube writes
+per cube and dimension growth via `grow_dimension` (which fans out). Each cube's
+write and each dimension grow is transactional; across targets it is sequential
+after a full pre-validation pass, so a partial apply can arise only from an
+unexpected mid-apply failure (documented; cross-target atomic commit is a future
+item). Element security still applies at write time per the *target* cube's
+element ACLs.
 
 **4. Schedules are global.** A job's steps reference global flows by name; the
 scheduler iterates the global job set (no per-cube dispatch). A job no longer has
