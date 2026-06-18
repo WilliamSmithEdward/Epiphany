@@ -14,6 +14,7 @@ import {
   type SharedDimensionSummary,
 } from '../api/client'
 import { Badge, Button, Card, Dialog, EmptyState, Field, Input, Select, Switch, Textarea } from '../ui'
+import MemberTable from './MemberTable'
 
 const KIND_OPTIONS = [
   { value: 'numeric', label: 'Number (input cell)' },
@@ -26,17 +27,6 @@ const ATTR_KIND_OPTIONS = [
   { value: 'numeric', label: 'Number' },
   { value: 'alias', label: 'Alias (alternate name)' },
 ]
-
-function kindBadge(kind: ElementKind) {
-  switch (kind) {
-    case 'consolidated':
-      return <Badge tone="info">total</Badge>
-    case 'string':
-      return <Badge tone="neutral">text</Badge>
-    default:
-      return <Badge tone="neutral">number</Badge>
-  }
-}
 
 // The Data Model workspace (ADR-0021): see a cube's structure, add members and
 // build consolidation hierarchies, and create a brand-new cube. Additive only;
@@ -272,18 +262,7 @@ function DimensionEditor({
       <div className="model-editor">
         <section>
           <h4 className="model-editor__h">Members</h4>
-          {dimension.elements.length === 0 ? (
-            <p className="muted">No members yet.</p>
-          ) : (
-            <ul className="model-members">
-              {dimension.elements.map((e) => (
-                <li key={e.name} className="model-member">
-                  <span className="model-member__name">{e.name}</span>
-                  {kindBadge(e.kind)}
-                </li>
-              ))}
-            </ul>
-          )}
+          <MemberTable dimension={dimension} />
           <div className="model-add-row">
             <Input
               value={memberName}
