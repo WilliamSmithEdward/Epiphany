@@ -1,6 +1,7 @@
 import * as DM from '@radix-ui/react-dropdown-menu'
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -20,6 +21,7 @@ import {
   type DimensionDto,
   type SharedDimensionSummary,
 } from '../api/client'
+import { buildElementTree, type TreeNode } from '../model/tree'
 
 // What the tree currently has open in the detail pane. The IA is cube-centric
 // (research-validated): cube-owned objects (its dimensions, views, rules+feeders)
@@ -134,19 +136,33 @@ function selectionId(s: Selection): string {
 
 // ---- node builders (each returns the children for a parent) ----
 
-function elementNodes(
-  prefix: string,
-  elements: { name: string; kind: string }[],
+/** Build the explorer nodes for a dimension's members, following the
+ * consolidation hierarchy: a consolidated member (a roll-up like a "Total")
+ * expands to the members beneath it; a leaf has no children. Roots are the
+ * members with no parent, so a flat dimension shows its members flat and a
+ * dimension with roll-ups shows the roll-ups, drillable into their inputs. A
+ * member reachable under two roll-ups (alternate hierarchies) appears under
+ * each, kept distinct by its path-prefixed id. */
+function elementTreeNodes(
+  parentId: string,
+  tree: TreeNode[],
   menu?: NodeMenuItem[],
   actionCtx?: ActionContext,
 ): Node[] {
-  return elements.map((el) => ({
-    id: `${prefix}/el:${el.name}`,
-    label: el.name,
-    icon: el.kind === 'consolidated' ? '◇' : el.kind === 'string' ? '"' : '·',
-    menu,
-    actionCtx,
-  }))
+  return tree.map((t) => {
+    const id = `${parentId}/el:${t.name}`
+    return {
+      id,
+      label: t.name,
+      icon: t.kind === 'consolidated' ? '◇' : t.kind === 'string' ? '"' : '·',
+      menu,
+      actionCtx,
+      loader:
+        t.children.length > 0
+          ? async () => elementTreeNodes(id, t.children, menu, actionCtx)
+          : undefined,
+    }
+  })
 }
 
 /** The shared context-menu action for a cube dimension (the "Dimensions" group
@@ -176,7 +192,7 @@ async function cubeChildren(cube: string): Promise<Node[]> {
         menu: CUBE_DIM_MENU,
         actionCtx: { cube, dim: d.name },
         loader: async () =>
-          elementNodes(`cube:${cube}/dim:${d.name}`, d.elements, CUBE_DIM_MENU, {
+          elementTreeNodes(`cube:${cube}/dim:${d.name}`, buildElementTree(d), CUBE_DIM_MENU, {
             cube,
             dim: d.name,
           }),
@@ -321,9 +337,9 @@ async function dimensionNamespace(): Promise<Node[]> {
     actionCtx: { dimId: d.id, dim: d.name },
     loader: async () => {
       const detail = await getDimension(d.id)
-      return elementNodes(
+      return elementTreeNodes(
         `dim:${d.id}`,
-        detail.elements,
+        buildElementTree(detail),
         [
           { action: 'add-member', label: 'Add member…' },
           { action: 'grow-dimension', label: 'Grow…' },
@@ -337,15 +353,16 @@ async function dimensionNamespace(): Promise<Node[]> {
     id: `cube:${cube}/dim:${d.name}`,
     label: d.name,
     icon: '⬡',
-    badge: cube, // provenance: the cube this dimension currently lives in
-    badgeTitle: `Lives in cube ${cube}`,
     selection: { kind: 'cube-dimension', cube, dim: d.name },
     // An embedded dimension can be promoted into the global registry so other
     // cubes can reference it (ADR-0031 Phase 1), alongside the usual edit/sets.
     menu: [...CUBE_DIM_MENU, { action: 'promote-dimension', label: 'Reuse in other cubes…' }],
     actionCtx: { cube, dim: d.name },
     loader: async () =>
-      elementNodes(`cube:${cube}/dim:${d.name}`, d.elements, CUBE_DIM_MENU, { cube, dim: d.name }),
+      elementTreeNodes(`cube:${cube}/dim:${d.name}`, buildElementTree(d), CUBE_DIM_MENU, {
+        cube,
+        dim: d.name,
+      }),
   })
 
   const [registry, cubes] = await Promise.all([listDimensions(), listCubes()])
@@ -443,7 +460,9 @@ export default function ModelExplorer({
   // Per-node load failures, kept separate from childrenById so a collapse/
   // re-expand (or a Retry) re-runs the loader instead of caching a dead row.
   const [errorById, setErrors] = useState<Record<string, string>>({})
-  const [cubeFilter, setCubeFilter] = useState('')
+  // A single global search across every object in the tree (cubes, dimensions,
+  // members, views, flows, schedules), not a cube-only filter.
+  const [query, setQuery] = useState('')
   const selectedId = selection ? selectionId(selection) : null
   const [focusId, setFocusId] = useState<string>('root:cubes')
   // The id of the row whose context menu is currently open (only one at a time).
@@ -496,6 +515,59 @@ export default function ModelExplorer({
       .finally(() => setLoading((s) => { const n = new Set(s); n.delete(node.id); return n }))
   }, [])
 
+  // Defer the heavy filter work off the keystroke so typing stays responsive: the
+  // input shows `query` immediately while the (potentially large) tree filter and
+  // re-render track the deferred value.
+  const deferredQuery = useDeferredValue(query)
+  const trimmed = deferredQuery.trim()
+  const searching = trimmed !== ''
+  const q = trimmed.toLowerCase()
+
+  // While a search is active, eagerly load every still-unloaded expandable node
+  // so the filter sees the whole model (the tree is otherwise lazy). It cascades:
+  // as a node's children arrive, childrenById changes and the next level loads,
+  // up to convergence. A ref of already-scheduled ids keeps it idempotent, so the
+  // effect doesn't re-dispatch on every loading/error toggle (only on new
+  // children arriving) and can't double-fetch; it resets when the search clears.
+  const scheduledRef = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!searching) {
+      scheduledRef.current.clear()
+      return
+    }
+    for (const n of collectLoaders(roots, childrenById)) {
+      if (n.id in childrenById || scheduledRef.current.has(n.id)) continue
+      scheduledRef.current.add(n.id)
+      load(n)
+    }
+  }, [searching, roots, childrenById, load])
+
+  // The search result set over the loaded tree: every node whose label matches,
+  // plus the ancestor chain leading to it (so a match shows under its rollups and
+  // section). `searchExpand` is the set of ancestors to force-open.
+  const { keepIds, searchExpand } = useMemo(() => {
+    const keep = new Set<string>()
+    const expand = new Set<string>()
+    if (!searching) return { keepIds: keep, searchExpand: expand }
+    const walk = (nodes: Node[]): boolean => {
+      let any = false
+      for (const n of nodes) {
+        if (n.info) continue
+        const selfMatch = n.label.toLowerCase().includes(q)
+        const kids = childrenById[n.id]
+        const childMatch = kids ? walk(kids) : false
+        if (selfMatch || childMatch) {
+          keep.add(n.id)
+          if (childMatch) expand.add(n.id)
+          any = true
+        }
+      }
+      return any
+    }
+    walk(roots)
+    return { keepIds: keep, searchExpand: expand }
+  }, [searching, q, roots, childrenById])
+
   // Reload the children of any currently-expanded node when the model changes
   // (a write bumps reloadSignal), so the tree stays in sync after create/delete.
   useEffect(() => {
@@ -544,8 +616,8 @@ export default function ModelExplorer({
   // keyboard nav). Non-interactive status rows (`info`) are excluded so arrows
   // and Enter/Space never land on them.
   const visible = useMemo(
-    () => flatten(roots, expanded, childrenById, cubeFilter),
-    [roots, expanded, childrenById, cubeFilter],
+    () => flatten(roots, searching ? searchExpand : expanded, childrenById, searching, keepIds),
+    [roots, expanded, childrenById, searching, searchExpand, keepIds],
   )
 
   // Self-healing roving tabindex: if the focused node leaves the visible set
@@ -559,7 +631,10 @@ export default function ModelExplorer({
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent, node: Node) => {
       const idx = visible.findIndex((v) => v.node.id === node.id)
-      const isOpen = expanded.has(node.id)
+      // Match the rendered open state: during a search, expansion is driven by
+      // searchExpand, not the user's manual `expanded` set, and is not manually
+      // toggleable (the search controls it), so arrows only move focus then.
+      const isOpen = searching ? searchExpand.has(node.id) : expanded.has(node.id)
       const hasMenu = Boolean(onAction && node.menu && node.menu.length > 0)
       switch (e.key) {
         case 'ArrowDown':
@@ -572,12 +647,12 @@ export default function ModelExplorer({
           break
         case 'ArrowRight':
           e.preventDefault()
-          if (node.loader && !isOpen) toggle(node)
+          if (!searching && node.loader && !isOpen) toggle(node)
           else if (isOpen && idx < visible.length - 1) setFocusId(visible[idx + 1].node.id)
           break
         case 'ArrowLeft':
           e.preventDefault()
-          if (node.loader && isOpen) toggle(node)
+          if (!searching && node.loader && isOpen) toggle(node)
           else {
             const parent = visible[idx]?.parentId
             if (parent) setFocusId(parent)
@@ -630,7 +705,7 @@ export default function ModelExplorer({
         }
       }
     },
-    [visible, expanded, toggle, activate, onAction],
+    [visible, expanded, searching, searchExpand, toggle, activate, onAction],
   )
 
   // Keep DOM focus on the roving-tabindex node after keyboard navigation.
@@ -640,20 +715,16 @@ export default function ModelExplorer({
   }, [focusId])
 
   function renderNodes(nodes: Node[], depth: number, parentId: string | null): ReactNode {
-    const isCubeRoot = parentId === 'root:cubes' && cubeFilter.trim() !== ''
-    const filtered = isCubeRoot
-      ? nodes.filter((n) => n.label.toLowerCase().includes(cubeFilter.trim().toLowerCase()))
-      : nodes
-    // Zero-results: when the cube search filters out every cube, show a single
-    // non-interactive status row (role="none") instead of a blank group.
-    if (isCubeRoot && filtered.length === 0) {
+    const list = searching ? searchVisibleChildren(nodes, parentId, keepIds) : nodes
+    // Zero-results at the root: the search matched nothing across the whole tree.
+    if (searching && parentId === null && list.length === 0) {
       return (
         <li role="none" className="tree__empty" style={{ paddingInlineStart: `${depth * 14 + 8}px` }}>
-          No cubes match &ldquo;{cubeFilter.trim()}&rdquo;
+          No objects match &ldquo;{trimmed}&rdquo;
         </li>
       )
     }
-    return filtered.map((node) => {
+    return list.map((node) => {
       // Non-interactive status placeholders ("No flows yet", etc.): a plain
       // role="none" row, never a focusable/selectable treeitem.
       if (node.info) {
@@ -663,9 +734,13 @@ export default function ModelExplorer({
           </li>
         )
       }
-      const isOpen = expanded.has(node.id)
+      const isOpen = searching ? searchExpand.has(node.id) : expanded.has(node.id)
       const isSel = node.id === selectedId
-      const expandable = Boolean(node.loader)
+      // While searching, only the ancestors of matches are expandable (they hold
+      // matching descendants); a matched dead-end row shows no twisty so it never
+      // presents an expand affordance that, under the search filter, reveals
+      // nothing. Outside search, anything with a loader is expandable.
+      const expandable = Boolean(node.loader) && (!searching || searchExpand.has(node.id))
       const selectable = Boolean(node.selection)
       const hasMenu = Boolean(onAction && node.menu && node.menu.length > 0)
       const isLoading = loading.has(node.id)
@@ -750,11 +825,11 @@ export default function ModelExplorer({
         <input
           type="search"
           className="tree__search-input"
-          value={cubeFilter}
-          placeholder="Search cubes"
-          aria-label="Search cubes"
+          value={query}
+          placeholder="Search…"
+          aria-label="Search objects"
           aria-controls="model-explorer-tree"
-          onChange={(e) => setCubeFilter(e.target.value)}
+          onChange={(e) => setQuery(e.target.value)}
         />
       </div>
       <ul id="model-explorer-tree" role="tree" aria-label="Model explorer" ref={treeRef} className="tree__root">
@@ -850,24 +925,48 @@ function collectLoaders(roots: Node[], childrenById: Record<string, Node[]>): No
   return out
 }
 
-/** Flatten the visible tree (respecting expand state + the cube filter). */
+/** Max matching children rendered per parent during a search, so a broad query
+ * (e.g. one matching thousands of members) can never flood the tree with DOM. */
+const CHILD_CAP = 50
+
+/** The children of one parent to show during a search: those kept by the filter
+ * (a match, or an ancestor of one), capped with a trailing "+N more" info row. */
+function searchVisibleChildren(
+  nodes: Node[],
+  parentId: string | null,
+  keepIds: Set<string>,
+): Node[] {
+  const kept = nodes.filter((n) => !n.info && keepIds.has(n.id))
+  if (kept.length <= CHILD_CAP) return kept
+  const overflow = kept.length - CHILD_CAP
+  return [
+    ...kept.slice(0, CHILD_CAP),
+    {
+      id: `${parentId ?? 'root'}/__more`,
+      label: `${overflow} more match${overflow === 1 ? '' : 'es'} not shown; refine your search`,
+      icon: ' ',
+      info: true,
+    },
+  ]
+}
+
+/** Flatten the visible tree (respecting expand state and the active search). */
 function flatten(
   roots: Node[],
-  expanded: Set<string>,
+  openIds: Set<string>,
   childrenById: Record<string, Node[]>,
-  cubeFilter: string,
+  searching: boolean,
+  keepIds: Set<string>,
 ): { node: Node; depth: number; parentId: string | null }[] {
   const out: { node: Node; depth: number; parentId: string | null }[] = []
   const walk = (nodes: Node[], depth: number, parentId: string | null) => {
-    const filtered = parentId === 'root:cubes' && cubeFilter.trim() !== ''
-      ? nodes.filter((n) => n.label.toLowerCase().includes(cubeFilter.trim().toLowerCase()))
-      : nodes
-    for (const n of filtered) {
-      // Non-interactive status rows ("No flows yet", etc.) are never keyboard
-      // navigation targets, so they stay out of the roving-tabindex set.
+    const list = searching ? searchVisibleChildren(nodes, parentId, keepIds) : nodes
+    for (const n of list) {
+      // Non-interactive status rows ("No flows yet", "+N more", etc.) are never
+      // keyboard navigation targets, so they stay out of the roving-tabindex set.
       if (n.info) continue
       out.push({ node: n, depth, parentId })
-      if (n.loader && expanded.has(n.id) && childrenById[n.id]) {
+      if (n.loader && openIds.has(n.id) && childrenById[n.id]) {
         walk(childrenById[n.id], depth + 1, n.id)
       }
     }
