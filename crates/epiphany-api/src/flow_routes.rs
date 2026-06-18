@@ -278,6 +278,9 @@ pub(crate) struct FlowInputDto {
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct FlowDto {
+    /// Ignored on a `PUT` (the name comes from the path); always set on responses.
+    /// Optional in a request body for parity with the connection/schedule DTOs.
+    #[serde(default)]
     pub name: String,
     pub source: String,
     #[serde(default)]
