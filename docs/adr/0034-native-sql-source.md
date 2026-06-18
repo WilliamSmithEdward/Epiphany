@@ -14,7 +14,7 @@ runtime and a driver, then write and maintain a script just to pull a table.
 A native, point-and-click SQL source is the most-requested ergonomic gap. The
 two hard constraints carried over from ADR-0012/0019/0030 are non-negotiable:
 
-- **Single static binary** — no system driver manager, no runtime system library,
+- **Single static binary**: no system driver manager, no runtime system library,
   no native-tls/OpenSSL; TLS stays on rustls with the **ring** provider (the
   pinned provider across the server and HTTP connector; aws-lc-rs reignites the
   cross-compile/cargo-deny fight).
@@ -50,7 +50,7 @@ constraints:
 
 **SQL Server is intentionally NOT shipped.** Its only pure-Rust driver,
 `tiberius` 0.12 (the latest published), pins `rustls` 0.21, which pulls the old
-`webpki` 0.22 — a crate with **active** RUSTSEC advisories: certificate
+`webpki` 0.22, a crate with **active** RUSTSEC advisories: certificate
 name-constraint *verification bypasses* (RUSTSEC-2026-0098 / -0099) and a
 reachable CRL-parsing panic (RUSTSEC-2026-0104). That fails the supply-chain gate
 (`cargo deny`) and would make the `verify-full` TLS mode actively unsafe, so SQL
@@ -62,7 +62,7 @@ clean.
 
 **3. The ADR-0030 fail-closed fence, verbatim.** Three independent gates:
 
-- a `postgres` **cargo build feature** — a default build cannot run a SQL
+- a `postgres` **cargo build feature**: a default build cannot run a SQL
   connection (the API returns `SQL_NOT_BUILT` 422); release builds opt in;
 - a runtime **`EPIPHANY_ENABLE_SQL_CONNECTORS`** flag, off by default;
 - a **host allowlist** `EPIPHANY_SQL_ALLOWED_HOSTS`, enforced both when a
@@ -88,7 +88,7 @@ preview and flow/scheduled runs).
 
 **6. TLS modes (`sslmode`), fail-closed default.** `verify-full` (rustls + the
 bundled public roots, default), `require` (encrypt over rustls but **do not**
-verify the certificate — for self-signed internal DB certs, the libpq
+verify the certificate (for self-signed internal DB certs), the libpq
 `sslmode=require` behavior), `disable` (no TLS). The secure mode is the default
 ([[prefer-fail-closed-defaults]]); an operator with a self-signed internal
 database opts down explicitly to `require`. The host allowlist applies in every
