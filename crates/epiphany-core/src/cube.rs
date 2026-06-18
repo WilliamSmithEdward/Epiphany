@@ -587,7 +587,25 @@ impl Cube {
             })?),
             None => None,
         };
+        // If the new parent is a numeric/string member (it holds a stored value),
+        // gaining a child converts it to a consolidation, whose own stored cell
+        // must then be dropped (a consolidation is computed, not stored), mirroring
+        // set_element_kind. Without this the orphan cell would later fail to reload
+        // (set_leaf rejects a consolidated coordinate) and could resurrect if the
+        // member were converted back to a leaf.
+        let parent_was_leaf = match parent_idx {
+            Some(p) => matches!(
+                dim.element(p)?.kind,
+                ElementKind::Leaf | ElementKind::String
+            ),
+            None => false,
+        };
         dim.reparent(child_idx, parent_idx, weight)?;
+        if parent_was_leaf {
+            if let Some(p) = parent_idx {
+                next.drop_cells_for_element(d, p, true, true);
+            }
+        }
         *self = next;
         Ok(())
     }
@@ -2037,6 +2055,23 @@ mod tests {
         ));
         // Unchanged: Total still sums its three leaves.
         assert_eq!(read(&cube, "Total", "Sales"), fix(60));
+    }
+
+    #[test]
+    fn reparent_converting_a_populated_leaf_drops_its_cell_and_round_trips() {
+        // South is a numeric leaf holding Sales=20. Parenting East under it
+        // converts South to a consolidation, whose stored value must be dropped:
+        // otherwise the snapshot serializes a numeric cell at a now-consolidated
+        // coordinate that fails to reload (set_leaf rejects it). ADR-0036 review.
+        let mut cube = edit_cube();
+        cube.reparent_element("Region", "East", Some("South"), 1)
+            .unwrap();
+        let model = crate::Model::new(cube);
+        let text = model.to_model_text().unwrap();
+        let reloaded = crate::Model::from_model_text(&text).expect("reloads after reparent");
+        // South now reads as a pure consolidation of its child East (30), with no
+        // stale 20 lingering.
+        assert_eq!(read(&reloaded.cube, "South", "Sales"), fix(30));
     }
 
     #[test]

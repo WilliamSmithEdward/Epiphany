@@ -123,4 +123,7 @@ no longer offers a flat toggle.
 Undo/redo of structural edits (each edit is a normal version, so external revert
 is by editing back); bulk reorder by a sort key; cross-dimension moves; a
 structural-edit "dry-run" preview of how many cells a delete would drop (the
-confirm step states the rule, not the exact count).
+confirm step states the rule, not the exact count); and a two-phase
+validate-every-referencing-cube-before-publish for a shared-dimension edit (today
+the registry generation publishes first and per-cube application is best-effort
+with no rollback, matching the `grow_dimension` posture).

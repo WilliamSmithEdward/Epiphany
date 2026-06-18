@@ -529,9 +529,19 @@ impl Engine {
     /// ADR-0024 lock order.
     ///
     /// A rejected edit (not a permutation, a cycle, a child-bearing delete, a
-    /// duplicate insert) leaves everything unchanged: the registry edit is staged
+    /// duplicate insert) leaves that target unchanged: the registry edit is staged
     /// on a clone and validated before publish, and each per-cube edit is itself
     /// transactional.
+    ///
+    /// Cross-cube atomicity is best-effort, matching
+    /// [`grow_dimension`](Self::grow_dimension): the registry generation is
+    /// published first, then each referencing cube is edited in turn, propagating
+    /// the first error without rolling back cubes already edited. In normal
+    /// operation every referencing cube is materialized identically from the
+    /// registry and stays in lockstep, so a name-addressed edit applies cleanly to
+    /// each; a per-cube failure (e.g. a cube whose member set has somehow diverged)
+    /// can leave a partial result. A two-phase validate-all-cubes-before-publish is
+    /// a deferred hardening (ADR-0036).
     pub fn edit_dimension(
         &self,
         cube: &str,
