@@ -63,10 +63,35 @@ pub(crate) fn apply_outcome(
     let mut elements_added = 0usize;
     let mut cells_written = 0usize;
 
+    // ---- per-global-dimension growth (applied first) ----
+    // Grow global dimensions before cube cell writes so a flow can add a member to
+    // a global dimension and, in the same run, write a cube cell at that member:
+    // grow_dimension fans the member out to every referencing cube, and the
+    // per-cube snapshot taken below then sees it (otherwise the cell would fail to
+    // resolve, an order-dependent surprise).
+    for (dim, changes) in &outcome.dimensions {
+        let id = state.engine.dimension_id_by_name(dim).ok_or_else(|| {
+            ApiError::unprocessable(
+                "FLOW_UNKNOWN_TARGET",
+                format!("flow targets unknown global dimension '{dim}'"),
+            )
+        })?;
+        if !changes.elements.is_empty() || !changes.edges.is_empty() {
+            let _ = state
+                .engine
+                .grow_dimension(id, &changes.elements, &changes.edges)
+                .map_err(map_batch_error)?;
+            // grow_dimension does not report a per-call count, so count the staged
+            // new members (idempotent; an exact delta is a future refinement).
+            elements_added += changes.elements.len();
+        }
+    }
+
     // ---- per-cube writes ----
     for (cube, changes) in &outcome.cubes {
         // A snapshot for an unknown target cube is a 422 (the flow named a cube
         // that does not exist), distinct from the 404 of an unknown route cube.
+        // Taken after dimension growth so any fanned-out members are visible.
         let snap = state.engine.snapshot(cube).ok_or_else(|| {
             ApiError::unprocessable(
                 "FLOW_UNKNOWN_TARGET",
@@ -99,26 +124,6 @@ pub(crate) fn apply_outcome(
                 .engine
                 .apply_batch(cube, None, &writes)
                 .map_err(map_batch_error)?;
-        }
-    }
-
-    // ---- per-global-dimension growth ----
-    for (dim, changes) in &outcome.dimensions {
-        let id = state.engine.dimension_id_by_name(dim).ok_or_else(|| {
-            ApiError::unprocessable(
-                "FLOW_UNKNOWN_TARGET",
-                format!("flow targets unknown global dimension '{dim}'"),
-            )
-        })?;
-        if !changes.elements.is_empty() || !changes.edges.is_empty() {
-            let before = elements_added;
-            let _ = state
-                .engine
-                .grow_dimension(id, &changes.elements, &changes.edges)
-                .map_err(map_batch_error)?;
-            // grow_dimension does not report a per-call count, so count the staged
-            // new members (idempotent; an exact delta is a future refinement).
-            elements_added = before + changes.elements.len();
         }
     }
 
@@ -288,9 +293,12 @@ pub(crate) struct FlowListDto {
     pub flows: Vec<FlowDto>,
 }
 
-/// Render a flow input as its DTO (a local connection echoes unredacted, since the
-/// caller holds `Flow:Read` over the global automation surface).
-fn input_dto(input: &FlowInput) -> FlowInputDto {
+/// Render a flow input as its DTO. A local connection's target (command line,
+/// URL, SQL host/query) is redacted for a non-admin, matching the global
+/// connection surface: a `Flow:Read` holder is not necessarily a connection
+/// admin, so a flow-scoped connector's target is not echoed in full to them. The
+/// referenced secret name (never a value) is not sensitive.
+fn input_dto(input: &FlowInput, is_admin: bool) -> FlowInputDto {
     match &input.binding {
         FlowInputBinding::Global => FlowInputDto {
             name: input.name.clone(),
@@ -303,19 +311,19 @@ fn input_dto(input: &FlowInput) -> FlowInputDto {
             connection: Some(crate::connection_routes::spec_to_dto(
                 &input.name,
                 spec,
-                true,
+                is_admin,
             )),
         },
     }
 }
 
-fn flow_dto(flow: &Flow) -> FlowDto {
+fn flow_dto(flow: &Flow, is_admin: bool) -> FlowDto {
     FlowDto {
         name: flow.name.clone(),
         source: flow.source.clone(),
         owner: flow.owner.clone(),
         default_cube: flow.default_cube.clone(),
-        inputs: flow.inputs.iter().map(input_dto).collect(),
+        inputs: flow.inputs.iter().map(|i| input_dto(i, is_admin)).collect(),
     }
 }
 
@@ -358,9 +366,15 @@ pub(crate) async fn list_flows(
     State(state): State<AppState>,
 ) -> Result<Json<FlowListDto>, ApiError> {
     require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Read)?;
+    let is_admin = auth.principal.is_admin;
     let store = state.automation.lock().expect("automation store mutex");
     Ok(Json(FlowListDto {
-        flows: store.automation().flows.values().map(flow_dto).collect(),
+        flows: store
+            .automation()
+            .flows
+            .values()
+            .map(|f| flow_dto(f, is_admin))
+            .collect(),
     }))
 }
 
@@ -377,7 +391,7 @@ pub(crate) async fn get_flow(
         .flows
         .get(&name)
         .ok_or_else(|| ApiError::not_found(format!("unknown flow '{name}'")))?;
-    Ok(Json(flow_dto(flow)))
+    Ok(Json(flow_dto(flow, auth.principal.is_admin)))
 }
 
 /// `PUT /flows/{name}` -> validate and store a global flow. The owner is set to
@@ -439,7 +453,9 @@ pub(crate) async fn put_flow(
         Some(&ObjectRef::global(ObjectKind::Flow, &name)),
         true,
     );
-    Ok(Json(flow_dto(&flow)))
+    // Echo the flow the caller just authored at full detail: it is their own
+    // submission, so this is never a cross-principal disclosure.
+    Ok(Json(flow_dto(&flow, true)))
 }
 
 /// `DELETE /flows/{name}` -> delete a flow.
@@ -539,6 +555,16 @@ pub(crate) async fn run_flow_handler(
             .cloned()
             .ok_or_else(|| ApiError::not_found(format!("unknown flow '{name}'")))?
     };
+
+    // The legacy single-source body (`input`/`connection`) is only for a flow with
+    // no declared inputs. With declared inputs, the run fetches them and an ad-hoc
+    // override goes through `inputs` keyed by source address; reject the ambiguous
+    // mix rather than silently overwriting the first declared source.
+    if !flow.inputs.is_empty() && (!body.input.is_empty() || body.connection.is_some()) {
+        return Err(ApiError::bad_request(
+            "this flow declares its data sources; override a named source with 'inputs' (address to content), not the single 'input'/'connection'",
+        ));
+    }
 
     // The legacy single source: either a named connection's rows or inline CSV. A
     // named connection's rows are fetched and keyed under the flow's first declared

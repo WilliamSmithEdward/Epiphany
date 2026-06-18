@@ -144,6 +144,12 @@ fn merge_legacy(
     cube: &str,
     first_admin: Option<&str>,
 ) {
+    // Lift flows first, recording how each was renamed by a cross-cube collision
+    // so this cube's jobs and flow tests (which reference flows by name) can be
+    // remapped to the new flow names, never dangling or binding to another cube's
+    // same-named flow. Legacy flows predate `inputs`, so a renamed connection can
+    // never strand a flow input here.
+    let mut flow_rename: BTreeMap<String, String> = BTreeMap::new();
     for (name, mut flow) in legacy.flows {
         if flow.default_cube.is_none() {
             flow.default_cube = Some(cube.to_string());
@@ -152,10 +158,16 @@ fn merge_legacy(
             flow.owner = first_admin.map(str::to_string);
         }
         let key = unique_key(&merged.flows, &name, cube);
+        if key != name {
+            flow_rename.insert(name.clone(), key.clone());
+        }
         flow.name = key.clone();
         merged.flows.insert(key, flow);
     }
     for (name, mut test) in legacy.flow_tests {
+        if let Some(renamed) = flow_rename.get(&test.flow) {
+            test.flow = renamed.clone();
+        }
         let key = unique_key(&merged.flow_tests, &name, cube);
         test.name = key.clone();
         merged.flow_tests.insert(key, test);
@@ -166,6 +178,11 @@ fn merge_legacy(
         merged.connections.insert(key, conn);
     }
     for (name, mut job) in legacy.jobs {
+        for step in &mut job.steps {
+            if let Some(renamed) = flow_rename.get(step) {
+                *step = renamed.clone();
+            }
+        }
         let key = unique_key(&merged.jobs, &name, cube);
         job.name = key.clone();
         merged.jobs.insert(key, job);
@@ -208,5 +225,58 @@ mod tests {
         assert_eq!(second.cube_names(), names);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn migration_remaps_references_when_a_colliding_flow_is_renamed() {
+        use epiphany_core::{Flow, Job, Trigger};
+
+        fn flow(name: &str) -> Flow {
+            Flow {
+                name: name.to_string(),
+                source: "function rows(ctx) {}".to_string(),
+                owner: None,
+                default_cube: None,
+                inputs: Vec::new(),
+            }
+        }
+
+        // Cube A already lifted a flow "load".
+        let mut merged = Automation::new();
+        merged.flows.insert("load".to_string(), flow("load"));
+
+        // Cube B also has a flow "load", plus a job and a test that reference it
+        // by name (the legacy same-cube convention).
+        let mut legacy = Automation::new();
+        legacy.flows.insert("load".to_string(), flow("load"));
+        legacy.jobs.insert(
+            "nightly".to_string(),
+            Job {
+                name: "nightly".to_string(),
+                steps: vec!["load".to_string()],
+                trigger: Trigger::Interval { every_millis: 1000 },
+                enabled: true,
+            },
+        );
+        legacy.flow_tests.insert(
+            "t".to_string(),
+            epiphany_core::FlowTest {
+                name: "t".to_string(),
+                flow: "load".to_string(),
+                ..Default::default()
+            },
+        );
+
+        merge_legacy(&mut merged, legacy, "B", Some("admin"));
+
+        // Both flows survive under distinct names.
+        assert!(merged.flows.contains_key("load"));
+        assert!(merged.flows.contains_key("B_load"));
+        // B's job step and flow test follow the rename (not cube A's "load").
+        assert_eq!(merged.jobs["nightly"].steps, vec!["B_load".to_string()]);
+        assert_eq!(merged.flow_tests["t"].flow, "B_load");
+        // The migrated flow got its default cube and owner stamped.
+        assert_eq!(merged.flows["B_load"].default_cube.as_deref(), Some("B"));
+        assert_eq!(merged.flows["B_load"].owner.as_deref(), Some("admin"));
     }
 }
