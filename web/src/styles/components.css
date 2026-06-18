@@ -1330,6 +1330,10 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
   margin-left: auto;
   font-size: var(--text-xs);
 }
+.set-picker__relabel {
+  font-size: var(--text-xs);
+  align-self: center;
+}
 .set-picker__presets button,
 .set-picker__sortbar button {
   font-size: var(--text-xs);
@@ -2126,4 +2130,66 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
 }
 .mtable__empty {
   padding: 0.75rem;
+}
+.mtable__filterbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem 0.75rem;
+  padding: 0.5rem 0.1rem;
+}
+.mtable__filterbar--hint {
+  align-items: center;
+}
+.mtable__filterfield {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.mtable__filterfield input {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 0.2rem 0.4rem;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+.mtable__filterlabel {
+  font-weight: var(--weight-semibold);
+}
+/* Inline attribute editing (editor mode). */
+.mtable__celltrigger {
+  border: 1px solid transparent;
+  background: transparent;
+  text-align: inherit;
+  cursor: text;
+  color: inherit;
+  font: inherit;
+  border-radius: var(--radius-sm);
+}
+.mtable__celltrigger:hover,
+.mtable__celltrigger:focus-visible {
+  border-color: var(--color-border);
+  background: var(--color-elevated);
+}
+.mtable__cellempty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+.mtable__celledit {
+  width: 100%;
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  padding: 0.2rem 0.4rem;
+  font: inherit;
+  font-size: var(--text-sm);
+}
+.mtable__attr--num .mtable__celledit,
+.mtable__attr--num.mtable__celltrigger {
+  text-align: right;
 }

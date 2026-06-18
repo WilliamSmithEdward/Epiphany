@@ -49,38 +49,72 @@ type SortDir = 'asc' | 'desc'
  * A scalable member table (ADR-0032): the members of a dimension as rows, with
  * the member name as a pinned leading column, a kind column, and any toggled-on
  * attribute columns. Search (wildcard + alias-aware), sortable headers, a
- * Flat/Hierarchy toggle, and in-house row virtualization let it handle thousands
- * of members at a constant DOM cost. In `selectable` mode it is the Available
- * pane of the set builder: each row has a checkbox and reports selection changes.
+ * Flat/Hierarchy toggle, per-attribute column filters, and in-house row
+ * virtualization let it handle thousands of members at a constant DOM cost.
  *
- * v1 uses static table semantics (role=table) because cells are read-only here;
- * the interactive controls (checkboxes, twisties, sort headers) are normal tab
- * stops. Full grid cell-navigation + inline cell editing is deferred (ADR-0032).
+ * Two interactive modes layer on top of the read-only view:
+ *  - `selectable` makes it the Available pane of the set builder: each row has a
+ *    checkbox, reports selection changes, and gains Keep/Hide filters that scope
+ *    the list to (or away from) the current selection.
+ *  - `editable` (ignored when selectable) makes the attribute cells inline
+ *    editable: click a cell to type a value, Enter/blur to commit, Escape to
+ *    cancel; commits flow up through `onAttrEdit`.
+ *
+ * It uses static table semantics (role=table); the interactive controls
+ * (checkboxes, twisties, sort headers, cell editors) are normal tab stops.
  */
 export default function MemberTable({
   dimension,
   selectable = false,
   selected,
   onSelectedChange,
+  editable = false,
+  onAttrEdit,
 }: {
   dimension: DimensionDto
   selectable?: boolean
   selected?: Set<string>
   onSelectedChange?: (next: Set<string>) => void
+  /** Editor mode: render attribute cells as inline-editable. Ignored when
+   * `selectable` (the set builder needs read-only cells under its checkboxes). */
+  editable?: boolean
+  /** Commit an edited attribute value (only called in `editable` mode). */
+  onAttrEdit?: (element: string, attribute: string, value: string) => void | Promise<void>
 }) {
   const attributes = useMemo(() => dimension.attributes ?? [], [dimension])
   const aliasAttrs = useMemo(() => attributes.filter((a) => a.kind === 'alias'), [attributes])
+  const editing0 = editable && !selectable
 
   const [search, setSearch] = useState('')
   const [sortKey, setSortKey] = useState<string>('model') // 'model' | 'member' | 'kind' | attr name
   const [sortDir, setSortDir] = useState<SortDir>('asc')
-  const [visibleAttrs, setVisibleAttrs] = useState<Set<string>>(() => new Set())
+  // Editor mode opens with every attribute column shown so editing is
+  // discoverable; the set builder opens with none (the picker is about members).
+  const [visibleAttrs, setVisibleAttrs] = useState<Set<string>>(() =>
+    editing0 ? new Set(attributes.map((a) => a.name)) : new Set(),
+  )
   const [aliasLabel, setAliasLabel] = useState<string | null>(null)
   const [mode, setMode] = useState<'flat' | 'hierarchy'>('flat')
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [columnsOpen, setColumnsOpen] = useState(false)
+  // Per-attribute column filters (attr name -> wildcard/substring query) and
+  // whether the filter bar is shown.
+  const [colFilters, setColFilters] = useState<Record<string, string>>({})
+  const [filtersOpen, setFiltersOpen] = useState(false)
+  // Set-builder view filter: scope the list to / away from the current selection.
+  const [keepHide, setKeepHide] = useState<'all' | 'keep' | 'hide'>('all')
+  // The attribute cell currently being edited (editor mode), and its draft text.
+  const [editing, setEditing] = useState<{ element: string; attr: string } | null>(null)
+  const [editText, setEditText] = useState('')
   const lastClicked = useRef<number | null>(null)
   const columnsRef = useRef<HTMLDivElement | null>(null)
+
+  // Re-show all attribute columns when the edited dimension changes, so each
+  // dimension's editor opens with its own attributes visible.
+  useEffect(() => {
+    if (editing0) setVisibleAttrs(new Set(attributes.map((a) => a.name)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dimension.name, editing0])
 
   // member -> value, per attribute, for cell lookup and attribute sort.
   const attrValues = useMemo(() => {
@@ -112,6 +146,45 @@ export default function MemberTable({
   const match = useMemo(() => matcher(search), [search])
   const searching = search.trim() !== ''
 
+  // Per-attribute column filters: a member passes only if its value for each
+  // filtered attribute matches that column's wildcard/substring query.
+  const colFilterFns = useMemo(() => {
+    const fns: Array<(name: string) => boolean> = []
+    for (const a of attributes) {
+      const q = colFilters[a.name]
+      if (!q || q.trim() === '') continue
+      const m = matcher(q)
+      const vals = attrValues.get(a.name)
+      fns.push((name) => m(vals?.get(name) ?? ''))
+    }
+    return fns
+  }, [attributes, colFilters, attrValues])
+  const hasColFilter = colFilterFns.length > 0
+
+  // Set-builder Keep/Hide scopes the visible list to / away from the selection.
+  const keepHideActive = selectable && keepHide !== 'all'
+  const passesKeepHide = useCallback(
+    (name: string) => {
+      if (!keepHideActive) return true
+      const inSel = selected?.has(name) ?? false
+      return keepHide === 'keep' ? inSel : !inSel
+    },
+    [keepHideActive, keepHide, selected],
+  )
+
+  // Any active filter forces the flat (filtered) row path, even in hierarchy mode.
+  const filtering = searching || hasColFilter || keepHideActive
+
+  // Commit the in-progress attribute edit (editor mode). Skips a no-op edit and
+  // lets the parent surface any save error; Escape clears `editing` first so the
+  // resulting blur is a no-op.
+  const commitEdit = () => {
+    if (!editing) return
+    const current = attrValues.get(editing.attr)?.get(editing.element) ?? ''
+    if (editText !== current) void Promise.resolve(onAttrEdit?.(editing.element, editing.attr, editText))
+    setEditing(null)
+  }
+
   // Close the columns popover on an outside click.
   useEffect(() => {
     if (!columnsOpen) return
@@ -125,7 +198,7 @@ export default function MemberTable({
   // The visible row list. Hierarchy mode (no search) flattens the expanded tree;
   // otherwise a flat, filtered, sorted member list. Searching always flattens.
   const rows: Row[] = useMemo(() => {
-    if (mode === 'hierarchy' && !searching) {
+    if (mode === 'hierarchy' && !filtering) {
       const out: Row[] = []
       const walk = (nodes: TreeNode[], depth: number) => {
         for (const n of nodes) {
@@ -144,7 +217,12 @@ export default function MemberTable({
       walk(tree, 0)
       return out
     }
-    const filtered = dimension.elements.filter((e) => match(e.name) || match(labelOf(e.name)))
+    const filtered = dimension.elements.filter(
+      (e) =>
+        (match(e.name) || match(labelOf(e.name))) &&
+        colFilterFns.every((f) => f(e.name)) &&
+        passesKeepHide(e.name),
+    )
     const sorted = [...filtered]
     const cmp = (a: string, b: string) => {
       let r: number
@@ -169,7 +247,7 @@ export default function MemberTable({
       expanded: false,
       path: e.name,
     }))
-  }, [mode, searching, expanded, tree, dimension, match, labelOf, sortKey, sortDir, order, kindOf, attrValues])
+  }, [mode, filtering, expanded, tree, dimension, match, labelOf, sortKey, sortDir, order, kindOf, attrValues, colFilterFns, passesKeepHide])
 
   const virtual = useVirtualRows({
     rowCount: rows.length,
@@ -337,7 +415,7 @@ export default function MemberTable({
             >
               Hierarchy
             </button>
-            {mode === 'hierarchy' && !searching ? (
+            {mode === 'hierarchy' && !filtering ? (
               <>
                 <button type="button" onClick={expandAll} title="Expand all">
                   Expand all
@@ -349,10 +427,71 @@ export default function MemberTable({
             ) : null}
           </div>
         ) : null}
+        {attributes.length > 0 ? (
+          <button
+            type="button"
+            className="mtable__colsbtn"
+            aria-pressed={filtersOpen}
+            onClick={() => setFiltersOpen((o) => !o)}
+            title="Filter by attribute value"
+          >
+            Filters{hasColFilter ? ` (${colFilterFns.length})` : ''}
+          </button>
+        ) : null}
+        {selectable ? (
+          <div className="mtable__modes" role="group" aria-label="Filter by selection">
+            <button
+              type="button"
+              aria-pressed={keepHide === 'keep'}
+              className={keepHide === 'keep' ? 'is-active' : ''}
+              onClick={() => setKeepHide((k) => (k === 'keep' ? 'all' : 'keep'))}
+              title="Show only the selected members"
+            >
+              Keep
+            </button>
+            <button
+              type="button"
+              aria-pressed={keepHide === 'hide'}
+              className={keepHide === 'hide' ? 'is-active' : ''}
+              onClick={() => setKeepHide((k) => (k === 'hide' ? 'all' : 'hide'))}
+              title="Hide the selected members"
+            >
+              Hide
+            </button>
+          </div>
+        ) : null}
         <span className="mtable__count" role="status" aria-live="polite">
-          {searching ? `${rows.length} of ${total}` : `${total}`} {total === 1 ? 'member' : 'members'}
+          {filtering ? `${rows.length} of ${total}` : `${total}`} {total === 1 ? 'member' : 'members'}
         </span>
       </div>
+
+      {filtersOpen && shownAttrs.length > 0 ? (
+        <div className="mtable__filterbar" role="group" aria-label="Attribute column filters">
+          {shownAttrs.map((a) => (
+            <label key={a.name} className="mtable__filterfield">
+              <span className="mtable__filterlabel">{a.name}</span>
+              <input
+                type="search"
+                value={colFilters[a.name] ?? ''}
+                placeholder={`Filter ${a.name}`}
+                aria-label={`Filter by ${a.name}`}
+                onChange={(e) =>
+                  setColFilters((f) => ({ ...f, [a.name]: e.target.value }))
+                }
+              />
+            </label>
+          ))}
+          {hasColFilter ? (
+            <button type="button" className="mtable__colsbtn" onClick={() => setColFilters({})}>
+              Clear filters
+            </button>
+          ) : null}
+        </div>
+      ) : filtersOpen ? (
+        <div className="mtable__filterbar mtable__filterbar--hint">
+          <span className="muted">Add an attribute column to filter by its value.</span>
+        </div>
+      ) : null}
 
       <div
         className="mtable__scroll"
@@ -416,7 +555,11 @@ export default function MemberTable({
           <div style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
             {rows.length === 0 ? (
               <p className="mtable__empty muted">
-                {searching ? `No members match "${search.trim()}"` : 'No members yet.'}
+                {filtering
+                  ? searching
+                    ? `No members match "${search.trim()}"`
+                    : 'No members match the current filters.'
+                  : 'No members yet.'}
               </p>
             ) : (
               slice.map((r, i) => {
@@ -447,9 +590,9 @@ export default function MemberTable({
                     <span
                       className="mtable__cell mtable__cell--member"
                       role="rowheader"
-                      style={mode === 'hierarchy' && !searching ? { paddingLeft: `${r.depth * 1.1 + 0.5}rem` } : undefined}
+                      style={mode === 'hierarchy' && !filtering ? { paddingLeft: `${r.depth * 1.1 + 0.5}rem` } : undefined}
                     >
-                      {mode === 'hierarchy' && !searching && r.hasChildren ? (
+                      {mode === 'hierarchy' && !filtering && r.hasChildren ? (
                         <button
                           type="button"
                           className="mtable__twisty"
@@ -459,7 +602,7 @@ export default function MemberTable({
                         >
                           {r.expanded ? '▾' : '▸'}
                         </button>
-                      ) : mode === 'hierarchy' && !searching ? (
+                      ) : mode === 'hierarchy' && !filtering ? (
                         <span className="mtable__twisty mtable__twisty--leaf" aria-hidden="true" />
                       ) : null}
                       <span className="mtable__name">{labelOf(r.name)}</span>
@@ -467,15 +610,56 @@ export default function MemberTable({
                     <span className="mtable__cell mtable__kind" role="cell">
                       {KIND_LABEL[r.kind]}
                     </span>
-                    {shownAttrs.map((a) => (
-                      <span
-                        key={a.name}
-                        className={`mtable__cell mtable__attr${a.kind === 'numeric' ? ' mtable__attr--num' : ''}`}
-                        role="cell"
-                      >
-                        {attrValues.get(a.name)?.get(r.name) ?? ''}
-                      </span>
-                    ))}
+                    {shownAttrs.map((a) => {
+                      const val = attrValues.get(a.name)?.get(r.name) ?? ''
+                      const numCls = a.kind === 'numeric' ? ' mtable__attr--num' : ''
+                      if (editing0 && editing?.element === r.name && editing.attr === a.name) {
+                        return (
+                          <span key={a.name} className={`mtable__cell mtable__attr${numCls}`} role="cell">
+                            <input
+                              className="mtable__celledit"
+                              autoFocus
+                              value={editText}
+                              inputMode={a.kind === 'numeric' ? 'decimal' : undefined}
+                              aria-label={`${a.name} for ${r.name}`}
+                              onChange={(e) => setEditText(e.target.value)}
+                              onBlur={commitEdit}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault()
+                                  commitEdit()
+                                } else if (e.key === 'Escape') {
+                                  e.preventDefault()
+                                  setEditing(null)
+                                }
+                              }}
+                            />
+                          </span>
+                        )
+                      }
+                      if (editing0) {
+                        return (
+                          <button
+                            key={a.name}
+                            type="button"
+                            className={`mtable__cell mtable__attr mtable__celltrigger${numCls}`}
+                            role="cell"
+                            aria-label={`Edit ${a.name} for ${r.name}, currently ${val || 'empty'}`}
+                            onClick={() => {
+                              setEditing({ element: r.name, attr: a.name })
+                              setEditText(val)
+                            }}
+                          >
+                            {val !== '' ? val : <span className="mtable__cellempty">Set…</span>}
+                          </button>
+                        )
+                      }
+                      return (
+                        <span key={a.name} className={`mtable__cell mtable__attr${numCls}`} role="cell">
+                          {val}
+                        </span>
+                      )
+                    })}
                   </div>
                 )
               })

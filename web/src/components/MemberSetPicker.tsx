@@ -45,6 +45,74 @@ export default function MemberSetPicker({
     }
   }, [dimension])
 
+  // Parent -> children and child -> parents, for the relationship operators.
+  const { childrenOf, parentsOf } = useMemo(() => {
+    const childrenOf = new Map<string, string[]>()
+    const parentsOf = new Map<string, string[]>()
+    for (const e of dimension.edges) {
+      const kids = childrenOf.get(e.parent) ?? []
+      kids.push(e.child)
+      childrenOf.set(e.parent, kids)
+      const parents = parentsOf.get(e.child) ?? []
+      parents.push(e.parent)
+      parentsOf.set(e.child, parents)
+    }
+    return { childrenOf, parentsOf }
+  }, [dimension])
+  const hasHierarchy = dimension.edges.length > 0
+
+  // Replace the left selection with a relationship over the current selection.
+  // These mirror the standard OLAP set operators: direct children, all
+  // descendants, parents (ancestors), siblings (same parent), and the leaf
+  // descendants of the selection.
+  type Relation = 'children' | 'descendants' | 'parents' | 'ancestors' | 'siblings' | 'leaves'
+  const relate = (op: Relation) => {
+    const base = [...leftSelected]
+    if (base.length === 0) return
+    const out = new Set<string>()
+    if (op === 'children') {
+      base.forEach((n) => (childrenOf.get(n) ?? []).forEach((c) => out.add(c)))
+    } else if (op === 'parents') {
+      base.forEach((n) => (parentsOf.get(n) ?? []).forEach((p) => out.add(p)))
+    } else if (op === 'siblings') {
+      base.forEach((n) =>
+        (parentsOf.get(n) ?? []).forEach((p) =>
+          (childrenOf.get(p) ?? []).forEach((s) => out.add(s)),
+        ),
+      )
+    } else if (op === 'descendants' || op === 'leaves') {
+      const seen = new Set<string>()
+      const stack = [...base]
+      while (stack.length) {
+        const n = stack.pop() as string
+        const kids = childrenOf.get(n) ?? []
+        if (op === 'leaves' && kids.length === 0) out.add(n)
+        for (const c of kids) {
+          if (op === 'descendants') out.add(c)
+          if (!seen.has(c)) {
+            seen.add(c)
+            stack.push(c)
+          }
+        }
+      }
+    } else {
+      // ancestors: walk parents transitively
+      const seen = new Set<string>()
+      const stack = [...base]
+      while (stack.length) {
+        const n = stack.pop() as string
+        for (const p of parentsOf.get(n) ?? []) {
+          out.add(p)
+          if (!seen.has(p)) {
+            seen.add(p)
+            stack.push(p)
+          }
+        }
+      }
+    }
+    setLeftSelected(out)
+  }
+
   const includedSet = useMemo(() => new Set(value), [value])
 
   const transfer = (replace: boolean) => {
@@ -102,6 +170,29 @@ export default function MemberSetPicker({
           ) : null}
           <span className="set-picker__selcount muted">{leftSelected.size} selected</span>
         </div>
+        {hasHierarchy ? (
+          <div className="set-picker__presets" role="group" aria-label="Relate to selection">
+            <span className="set-picker__relabel muted">Relate:</span>
+            <button type="button" disabled={leftSelected.size === 0} onClick={() => relate('children')} title="Replace with the direct children of the selection">
+              Children
+            </button>
+            <button type="button" disabled={leftSelected.size === 0} onClick={() => relate('descendants')} title="Replace with all descendants of the selection">
+              Descendants
+            </button>
+            <button type="button" disabled={leftSelected.size === 0} onClick={() => relate('parents')} title="Replace with the direct parents of the selection">
+              Parents
+            </button>
+            <button type="button" disabled={leftSelected.size === 0} onClick={() => relate('ancestors')} title="Replace with all ancestors of the selection">
+              Ancestors
+            </button>
+            <button type="button" disabled={leftSelected.size === 0} onClick={() => relate('siblings')} title="Replace with members sharing a parent with the selection">
+              Siblings
+            </button>
+            <button type="button" disabled={leftSelected.size === 0} onClick={() => relate('leaves')} title="Replace with the leaf descendants of the selection">
+              Leaves of
+            </button>
+          </div>
+        ) : null}
         <MemberTable
           dimension={dimension}
           selectable

@@ -160,9 +160,6 @@ function DimensionEditor({
   const [weight, setWeight] = useState('1')
   const [attrName, setAttrName] = useState('')
   const [attrKind, setAttrKind] = useState<AttributeKind>('text')
-  const [valAttr, setValAttr] = useState('')
-  const [valElement, setValElement] = useState('')
-  const [valText, setValText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
@@ -170,7 +167,6 @@ function DimensionEditor({
   const elementOptions = dimension.elements.map((e) => ({ value: e.name, label: e.name }))
   const parentOptions = consolidated.map((e) => ({ value: e.name, label: e.name }))
   const attributes = dimension.attributes ?? []
-  const attrOptions = attributes.map((a) => ({ value: a.name, label: a.name }))
 
   async function addMember() {
     const name = memberName.trim()
@@ -237,23 +233,14 @@ function DimensionEditor({
     }
   }
 
-  async function setValue() {
-    if (valAttr === '' || valElement === '') {
-      setError('Pick an attribute and a member.')
-      return
-    }
-    setBusy(true)
+  // Commit one inline attribute-cell edit from the member table.
+  async function editAttr(element: string, attribute: string, value: string) {
     setError(null)
     try {
-      await setAttributeValues(cube, dimension.name, valAttr, [
-        { element: valElement, value: valText },
-      ])
-      setValText('')
+      await setAttributeValues(cube, dimension.name, attribute, [{ element, value }])
       onChanged()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not set the value')
-    } finally {
-      setBusy(false)
     }
   }
 
@@ -262,7 +249,7 @@ function DimensionEditor({
       <div className="model-editor">
         <section>
           <h4 className="model-editor__h">Members</h4>
-          <MemberTable dimension={dimension} />
+          <MemberTable dimension={dimension} editable onAttrEdit={editAttr} />
           <div className="model-add-row">
             <Input
               value={memberName}
@@ -378,33 +365,10 @@ function DimensionEditor({
             </Button>
           </div>
           {attributes.length > 0 ? (
-            <div className="model-add-row">
-              <Select
-                value={valAttr}
-                onValueChange={setValAttr}
-                options={attrOptions}
-                placeholder="Attribute…"
-                ariaLabel="Attribute to set"
-              />
-              <span className="muted">of</span>
-              <Select
-                value={valElement}
-                onValueChange={setValElement}
-                options={elementOptions}
-                placeholder="Member…"
-                ariaLabel="Member"
-              />
-              <span className="muted">=</span>
-              <Input
-                value={valText}
-                onChange={(e) => setValText(e.target.value)}
-                placeholder="value"
-                aria-label="Attribute value"
-              />
-              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void setValue()}>
-                Set value
-              </Button>
-            </div>
+            <p className="field__msg field__msg--hint">
+              Set a value by clicking its cell in the members table above (turn on the attribute
+              column from Columns if it is hidden).
+            </p>
           ) : null}
         </section>
 
