@@ -359,21 +359,28 @@ async function dimensionNamespace(): Promise<Node[]> {
     },
   })
 
-  const embeddedNode = (cube: string, d: DimensionDto): Node => ({
-    id: `cube:${cube}/dim:${d.name}`,
-    label: d.name,
-    icon: '⬡',
-    selection: { kind: 'cube-dimension', cube, dim: d.name },
-    // An embedded dimension can be promoted into the global registry so other
-    // cubes can reference it (ADR-0031 Phase 1), alongside the usual edit/sets.
-    menu: [...CUBE_DIM_MENU, { action: 'promote-dimension', label: 'Reuse in other cubes…' }],
-    actionCtx: { cube, dim: d.name },
-    loader: async () =>
-      elementTreeNodes(`cube:${cube}/dim:${d.name}`, buildElementTree(d), CUBE_DIM_MENU, {
-        cube,
-        dim: d.name,
-      }),
-  })
+  const embeddedNode = (cube: string, d: DimensionDto): Node => {
+    // A `dimlib:` prefix keeps this id distinct from the under-cube node
+    // (`cube:${cube}/dim:...`). The same embedded dimension shows in BOTH the cube
+    // tree and this global list (the ADR-0031 union), and the tree's expand /
+    // context-menu / focus state is keyed by node id, so identical ids would
+    // couple the two locations (expanding or opening a menu in one fires in both).
+    // Selection still carries the same `cube-dimension` target, so either row
+    // opens the same dimension.
+    const id = `dimlib:cube:${cube}/dim:${d.name}`
+    return {
+      id,
+      label: d.name,
+      icon: '⬡',
+      selection: { kind: 'cube-dimension', cube, dim: d.name },
+      // An embedded dimension can be promoted into the global registry so other
+      // cubes can reference it (ADR-0031 Phase 1), alongside the usual edit/sets.
+      menu: [...CUBE_DIM_MENU, { action: 'promote-dimension', label: 'Reuse in other cubes…' }],
+      actionCtx: { cube, dim: d.name },
+      loader: async () =>
+        elementTreeNodes(id, buildElementTree(d), CUBE_DIM_MENU, { cube, dim: d.name }),
+    }
+  }
 
   const [registry, cubes] = await Promise.all([listDimensions(), listCubes()])
   // Read each cube's dimensions. A cube the caller cannot read (403) is
@@ -774,7 +781,12 @@ export default function ModelExplorer({
         )
       }
       const isOpen = searching ? searchExpand.has(node.id) : expanded.has(node.id)
-      const isSel = node.id === selectedId
+      // Highlight by the underlying selection, not the node id: a dimension shown
+      // in two tree locations (the cube tree and the global list) has distinct ids
+      // but the same selection, so selecting it highlights wherever it appears.
+      const isSel = node.selection
+        ? selectionId(node.selection) === selectedId
+        : node.id === selectedId
       // While searching, only the ancestors of matches are expandable (they hold
       // matching descendants); a matched dead-end row shows no twisty so it never
       // presents an expand affordance that, under the search filter, reveals

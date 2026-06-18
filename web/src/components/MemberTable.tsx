@@ -29,9 +29,9 @@ function matcher(query: string): (s: string) => boolean {
 }
 
 const KIND_LABEL: Record<ElementKind, string> = {
-  numeric: 'Number',
-  string: 'Text',
-  consolidated: 'Total',
+  numeric: 'Numeric',
+  string: 'String',
+  consolidated: 'Consolidation',
 }
 
 interface Row {
