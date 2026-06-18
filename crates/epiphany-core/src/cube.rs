@@ -610,6 +610,68 @@ impl Cube {
         Ok(())
     }
 
+    /// Add `child` to the consolidation `parent` ADDITIVELY: the new
+    /// `parent -> child` edge is created while every existing edge of `child`
+    /// (its membership in other consolidations, or its place as a root) is kept.
+    /// This is the OLAP "add to a consolidation" operation, where a member may
+    /// roll up to multiple consolidations (alternate hierarchies). Unlike
+    /// [`Self::reparent_element`], it never detaches the child from anything.
+    ///
+    /// A numeric/string `parent` is converted to a consolidation first (so it can
+    /// hold a child), and its own stored cell is dropped (a consolidation is
+    /// computed, not stored), mirroring [`Self::reparent_element`]. An edge-only
+    /// change otherwise, so no cell remap.
+    ///
+    /// Idempotent: re-adding an edge that already exists is a no-op (it does not
+    /// error and does not duplicate the edge). Transactional: a self-parent or a
+    /// cycle is rejected and the cube is unchanged.
+    pub fn add_child_element(
+        &mut self,
+        dimension: &str,
+        parent: &str,
+        child: &str,
+        weight: i64,
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.clone();
+        let dim = &mut next.dimensions[d];
+        let parent_idx = dim
+            .index_of(parent)
+            .ok_or_else(|| ModelError::ElementNotFound {
+                dimension: dimension.to_string(),
+                element: parent.to_string(),
+            })?;
+        let child_idx = dim
+            .index_of(child)
+            .ok_or_else(|| ModelError::ElementNotFound {
+                dimension: dimension.to_string(),
+                element: child.to_string(),
+            })?;
+        // Idempotent: an existing parent -> child edge is left untouched (no
+        // duplicate, no error). The kind/weight stay as they are.
+        if dim.children_of(parent_idx)?.contains(&child_idx) {
+            return Ok(());
+        }
+        // A numeric/string parent gains a child, which converts it to a
+        // consolidation (so add_child accepts it). Its stored cell is then dropped
+        // (a consolidation is computed, not stored), mirroring reparent_element.
+        let parent_was_leaf = matches!(
+            dim.element(parent_idx)?.kind,
+            ElementKind::Leaf | ElementKind::String
+        );
+        if parent_was_leaf {
+            dim.set_kind(parent_idx, ElementKind::Consolidated)?;
+        }
+        // Additive: add_child appends the edge and keeps the child's other edges,
+        // validating self-parent, cycle, and a non-consolidated parent.
+        dim.add_child(parent_idx, child_idx, weight)?;
+        if parent_was_leaf {
+            next.drop_cells_for_element(d, parent_idx, true, true);
+        }
+        *self = next;
+        Ok(())
+    }
+
     /// Convert a dimension element's kind. A numeric/string change re-types the
     /// element's stored cells (an incompatible value is cleared, not crashed); a
     /// change to consolidated drops the element's stored leaf value (a
@@ -2072,6 +2134,25 @@ mod tests {
         // South now reads as a pure consolidation of its child East (30), with no
         // stale 20 lingering.
         assert_eq!(read(&reloaded.cube, "South", "Sales"), fix(30));
+    }
+
+    #[test]
+    fn add_child_is_additive_and_keeps_other_parents() {
+        // ADR-0036 + UAT: adding a member to a consolidation must NOT remove it
+        // from any other consolidation it already rolls up to (alternate
+        // hierarchies are valid), unlike reparent which detaches first.
+        let mut cube = edit_cube(); // North/South/East are leaves under Total.
+        // A second consolidation; North will roll up to BOTH Total and Coastal.
+        cube.insert_element_at("Region", "Coastal", ElementKind::Consolidated, Position::AtEnd)
+            .unwrap();
+        cube.add_child_element("Region", "Coastal", "North", 1).unwrap();
+        // North still contributes to Total (it was NOT detached): 10+20+30 = 60.
+        assert_eq!(read(&cube, "Total", "Sales"), fix(60));
+        // And it now also rolls up to Coastal = North's 10.
+        assert_eq!(read(&cube, "Coastal", "Sales"), fix(10));
+        // Idempotent: re-adding the same edge changes nothing.
+        cube.add_child_element("Region", "Coastal", "North", 1).unwrap();
+        assert_eq!(read(&cube, "Coastal", "Sales"), fix(10));
     }
 
     #[test]

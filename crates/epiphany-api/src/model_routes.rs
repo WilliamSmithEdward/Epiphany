@@ -108,6 +108,7 @@ struct AttributeValueDto {
 ///
 /// - `{ "op": "reorder", "new_order": [..] }`
 /// - `{ "op": "reparent", "child": "..", "new_parent": ".."|null, "weight": 1 }`
+/// - `{ "op": "add_child", "parent": "..", "child": "..", "weight": 1 }`
 /// - `{ "op": "set_kind", "element": "..", "kind": "numeric"|"string"|"consolidated" }`
 /// - `{ "op": "delete", "element": ".." }`
 /// - `{ "op": "insert", "name": "..", "kind": "..", "position": { "at": "end"|"before"|"after", "ref": ".." } }`
@@ -122,6 +123,12 @@ pub(crate) enum DimensionEditBody {
         child: String,
         #[serde(default)]
         new_parent: Option<String>,
+        #[serde(default = "one")]
+        weight: i64,
+    },
+    AddChild {
+        parent: String,
+        child: String,
         #[serde(default = "one")]
         weight: i64,
     },
@@ -175,6 +182,15 @@ impl DimensionEditBody {
                 new_parent,
                 weight,
             },
+            DimensionEditBody::AddChild {
+                parent,
+                child,
+                weight,
+            } => DimensionEdit::AddChild {
+                parent,
+                child,
+                weight,
+            },
             DimensionEditBody::SetKind { element, kind } => DimensionEdit::SetKind {
                 element,
                 kind: parse_element_kind(&kind)?,
@@ -199,15 +215,19 @@ impl DimensionEditBody {
         })
     }
 
-    /// Whether this edit can drop stored cell data (a delete, or a kind conversion
-    /// that may clear values). Such edits surface or destroy values across the
-    /// whole dimension, so an element-restricted caller is denied (fail-closed):
-    /// they must not delete or convert a member whose values they cannot see.
-    /// A reorder/reparent only moves members and never destroys a value.
+    /// Whether this edit can drop stored cell data (a delete, a kind conversion
+    /// that may clear values, or an add_child onto a leaf/string parent that
+    /// converts it to a consolidation and clears its stored value). Such edits
+    /// surface or destroy values across the whole dimension, so an
+    /// element-restricted caller is denied (fail-closed): they must not delete,
+    /// convert, or consolidate a member whose values they cannot see. A
+    /// reorder/reparent only moves members and never destroys a value.
     pub(crate) fn touches_element_data(&self) -> bool {
         matches!(
             self,
-            DimensionEditBody::Delete { .. } | DimensionEditBody::SetKind { .. }
+            DimensionEditBody::Delete { .. }
+                | DimensionEditBody::SetKind { .. }
+                | DimensionEditBody::AddChild { .. }
         )
     }
 }

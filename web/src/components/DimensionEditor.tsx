@@ -60,14 +60,17 @@ interface FlatRow {
 /**
  * The standalone, cube-agnostic, hierarchy-only dimension editor (ADR-0036).
  * Members are rows in a tree: each row is draggable and drives structural edits
- * (reorder / reparent / set kind / delete / insert) through the new endpoints.
+ * (reorder / reparent / add child / set kind / delete / insert) through the
+ * new endpoints.
  *
  * Drag-and-drop drop zones: while dragging a member over a row, the row splits
  * into thirds. The top third places the dragged member BEFORE the target, the
  * bottom third places it AFTER (both compute the full new member order and POST
- * a `reorder`), and the middle third places it AS A CHILD of the target (POST a
- * `reparent`, which the backend turns the target into a consolidation for).
- * Dropping onto the empty area below the list detaches the member to a root.
+ * a `reorder`), and the middle third adds the dragged member AS A CHILD of the
+ * target (POST an `add_child`, which is additive: the member keeps its existing
+ * parents and the backend turns a leaf/string target into a consolidation).
+ * Dropping onto the empty area below the list detaches the member to a root
+ * (a `reparent` with no new parent).
  *
  * Right-click (or the row's "..." button) opens a menu: Add member before / after
  * / as child, Convert to Numeric / String / Consolidation, Detach, and Delete.
@@ -220,17 +223,42 @@ export default function DimensionEditor({
     [dimension],
   )
 
-  // Resolve a drop: before/after -> reorder; as-child -> reparent onto target.
+  // Add `child` to consolidation `parent` ADDITIVELY: the child keeps its existing
+  // parents (a member may roll up to several consolidations), unlike Detach +
+  // reparent which moves it. When the target is currently a leaf/string it gets
+  // converted to a consolidation and any value stored directly on it is cleared,
+  // so confirm first; a target that is already a consolidation is purely additive
+  // and needs no confirmation.
+  const addChild = useCallback(
+    async (parent: string, child: string): Promise<boolean> => {
+      if (parent === child) return false
+      const parentKind = kindOf.get(parent)
+      if (parentKind && parentKind !== 'consolidated') {
+        const ok = await confirm({
+          title: `Add "${child}" as a child of "${parent}"`,
+          body: `"${parent}" becomes a Consolidation, which is calculated from its children, so any value stored directly on "${parent}" will be cleared. Continue?`,
+          confirmLabel: 'Add as child',
+          danger: true,
+        })
+        if (!ok) return false
+      }
+      return runEdit({ op: 'add_child', parent, child })
+    },
+    [confirm, kindOf, runEdit],
+  )
+
+  // Resolve a drop: before/after -> reorder; as-child -> add the moved member as a
+  // child of the target additively (it keeps its existing parents).
   const doDrop = useCallback(
     (moved: string, targetName: string, zone: DropZone) => {
       if (moved === targetName) return
       if (zone === 'as-child') {
-        void runEdit({ op: 'reparent', child: moved, new_parent: targetName })
+        void addChild(targetName, moved)
       } else {
         void runEdit({ op: 'reorder', new_order: orderMoving(moved, targetName, zone) })
       }
     },
-    [runEdit, orderMoving],
+    [runEdit, orderMoving, addChild],
   )
 
   // Compute the drop zone (top third / middle / bottom third) from the pointer
@@ -261,17 +289,16 @@ export default function DimensionEditor({
     }
     let ok: boolean
     if (adding.at === 'as-child' && adding.ref) {
-      // Insert at the end, then reparent it under the chosen member (which the
-      // backend converts to a consolidation). Two committed edits.
+      // Insert at the end, then add it as a child of the chosen member
+      // additively (which keeps any other members the parent already holds and
+      // converts a leaf/string parent to a consolidation). Two committed edits.
       const inserted = await runEdit({
         op: 'insert',
         name,
         kind: addKind,
         position: { at: 'end' },
       })
-      ok = inserted
-        ? await runEdit({ op: 'reparent', child: name, new_parent: adding.ref })
-        : false
+      ok = inserted ? await addChild(adding.ref, name) : false
     } else {
       const position: InsertPosition = adding.ref
         ? { at: adding.at as 'before' | 'after', ref: adding.ref }
@@ -279,7 +306,7 @@ export default function DimensionEditor({
       ok = await runEdit({ op: 'insert', name, kind: addKind, position })
     }
     if (ok) setAdding(null)
-  }, [adding, addName, addKind, runEdit])
+  }, [adding, addName, addKind, runEdit, addChild])
 
   const convert = useCallback(
     async (name: string, kind: ElementKind) => {

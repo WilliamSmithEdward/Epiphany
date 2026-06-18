@@ -569,6 +569,21 @@ impl Store {
         self.checkpoint()
     }
 
+    /// Add a member to a consolidation additively (keeping its other parents),
+    /// then checkpoint.
+    pub fn add_child_element(
+        &mut self,
+        dimension: &str,
+        parent: &str,
+        child: &str,
+        weight: i64,
+    ) -> Result<(), PersistError> {
+        self.model
+            .cube
+            .add_child_element(dimension, parent, child, weight)?;
+        self.checkpoint()
+    }
+
     /// Convert a member's kind (re-typing or clearing its cells), then checkpoint.
     pub fn set_element_kind(
         &mut self,
@@ -615,6 +630,16 @@ pub enum DimensionEdit {
         new_parent: Option<String>,
         weight: i64,
     },
+    /// Add `child` to the consolidation `parent` additively, keeping the child's
+    /// existing parents (a member may roll up to multiple consolidations). A
+    /// numeric/string `parent` is converted to a consolidation first. Idempotent
+    /// when the edge already exists. Unlike `Reparent`, it never detaches the
+    /// child from any other consolidation.
+    AddChild {
+        parent: String,
+        child: String,
+        weight: i64,
+    },
     /// Convert `element` to `kind`.
     SetKind { element: String, kind: ElementKind },
     /// Delete `element` (rejected if it still has children).
@@ -643,6 +668,11 @@ impl Store {
                 new_parent,
                 weight,
             } => self.reparent_element(dimension, child, new_parent.as_deref(), *weight),
+            DimensionEdit::AddChild {
+                parent,
+                child,
+                weight,
+            } => self.add_child_element(dimension, parent, child, *weight),
             DimensionEdit::SetKind { element, kind } => {
                 self.set_element_kind(dimension, element, *kind)
             }

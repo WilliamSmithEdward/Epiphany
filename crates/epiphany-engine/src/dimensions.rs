@@ -201,6 +201,37 @@ impl SharedDimension {
                 };
                 next.reparent(child_idx, parent_idx, *weight)?;
             }
+            DimensionEdit::AddChild {
+                parent,
+                child,
+                weight,
+            } => {
+                let parent_idx =
+                    next.index_of(parent)
+                        .ok_or_else(|| ModelError::ElementNotFound {
+                            dimension: next.name().to_string(),
+                            element: parent.clone(),
+                        })?;
+                let child_idx =
+                    next.index_of(child)
+                        .ok_or_else(|| ModelError::ElementNotFound {
+                            dimension: next.name().to_string(),
+                            element: child.clone(),
+                        })?;
+                // Idempotent: an existing parent -> child edge is left untouched.
+                // The registry copy has no cells, so it only mirrors the edge and
+                // the parent's leaf -> consolidation conversion (additive: the
+                // child keeps every other parent).
+                if !next.children_of(parent_idx)?.contains(&child_idx) {
+                    if matches!(
+                        next.element(parent_idx)?.kind,
+                        ElementKind::Leaf | ElementKind::String
+                    ) {
+                        next.set_kind(parent_idx, ElementKind::Consolidated)?;
+                    }
+                    next.add_child(parent_idx, child_idx, *weight)?;
+                }
+            }
             DimensionEdit::SetKind { element, kind } => {
                 let element_idx =
                     next.index_of(element)

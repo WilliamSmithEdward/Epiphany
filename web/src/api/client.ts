@@ -1058,10 +1058,14 @@ export interface InsertPosition {
 /** A single structural edit on a dimension, tagged by `op` (ADR-0036). Each
  * changes the dimension transactionally and is reflected in a new committed
  * version. `reorder` carries a full permutation of the current member names;
- * `reparent` with `new_parent: null` detaches a member to a root. */
+ * `reparent` with `new_parent: null` detaches a member to a root. `add_child`
+ * adds a member to a consolidation additively, keeping its existing parents (a
+ * member may roll up to multiple consolidations); unlike `reparent` it never
+ * detaches the child from any other consolidation. */
 export type DimensionEdit =
   | { op: 'reorder'; new_order: string[] }
   | { op: 'reparent'; child: string; new_parent: string | null; weight?: number }
+  | { op: 'add_child'; parent: string; child: string; weight?: number }
   | { op: 'set_kind'; element: string; kind: ElementKind }
   | { op: 'delete'; element: string }
   | { op: 'insert'; name: string; kind: ElementKind; position: InsertPosition }
