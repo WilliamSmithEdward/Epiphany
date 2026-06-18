@@ -1,15 +1,15 @@
 import { useMemo, useState, type DragEvent } from 'react'
 import type { DimensionDto } from '../api/client'
-import { buildElementTree, type TreeNode } from '../model/tree'
-import ElementTree from './ElementTree'
+import MemberTable from './MemberTable'
 
 /**
- * A two-pane member set builder. The left pane lists every element of the
- * dimension as a searchable, expandable hierarchy with selection helpers
- * (roots / leaves / all); selected elements are sent to the right pane as an
- * addition or a replacement. The right pane is the ordered, included set: it can
- * be sorted, reordered (drag or keyboard), and trimmed. The ordered member list
- * is the value, so a set keeps the order the user arranges here.
+ * A two-pane member set builder. The left pane is a scalable member table
+ * (search, attribute columns, flat/hierarchy, virtualization; ADR-0032) with a
+ * checkbox per row plus relationship presets (roots / leaves / all); selected
+ * members are sent to the right pane as an addition or a replacement. The right
+ * pane is the ordered, included set: sortable, reorderable (drag or keyboard),
+ * and trimmable. The ordered member list is the value, so a set keeps the order
+ * the user arranges here.
  */
 export default function MemberSetPicker({
   dimension,
@@ -20,71 +20,8 @@ export default function MemberSetPicker({
   value: string[]
   onChange: (members: string[]) => void
 }) {
-  const tree = useMemo(() => buildElementTree(dimension), [dimension])
   const [leftSelected, setLeftSelected] = useState<Set<string>>(() => new Set())
-  const [search, setSearch] = useState('')
   const [dragIndex, setDragIndex] = useState<number | null>(null)
-  // Controlled expansion of the available tree (by node path), so the level
-  // controls can expand/collapse all or one level at a time.
-  const [treeExpanded, setTreeExpanded] = useState<Set<string>>(() => new Set())
-
-  // Every expandable node's path (a parent with children), for "expand all".
-  const allExpandablePaths = useMemo(() => {
-    const out = new Set<string>()
-    const walk = (ns: TreeNode[]) =>
-      ns.forEach((n) => {
-        if (n.children.length) {
-          out.add(n.path)
-          walk(n.children)
-        }
-      })
-    walk(tree)
-    return out
-  }, [tree])
-  const hasHierarchy = allExpandablePaths.size > 0
-
-  const treeExpandAll = () => setTreeExpanded(new Set(allExpandablePaths))
-  const treeCollapseAll = () => setTreeExpanded(new Set())
-  // Expand the frontier: open every visible collapsed parent, one level per click.
-  const treeExpandNext = () =>
-    setTreeExpanded((cur) => {
-      const next = new Set(cur)
-      const walk = (ns: TreeNode[], parentOpen: boolean) =>
-        ns.forEach((n) => {
-          if (parentOpen && n.children.length && !cur.has(n.path)) next.add(n.path)
-          walk(n.children, parentOpen && cur.has(n.path))
-        })
-      walk(tree, true)
-      return next
-    })
-  // Collapse the deepest currently-expanded level.
-  const treeCollapsePrev = () => {
-    let maxDepth = -1
-    const measure = (ns: TreeNode[], depth: number, parentOpen: boolean) =>
-      ns.forEach((n) => {
-        if (parentOpen && treeExpanded.has(n.path)) maxDepth = Math.max(maxDepth, depth)
-        measure(n.children, depth + 1, parentOpen && treeExpanded.has(n.path))
-      })
-    measure(tree, 0, true)
-    if (maxDepth < 0) return
-    setTreeExpanded((cur) => {
-      const next = new Set(cur)
-      const collapse = (ns: TreeNode[], depth: number, parentOpen: boolean) =>
-        ns.forEach((n) => {
-          if (parentOpen && cur.has(n.path) && depth === maxDepth) next.delete(n.path)
-          collapse(n.children, depth + 1, parentOpen && cur.has(n.path))
-        })
-      collapse(tree, 0, true)
-      return next
-    })
-  }
-  const toggleExpand = (path: string) =>
-    setTreeExpanded((cur) => {
-      const next = new Set(cur)
-      if (next.has(path)) next.delete(path)
-      else next.add(path)
-      return next
-    })
 
   // Dimension order: for stable add ordering and the "model order" sort.
   const order = useMemo(
@@ -109,14 +46,6 @@ export default function MemberSetPicker({
   }, [dimension])
 
   const includedSet = useMemo(() => new Set(value), [value])
-
-  const toggleLeft = (name: string) =>
-    setLeftSelected((s) => {
-      const n = new Set(s)
-      if (n.has(name)) n.delete(name)
-      else n.add(name)
-      return n
-    })
 
   const transfer = (replace: boolean) => {
     const picked = [...leftSelected].sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
@@ -153,24 +82,9 @@ export default function MemberSetPicker({
     setDragIndex(null)
   }
 
-  const q = search.trim().toLowerCase()
-  const matches = q ? all.filter((n) => n.toLowerCase().includes(q)) : []
-
   return (
     <div className="set-picker">
       <section className="set-picker__pane" aria-label="Available members">
-        <header className="set-picker__head">
-          <span>Available</span>
-          <span className="muted">{all.length}</span>
-        </header>
-        <input
-          type="search"
-          className="set-picker__search"
-          value={search}
-          placeholder="Search members"
-          aria-label="Search available members"
-          onChange={(e) => setSearch(e.target.value)}
-        />
         <div className="set-picker__presets" role="group" aria-label="Select">
           <button type="button" onClick={() => setLeftSelected(new Set(roots))}>
             Roots
@@ -186,54 +100,14 @@ export default function MemberSetPicker({
               Clear
             </button>
           ) : null}
+          <span className="set-picker__selcount muted">{leftSelected.size} selected</span>
         </div>
-        {hasHierarchy && !q ? (
-          <div className="set-picker__levels" role="group" aria-label="Expand levels">
-            <button type="button" onClick={treeExpandNext} title="Expand to the next level">
-              + level
-            </button>
-            <button type="button" onClick={treeCollapsePrev} title="Collapse to the previous level">
-              - level
-            </button>
-            <button type="button" onClick={treeExpandAll} title="Expand all">
-              Expand all
-            </button>
-            <button type="button" onClick={treeCollapseAll} title="Collapse all">
-              Collapse all
-            </button>
-          </div>
-        ) : null}
-        <div className="set-picker__list">
-          {q ? (
-            matches.length === 0 ? (
-              <p className="muted">No members match &ldquo;{search.trim()}&rdquo;</p>
-            ) : (
-              <ul className="set-picker__flat">
-                {matches.map((n) => (
-                  <li key={n}>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={leftSelected.has(n)}
-                        onChange={() => toggleLeft(n)}
-                      />
-                      {n}
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            )
-          ) : (
-            <ElementTree
-              nodes={tree}
-              selected={leftSelected}
-              onToggle={toggleLeft}
-              expanded={treeExpanded}
-              onToggleExpand={toggleExpand}
-            />
-          )}
-        </div>
-        <p className="muted">{leftSelected.size} selected</p>
+        <MemberTable
+          dimension={dimension}
+          selectable
+          selected={leftSelected}
+          onSelectedChange={setLeftSelected}
+        />
       </section>
 
       <div className="set-picker__controls" role="group" aria-label="Transfer">

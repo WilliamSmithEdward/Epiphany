@@ -5,12 +5,13 @@ import {
   growDimension,
   listDimensions,
   registerDimension,
+  type DimensionDto,
   type ElementKind,
   type SharedDimensionDetail,
   type SharedDimensionSummary,
 } from '../api/client'
+import MemberTable from './MemberTable'
 import {
-  Badge,
   Button,
   Card,
   Dialog,
@@ -28,17 +29,6 @@ const KIND_OPTIONS = [
   { value: 'string', label: 'Text (input cell)' },
   { value: 'consolidated', label: 'Total (rolls up children)' },
 ]
-
-function kindBadge(kind: ElementKind) {
-  switch (kind) {
-    case 'consolidated':
-      return <Badge tone="info">total</Badge>
-    case 'string':
-      return <Badge tone="neutral">text</Badge>
-    default:
-      return <Badge tone="neutral">number</Badge>
-  }
-}
 
 // The shared Dimension Library (ADR-0024): register reusable dimensions once and
 // reference them from many cubes. Editing a shared dimension here fans the change
@@ -193,6 +183,13 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
     load()
   }, [load])
 
+  // Adapt the registry detail to the shape the shared MemberTable consumes
+  // (registry dimensions carry no attributes in v1, ADR-0031).
+  const memberDto = useMemo<DimensionDto | null>(
+    () => (detail ? { name: detail.name, elements: detail.elements, edges: detail.edges } : null),
+    [detail],
+  )
+
   if (!detail) {
     return null
   }
@@ -293,18 +290,7 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
       <div className="model-editor">
         <section>
           <h4 className="model-editor__h">Members</h4>
-          {detail.elements.length === 0 ? (
-            <p className="muted">No members yet.</p>
-          ) : (
-            <ul className="model-members">
-              {detail.elements.map((e) => (
-                <li key={e.name} className="model-member">
-                  <span className="model-member__name">{e.name}</span>
-                  {kindBadge(e.kind)}
-                </li>
-              ))}
-            </ul>
-          )}
+          {memberDto ? <MemberTable dimension={memberDto} /> : null}
           <div className="model-add-row">
             <Input
               value={memberName}

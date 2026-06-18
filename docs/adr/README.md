@@ -35,5 +35,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0029](0029-data-spreading.md) | Data spreading (equal, proportional, repeat, clear) | Accepted | Data entry |
 | [0030](0030-http-connector-and-secret-store.md) | HTTP fetch connector and secret store | Accepted | Connectors |
 | [0031](0031-global-dimension-namespace.md) | Global dimension namespace (one list, no shared/local split) | Accepted | Model architecture |
+| [0032](0032-scalable-member-table.md) | Scalable member table for the dimension and set editors | Accepted | Web UI |
 
 > All originally-reserved ADR numbers are allocated; later decisions continue from 0020.
