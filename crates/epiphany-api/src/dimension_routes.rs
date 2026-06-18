@@ -23,10 +23,11 @@ use crate::authz::{
     require_kind_access,
 };
 use crate::model_routes::{
-    build_dimension_def, parse_element_kind, validate_name, ElementMemberDto, LocalEdgeDto,
+    build_dimension_def, parse_element_kind, validate_name, DimensionEditBody, ElementMemberDto,
+    LocalEdgeDto,
 };
 use crate::resolve::kind_str;
-use crate::routes::{map_batch_error, snapshot};
+use crate::routes::{broadcast_with_version, map_batch_error, snapshot};
 use crate::{ApiError, AppState};
 
 // ---- request bodies ----
@@ -423,6 +424,93 @@ pub(crate) async fn delete_dimension(
         true,
     );
     Ok(Json(serde_json::json!({ "deleted": id })))
+}
+
+/// `POST /api/v1/dimensions/{id}/edit` -> apply one structural edit (ADR-0036) to
+/// a registry dimension by id: reorder, reparent, set kind, delete, or insert. The
+/// edit applies to the registry generation and **fans out to every referencing
+/// cube** (each remaps its own stored cells transactionally), so all materialized
+/// copies stay consistent; a rejected edit changes nothing and surfaces as 422.
+/// Requires global `Dimension:Write`. A delete or kind conversion can drop stored
+/// values, so a caller element-restricted on *any* referencing cube is denied
+/// (fail-closed): they must not destroy or convert a member hidden from them on
+/// any copy.
+///
+/// The engine edits by `(cube, dimension name)`, so the id is resolved to the
+/// dimension's name plus any one referencing cube to act as the entry point; the
+/// engine's fan-out then reaches every referencing cube (including that one). A
+/// registry dimension that no cube references has no materialized copy to edit, so
+/// it is a 409 (reference it from a cube first, or grow/delete it instead).
+pub(crate) async fn edit_dimension_by_id(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Path(id): Path<u64>,
+    Json(body): Json<DimensionEditBody>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Dimension,
+        None,
+        AccessLevel::Write,
+    )?;
+
+    // Resolve the id to the dimension's name and its referencing cubes under the
+    // current registry snapshot.
+    let registry = state.engine.dimension_registry();
+    let shared = registry
+        .get(DimensionId(id))
+        .ok_or_else(|| ApiError::not_found(format!("unknown shared dimension #{id}")))?;
+    let dim_name = shared.dimension.name().to_string();
+    let references = registry.referencing(DimensionId(id));
+    // An unreferenced registry dimension has no cube-backed copy to remap; the
+    // engine edits cells per referencing cube, so there is nothing to apply to.
+    let entry_cube = references.first().cloned().ok_or_else(|| {
+        ApiError::conflict(format!(
+            "shared dimension #{id} is not referenced by any cube; reference it from a cube before \
+             editing its structure"
+        ))
+    })?;
+
+    // A data-dropping edit (delete/convert) must not be reachable by a caller with
+    // any element restriction on any referencing cube (fail-closed, defense in
+    // depth across the shared copies). Mirrors denied_registry_elements' union.
+    if body.touches_element_data() {
+        for cube in &references {
+            if let Some(snap) = state.engine.snapshot(cube) {
+                deny_if_element_restricted(&state, &auth, &snap)?;
+            }
+        }
+    }
+
+    let edit = body.into_edit()?;
+    let outcome = state
+        .engine
+        .edit_dimension(&entry_cube, &dim_name, &edit)
+        .map_err(map_batch_error)?;
+
+    // Broadcast every fanned-out cube's new version so connected UIs refresh.
+    let fanned_out_to = state
+        .engine
+        .dimension_registry()
+        .referencing(DimensionId(id));
+    for cube in &fanned_out_to {
+        if let Some(version) = state.engine.version(cube) {
+            broadcast_with_version(&state, cube, version);
+        }
+    }
+
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&ObjectRef::global(ObjectKind::Dimension, format!("#{id}"))),
+        true,
+    );
+    Ok(Json(serde_json::json!({
+        "version": outcome.version,
+        "fanned_out_to": fanned_out_to,
+    })))
 }
 
 /// `POST /api/v1/cubes/{cube}/dimensions/{dim}/promote` -> promote a cube's

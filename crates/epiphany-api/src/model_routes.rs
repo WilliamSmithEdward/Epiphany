@@ -12,13 +12,14 @@ use serde::{Deserialize, Serialize};
 
 use epiphany_core::{
     AttributeKind, AttributeValue, DimensionDef, EdgeSpec, ElementKind, ElementSpec, Fixed,
+    Position,
 };
-use epiphany_engine::{CubeDimensionSpec, DimensionId};
+use epiphany_engine::{CubeDimensionSpec, DimensionEdit, DimensionId};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_kind_access, require_manage_cubes};
-use crate::routes::{broadcast, map_batch_error};
+use crate::authz::{audit, deny_if_element_restricted, require_kind_access, require_manage_cubes};
+use crate::routes::{broadcast, broadcast_with_version, map_batch_error, snapshot};
 use crate::{ApiError, AppState};
 
 // ---- request bodies ----
@@ -99,6 +100,116 @@ pub(crate) struct AttributeValuesBody {
 struct AttributeValueDto {
     element: String,
     value: String,
+}
+
+/// One structural dimension edit (ADR-0036), as a tagged `op` body shared by the
+/// cube-dimension and registry-dimension edit endpoints. Each variant maps
+/// directly to an [`epiphany_engine::DimensionEdit`]:
+///
+/// - `{ "op": "reorder", "new_order": [..] }`
+/// - `{ "op": "reparent", "child": "..", "new_parent": ".."|null, "weight": 1 }`
+/// - `{ "op": "set_kind", "element": "..", "kind": "numeric"|"string"|"consolidated" }`
+/// - `{ "op": "delete", "element": ".." }`
+/// - `{ "op": "insert", "name": "..", "kind": "..", "position": { "at": "end"|"before"|"after", "ref": ".." } }`
+#[derive(Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub(crate) enum DimensionEditBody {
+    Reorder {
+        #[serde(default)]
+        new_order: Vec<String>,
+    },
+    Reparent {
+        child: String,
+        #[serde(default)]
+        new_parent: Option<String>,
+        #[serde(default = "one")]
+        weight: i64,
+    },
+    SetKind {
+        element: String,
+        kind: String,
+    },
+    Delete {
+        element: String,
+    },
+    Insert {
+        name: String,
+        kind: String,
+        #[serde(default)]
+        position: PositionDto,
+    },
+}
+
+/// Where an inserted member lands relative to the existing members (ADR-0036):
+/// `{ "at": "end" }` (the default), `{ "at": "before", "ref": ".." }`, or
+/// `{ "at": "after", "ref": ".." }`.
+#[derive(Deserialize, Default)]
+#[serde(tag = "at", rename_all = "snake_case")]
+pub(crate) enum PositionDto {
+    #[default]
+    End,
+    Before {
+        #[serde(rename = "ref")]
+        reference: String,
+    },
+    After {
+        #[serde(rename = "ref")]
+        reference: String,
+    },
+}
+
+impl DimensionEditBody {
+    /// Validate and lower this body into the engine's [`DimensionEdit`]. Whether
+    /// the resulting edit is actually applicable (a true permutation, no cycle, no
+    /// child-bearing delete) is the engine's call; this only validates names and
+    /// element kinds locally.
+    pub(crate) fn into_edit(self) -> Result<DimensionEdit, ApiError> {
+        Ok(match self {
+            DimensionEditBody::Reorder { new_order } => DimensionEdit::Reorder { new_order },
+            DimensionEditBody::Reparent {
+                child,
+                new_parent,
+                weight,
+            } => DimensionEdit::Reparent {
+                child,
+                new_parent,
+                weight,
+            },
+            DimensionEditBody::SetKind { element, kind } => DimensionEdit::SetKind {
+                element,
+                kind: parse_element_kind(&kind)?,
+            },
+            DimensionEditBody::Delete { element } => DimensionEdit::Delete { element },
+            DimensionEditBody::Insert {
+                name,
+                kind,
+                position,
+            } => {
+                validate_name("element", &name)?;
+                DimensionEdit::Insert {
+                    name,
+                    kind: parse_element_kind(&kind)?,
+                    position: match position {
+                        PositionDto::End => Position::AtEnd,
+                        PositionDto::Before { reference } => Position::Before(reference),
+                        PositionDto::After { reference } => Position::After(reference),
+                    },
+                }
+            }
+        })
+    }
+
+    /// Whether this edit can drop stored cell data (a delete, or a kind conversion
+    /// that may clear values). Such edits surface or destroy values across the
+    /// whole dimension, so an element-restricted caller is denied (fail-closed):
+    /// they must not delete or convert a member whose values they cannot see.
+    /// A reorder/reparent only moves members and never destroys a value.
+    pub(crate) fn touches_element_data(&self) -> bool {
+        matches!(
+            self,
+            DimensionEditBody::Delete { .. } | DimensionEditBody::SetKind { .. }
+        )
+    }
 }
 
 fn one() -> i64 {
@@ -432,6 +543,57 @@ pub(crate) async fn set_attribute_values(
         true,
     );
     broadcast(&state, &cube);
+    Ok(Json(CommitDto {
+        version: outcome.version,
+        elements_added: None,
+    }))
+}
+
+/// `POST /api/v1/cubes/{cube}/dimensions/{dim}/edit` -> apply one structural edit
+/// (ADR-0036) to a cube's dimension: reorder, reparent, set kind, delete, or
+/// insert. Index-changing edits remap the cube's stored cells transactionally, so
+/// a rejected edit (a non-permutation reorder, a cycle, a child-bearing delete, a
+/// consolidation that still has children) changes nothing and surfaces as 422.
+/// Requires `Dimension:Write` on the cube. A delete or kind conversion can drop
+/// stored values, so an element-restricted caller is denied (fail-closed): they
+/// must not destroy or convert a member whose values they cannot see. If the
+/// dimension is registry-backed for this cube, the engine fans the same edit out
+/// to every referencing cube so the shared copies stay consistent.
+pub(crate) async fn edit_cube_dimension(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Path((cube, dimension)): Path<(String, String)>,
+    Json(body): Json<DimensionEditBody>,
+) -> Result<Json<CommitDto>, ApiError> {
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Dimension,
+        Some(&cube),
+        AccessLevel::Write,
+    )?;
+    // A data-dropping edit (delete/convert) must not be reachable by a caller with
+    // any element restriction on this cube; mirrors the rule/flow/promote gates.
+    if body.touches_element_data() {
+        deny_if_element_restricted(&state, &auth, &snapshot(&state, &cube)?)?;
+    }
+    let edit = body.into_edit()?;
+    let outcome = state
+        .engine
+        .edit_dimension(&cube, &dimension, &edit)
+        .map_err(map_batch_error)?;
+    audit(
+        &state,
+        &auth.principal.username,
+        AuditAction::ObjectUpdate,
+        Some(&ObjectRef::in_cube(
+            ObjectKind::Dimension,
+            &cube,
+            &dimension,
+        )),
+        true,
+    );
+    broadcast_with_version(&state, &cube, outcome.version);
     Ok(Json(CommitDto {
         version: outcome.version,
         elements_added: None,

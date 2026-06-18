@@ -125,6 +125,18 @@ fn document() -> Value {
                     "422": { "description": "Kind conflict, non-consolidated parent, or cycle", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
                 }
             }},
+            "/api/v1/dimensions/{id}/edit": { "post": {
+                "summary": "Apply one structural edit (reorder/reparent/set_kind/delete/insert) to a registry dimension; fans out to every referencing cube remapping cells (ADR-0036)",
+                "security": bearer(),
+                "parameters": [dim_id_param()],
+                "requestBody": json_body("#/components/schemas/DimensionEditRequest"),
+                "responses": {
+                    "200": { "description": "The new committed version and the cubes the edit fanned out to" },
+                    "403": { "description": "An element-restricted caller attempted a delete or kind conversion", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+                    "409": { "description": "The dimension is referenced by no cube and has no copy to edit", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+                    "422": { "description": "The edit was rejected (non-permutation reorder, cycle, child-bearing delete, ...)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
+            }},
             "/api/v1/cubes/{cube}/elements": { "post": {
                 "summary": "Add elements and consolidation edges to existing dimensions (ADR-0021)",
                 "security": bearer(),
@@ -163,6 +175,17 @@ fn document() -> Value {
                 "responses": {
                     "200": { "description": "The commit version" },
                     "422": { "description": "Unknown element, kind mismatch, or alias collision", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
+            }},
+            "/api/v1/cubes/{cube}/dimensions/{dim}/edit": { "post": {
+                "summary": "Apply one structural edit (reorder/reparent/set_kind/delete/insert) to a cube's dimension, remapping stored cells (ADR-0036)",
+                "security": bearer(),
+                "parameters": [cube_param(), dim_param()],
+                "requestBody": json_body("#/components/schemas/DimensionEditRequest"),
+                "responses": {
+                    "200": { "description": "The new committed version" },
+                    "403": { "description": "An element-restricted caller attempted a delete or kind conversion", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+                    "422": { "description": "The edit was rejected (non-permutation reorder, cycle, child-bearing delete, ...)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
                 }
             }},
             "/api/v1/cubes/{cube}/cells/read": { "post": {
@@ -706,6 +729,20 @@ fn document() -> Value {
                         "parent": { "type": "string" }, "child": { "type": "string" },
                         "weight": { "type": "integer", "format": "int64" } },
                         "required": ["parent", "child"] } } } },
+                "DimensionEditRequest": { "type": "object", "description": "One structural edit (ADR-0036), tagged by `op`. reorder: a permutation of the current member names. reparent: move `child` under `new_parent` (omit/null to detach to a root). set_kind: convert `element` to numeric/string/consolidated. delete: remove `element` (rejected if it still has children). insert: add `name` of `kind` at `position` ({ at: end|before|after, ref: name }).", "properties": {
+                    "op": { "type": "string", "enum": ["reorder", "reparent", "set_kind", "delete", "insert"] },
+                    "new_order": { "type": "array", "items": { "type": "string" }, "description": "reorder: the full permutation of member names" },
+                    "child": { "type": "string", "description": "reparent: the member to move" },
+                    "new_parent": { "type": "string", "description": "reparent: the new consolidated parent, or null to detach to a root" },
+                    "weight": { "type": "integer", "format": "int64", "description": "reparent: the consolidation weight (default 1)" },
+                    "element": { "type": "string", "description": "set_kind/delete: the target member" },
+                    "kind": { "type": "string", "enum": ["numeric", "string", "consolidated"], "description": "set_kind/insert: the element kind" },
+                    "name": { "type": "string", "description": "insert: the new member name" },
+                    "position": { "type": "object", "description": "insert: where to place the new member", "properties": {
+                        "at": { "type": "string", "enum": ["end", "before", "after"] },
+                        "ref": { "type": "string", "description": "the anchor member for before/after" } },
+                        "required": ["at"] } },
+                    "required": ["op"] },
                 "AddElementsRequest": { "type": "object", "properties": {
                     "elements": { "type": "array", "items": { "type": "object", "properties": {
                         "dimension": { "type": "string" }, "name": { "type": "string" },
@@ -917,6 +954,7 @@ mod tests {
         "/api/v1/dimensions",
         "/api/v1/dimensions/{id}",
         "/api/v1/dimensions/{id}/elements",
+        "/api/v1/dimensions/{id}/edit",
         "/api/v1/cubes/{cube}/cells/read",
         "/api/v1/cubes/{cube}/cell",
         "/api/v1/cubes/{cube}/cells/batch",
@@ -925,6 +963,7 @@ mod tests {
         "/api/v1/cubes/{cube}/dimensions/{dim}/promote",
         "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}",
         "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}/values",
+        "/api/v1/cubes/{cube}/dimensions/{dim}/edit",
         "/api/v1/cubes/{cube}/dimensions/{dim}/subsets",
         "/api/v1/cubes/{cube}/dimensions/{dim}/subsets/preview",
         "/api/v1/cubes/{cube}/dimensions/{dim}/mdx/preview",

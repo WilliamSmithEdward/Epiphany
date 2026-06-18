@@ -236,6 +236,12 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/dimensions/{id}/elements",
             post(dimension_routes::grow_dimension),
         )
+        // Structural edit of a registry dimension by id (ADR-0036); fans out to
+        // every referencing cube.
+        .route(
+            "/api/v1/dimensions/{id}/edit",
+            post(dimension_routes::edit_dimension_by_id),
+        )
         // Promote a cube's embedded dimension into the global registry (ADR-0031).
         .route(
             "/api/v1/cubes/{cube}/dimensions/{dim}/promote",
@@ -253,6 +259,12 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/api/v1/cubes/{cube}/dimensions/{dim}/attributes/{attr}/values",
             put(model_routes::set_attribute_values),
+        )
+        // Structural edit of a cube's dimension (ADR-0036): reorder, reparent, set
+        // kind, delete, or insert, remapping the cube's stored cells.
+        .route(
+            "/api/v1/cubes/{cube}/dimensions/{dim}/edit",
+            post(model_routes::edit_cube_dimension),
         )
         .route("/api/v1/cubes/{cube}/cells/read", post(routes::read_cells))
         .route("/api/v1/cubes/{cube}/cell", put(routes::write_cell))
