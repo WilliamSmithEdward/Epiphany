@@ -160,7 +160,7 @@ function crumbs(s: Selection | null, opts: { autoNew?: boolean } = {}): Crumb[] 
     case 'cube-rules':
       return [cubesRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: 'Rules & feeders', to: null }]
     case 'dimension':
-      return [dimsRoot, { label: s.name || (opts.autoNew ? 'New global dimension' : 'Dimension'), to: null }]
+      return [dimsRoot, { label: s.name || (opts.autoNew ? 'New dimension' : 'Dimension'), to: null }]
     case 'flow':
       return [flowsRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: s.flow || 'New flow', to: null }]
     case 'schedule':
@@ -479,9 +479,9 @@ export default function CubeApp({
           const { cube: c, dim: d } = ctx
           void (async () => {
             const ok = await confirm({
-              title: 'Make dimension global',
-              body: `Make "${d}" a global dimension? It stays in ${c} with the same members and hierarchy, and other cubes can then reuse it; editing it later updates every cube that references it.`,
-              confirmLabel: 'Make global',
+              title: 'Reuse in other cubes',
+              body: `Make "${d}" available to other cubes? It stays in ${c} with the same members and hierarchy, and other cubes can then reuse it; editing it later updates every cube that uses it.`,
+              confirmLabel: 'Make reusable',
             })
             if (!ok) return
             try {
@@ -493,7 +493,7 @@ export default function CubeApp({
               navigate({ kind: 'dimension', id, name: d }, { dimId: id })
               closeTab(tabId({ kind: 'cube-dimension', cube: c, dim: d }))
             } catch (e) {
-              setError(e instanceof Error ? e.message : 'Could not make the dimension global')
+              setError(e instanceof Error ? e.message : 'Could not make the dimension reusable')
             }
           })()
           return
@@ -584,7 +584,7 @@ export default function CubeApp({
       id: 'go:dimensions',
       label: 'Go to Dimensions',
       group: 'Go to',
-      keywords: 'global library reusable',
+      keywords: 'reusable across cubes library',
       run: () => navigate({ kind: 'dimension', id: -1, name: '' }, {}),
     })
     list.push({
@@ -603,7 +603,7 @@ export default function CubeApp({
     if (isAdmin) {
       list.push({ id: 'new:cube', label: 'New cube…', group: 'Create', run: () => onAction('new-cube', {}) })
     }
-    list.push({ id: 'new:dimension', label: 'New global dimension…', group: 'Create', run: () => onAction('register-dimension', {}) })
+    list.push({ id: 'new:dimension', label: 'New dimension…', group: 'Create', run: () => onAction('register-dimension', {}) })
     list.push({ id: 'new:flow', label: 'New flow…', group: 'Create', run: () => onAction('new-flow', {}) })
     list.push({ id: 'new:schedule', label: 'New schedule…', group: 'Create', run: () => onAction('new-schedule', {}) })
     if (isAdmin) {

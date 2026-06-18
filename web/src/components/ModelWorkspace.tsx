@@ -583,7 +583,7 @@ function NewCubeDialog({
                     }
                     options={[
                       { value: 'inline', label: 'Define here' },
-                      { value: 'reference', label: 'Reuse a global dimension' },
+                      { value: 'reference', label: 'Reuse an existing dimension' },
                     ]}
                     ariaLabel={`Dimension ${i + 1} source`}
                   />
@@ -603,7 +603,7 @@ function NewCubeDialog({
                     onValueChange={(v) => update(i, { ref: Number(v) })}
                     options={libraryOptions}
                     placeholder="Pick a dimension…"
-                    ariaLabel={`Dimension ${i + 1} reuse a global dimension`}
+                    ariaLabel={`Dimension ${i + 1} reuse an existing dimension`}
                   />
                 )}
                 {dims.length > 1 ? (
@@ -638,7 +638,7 @@ function NewCubeDialog({
                 </>
               ) : (
                 <p className="field__msg field__msg--hint">
-                  This dimension reuses a global dimension. Editing it later updates every cube that
+                  This dimension reuses an existing dimension. Editing it later updates every cube that
                   references it.
                 </p>
               )}

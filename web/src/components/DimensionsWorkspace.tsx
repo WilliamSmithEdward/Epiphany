@@ -120,7 +120,7 @@ export default function DimensionsWorkspace({
   return (
     <div className="model-workspace">
       <Card
-        title="Global dimensions"
+        title="Dimensions"
         subtitle="Dimensions you can reuse across cubes. Editing one updates every cube that references it."
         actions={
           <Button size="sm" variant="primary" onClick={() => setShowNew(true)}>
@@ -130,7 +130,7 @@ export default function DimensionsWorkspace({
       >
         {error ? <p className="error" role="alert">{error}</p> : null}
         {list.length === 0 ? (
-          <EmptyState icon="⬡" title="No global dimensions yet">
+          <EmptyState icon="⬡" title="No dimensions yet">
             Register a dimension here, then reference it when you create a cube. One edit keeps every
             cube that uses it consistent.
           </EmptyState>
@@ -445,7 +445,7 @@ function NewDimensionDialog({
       onOpenChange={(o) => {
         if (!o) onClose()
       }}
-      title="New global dimension"
+      title="New dimension"
       description="Define a dimension once here, then reference it from any cube. Editing it later updates every cube that uses it."
       size="md"
       footer={

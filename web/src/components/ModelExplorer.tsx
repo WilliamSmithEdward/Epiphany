@@ -342,7 +342,7 @@ async function dimensionNamespace(): Promise<Node[]> {
     selection: { kind: 'cube-dimension', cube, dim: d.name },
     // An embedded dimension can be promoted into the global registry so other
     // cubes can reference it (ADR-0031 Phase 1), alongside the usual edit/sets.
-    menu: [...CUBE_DIM_MENU, { action: 'promote-dimension', label: 'Make global…' }],
+    menu: [...CUBE_DIM_MENU, { action: 'promote-dimension', label: 'Reuse in other cubes…' }],
     actionCtx: { cube, dim: d.name },
     loader: async () =>
       elementNodes(`cube:${cube}/dim:${d.name}`, d.elements, CUBE_DIM_MENU, { cube, dim: d.name }),
@@ -390,7 +390,7 @@ function rootNodes(isAdmin: boolean): Node[] {
       id: 'root:dimensions',
       label: 'Dimensions',
       icon: '⬡',
-      menu: [{ action: 'register-dimension', label: 'New global dimension…' }],
+      menu: [{ action: 'register-dimension', label: 'New dimension…' }],
       actionCtx: {},
       // Global dimension namespace (ADR-0031): one list = the registry (global)
       // dimensions plus every cube's embedded-only dimensions, presented
