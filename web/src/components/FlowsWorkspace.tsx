@@ -5,6 +5,7 @@ import {
   getCube,
   importCsv,
   listConnections,
+  listCubes,
   listFlows,
   listFlowTests,
   listSecrets,
@@ -82,18 +83,36 @@ export default function FlowsWorkspace({
   const [preview, setPreview] = useState<FlowPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  // The cube detail backs the guided CSV import (only when a cube is in context).
+  // The guided CSV import is cube-scoped (ADR-0035), but flows are global, so the
+  // import target is chosen here rather than inherited from an ambient cube. The
+  // picked cube's detail backs the column-to-dimension mapping.
+  const [cubeNames, setCubeNames] = useState<string[]>([])
+  const [importCube, setImportCube] = useState<string>(cube ?? '')
   const [detail, setDetail] = useState<CubeDetail | null>(null)
 
   useEffect(() => {
-    if (!cube) {
+    let live = true
+    listCubes()
+      .then((cs) => {
+        if (live) setCubeNames(cs.map((c) => c.name))
+      })
+      .catch(() => {
+        if (live) setCubeNames([])
+      })
+    return () => {
+      live = false
+    }
+  }, [reloadSignal])
+
+  useEffect(() => {
+    if (!importCube) {
       setDetail(null)
       return
     }
-    getCube(cube)
+    getCube(importCube)
       .then(setDetail)
       .catch(() => setDetail(null))
-  }, [cube, reloadSignal])
+  }, [importCube, reloadSignal])
 
   // Open the flow the navigator (tree) asked for, or a blank form for "New flow".
   useEffect(() => {
@@ -272,9 +291,31 @@ export default function FlowsWorkspace({
       <DataSourcesPanel inputs={inputs} onChange={setInputs} isAdmin={isAdmin} reloadSignal={reloadSignal} />
 
       {selected ? <RunPanel flow={selected} inputs={inputs} /> : null}
-      {/* The guided CSV import stays cube-scoped (ADR-0035); show it only when a
-          cube is in context. */}
-      {detail && cube ? <ImportPanel cube={cube} detail={detail} /> : null}
+      {/* The guided CSV import is cube-scoped (ADR-0035): pick the target cube,
+          then map columns to its dimensions. */}
+      {cubeNames.length > 0 ? (
+        <section className="flows-import">
+          <h3>Import a CSV into a cube</h3>
+          <Field label="Target cube">
+            {(id, a11y) => (
+              <select
+                id={id}
+                {...a11y}
+                value={importCube}
+                onChange={(e) => setImportCube(e.target.value)}
+              >
+                <option value="">Choose a cube...</option>
+                {cubeNames.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            )}
+          </Field>
+          {importCube && detail ? <ImportPanel cube={importCube} detail={detail} /> : null}
+        </section>
+      ) : null}
       <FlowTestPanel reloadSignal={reloadSignal} />
       {/* Global connections + HTTP secrets are operator configuration (admin
           only); a non-admin never sees the connector internals (ADR-0012/0030). */}

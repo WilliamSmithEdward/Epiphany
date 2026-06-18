@@ -389,7 +389,7 @@ export default function JobsWorkspace({
                       {run.is_job ? <span className="run-table__tag">schedule</span> : null}
                       {run.error ? <div className="run-table__err">{run.error}</div> : null}
                     </td>
-                    <td>{run.cube || '—'}</td>
+                    <td>{run.cube || '-'}</td>
                     <td className="run-table__when">{humanizeTime(run.fire_millis)}</td>
                     <td className="num">{run.rows_read}</td>
                     <td className="num">{run.cells_written}</td>

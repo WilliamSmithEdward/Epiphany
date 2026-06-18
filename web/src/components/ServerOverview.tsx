@@ -114,7 +114,7 @@ export default function ServerOverview() {
               {runs.map((r) => (
                 <tr key={r.id}>
                   <td>{runBadge(r.state)}</td>
-                  <td>{r.cube || '—'}</td>
+                  <td>{r.cube || '-'}</td>
                   <td>
                     {r.target}
                     {r.is_job ? ' (schedule)' : ''}
