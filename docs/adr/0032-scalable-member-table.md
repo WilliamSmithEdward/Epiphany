@@ -32,12 +32,12 @@ hook. No table/grid library is added (dependency-light constraint, ADR-0020).
    The first column is the human-readable member name, never an internal id
    (NN/g). This is the same CSS-grid approach the pivot `CellsetGrid` uses. v1
    uses **static table semantics (`role=table`/`row`/`columnheader`/`rowheader`/
-   `cell`)** because cells are read-only here and the interactive controls
-   (checkboxes, sort headers, twisties) are normal tab stops; sortable headers
-   still carry `aria-sort`. The interactive `role=grid` with roving-tabindex cell
-   navigation is deferred to when inline cell editing lands (declaring `grid`
-   without fulfilling its keyboard contract is the trap a prior review flagged on
-   the tab strip).
+   `cell`)**; the interactive controls (checkboxes, sort headers, twisties, and
+   the v2 inline cell editors) are all ordinary tab stops, and sortable headers
+   carry `aria-sort`. The fuller `role=grid` with roving-tabindex two-dimensional
+   cell navigation stays deferred even now that inline editing has landed:
+   declaring `grid` without fulfilling its keyboard contract is the trap a prior
+   review flagged on the tab strip, and tab-stop editors meet the need without it.
 2. **In-house virtualization, gated.** `useVirtualRows` renders only the rows in
    the viewport (plus a small overscan) over a fixed row height, padding with top
    and bottom spacer rows so the scrollbar stays honest. Gated above a threshold
@@ -81,12 +81,19 @@ hook. No table/grid library is added (dependency-light constraint, ADR-0020).
   model-order, "N of M" count, Flat/Hierarchy toggle, and controlled multi-select
   for the set builder (checkbox + click + Shift-range); wired into the dimension
   editor (browse) and the set builder (select). Read-only attribute cells.
-- **Deferred (own follow-ups):** inline cell editing of attribute values (needs
-  per-cell define-attribute wiring) and, with it, the interactive `role=grid` +
-  APG two-dimensional cell-navigation matrix; relationship/family bulk operators
-  (Descendants/Children/Ancestors/Siblings/Level) and Keep/Hide view filters;
-  per-column typed filters; a backend paged/filtered member endpoint (v1 windows
-  the full member payload client-side, fine for thousands).
+- **v2 (follow-up delivery):** inline cell editing of attribute values (click a
+  cell to edit, Enter/blur commits, Escape cancels; commits flow up through
+  `onAttrEdit` to the attribute-values endpoint), wired into the cube-dimension
+  editor in place of its old pick-attribute/pick-member/Set value form; per-column
+  attribute filters (a Filters bar, one wildcard input per shown column); and, in
+  the set builder, relationship operators over the current selection (Children,
+  Descendants, Parents, Ancestors, Siblings, Leaves-of) plus Keep/Hide view
+  filters that scope the available list to or away from the selection.
+- **Still deferred:** promoting the table to an interactive `role=grid` with the
+  APG two-dimensional cell-navigation matrix (v2 keeps `role=table` semantics:
+  cell editors are ordinary tab stops); and a backend paged/filtered member
+  endpoint (the table still windows the full member payload client-side, which is
+  fine for thousands).
 
 ## Alternatives considered
 
