@@ -53,7 +53,7 @@ and a new `cubes()` listing the available cube names) stay on `ctx`.
 set, the legacy cube-less calls (`ctx.writeCells(arr)`, `ctx.ensureElements(...)`)
 target it, so existing flow bodies and the starter templates keep working; when
 unset, a cube-less call errors ("name a cube with ctx.cube(...)"). `default_cube`
-is a convenience target, not ownership — it is freely changeable and a flow may
+is a convenience target, not ownership (freely changeable), and a flow may
 ignore it and address cubes explicitly.
 
 **3. Multi-cube outcome; per-cube validate-then-apply.** `run_flow` drops its
@@ -79,7 +79,7 @@ name); they simply move to the server level.
 
 **6. REST moves to the server level.** `/api/v1/flows`, `/flows/{name}`,
 `/flows/{name}/run`, `/flows/tests`, `/schedules`, `/connections` (no `/cubes/`
-prefix). The per-cube routes are removed rather than aliased — Epiphany is
+prefix). The per-cube routes are removed rather than aliased: Epiphany is
 pre-1.0, and a global flow run writes to the cubes its body names, so a per-cube
 flow route no longer has a meaning.
 
@@ -99,7 +99,7 @@ cube-targeted flows directly.
 ## Consequences
 
 - Flows/schedules/connections are authored once at the server level and a flow can
-  fan out to many cubes — the ETL/orchestration surface matches how operators
+  fan out to many cubes, so the ETL/orchestration surface matches how operators
   think about it, not the cube tree.
 - Larger blast radius than the connector work: it restructures the model, the flow
   host API, persistence, the scheduler, the REST surface, the web, and migrates
