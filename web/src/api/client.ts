@@ -956,6 +956,9 @@ export interface SharedDimensionDetail {
   references: string[]
   elements: ElementDto[]
   edges: EdgeDto[]
+  /** Attribute columns (defs + per-element values), carried so the dimension
+   * editor shows them; element-masked per the caller (ADR-0024/0033). */
+  attributes?: AttributeDto[]
 }
 
 export async function listDimensions(): Promise<SharedDimensionSummary[]> {

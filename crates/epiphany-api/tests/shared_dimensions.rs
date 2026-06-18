@@ -758,6 +758,123 @@ async fn global_dimension_read_masks_elements_denied_on_a_referencing_cube() {
 }
 
 #[tokio::test]
+async fn attributes_carry_to_a_referencing_cube() {
+    // ADR-0024/0033 follow-up: a dimension's attributes (defs + values) travel
+    // with it into the registry and into any cube that references it, and the
+    // global read exposes them.
+    let dir = data_dir("attr-carry");
+    let app = build_app(&dir);
+    let modeler = login(&app, "modeler").await;
+    let admin = login(&app, "admin").await;
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes",
+        &modeler,
+        Some(json!({
+            "name": "Plain",
+            "dimensions": [
+                { "name": "Org", "elements": [
+                    { "name": "HQ", "kind": "numeric" },
+                    { "name": "Branch", "kind": "numeric" }
+                ]},
+                { "name": "Measure", "elements": [{ "name": "Amount", "kind": "numeric" }] }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            "/api/v1/cubes/Plain/dimensions/Org/attributes/Tier",
+            &modeler,
+            Some(json!({ "kind": "text" }))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            "/api/v1/cubes/Plain/dimensions/Org/attributes/Tier/values",
+            &modeler,
+            Some(json!({ "values": [{ "element": "HQ", "value": "Gold" }] }))
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Plain/dimensions/Org/promote",
+        &modeler,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let org_id = body["id"].as_u64().unwrap();
+
+    // The global read exposes the attribute + value.
+    let (_, dim) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/dimensions/{org_id}"),
+        &modeler,
+        None,
+    )
+    .await;
+    let attr = dim["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "Tier")
+        .expect("Tier attribute present on the global read");
+    assert_eq!(attr["kind"], "text");
+    assert!(attr["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["element"] == "HQ" && v["value"] == "Gold"));
+
+    // A new cube referencing the dimension receives the attribute + value.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes",
+        &modeler,
+        Some(json!({
+            "name": "Plan2",
+            "dimensions": [
+                { "ref": org_id },
+                { "name": "Measure", "elements": [{ "name": "Amount", "kind": "numeric" }] }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "reference the promoted dimension");
+    let (_, plan2) = call(&app, "GET", "/api/v1/cubes/Plan2", &admin, None).await;
+    let org = cube_dimension(&plan2, "Org");
+    let cube_attr = org["attributes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["name"] == "Tier")
+        .expect("referencing cube carries the attribute");
+    assert!(cube_attr["values"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|v| v["element"] == "HQ" && v["value"] == "Gold"));
+}
+
+#[tokio::test]
 async fn library_is_gated_on_the_dimension_permission() {
     let dir = data_dir("authz");
     let app = build_app(&dir);

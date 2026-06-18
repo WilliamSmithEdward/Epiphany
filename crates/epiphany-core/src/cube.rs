@@ -291,7 +291,7 @@ pub struct EdgeSpec {
 /// initial elements as `(name, kind)`, and its consolidation edges as
 /// `(parent, child, weight)`. Elements and edges are validated together when the
 /// cube is built.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct DimensionDef {
     /// The dimension name.
     pub name: String,
@@ -299,6 +299,12 @@ pub struct DimensionDef {
     pub elements: Vec<(String, ElementKind)>,
     /// Initial consolidation edges as `(parent, child, weight)`.
     pub edges: Vec<(String, String, i64)>,
+    /// Attribute definitions as `(name, kind)`, in declaration order. Carried so a
+    /// cube materialized from a registry dimension keeps its attributes
+    /// (ADR-0024/0033). Empty for a plain inline dimension.
+    pub attributes: Vec<(String, AttributeKind)>,
+    /// Per-element attribute values as `(element, attribute, value)`.
+    pub attribute_values: Vec<(String, String, AttributeValue)>,
 }
 
 impl Cube {
@@ -343,6 +349,18 @@ impl Cube {
             }
         }
         cube.extend_schema(&elements, &edges)?;
+        // Apply attribute defs + values after the element/edge schema exists, so a
+        // cube materialized from a registry dimension keeps its attributes
+        // (ADR-0024/0033). define_attribute/set_attribute_values validate and are
+        // transactional per dimension.
+        for d in dims {
+            for (attr, kind) in &d.attributes {
+                cube.define_attribute(&d.name, attr, *kind)?;
+            }
+            for (element, attr, value) in &d.attribute_values {
+                cube.set_attribute_values(&d.name, attr, &[(element.clone(), value.clone())])?;
+            }
+        }
         Ok(cube)
     }
 
@@ -910,11 +928,13 @@ mod tests {
                         ("Total".into(), "North".into(), 1),
                         ("Total".into(), "South".into(), 1),
                     ],
+                    ..Default::default()
                 },
                 DimensionDef {
                     name: "Measure".into(),
                     elements: vec![("Amount".into(), ElementKind::Leaf)],
                     edges: vec![],
+                    ..Default::default()
                 },
             ],
         )
@@ -945,11 +965,13 @@ mod tests {
                     name: "D".into(),
                     elements: vec![("a".into(), ElementKind::Leaf)],
                     edges: vec![],
+                    ..Default::default()
                 },
                 DimensionDef {
                     name: "D".into(),
                     elements: vec![("b".into(), ElementKind::Leaf)],
                     edges: vec![],
+                    ..Default::default()
                 },
             ],
         )
@@ -966,6 +988,7 @@ mod tests {
                     ("c".into(), ElementKind::Leaf),
                 ],
                 edges: vec![("p".into(), "c".into(), 1)],
+                ..Default::default()
             }],
         )
         .unwrap_err();
@@ -983,6 +1006,7 @@ mod tests {
                 name: "Region".into(),
                 elements: vec![("North".into(), ElementKind::Leaf)],
                 edges: vec![],
+                ..Default::default()
             }],
         )
         .unwrap();

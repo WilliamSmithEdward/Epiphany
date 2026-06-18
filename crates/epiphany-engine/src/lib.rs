@@ -1842,11 +1842,13 @@ mod tests {
                             ("Profit".into(), "Sales".into(), 1),
                             ("Profit".into(), "Costs".into(), -1),
                         ],
+                        ..Default::default()
                     },
                     DimensionDef {
                         name: "Period".into(),
                         elements: vec![("Jan".into(), ElementKind::Leaf)],
                         edges: vec![],
+                        ..Default::default()
                     },
                 ],
             )
@@ -1886,6 +1888,7 @@ mod tests {
             name: "D".into(),
             elements: vec![("a".into(), ElementKind::Leaf)],
             edges: vec![],
+            ..Default::default()
         }];
         assert!(matches!(
             engine.create_cube("Sales", &dims),
@@ -1984,6 +1987,7 @@ mod tests {
             name: "Measure".into(),
             elements: vec![("Amount".into(), ElementKind::Leaf)],
             edges: vec![],
+            ..Default::default()
         };
 
         // Two cubes each materialize a copy of Product and record the reference.

@@ -38,8 +38,9 @@ impl SharedDimension {
         }
     }
 
-    /// A `DimensionDef` capturing this dimension's current elements and edges, so
-    /// a cube can materialize a copy of it at attach time (ADR-0024 v1).
+    /// A `DimensionDef` capturing this dimension's current elements, edges, and
+    /// attributes (defs + values), so a cube can materialize a faithful copy of it
+    /// at attach time, attributes included (ADR-0024 v1, ADR-0033 follow-up).
     pub fn to_dimension_def(&self) -> DimensionDef {
         let d = &self.dimension;
         let elements = d
@@ -57,10 +58,28 @@ impl SharedDimension {
                 )
             })
             .collect();
+        let attributes = d
+            .attribute_defs()
+            .iter()
+            .map(|a| (a.name.clone(), a.kind))
+            .collect();
+        let attribute_values = d
+            .attribute_values()
+            .into_iter()
+            .map(|(element, attr, value)| {
+                (
+                    d.element(element).expect("valid index").name.clone(),
+                    d.attribute_defs()[attr as usize].name.clone(),
+                    value,
+                )
+            })
+            .collect();
         DimensionDef {
             name: d.name().to_string(),
             elements,
             edges,
+            attributes,
+            attribute_values,
         }
     }
 

@@ -13,7 +13,7 @@ use axum::extract::{Path, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use epiphany_core::{EdgeSpec, ElementSpec};
+use epiphany_core::{AttributeKind, AttributeValue, EdgeSpec, ElementSpec};
 use epiphany_engine::{DimensionError, DimensionId, PromoteError};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
@@ -89,6 +89,37 @@ pub(crate) struct DimensionDetailDto {
     references: Vec<String>,
     elements: Vec<ElementDto>,
     edges: Vec<EdgeDto>,
+    /// Attribute columns (defs + per-element values), carried so a referencing
+    /// cube and the dimension editor see them (ADR-0024/0033). Element-masked.
+    attributes: Vec<AttrDto>,
+}
+
+#[derive(Serialize)]
+struct AttrDto {
+    name: String,
+    kind: &'static str,
+    values: Vec<AttrValDto>,
+}
+
+#[derive(Serialize)]
+struct AttrValDto {
+    element: String,
+    value: String,
+}
+
+fn attr_kind_str(kind: AttributeKind) -> &'static str {
+    match kind {
+        AttributeKind::Text => "text",
+        AttributeKind::Numeric => "numeric",
+        AttributeKind::Alias => "alias",
+    }
+}
+
+fn attr_value_str(value: &AttributeValue) -> String {
+    match value {
+        AttributeValue::Text(t) => t.clone(),
+        AttributeValue::Numeric(n) => n.to_string(),
+    }
 }
 
 #[derive(Serialize)]
@@ -246,6 +277,24 @@ pub(crate) async fn get_dimension(
     // referencing cubes' element-ACL denials (fail-closed; admins see all).
     let element_names: Vec<String> = def.elements.iter().map(|(name, _)| name.clone()).collect();
     let denied = denied_registry_elements(&state, &auth, &def.name, &references, &element_names);
+    // Attribute columns, with values for masked elements suppressed (ADR-0033).
+    let attributes: Vec<AttrDto> = def
+        .attributes
+        .iter()
+        .map(|(attr_name, kind)| AttrDto {
+            name: attr_name.clone(),
+            kind: attr_kind_str(*kind),
+            values: def
+                .attribute_values
+                .iter()
+                .filter(|(element, attr, _)| attr == attr_name && !denied.contains(element))
+                .map(|(element, _, value)| AttrValDto {
+                    element: element.clone(),
+                    value: attr_value_str(value),
+                })
+                .collect(),
+        })
+        .collect();
     Ok(Json(DimensionDetailDto {
         id,
         name: def.name,
@@ -270,6 +319,7 @@ pub(crate) async fn get_dimension(
                 weight,
             })
             .collect(),
+        attributes,
     }))
 }
 

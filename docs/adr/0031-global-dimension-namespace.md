@@ -126,32 +126,39 @@ Cube:Read, the wrong-dimension tab, and the swallow-all-errors union loader) wer
 fixed in place. The rest are inherent to the v1 materialized-reference model
 (ADR-0024) and are recorded here rather than papered over:
 
-- **Element security on global dimensions** is per-cube `(cube, dim, element)`,
-  so a registry dimension referenced by N cubes has no single masking context:
-  `GET /dimensions/{id}` returns the full element list to any global
-  `Dimension:Read` holder, even members an element ACL hides from them on a
-  referencing cube. Promotion now denies an element-restricted caller (so it
-  cannot create new exposure), but the standing gap is resolved only by the
-  deferred ADR-0024 Phase 3 re-key to `(DimensionId, element)` with a fail-closed
-  default (a union of the referencing cubes' masks, or a `Dimension:Admin` gate on
-  enumeration). Tracked there.
-- **Attributes are not carried to referencing cubes.** `to_dimension_def` and the
-  grow fan-out move only members and hierarchy, so a cube that references (or is
-  created from) a promoted dimension does not receive its attribute defs/values,
-  and a cube-local attribute edit on a backed dimension is not divergence-guarded.
-  The promote copy says "members and hierarchy" accordingly. Carrying attributes
-  end to end (def + fan-out + reconcile) is an ADR-0024 follow-up.
+- **Element security on global dimensions is fail-closed** (resolved, ADR-0033).
+  Element ACLs stay per-cube `(cube, dim, element)`, but `GET /dimensions/{id}` now
+  masks the returned members, edges, and attribute values by the *union* of every
+  referencing cube's element mask: a member an element ACL hides from the caller on
+  any referencing cube is withheld from the global read. Admins bypass; an
+  unreferenced dimension is unmasked; an unknown principal is denied all members
+  (deny-by-default). This supersedes the earlier `(DimensionId, element)` re-key
+  proposal, delivering the same confidentiality guarantee with no ACL-format change
+  or data migration. See ADR-0033.
+- **Attributes carry to referencing cubes** (resolved, ADR-0033 follow-up).
+  `DimensionDef` now carries `attributes` (defs) and `attribute_values`,
+  `Cube::build` applies them, and `to_dimension_def` populates them, so a cube
+  created from or referencing a promoted dimension receives its attribute
+  defs/values and `GET /dimensions/{id}` returns them (masked by the same
+  fail-closed element union as the member list). A cube-local attribute edit on a
+  backed dimension is still not divergence-guarded; that guard remains an ADR-0024
+  follow-up.
 - **The global namespace allows duplicate names** (non-merging by design), and
   backing is resolved by `(cube, name)`. This is safe because a cube cannot hold
   two dimensions of the same name (so it cannot reference two same-named registry
   dimensions); two distinct cubes each owning a "Region" are simply two global
   entries. A future id-on-cube-dimension link would remove the name dependency.
-- **Cube model-as-code export re-localizes a promoted dimension.** A cube file
-  embeds its dimensions inline with no `reference = <id>` marker, so exporting a
-  single cube and re-importing it into another deployment loses the registry
-  linkage (within one data directory the registry index reconciles references on
-  load, so a restart is fine). Recording per-dimension backing in the cube's
-  model-as-code is the follow-up.
+- **Isolated single-cube export re-localizes a promoted dimension** (accepted).
+  Within a data directory the registry index (`dimensions/index.toml`) is the
+  reference record and reconciles links on load, so the practical round-trip — edit,
+  serialize, restart — survives, and attribute defs/values now travel with the
+  cube's materialized copy. The only residual gap is exporting a *single* cube file
+  on its own (without the `dimensions/` directory) and importing it into a fresh
+  deployment: that loses the registry link. Adding a redundant `reference = <id>`
+  marker to the cube text was considered and rejected — it would duplicate the
+  index's record and create a two-sources-of-truth consistency hazard. The
+  model-as-code unit is the data directory, not a lone cube file, so this is
+  accepted rather than worked around.
 - **Unsaved-edit guard coverage.** Only the rules pane reports dirty state to the
   tab/navigation discard-guard; the Flows/Views/Schedules editors do not, so a tab
   switch can drop in-progress input there (the New-Cube wizard is a modal whose

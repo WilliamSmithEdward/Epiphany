@@ -186,7 +186,15 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
   // Adapt the registry detail to the shape the shared MemberTable consumes
   // (registry dimensions carry no attributes in v1, ADR-0031).
   const memberDto = useMemo<DimensionDto | null>(
-    () => (detail ? { name: detail.name, elements: detail.elements, edges: detail.edges } : null),
+    () =>
+      detail
+        ? {
+            name: detail.name,
+            elements: detail.elements,
+            edges: detail.edges,
+            attributes: detail.attributes,
+          }
+        : null,
     [detail],
   )
 

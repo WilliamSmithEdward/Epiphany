@@ -185,6 +185,7 @@ pub(crate) fn build_dimension_def(
         name: name.to_string(),
         elements: els,
         edges,
+        ..Default::default()
     })
 }
 
