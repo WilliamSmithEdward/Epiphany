@@ -58,6 +58,7 @@ fn state(name: &str) -> AppState {
         view_cache: Default::default(),
         secrets: Default::default(),
         http: Default::default(),
+        sql: Default::default(),
     }
 }
 

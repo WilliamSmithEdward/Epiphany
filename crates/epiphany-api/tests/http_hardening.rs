@@ -42,6 +42,7 @@ fn app(tag: &str) -> Router {
         view_cache: Default::default(),
         secrets: Default::default(),
         http: Default::default(),
+        sql: Default::default(),
     };
     build_router(state)
 }

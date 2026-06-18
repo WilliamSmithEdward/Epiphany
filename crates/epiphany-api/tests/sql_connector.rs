@@ -1,11 +1,11 @@
-//! HTTP-connector and secret-store integration tests (ADR-0030) over the real
-//! router. They prove the fail-closed gates (capability + host allowlist), that
-//! secrets are write-only (names listed, values never), that a connection
-//! references a secret by name, and that the fetch path is feature-gated.
+//! SQL-connector integration tests (ADR-0034) over the real router. They prove
+//! the fail-closed gates (capability + host allowlist), that a referenced
+//! password secret must exist, that a connection round-trips referencing the
+//! secret by NAME (never a value), and that the fetch path is feature-gated.
 //!
-//! The live fetch itself is covered in epiphany-connect (a localhost server);
-//! here the default build has no `http` feature, so a preview reports the
-//! connector is not built, which exercises the gate.
+//! The live query itself needs a real database (the documented impure boundary),
+//! so the default build has no `postgres` feature: a preview of a fully-valid,
+//! gated connection then reports the connector is not built, exercising the gate.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use axum::Router;
-use epiphany_api::{build_router, AppState, HttpConnectorConfig, SessionStore};
+use epiphany_api::{build_router, AppState, SessionStore, SqlConnectorConfig};
 use epiphany_core::{Cube, Dimension};
 use epiphany_determinism::{IdGen, ManualClock};
 use epiphany_engine::Engine;
@@ -29,8 +29,8 @@ fn cube() -> Cube {
     Cube::new("Sales", vec![region]).unwrap()
 }
 
-fn harness(name: &str, http: HttpConnectorConfig, secrets: &[(&str, &str)]) -> Router {
-    let dir = std::env::temp_dir().join(format!("epiphany-http-{}-{name}", std::process::id()));
+fn harness(name: &str, sql: SqlConnectorConfig, secrets: &[(&str, &str)]) -> Router {
+    let dir = std::env::temp_dir().join(format!("epiphany-sql-{}-{name}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     let store = Store::create(dir, cube()).unwrap();
     let mut stores = BTreeMap::new();
@@ -57,17 +57,34 @@ fn harness(name: &str, http: HttpConnectorConfig, secrets: &[(&str, &str)]) -> R
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Arc::new(Mutex::new(secret_store)),
-        http,
-        sql: Default::default(),
+        http: Default::default(),
+        sql,
     };
     build_router(state)
 }
 
-fn http_enabled() -> HttpConnectorConfig {
-    HttpConnectorConfig {
+fn sql_enabled() -> SqlConnectorConfig {
+    SqlConnectorConfig {
         enabled: true,
-        allowed_hosts: vec!["api.example.com".to_string()],
+        allowed_hosts: vec!["db.internal".to_string()],
     }
+}
+
+fn sql_conn(host: &str, secret: Option<&str>) -> Value {
+    let mut body = json!({
+        "kind": "sql",
+        "engine": "postgres",
+        "host": host,
+        "port": 5432,
+        "database": "analytics",
+        "user": "reporting",
+        "query": "SELECT region, amount::text FROM sales",
+        "ssl_mode": "require",
+    });
+    if let Some(s) = secret {
+        body["password_secret"] = json!(s);
+    }
+    body
 }
 
 async fn login(app: &Router, user: &str) -> String {
@@ -122,94 +139,51 @@ async fn call(
     (status, value)
 }
 
-fn http_conn(url: &str, secret: Option<&str>) -> Value {
-    let mut body = json!({ "kind": "http", "url": url, "format": "csv" });
-    if let Some(s) = secret {
-        body["auth"] = json!({ "kind": "bearer", "secret": s });
-    }
-    body
-}
-
 #[tokio::test]
-async fn secrets_are_write_only_and_admin_only() {
-    let app = harness("secrets", HttpConnectorConfig::default(), &[]);
-    let admin = login(&app, "admin").await;
-
-    // Admin sets a secret; the response carries no value.
-    let (status, _) = call(
-        &app,
-        "PUT",
-        "/api/v1/secrets/token",
-        &admin,
-        Some(json!({ "value": "super-secret" })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-
-    // The listing exposes the name but never the value.
-    let (status, body) = call(&app, "GET", "/api/v1/secrets", &admin, None).await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["names"], json!(["token"]));
-    assert!(
-        !body.to_string().contains("super-secret"),
-        "the value must never be returned"
-    );
-
-    // Delete it.
-    let (status, _) = call(&app, "DELETE", "/api/v1/secrets/token", &admin, None).await;
-    assert_eq!(status, StatusCode::NO_CONTENT);
-    let (_, body) = call(&app, "GET", "/api/v1/secrets", &admin, None).await;
-    assert_eq!(body["names"], json!([]));
-}
-
-#[tokio::test]
-async fn http_connection_requires_the_capability() {
-    // Capability off (default): defining an http connection is forbidden.
-    let app = harness("disabled", HttpConnectorConfig::default(), &[]);
+async fn sql_connection_requires_the_capability() {
+    // Capability off (default): defining a sql connection is forbidden.
+    let app = harness("disabled", SqlConnectorConfig::default(), &[]);
     let admin = login(&app, "admin").await;
     let (status, _) = call(
         &app,
         "PUT",
         "/api/v1/cubes/Sales/connections/feed",
         &admin,
-        Some(http_conn("https://api.example.com/data.csv", None)),
+        Some(sql_conn("db.internal", None)),
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
-async fn http_connection_host_must_be_allowlisted() {
-    let app = harness("allowlist", http_enabled(), &[]);
+async fn sql_connection_host_must_be_allowlisted() {
+    let app = harness("allowlist", sql_enabled(), &[]);
     let admin = login(&app, "admin").await;
     let (status, _) = call(
         &app,
         "PUT",
         "/api/v1/cubes/Sales/connections/feed",
         &admin,
-        Some(http_conn("https://evil.example.net/data.csv", None)),
+        Some(sql_conn("db.evil.example.net", None)),
     )
     .await;
     assert_eq!(
         status,
         StatusCode::FORBIDDEN,
-        "non-allowlisted host is refused"
+        "a non-allowlisted database host is refused"
     );
 }
 
 #[tokio::test]
-async fn http_connection_unknown_secret_is_rejected() {
-    let app = harness("nosecret", http_enabled(), &[]);
+async fn sql_connection_unknown_secret_is_rejected() {
+    let app = harness("nosecret", sql_enabled(), &[]);
     let admin = login(&app, "admin").await;
     let (status, body) = call(
         &app,
         "PUT",
         "/api/v1/cubes/Sales/connections/feed",
         &admin,
-        Some(http_conn(
-            "https://api.example.com/data.csv",
-            Some("missing"),
-        )),
+        Some(sql_conn("db.internal", Some("missing"))),
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -217,24 +191,25 @@ async fn http_connection_unknown_secret_is_rejected() {
 }
 
 #[tokio::test]
-async fn http_connection_defines_and_round_trips() {
-    let app = harness("define", http_enabled(), &[("tok", "abc123")]);
+async fn sql_connection_defines_and_round_trips() {
+    let app = harness("define", sql_enabled(), &[("pw", "s3cret")]);
     let admin = login(&app, "admin").await;
     let (status, body) = call(
         &app,
         "PUT",
         "/api/v1/cubes/Sales/connections/feed",
         &admin,
-        Some(http_conn("https://api.example.com/data.csv", Some("tok"))),
+        Some(sql_conn("db.internal", Some("pw"))),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["kind"], "http");
-    assert_eq!(body["url"], "https://api.example.com/data.csv");
-    assert_eq!(body["auth"]["kind"], "bearer");
-    assert_eq!(body["auth"]["secret"], "tok");
+    assert_eq!(body["kind"], "sql");
+    assert_eq!(body["host"], "db.internal");
+    assert_eq!(body["database"], "analytics");
+    assert_eq!(body["password_secret"], "pw");
+    // The password value is never echoed, only its secret name.
+    assert!(!body.to_string().contains("s3cret"));
 
-    // It comes back from GET, with the secret referenced by name (never a value).
     let (status, got) = call(
         &app,
         "GET",
@@ -244,24 +219,57 @@ async fn http_connection_defines_and_round_trips() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(got["auth"]["secret"], "tok");
-    assert!(!got.to_string().contains("abc123"));
+    assert_eq!(got["host"], "db.internal");
+    assert_eq!(got["query"], "SELECT region, amount::text FROM sales");
+    assert_eq!(got["password_secret"], "pw");
+    assert!(!got.to_string().contains("s3cret"));
 }
 
-// In the default build (no `http` feature) a preview of a fully-valid, gated
-// http connection reports the connector is not compiled in, proving the feature
-// gate. With `--features http` the fetch would run instead (covered in connect).
-#[cfg(not(feature = "http"))]
 #[tokio::test]
-async fn http_preview_reports_not_built_without_the_feature() {
-    let app = harness("notbuilt", http_enabled(), &[("tok", "abc123")]);
+async fn sql_mysql_connection_defines_and_round_trips() {
+    let app = harness("mysql", sql_enabled(), &[("pw", "s3cret")]);
+    let admin = login(&app, "admin").await;
+    let body = json!({
+        "kind": "sql",
+        "engine": "mysql",
+        "host": "db.internal",
+        "port": 3306,
+        "database": "app",
+        "user": "reporting",
+        "query": "SELECT region, amount FROM sales",
+        "ssl_mode": "require",
+        "password_secret": "pw",
+    });
+    let (status, got) = call(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/connections/mariadb",
+        &admin,
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(got["kind"], "sql");
+    assert_eq!(got["engine"], "mysql");
+    assert_eq!(got["host"], "db.internal");
+    assert_eq!(got["password_secret"], "pw");
+    assert!(!got.to_string().contains("s3cret"));
+}
+
+// In the default build (no `postgres`/`mysql` feature) a preview of a fully-valid, gated
+// sql connection reports the connector is not compiled in, proving the feature
+// gate. With `--features postgres` the query would run instead (needs a live DB).
+#[cfg(not(feature = "postgres"))]
+#[tokio::test]
+async fn sql_preview_reports_not_built_without_the_feature() {
+    let app = harness("notbuilt", sql_enabled(), &[("pw", "s3cret")]);
     let admin = login(&app, "admin").await;
     call(
         &app,
         "PUT",
         "/api/v1/cubes/Sales/connections/feed",
         &admin,
-        Some(http_conn("https://api.example.com/data.csv", Some("tok"))),
+        Some(sql_conn("db.internal", Some("pw"))),
     )
     .await;
     let (status, body) = call(
@@ -273,5 +281,5 @@ async fn http_preview_reports_not_built_without_the_feature() {
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(body["error"]["code"], "HTTP_NOT_BUILT");
+    assert_eq!(body["error"]["code"], "SQL_NOT_BUILT");
 }

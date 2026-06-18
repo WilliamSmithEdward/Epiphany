@@ -193,6 +193,23 @@ where
             http_allowed_hosts.len()
         );
     }
+    // SQL connectors query external databases, so they are off unless the operator
+    // opts in AND names an allowlist of database hosts (fail-closed, ADR-0034).
+    let sql_connectors_enabled = std::env::var("EPIPHANY_ENABLE_SQL_CONNECTORS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let sql_allowed_hosts: Vec<String> = std::env::var("EPIPHANY_SQL_ALLOWED_HOSTS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|h| h.trim().to_ascii_lowercase())
+        .filter(|h| !h.is_empty())
+        .collect();
+    if sql_connectors_enabled {
+        tracing::warn!(
+            "SQL connectors are ENABLED with {} allowlisted host(s): admin-defined connections may query external databases",
+            sql_allowed_hosts.len()
+        );
+    }
     let state = AppState {
         engine,
         clock: Arc::new(SystemClock),
@@ -216,6 +233,10 @@ where
         http: epiphany_api::HttpConnectorConfig {
             enabled: http_connectors_enabled,
             allowed_hosts: http_allowed_hosts,
+        },
+        sql: epiphany_api::SqlConnectorConfig {
+            enabled: sql_connectors_enabled,
+            allowed_hosts: sql_allowed_hosts,
         },
     };
 

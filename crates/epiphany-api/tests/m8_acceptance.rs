@@ -97,6 +97,7 @@ fn state(engine: Engine, clock: Arc<ManualClock>, runs: RunLedger) -> AppState {
         view_cache: Default::default(),
         secrets: Default::default(),
         http: Default::default(),
+        sql: Default::default(),
     }
 }
 

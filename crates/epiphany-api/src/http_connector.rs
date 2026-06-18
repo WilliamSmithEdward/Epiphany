@@ -62,6 +62,18 @@ pub(crate) fn require_http_host_allowed(state: &AppState, url: &str) -> Result<(
     }
 }
 
+/// Gate: a SQL connection's host must be in the operator allowlist (ADR-0034).
+/// The host is a bare hostname (not a URL), so it is matched directly.
+pub(crate) fn require_sql_host_allowed(state: &AppState, host: &str) -> Result<(), ApiError> {
+    if state.sql.allows_host(host) {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(format!(
+            "host '{host}' is not in the SQL connector allowlist (set EPIPHANY_SQL_ALLOWED_HOSTS)"
+        )))
+    }
+}
+
 /// Resolve an HTTP connection's credential into the concrete `Authorization`
 /// header value, from the secret store. The value is used only to build the
 /// header (passed straight to the connector); a missing secret fails the

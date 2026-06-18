@@ -88,6 +88,7 @@ fn harness(dir: &Path, audit_path: std::path::PathBuf) -> Harness {
         view_cache: Default::default(),
         secrets: Default::default(),
         http: Default::default(),
+        sql: Default::default(),
     };
     Harness {
         app: build_router(state),

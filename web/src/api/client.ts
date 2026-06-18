@@ -685,6 +685,23 @@ export interface ConnectionDto {
   headers?: ConnectionHeaderDto[]
   /** HTTP credential, referencing a secret by name (kind === 'http'). */
   auth?: ConnectionAuthDto | null
+  // ---- sql fields (kind === 'sql', ADR-0034) ----
+  /** Database engine ('postgres'). */
+  engine?: string
+  /** Database host. */
+  host?: string
+  /** Database port. */
+  port?: number
+  /** Database (catalog) name. */
+  database?: string
+  /** Connecting user. */
+  user?: string
+  /** Name of the secret holding the password (never the value). */
+  password_secret?: string | null
+  /** The SQL query to run. */
+  query?: string
+  /** TLS mode: 'verify-full' (default), 'require', or 'disable'. */
+  ssl_mode?: string
 }
 
 /** A connection's sample output, from the wizard's "Test" button (ADR-0027). */

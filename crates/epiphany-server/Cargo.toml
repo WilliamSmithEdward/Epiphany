@@ -22,6 +22,14 @@ tls = ["dep:axum-server", "dep:rustls", "dep:rcgen"]
 # Optional HTTP fetch connector (ADR-0030). Off by default; release binaries
 # enable it. Forwards to the API's http feature (ureq, rustls/ring; no aws-lc-rs).
 http = ["epiphany-api/http"]
+# Optional native SQL fetch connector (ADR-0034). Off by default; release
+# binaries enable it. Forwards to the API's postgres feature (tokio-postgres,
+# rustls/ring; no aws-lc-rs).
+postgres = ["epiphany-api/postgres"]
+# Optional native MySQL / MariaDB connector (ADR-0034). Off by default; release
+# binaries enable it. Forwards to the API's mysql feature (mysql_async,
+# rustls/ring; no aws-lc-rs, no native-tls).
+mysql = ["epiphany-api/mysql"]
 
 [dependencies]
 epiphany-api = { path = "../epiphany-api" }

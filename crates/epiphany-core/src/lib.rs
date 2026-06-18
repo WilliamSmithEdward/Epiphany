@@ -28,8 +28,9 @@ pub use query::{
     execute_view, execute_view_with, resolve_subset, validate_subset, validate_view, Axis,
     AxisSpec, CellResolver, CellTrace, Cellset, CommandSpec, Connection, ConnectionSpec,
     ExplainDepth, Flow, FlowTest, HttpAuth, HttpAuthKind, HttpSpec, Job, Model, NoSetEvaluator,
-    Parallelism, QueryError, RuleSet, RuleTest, Sandbox, SetEvaluator, SourceFormat, StoredCells,
-    Subset, SubsetKind, TestCell, TraceKind, Trigger, View, Visibility,
+    Parallelism, QueryError, RuleSet, RuleTest, Sandbox, SetEvaluator, SourceFormat, SqlEngine,
+    SqlSpec, SqlSslMode, StoredCells, Subset, SubsetKind, TestCell, TraceKind, Trigger, View,
+    Visibility,
 };
 pub use spread::{spread_leaves, SpreadError, SpreadMethod, MAX_SPREAD_LEAVES};
 pub use text::{LoadError, SaveError};

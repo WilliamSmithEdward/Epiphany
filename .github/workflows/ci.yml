@@ -64,6 +64,11 @@ jobs:
       # The optional TLS feature (ADR-0019) is off by default, so lint and build
       # it explicitly on every platform to keep the feature-gated path green.
       - run: cargo clippy -p epiphany-server --features tls --all-targets -- -D warnings
+      # The optional native SQL connectors (ADR-0034: postgres = tokio-postgres,
+      # mysql = mysql_async; both over rustls/ring) are off by default; lint them
+      # on every platform so their pure-Rust driver + ring build stays green
+      # cross-platform (they ship in release binaries).
+      - run: cargo clippy -p epiphany-server --features postgres,mysql --all-targets -- -D warnings
 
   deny:
     name: cargo-deny (supply chain)
@@ -120,8 +125,8 @@ jobs:
       - name: Build the web UI (to embed)
         run: npm ci && npm run build
         working-directory: web
-      - name: Build the server (single binary, embedded UI + TLS)
-        run: cargo build --release -p epiphany-server --features embed-ui,tls
+      - name: Build the server (single binary, embedded UI + TLS + SQL connectors)
+        run: cargo build --release -p epiphany-server --features embed-ui,tls,postgres,mysql
       - name: Stage the artifact
         run: |
           mkdir -p dist

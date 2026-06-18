@@ -108,6 +108,9 @@ pub struct AppState {
     /// HTTP connector capability and SSRF host allowlist (ADR-0030). Fail-closed:
     /// disabled with an empty allowlist unless the operator opts in.
     pub http: HttpConnectorConfig,
+    /// SQL connector capability and host allowlist (ADR-0034). Fail-closed:
+    /// disabled with an empty allowlist unless the operator opts in.
+    pub sql: SqlConnectorConfig,
 }
 
 /// The HTTP connector capability and its SSRF host allowlist (ADR-0030).
@@ -122,6 +125,26 @@ pub struct HttpConnectorConfig {
 }
 
 impl HttpConnectorConfig {
+    /// Whether `host` (case-insensitive) is allowlisted.
+    pub fn allows_host(&self, host: &str) -> bool {
+        let host = host.to_ascii_lowercase();
+        self.allowed_hosts.iter().any(|h| h == &host)
+    }
+}
+
+/// The SQL connector capability and its host allowlist (ADR-0034). Fail-closed
+/// by default, like the HTTP connector: disabled with an empty allowlist, so
+/// enabling the capability is not enough on its own; the operator must also name
+/// the database hosts a connection may target.
+#[derive(Clone, Debug, Default)]
+pub struct SqlConnectorConfig {
+    /// Whether SQL connections may be defined and run.
+    pub enabled: bool,
+    /// Lowercased hostnames a SQL connection may target. Empty allows nothing.
+    pub allowed_hosts: Vec<String>,
+}
+
+impl SqlConnectorConfig {
     /// Whether `host` (case-insensitive) is allowlisted.
     pub fn allows_host(&self, host: &str) -> bool {
         let host = host.to_ascii_lowercase();
@@ -546,6 +569,7 @@ mod tests {
             view_cache: Default::default(),
             secrets: Default::default(),
             http: HttpConnectorConfig::default(),
+            sql: SqlConnectorConfig::default(),
         }
     }
 

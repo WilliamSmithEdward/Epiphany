@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::query::{
     AxisSpec, CommandSpec, Connection, ConnectionSpec, Flow, FlowTest, HttpAuth, HttpAuthKind,
-    HttpSpec, Job, Model, RuleSet, RuleTest, Sandbox, SourceFormat, Subset, SubsetKind, TestCell,
-    Trigger, View, Visibility,
+    HttpSpec, Job, Model, RuleSet, RuleTest, Sandbox, SourceFormat, SqlEngine, SqlSpec, SqlSslMode,
+    Subset, SubsetKind, TestCell, Trigger, View, Visibility,
 };
 use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
@@ -581,6 +581,27 @@ struct ConnectionDoc {
     headers: Vec<HeaderDoc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auth: Option<AuthDoc>,
+    // ---- sql fields (ADR-0034); the password is referenced by secret name ----
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    engine: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    host: String,
+    #[serde(default, skip_serializing_if = "is_zero_u16")]
+    port: u16,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    database: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    password_secret: Option<String>,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    query: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    ssl_mode: String,
+}
+
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
 }
 
 #[derive(Serialize, Deserialize)]
@@ -625,6 +646,41 @@ fn build_format(token: &str) -> SourceFormat {
     }
 }
 
+fn sql_engine_token(engine: SqlEngine) -> String {
+    match engine {
+        SqlEngine::Postgres => "postgres",
+        SqlEngine::MySql => "mysql",
+    }
+    .to_string()
+}
+
+fn build_sql_engine(token: &str) -> SqlEngine {
+    match token {
+        "mysql" | "mariadb" => SqlEngine::MySql,
+        // Empty or unknown loads as Postgres (forward-compatible, matches the
+        // connection-kind fallback) rather than failing the model.
+        _ => SqlEngine::Postgres,
+    }
+}
+
+fn ssl_mode_token(mode: SqlSslMode) -> String {
+    match mode {
+        SqlSslMode::VerifyFull => "verify-full",
+        SqlSslMode::Require => "require",
+        SqlSslMode::Disable => "disable",
+    }
+    .to_string()
+}
+
+fn build_ssl_mode(token: &str) -> SqlSslMode {
+    match token {
+        "require" => SqlSslMode::Require,
+        "disable" => SqlSslMode::Disable,
+        // Empty or unknown loads as the secure default (verify-full).
+        _ => SqlSslMode::VerifyFull,
+    }
+}
+
 fn connection_doc(conn: &Connection) -> ConnectionDoc {
     let base = ConnectionDoc {
         name: conn.name.clone(),
@@ -638,6 +694,14 @@ fn connection_doc(conn: &Connection) -> ConnectionDoc {
         url: String::new(),
         headers: Vec::new(),
         auth: None,
+        engine: String::new(),
+        host: String::new(),
+        port: 0,
+        database: String::new(),
+        user: String::new(),
+        password_secret: None,
+        query: String::new(),
+        ssl_mode: String::new(),
     };
     match &conn.spec {
         ConnectionSpec::Command(cmd) => ConnectionDoc {
@@ -670,6 +734,19 @@ fn connection_doc(conn: &Connection) -> ConnectionDoc {
             }),
             ..base
         },
+        ConnectionSpec::Sql(sql) => ConnectionDoc {
+            kind: "sql".to_string(),
+            engine: sql_engine_token(sql.engine),
+            host: sql.host.clone(),
+            port: sql.port,
+            database: sql.database.clone(),
+            user: sql.user.clone(),
+            password_secret: sql.password_secret.clone(),
+            query: sql.query.clone(),
+            ssl_mode: ssl_mode_token(sql.ssl_mode),
+            timeout_ms: sql.timeout_ms,
+            ..base
+        },
     }
 }
 
@@ -688,6 +765,17 @@ fn build_connection(doc: &ConnectionDoc) -> Connection {
             }),
             format: build_format(&doc.format),
             json_path: doc.json_path.clone(),
+            timeout_ms: doc.timeout_ms,
+        }),
+        "sql" => ConnectionSpec::Sql(SqlSpec {
+            engine: build_sql_engine(&doc.engine),
+            host: doc.host.clone(),
+            port: doc.port,
+            database: doc.database.clone(),
+            user: doc.user.clone(),
+            password_secret: doc.password_secret.clone(),
+            query: doc.query.clone(),
+            ssl_mode: build_ssl_mode(&doc.ssl_mode),
             timeout_ms: doc.timeout_ms,
         }),
         // The command kind (and, forward-compatibly, any unknown kind) builds a
@@ -1705,6 +1793,85 @@ mod tests {
         let auth = http.auth.as_ref().expect("auth");
         assert_eq!(auth.kind, HttpAuthKind::Bearer);
         assert_eq!(auth.secret, "rates_token");
+    }
+
+    #[test]
+    fn model_round_trips_sql_connections() {
+        use crate::{Connection, ConnectionSpec, SqlEngine, SqlSpec, SqlSslMode};
+
+        let mut model = Model::new(sample_cube());
+        model.connections.insert(
+            "warehouse".to_string(),
+            Connection {
+                name: "warehouse".to_string(),
+                spec: ConnectionSpec::Sql(SqlSpec {
+                    engine: SqlEngine::Postgres,
+                    host: "db.internal".to_string(),
+                    port: 5432,
+                    database: "analytics".to_string(),
+                    user: "reporting".to_string(),
+                    password_secret: Some("warehouse_pw".to_string()),
+                    query: "SELECT region, amount::text FROM sales".to_string(),
+                    ssl_mode: SqlSslMode::Require,
+                    timeout_ms: 20_000,
+                }),
+            },
+        );
+
+        let text1 = model.to_model_text().unwrap();
+        // The model text references the password by secret NAME, never a value.
+        assert!(text1.contains("warehouse_pw"));
+        let model2 = Model::from_model_text(&text1).unwrap();
+        let text2 = model2.to_model_text().unwrap();
+        assert_eq!(
+            text1, text2,
+            "sql connections must round-trip byte-identically"
+        );
+        let ConnectionSpec::Sql(sql) = &model2.connections["warehouse"].spec else {
+            panic!("expected a sql connection");
+        };
+        assert_eq!(sql.engine, SqlEngine::Postgres);
+        assert_eq!(sql.host, "db.internal");
+        assert_eq!(sql.port, 5432);
+        assert_eq!(sql.database, "analytics");
+        assert_eq!(sql.user, "reporting");
+        assert_eq!(sql.password_secret.as_deref(), Some("warehouse_pw"));
+        assert_eq!(sql.query, "SELECT region, amount::text FROM sales");
+        assert_eq!(sql.ssl_mode, SqlSslMode::Require);
+        assert_eq!(sql.timeout_ms, 20_000);
+    }
+
+    #[test]
+    fn model_round_trips_mysql_engine() {
+        use crate::{Connection, ConnectionSpec, SqlEngine, SqlSpec, SqlSslMode};
+
+        let mut model = Model::new(sample_cube());
+        model.connections.insert(
+            "mariadb".to_string(),
+            Connection {
+                name: "mariadb".to_string(),
+                spec: ConnectionSpec::Sql(SqlSpec {
+                    engine: SqlEngine::MySql,
+                    host: "db.internal".to_string(),
+                    port: 3306,
+                    database: "app".to_string(),
+                    user: "reporting".to_string(),
+                    password_secret: None,
+                    query: "SELECT 1".to_string(),
+                    ssl_mode: SqlSslMode::VerifyFull,
+                    timeout_ms: 0,
+                }),
+            },
+        );
+        let text1 = model.to_model_text().unwrap();
+        assert!(text1.contains("mysql"), "engine token must serialize");
+        let model2 = Model::from_model_text(&text1).unwrap();
+        assert_eq!(text1, model2.to_model_text().unwrap());
+        let ConnectionSpec::Sql(sql) = &model2.connections["mariadb"].spec else {
+            panic!("expected a sql connection");
+        };
+        assert_eq!(sql.engine, SqlEngine::MySql);
+        assert_eq!(sql.port, 3306);
     }
 
     #[test]

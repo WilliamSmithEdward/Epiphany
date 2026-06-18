@@ -15,6 +15,12 @@ workspace = true
 # build dependency-light; the server's `http` feature and release binaries
 # enable it. Forwards to epiphany-connect's http feature (ureq, rustls/ring).
 http = ["epiphany-connect/http"]
+# Build the native SQL fetch connector (ADR-0034). Off by default; the server's
+# `postgres` feature and release binaries enable it. Forwards to
+# epiphany-connect's postgres feature (tokio-postgres, rustls/ring).
+postgres = ["epiphany-connect/postgres"]
+# Build the native MySQL / MariaDB connector (ADR-0034). Off by default.
+mysql = ["epiphany-connect/mysql"]
 
 [dependencies]
 epiphany-core = { path = "../epiphany-core" }

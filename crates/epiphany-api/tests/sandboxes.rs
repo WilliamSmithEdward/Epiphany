@@ -74,6 +74,7 @@ fn router(dir: &Path) -> Router {
         view_cache: Default::default(),
         secrets: Default::default(),
         http: Default::default(),
+        sql: Default::default(),
     };
     build_router(state)
 }
@@ -200,6 +201,7 @@ fn router_calc(dir: &Path) -> (Router, Engine) {
         view_cache: Default::default(),
         secrets: Default::default(),
         http: Default::default(),
+        sql: Default::default(),
     };
     (build_router(state), engine)
 }
@@ -591,6 +593,7 @@ async fn sandbox_rejects_string_what_if_but_allows_numeric() {
         view_cache: Default::default(),
         secrets: Default::default(),
         http: Default::default(),
+        sql: Default::default(),
     };
     let app = build_router(state);
     let ann = login(&app, "ann").await;

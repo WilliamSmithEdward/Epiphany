@@ -326,7 +326,7 @@ function RunPanel({
 function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: number }) {
   const confirm = useConfirm()
   const [connections, setConnections] = useState<ConnectionDto[]>([])
-  const [kind, setKind] = useState<'command' | 'http'>('command')
+  const [kind, setKind] = useState<'command' | 'http' | 'sql'>('command')
   const [name, setName] = useState('')
   const [program, setProgram] = useState('')
   const [args, setArgs] = useState('')
@@ -334,6 +334,14 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
   const [authSecret, setAuthSecret] = useState('')
   const [format, setFormat] = useState('csv')
   const [workingDir, setWorkingDir] = useState('')
+  // SQL connection fields (ADR-0034).
+  const [sqlEngine, setSqlEngine] = useState('postgres')
+  const [host, setHost] = useState('')
+  const [port, setPort] = useState('')
+  const [database, setDatabase] = useState('')
+  const [dbUser, setDbUser] = useState('')
+  const [query, setQuery] = useState('')
+  const [sslMode, setSslMode] = useState('verify-full')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   // The most recent "Test connection" result, keyed by connection name.
@@ -357,6 +365,10 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
     setWorkingDir('')
     setUrl('')
     setAuthSecret('')
+    setHost('')
+    setDatabase('')
+    setDbUser('')
+    setQuery('')
   }
 
   async function add() {
@@ -383,7 +395,7 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
           timeout_ms: 30000,
           working_dir: workingDir.trim() === '' ? null : workingDir.trim(),
         })
-      } else {
+      } else if (kind === 'http') {
         if (url.trim() === '') {
           setError('An HTTP data source needs a url.')
           setSaving(false)
@@ -398,6 +410,28 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
           timeout_ms: 30000,
           url: url.trim(),
           auth: authSecret.trim() === '' ? null : { kind: 'bearer', secret: authSecret.trim() },
+        })
+      } else {
+        if (host.trim() === '' || database.trim() === '' || query.trim() === '') {
+          setError('A SQL data source needs a host, database, and query.')
+          setSaving(false)
+          return
+        }
+        await putConnection(cube, {
+          name: name.trim(),
+          kind: 'sql',
+          program: '',
+          args: [],
+          format: 'csv',
+          timeout_ms: 30000,
+          engine: sqlEngine,
+          host: host.trim(),
+          port: Number(port) || (sqlEngine === 'mysql' ? 3306 : 5432),
+          database: database.trim(),
+          user: dbUser.trim(),
+          query: query.trim(),
+          ssl_mode: sslMode,
+          password_secret: authSecret.trim() === '' ? null : authSecret.trim(),
         })
       }
       reset()
@@ -483,10 +517,11 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
               id={id}
               {...a11y}
               value={kind}
-              onChange={(e) => setKind(e.target.value as 'command' | 'http')}
+              onChange={(e) => setKind(e.target.value as 'command' | 'http' | 'sql')}
             >
               <option value="command">command</option>
               <option value="http">http</option>
+              <option value="sql">sql (database)</option>
             </select>
           )}
         </Field>
@@ -538,7 +573,7 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
               )}
             </Field>
           </>
-        ) : (
+        ) : kind === 'http' ? (
           <>
             <Field label="URL">
               {(id, a11y) => (
@@ -563,15 +598,105 @@ function ConnectionsPanel({ cube, reloadSignal }: { cube: string; reloadSignal: 
               )}
             </Field>
           </>
+        ) : (
+          <>
+            <Field label="Engine">
+              {(id, a11y) => (
+                <select id={id} {...a11y} value={sqlEngine} onChange={(e) => setSqlEngine(e.target.value)}>
+                  <option value="postgres">PostgreSQL</option>
+                  <option value="mysql">MySQL / MariaDB</option>
+                </select>
+              )}
+            </Field>
+            <Field label="Host">
+              {(id, a11y) => (
+                <Input
+                  id={id}
+                  {...a11y}
+                  value={host}
+                  placeholder="db.internal (host must be allowlisted)"
+                  onChange={(e) => setHost(e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Port">
+              {(id, a11y) => (
+                <Input
+                  id={id}
+                  {...a11y}
+                  type="number"
+                  value={port}
+                  placeholder={sqlEngine === 'mysql' ? '3306' : '5432'}
+                  onChange={(e) => setPort(e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Database">
+              {(id, a11y) => (
+                <Input
+                  id={id}
+                  {...a11y}
+                  value={database}
+                  placeholder="analytics"
+                  onChange={(e) => setDatabase(e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="User">
+              {(id, a11y) => (
+                <Input
+                  id={id}
+                  {...a11y}
+                  value={dbUser}
+                  placeholder="reporting"
+                  onChange={(e) => setDbUser(e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="Password secret name">
+              {(id, a11y) => (
+                <Input
+                  id={id}
+                  {...a11y}
+                  value={authSecret}
+                  placeholder="optional, references a managed secret"
+                  onChange={(e) => setAuthSecret(e.target.value)}
+                />
+              )}
+            </Field>
+            <Field label="TLS mode">
+              {(id, a11y) => (
+                <select id={id} {...a11y} value={sslMode} onChange={(e) => setSslMode(e.target.value)}>
+                  <option value="verify-full">verify-full (default)</option>
+                  <option value="require">require (encrypt, no cert check)</option>
+                  <option value="disable">disable</option>
+                </select>
+              )}
+            </Field>
+            <Field label="Query">
+              {(id, a11y) => (
+                <Textarea
+                  id={id}
+                  {...a11y}
+                  value={query}
+                  placeholder={'SELECT region, amount::text FROM sales'}
+                  onChange={(e) => setQuery(e.target.value)}
+                  rows={3}
+                />
+              )}
+            </Field>
+          </>
         )}
-        <Field label="Format">
-          {(id, a11y) => (
-            <select id={id} {...a11y} value={format} onChange={(e) => setFormat(e.target.value)}>
-              <option value="csv">csv</option>
-              <option value="json">json</option>
-            </select>
-          )}
-        </Field>
+        {kind !== 'sql' ? (
+          <Field label="Format">
+            {(id, a11y) => (
+              <select id={id} {...a11y} value={format} onChange={(e) => setFormat(e.target.value)}>
+                <option value="csv">csv</option>
+                <option value="json">json</option>
+              </select>
+            )}
+          </Field>
+        ) : null}
         <button className="primary" disabled={saving} onClick={() => void add()}>
           {saving ? 'Saving...' : 'Add data source'}
         </button>

@@ -1039,16 +1039,76 @@ pub struct HttpSpec {
     pub timeout_ms: u64,
 }
 
-/// What a connection does: run a command (ADR-0012) or fetch an HTTP(S) URL
-/// (ADR-0030). Database/ODBC ingestion is served by a command connection running
-/// the user's own client script, so the server stays a single pure-Rust binary
-/// with no database-driver dependency.
+/// The database engine of a [`SqlSpec`] (ADR-0034). SQL Server is intentionally
+/// absent: its only pure-Rust driver pulls a TLS library with active
+/// certificate-verification advisories (see ADR-0034), so it is deferred and
+/// reached via a `command` connection meanwhile.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SqlEngine {
+    /// PostgreSQL (and Postgres-wire-compatible databases).
+    #[default]
+    Postgres,
+    /// MySQL / MariaDB.
+    MySql,
+}
+
+/// How a SQL connection negotiates TLS (ADR-0034). The secure mode is the
+/// default; an operator with a self-signed internal database opts down.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SqlSslMode {
+    /// rustls with the bundled public roots and full certificate verification.
+    #[default]
+    VerifyFull,
+    /// Encrypt over rustls but do NOT verify the server certificate (the libpq
+    /// `sslmode=require` behavior; for self-signed internal-database certs).
+    Require,
+    /// No TLS.
+    Disable,
+}
+
+/// A SQL connection's configuration (ADR-0034): connect to a database and run a
+/// fixed, admin-defined `query`, mapping each result row to the same rows the
+/// other connectors produce. The capability is off by default and constrained by
+/// an operator host allowlist; the password is referenced by secret name, never
+/// stored here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SqlSpec {
+    /// The database engine (only Postgres is implemented).
+    pub engine: SqlEngine,
+    /// The database host (the API gates it against an operator allowlist).
+    pub host: String,
+    /// The database port.
+    pub port: u16,
+    /// The database (catalog) name.
+    pub database: String,
+    /// The connecting user (not secret).
+    pub user: String,
+    /// The name of the secret holding the password; `None` for a passwordless
+    /// connection. A name, never the value.
+    pub password_secret: Option<String>,
+    /// The fixed SQL query to run. Admin-defined at definition time and never
+    /// assembled from flow input, so a flow presents no injection surface.
+    pub query: String,
+    /// TLS negotiation mode.
+    pub ssl_mode: SqlSslMode,
+    /// Connect/query timeout in milliseconds (0 means the REST layer's safe
+    /// default; 0 only arises from a hand-edited model).
+    pub timeout_ms: u64,
+}
+
+/// What a connection does: run a command (ADR-0012), fetch an HTTP(S) URL
+/// (ADR-0030), or query a database (ADR-0034). A native SQL connection uses a
+/// pure-Rust driver over rustls, so the server stays a single binary; a database
+/// without a built-in driver is still reachable via a command connection running
+/// the user's own client script.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ConnectionSpec {
     /// Run an external program and read its stdout (ADR-0012 decision 6).
     Command(CommandSpec),
     /// Fetch an HTTP(S) URL and read the response body (ADR-0030).
     Http(HttpSpec),
+    /// Query a database and read its result rows (ADR-0034).
+    Sql(SqlSpec),
 }
 
 /// A named, admin-defined data-source connection. Flows reference it by name to

@@ -77,6 +77,7 @@ fn router_for(dir: &Path, is_admin: bool, commands: bool) -> Router {
         view_cache: Default::default(),
         secrets: Default::default(),
         http: Default::default(),
+        sql: Default::default(),
     };
     build_router(state)
 }

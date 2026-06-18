@@ -33,6 +33,11 @@ mod http;
 #[cfg(feature = "http")]
 pub use http::{fetch_http, fetch_http_capped};
 
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+mod sql;
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+pub use sql::{fetch_sql, fetch_sql_capped};
+
 /// Default cap on a command's captured stdout (16 MiB): output beyond this fails
 /// the run rather than risking memory exhaustion.
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
@@ -57,6 +62,8 @@ pub enum ConnectError {
     Http(String),
     /// The HTTP server returned a non-2xx status.
     HttpStatus { code: u16, body: String },
+    /// A SQL connection, query, or row-mapping error (ADR-0034).
+    Sql(String),
 }
 
 impl std::fmt::Display for ConnectError {
@@ -93,6 +100,7 @@ impl std::fmt::Display for ConnectError {
                     write!(f, "the server returned HTTP {code}: {tail}")
                 }
             }
+            ConnectError::Sql(m) => write!(f, "database query failed: {m}"),
         }
     }
 }

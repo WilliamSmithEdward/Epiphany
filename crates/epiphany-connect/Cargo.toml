@@ -16,13 +16,41 @@ workspace = true
 # provider with bundled webpki roots (matches the server TLS feature; no
 # native-tls, no aws-lc-rs, builds on the GNU toolchain).
 http = ["dep:ureq"]
+# Optional native SQL fetch connector (ADR-0034). Off by default. Pure-Rust
+# Postgres driver (tokio-postgres) over rustls pinned to the ring provider with
+# bundled webpki roots (no native-tls, no aws-lc-rs, builds on the GNU
+# toolchain). Run on a dedicated thread + current-thread runtime so it is a
+# plain sync Vec<Row> producer like the other connectors.
+postgres = [
+  "dep:tokio-postgres",
+  "dep:tokio-postgres-rustls",
+  "dep:tokio",
+  "dep:rustls",
+  "dep:webpki-roots",
+]
+# MySQL / MariaDB (ADR-0034): mysql_async over rustls pinned to ring
+# (default-rustls-ring) with bundled roots; minimal-rust keeps it pure (no C
+# libz-sys). No native-tls, no aws-lc-rs.
+mysql = ["dep:mysql_async", "dep:tokio"]
+# SQL Server is intentionally NOT offered: the only pure-Rust driver (tiberius
+# 0.12) pins rustls 0.21, which pulls webpki 0.22 with active certificate
+# name-constraint verification-bypass advisories (RUSTSEC-2026-0098/0099) and a
+# reachable CRL-parsing panic (RUSTSEC-2026-0104). That fails the supply-chain
+# gate, so it is deferred until tiberius moves to rustls 0.23 / rustls-webpki
+# (ADR-0034). SQL Server is reachable meanwhile via a `command` connection.
 
 [dependencies]
 epiphany-core = { path = "../epiphany-core" }
 # Connectors produce the same row shape flows consume, and reuse the CSV reader.
 epiphany-flow = { path = "../epiphany-flow" }
+mysql_async = { version = "0.37.0", default-features = false, features = ["minimal-rust", "default-rustls-ring", "webpki-roots"], optional = true }
+rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
 # Parse a connector program's JSON stdout.
 serde_json = "1"
+tokio = { version = "1.52.3", default-features = false, features = ["rt", "net", "time"], optional = true }
+tokio-postgres = { version = "0.7.18", optional = true }
+tokio-postgres-rustls = { version = "0.14.0", optional = true }
 # HTTP(S) fetch connector (feature = "http"): a blocking client over rustls
 # (ring) with bundled roots; no native-tls, no aws-lc-rs.
 ureq = { version = "2", default-features = false, features = ["tls", "gzip"], optional = true }
+webpki-roots = { version = "1.0.8", optional = true }

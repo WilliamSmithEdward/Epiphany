@@ -177,6 +177,8 @@ environment variables. The most useful:
 | `EPIPHANY_ENABLE_COMMAND_CONNECTORS` | Allow admin-defined programs as flow data sources | off |
 | `EPIPHANY_ENABLE_HTTP_CONNECTORS` | Allow admin-defined HTTP(S) data sources (needs the `http` build feature) | off |
 | `EPIPHANY_HTTP_ALLOWED_HOSTS` | Comma-separated hosts an HTTP connection may target (empty = none) | empty |
+| `EPIPHANY_ENABLE_SQL_CONNECTORS` | Allow admin-defined SQL data sources (PostgreSQL/MySQL; needs the `postgres`/`mysql` build features) | off |
+| `EPIPHANY_SQL_ALLOWED_HOSTS` | Comma-separated database hosts a SQL connection may target (empty = none) | empty |
 
 ### HTTPS / TLS
 

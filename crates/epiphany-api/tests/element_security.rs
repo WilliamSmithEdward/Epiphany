@@ -113,6 +113,7 @@ fn harness(name: &str) -> Harness {
         view_cache: Default::default(),
         secrets: Default::default(),
         http: Default::default(),
+        sql: Default::default(),
     };
     Harness {
         app: build_router(state),
