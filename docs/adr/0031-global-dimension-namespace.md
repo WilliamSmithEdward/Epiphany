@@ -150,12 +150,12 @@ fixed in place. The rest are inherent to the v1 materialized-reference model
   entries. A future id-on-cube-dimension link would remove the name dependency.
 - **Isolated single-cube export re-localizes a promoted dimension** (accepted).
   Within a data directory the registry index (`dimensions/index.toml`) is the
-  reference record and reconciles links on load, so the practical round-trip — edit,
-  serialize, restart — survives, and attribute defs/values now travel with the
+  reference record and reconciles links on load, so the practical round-trip (edit,
+  serialize, restart) survives, and attribute defs/values now travel with the
   cube's materialized copy. The only residual gap is exporting a *single* cube file
   on its own (without the `dimensions/` directory) and importing it into a fresh
   deployment: that loses the registry link. Adding a redundant `reference = <id>`
-  marker to the cube text was considered and rejected — it would duplicate the
+  marker to the cube text was considered and rejected: it would duplicate the
   index's record and create a two-sources-of-truth consistency hazard. The
   model-as-code unit is the data directory, not a lone cube file, so this is
   accepted rather than worked around.
