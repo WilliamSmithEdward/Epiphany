@@ -674,6 +674,90 @@ async fn promote_authorization_and_error_paths() {
 }
 
 #[tokio::test]
+async fn global_dimension_read_masks_elements_denied_on_a_referencing_cube() {
+    // ADR-0033: GET /dimensions/{id} must not leak member names the caller is
+    // denied on a referencing cube. The harness pre-grants (RCube, Org, Branch)
+    // to modeler only, so `restricted` is denied Branch once RCube references Org.
+    let dir = data_dir("global-elem-sec");
+    let app = build_app(&dir);
+    let modeler = login(&app, "modeler").await;
+    let admin = login(&app, "admin").await;
+    let restricted = login(&app, "restricted").await;
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/dimensions",
+        &modeler,
+        Some(json!({
+            "name": "Org",
+            "elements": [
+                { "name": "HQ", "kind": "numeric" },
+                { "name": "Branch", "kind": "numeric" },
+                { "name": "AllOrg", "kind": "consolidated" }
+            ],
+            "edges": [
+                { "parent": "AllOrg", "child": "HQ", "weight": 1 },
+                { "parent": "AllOrg", "child": "Branch", "weight": 1 }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let org_id = body["id"].as_u64().unwrap();
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes",
+        &modeler,
+        Some(json!({
+            "name": "RCube",
+            "dimensions": [
+                { "ref": org_id },
+                { "name": "Measure", "elements": [{ "name": "Amount", "kind": "numeric" }] }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "create RCube by reference to Org");
+
+    let path = format!("/api/v1/dimensions/{org_id}");
+
+    // restricted: Branch (and the edge to it) is masked from the global read.
+    let (_, dim_r) = call(&app, "GET", &path, &restricted, None).await;
+    let rm = member_names(&dim_r);
+    assert!(
+        rm.contains(&"HQ".to_string()),
+        "allowed member still visible"
+    );
+    assert!(
+        !rm.contains(&"Branch".to_string()),
+        "denied member masked from the global read"
+    );
+    assert!(
+        dim_r["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|e| e["child"] != "Branch"),
+        "edge to a denied member is dropped"
+    );
+
+    // admin bypasses; modeler is granted Branch:Read -> both see the full list.
+    let (_, dim_a) = call(&app, "GET", &path, &admin, None).await;
+    assert!(
+        member_names(&dim_a).contains(&"Branch".to_string()),
+        "admin sees all members"
+    );
+    let (_, dim_m) = call(&app, "GET", &path, &modeler, None).await;
+    assert!(
+        member_names(&dim_m).contains(&"Branch".to_string()),
+        "granted modeler sees the member"
+    );
+}
+
+#[tokio::test]
 async fn library_is_gated_on_the_dimension_permission() {
     let dir = data_dir("authz");
     let app = build_app(&dir);

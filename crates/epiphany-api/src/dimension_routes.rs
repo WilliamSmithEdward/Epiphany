@@ -18,7 +18,10 @@ use epiphany_engine::{DimensionError, DimensionId, PromoteError};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, deny_if_element_restricted, require_cube_access, require_kind_access};
+use crate::authz::{
+    audit, denied_registry_elements, deny_if_element_restricted, require_cube_access,
+    require_kind_access,
+};
 use crate::model_routes::{
     build_dimension_def, parse_element_kind, validate_name, ElementMemberDto, LocalEdgeDto,
 };
@@ -237,14 +240,21 @@ pub(crate) async fn get_dimension(
         .get(DimensionId(id))
         .ok_or_else(|| ApiError::not_found(format!("unknown shared dimension #{id}")))?;
     let def = shared.to_dimension_def();
+    let references = registry.referencing(DimensionId(id));
+    // Element security (ADR-0033): a global dimension read must not leak member
+    // names the caller is denied on a referencing cube. Suppress the union of the
+    // referencing cubes' element-ACL denials (fail-closed; admins see all).
+    let element_names: Vec<String> = def.elements.iter().map(|(name, _)| name.clone()).collect();
+    let denied = denied_registry_elements(&state, &auth, &def.name, &references, &element_names);
     Ok(Json(DimensionDetailDto {
         id,
         name: def.name,
         generation: shared.generation,
-        references: registry.referencing(DimensionId(id)),
+        references,
         elements: def
             .elements
             .into_iter()
+            .filter(|(name, _)| !denied.contains(name))
             .map(|(name, kind)| ElementDto {
                 name,
                 kind: kind_str(kind),
@@ -253,6 +263,7 @@ pub(crate) async fn get_dimension(
         edges: def
             .edges
             .into_iter()
+            .filter(|(parent, child, _)| !denied.contains(parent) && !denied.contains(child))
             .map(|(parent, child, weight)| EdgeDto {
                 parent,
                 child,

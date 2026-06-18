@@ -228,6 +228,41 @@ pub(crate) fn element_mask(
     Some(ElementMask::from_denied(&counts, &denied))
 }
 
+/// The element NAMES of a registry dimension the caller may not see, as the UNION
+/// across the dimension's referencing cubes (ADR-0033): a member denied by an
+/// element ACL in ANY referencing cube is suppressed from the global dimension
+/// read, fail-closed (hidden in one place means hidden globally). An admin gets
+/// an empty set (sees everything); an unknown principal gets every name (deny
+/// all, defense in depth). An unreferenced dimension has no cube ACL context, so
+/// nothing is denied. `element_names` is the dimension's full member list.
+pub(crate) fn denied_registry_elements(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    dim_name: &str,
+    referencing: &[String],
+    element_names: &[String],
+) -> std::collections::HashSet<String> {
+    let security = state.security.lock().expect("security mutex");
+    let Some(principal) = security.principal(&auth.principal.username) else {
+        return element_names.iter().cloned().collect();
+    };
+    if principal.is_admin {
+        return std::collections::HashSet::new();
+    }
+    let mut denied = std::collections::HashSet::new();
+    for cube in referencing {
+        if !security.has_element_acls(cube, dim_name) {
+            continue;
+        }
+        for name in element_names {
+            if !security.element_readable(&principal, cube, dim_name, name) {
+                denied.insert(name.clone());
+            }
+        }
+    }
+    denied
+}
+
 /// Gate a write on element-level access (ADR-0015): a write to a coordinate whose
 /// every component the caller may not write is rejected with 403. A write targets
 /// a leaf, so each component is checked directly (no rollup). On denial emits an
