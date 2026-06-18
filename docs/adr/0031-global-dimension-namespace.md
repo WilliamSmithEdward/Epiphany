@@ -159,12 +159,13 @@ fixed in place. The rest are inherent to the v1 materialized-reference model
   index's record and create a two-sources-of-truth consistency hazard. The
   model-as-code unit is the data directory, not a lone cube file, so this is
   accepted rather than worked around.
-- **Unsaved-edit guard coverage.** Only the rules pane reports dirty state to the
-  tab/navigation discard-guard; the Flows/Views/Schedules editors do not, so a tab
-  switch can drop in-progress input there (the New-Cube wizard is a modal whose
-  focus trap already blocks a background tab click, so it is not exposed). Wiring
-  `onDirtyChange` through the remaining editing workspaces is a follow-up; it
-  predates this work (the guard shipped rules-only with the tree IA).
+- **Unsaved-edit guard coverage** (resolved). The Flows, Views, and Schedules
+  editors now report dirty state to the tab/navigation discard-guard alongside the
+  rules pane, so a tab switch, tree click, or tab close confirms before dropping
+  in-progress input. Flows/Schedules diff against a loaded/saved baseline; the
+  view builder tracks a touched-since-clean flag (its config is rewritten
+  programmatically on load/open). The New-Cube wizard is a modal whose focus trap
+  already blocks a background tab click, so it was never exposed.
 - **Explorer Dimensions fan-out.** Listing the union fetches each readable cube's
   full structure via `getCube` just to read dimension names; a lightweight
   names+backing endpoint would avoid the N heavy reads. The per-request backing
