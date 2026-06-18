@@ -629,7 +629,7 @@ export default function DimensionEditor({
       }
       const ok = await confirm({
         title: `Delete "${name}" from the dimension`,
-        body: `This removes "${name}" from every consolidation it belongs to and permanently deletes all data stored on it. This cannot be undone here.`,
+        description: `This removes "${name}" from every consolidation it belongs to and permanently deletes all data stored on it. This cannot be undone here.`,
         confirmLabel: 'Delete from dimension',
         danger: true,
       })

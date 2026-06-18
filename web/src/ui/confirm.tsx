@@ -5,6 +5,10 @@ import { Button } from './Button'
 export interface ConfirmOptions {
   title: string
   body?: ReactNode
+  /** Rendered as the dialog's accessible description (Radix sets aria-describedby
+   * from it), so a screen reader announces it alongside the title. Prefer this over
+   * `body` for the load-bearing explanation, especially a destructive warning. */
+  description?: ReactNode
   confirmLabel?: string
   /** When true, the confirm button uses the destructive variant. */
   danger?: boolean
@@ -52,6 +56,7 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
           if (!open) settle(false)
         }}
         title={pending?.title ?? ''}
+        description={pending?.description}
         size="sm"
         footer={
           <>
