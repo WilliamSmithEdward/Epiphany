@@ -23,9 +23,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use epiphany_core::{
-    validate_subset, validate_view, AttributeKind, AttributeValue, Connection, Cube, EdgeSpec,
-    ElementSpec, Fixed, Flow, FlowTest, Job, LoadError, Model, ModelError, QueryError, RuleSet,
-    RuleTest, Sandbox, SaveError, Subset, View,
+    validate_subset, validate_view, AttributeKind, AttributeValue, Cube, EdgeSpec, ElementSpec,
+    Fixed, LoadError, Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox, SaveError, Subset,
+    View,
 };
 
 use crate::wal::{self, Record};
@@ -370,75 +370,9 @@ impl Store {
         Ok(removed)
     }
 
-    /// Define (create or replace) a flow definition, then checkpoint. The source
-    /// is stored verbatim; its validity is checked by the flow layer at the API
-    /// boundary (the store stays flow-free).
-    pub fn define_flow(&mut self, flow: Flow) -> Result<(), PersistError> {
-        self.model.flows.insert(flow.name.clone(), flow);
-        self.checkpoint()
-    }
-
-    /// Delete a flow by name. Returns whether one was removed; checkpoints only
-    /// when something changed.
-    pub fn delete_flow(&mut self, name: &str) -> Result<bool, PersistError> {
-        let removed = self.model.flows.remove(name).is_some();
-        if removed {
-            self.checkpoint()?;
-        }
-        Ok(removed)
-    }
-
-    /// Define (create or replace) a flow unit test, then checkpoint.
-    pub fn define_flow_test(&mut self, test: FlowTest) -> Result<(), PersistError> {
-        self.model.flow_tests.insert(test.name.clone(), test);
-        self.checkpoint()
-    }
-
-    /// Delete a flow test by name. Returns whether one was removed; checkpoints
-    /// only when something changed.
-    pub fn delete_flow_test(&mut self, name: &str) -> Result<bool, PersistError> {
-        let removed = self.model.flow_tests.remove(name).is_some();
-        if removed {
-            self.checkpoint()?;
-        }
-        Ok(removed)
-    }
-
-    /// Define (create or replace) a data-source connection, then checkpoint.
-    pub fn define_connection(&mut self, connection: Connection) -> Result<(), PersistError> {
-        self.model
-            .connections
-            .insert(connection.name.clone(), connection);
-        self.checkpoint()
-    }
-
-    /// Delete a connection by name. Returns whether one was removed; checkpoints
-    /// only when something changed.
-    pub fn delete_connection(&mut self, name: &str) -> Result<bool, PersistError> {
-        let removed = self.model.connections.remove(name).is_some();
-        if removed {
-            self.checkpoint()?;
-        }
-        Ok(removed)
-    }
-
-    /// Define (create or replace) a scheduled job (ADR-0013), then checkpoint. The
-    /// job is desired state persisted in the model snapshot; its step flows are
-    /// validated at the API boundary (the store stays scheduler-free).
-    pub fn define_job(&mut self, job: Job) -> Result<(), PersistError> {
-        self.model.jobs.insert(job.name.clone(), job);
-        self.checkpoint()
-    }
-
-    /// Delete a job by name. Returns whether one was removed; checkpoints only
-    /// when something changed.
-    pub fn delete_job(&mut self, name: &str) -> Result<bool, PersistError> {
-        let removed = self.model.jobs.remove(name).is_some();
-        if removed {
-            self.checkpoint()?;
-        }
-        Ok(removed)
-    }
+    // Flows, flow tests, connections, and jobs are no longer per-cube (ADR-0035);
+    // they are persisted by the server-global `AutomationStore`, so the per-cube
+    // `Store` no longer defines or deletes them.
 
     /// Define (create or replace) a sandbox, then checkpoint. A sandbox is a
     /// per-user what-if overlay (ADR-0014); it is persisted in the model snapshot

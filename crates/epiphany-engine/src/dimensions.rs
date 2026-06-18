@@ -227,6 +227,21 @@ impl DimensionRegistry {
             .collect()
     }
 
+    /// The id of the registry dimension named `name`, if any. Global dimension
+    /// names are unique (ADR-0031), so this is well-defined; a flow addresses a
+    /// global dimension by bare name (ADR-0035) and the apply path resolves it
+    /// here.
+    pub fn id_of(&self, name: &str) -> Option<DimensionId> {
+        self.by_id
+            .values()
+            .find_map(|s| (s.dimension.name() == name).then_some(s.id))
+    }
+
+    /// The registry dimension named `name`, if any.
+    pub fn named(&self, name: &str) -> Option<&Arc<SharedDimension>> {
+        self.by_id.values().find(|s| s.dimension.name() == name)
+    }
+
     /// All shared dimensions, in id order (for persistence).
     pub fn all(&self) -> Vec<Arc<SharedDimension>> {
         self.by_id.values().cloned().collect()

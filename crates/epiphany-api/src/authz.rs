@@ -85,6 +85,18 @@ pub(crate) fn require_admin(state: &AppState, auth: &AuthPrincipal) -> Result<()
     }
 }
 
+/// Whether `username` is a server admin, re-resolved from the live store. An
+/// unknown user is not an admin (fail-closed). Used by the flow reader to decide
+/// global-dimension member visibility for a run-as principal (ADR-0035).
+pub(crate) fn is_admin(state: &AppState, username: &str) -> bool {
+    state
+        .security
+        .lock()
+        .expect("security mutex")
+        .principal(username)
+        .is_some_and(|p| p.is_admin)
+}
+
 /// The caller's cube-level access at the `Cube` kind (ADR-0023), for filtering
 /// lists without erroring.
 pub(crate) fn cube_level(state: &AppState, username: &str, cube: &str) -> AccessLevel {
@@ -198,8 +210,21 @@ pub(crate) fn element_mask(
     auth: &AuthPrincipal,
     snapshot: &ReadSnapshot,
 ) -> Option<ElementMask> {
+    element_mask_for(state, &auth.principal.username, snapshot)
+}
+
+/// As [`element_mask`], but for an arbitrary principal by username (ADR-0035): a
+/// scheduled flow run reads and writes as the flow's recorded owner, not a request
+/// caller, so the reader resolves that owner's mask. Same fail-closed semantics:
+/// an unknown principal is masked against nothing here (the caller still gates
+/// reads, and `denied_registry_elements`/writes deny an unknown principal).
+pub(crate) fn element_mask_for(
+    state: &AppState,
+    username: &str,
+    snapshot: &ReadSnapshot,
+) -> Option<ElementMask> {
     let security = state.security.lock().expect("security mutex");
-    let principal = security.principal(&auth.principal.username)?;
+    let principal = security.principal(username)?;
     if principal.is_admin {
         return None;
     }

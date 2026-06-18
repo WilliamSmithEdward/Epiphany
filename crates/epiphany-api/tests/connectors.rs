@@ -76,6 +76,12 @@ fn router_for(dir: &Path, is_admin: bool, commands: bool) -> Router {
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Default::default(),
+        // Tie the automation store to the test data dir so connections persist
+        // across the redaction test's admin/non-admin router pair and stay isolated
+        // from parallel tests (ADR-0035).
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(dir.join("automation")).unwrap(),
+        )),
         http: Default::default(),
         sql: Default::default(),
     };
@@ -189,9 +195,9 @@ async fn flow_ingests_from_a_command_connection() {
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/flows/load",
+        "/api/v1/flows/load",
         &token,
-        Some(json!({ "name": "load", "source": LOAD_FLOW })),
+        Some(json!({ "name": "load", "source": LOAD_FLOW, "default_cube": "Sales" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -199,7 +205,7 @@ async fn flow_ingests_from_a_command_connection() {
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/emit",
+        "/api/v1/connections/emit",
         &token,
         Some(emit_csv_connection()),
     )
@@ -210,7 +216,7 @@ async fn flow_ingests_from_a_command_connection() {
     let (status, report) = call(
         &app,
         "POST",
-        "/api/v1/cubes/Sales/flows/load/run",
+        "/api/v1/flows/load/run",
         &token,
         Some(json!({ "connection": "emit" })),
     )
@@ -235,7 +241,7 @@ async fn defining_a_command_connection_requires_the_enable_gate() {
     let (status, err) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/emit",
+        "/api/v1/connections/emit",
         &token,
         Some(emit_csv_connection()),
     )
@@ -256,7 +262,7 @@ async fn connection_preview_returns_sample_rows() {
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/emit",
+        "/api/v1/connections/emit",
         &token,
         Some(emit_csv_connection()),
     )
@@ -266,7 +272,7 @@ async fn connection_preview_returns_sample_rows() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/cubes/Sales/connections/emit/preview",
+        "/api/v1/connections/emit/preview",
         &token,
         None,
     )
@@ -295,15 +301,9 @@ async fn connection_working_dir_must_be_absolute_without_traversal() {
         let app = app.clone();
         let token = token.clone();
         async move {
-            call(
-                &app,
-                "PUT",
-                "/api/v1/cubes/Sales/connections/emit",
-                &token,
-                Some(conn),
-            )
-            .await
-            .0
+            call(&app, "PUT", "/api/v1/connections/emit", &token, Some(conn))
+                .await
+                .0
         }
     };
 
@@ -340,7 +340,7 @@ async fn defining_a_connection_requires_admin() {
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/emit",
+        "/api/v1/connections/emit",
         &token,
         Some(emit_csv_connection()),
     )
@@ -359,21 +359,14 @@ async fn non_admin_sees_redacted_command_line() {
     let (status, _) = call(
         &admin,
         "PUT",
-        "/api/v1/cubes/Sales/connections/emit",
+        "/api/v1/connections/emit",
         &atok,
         Some(emit_csv_connection()),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     // The admin sees the full command line.
-    let (_, alist) = call(
-        &admin,
-        "GET",
-        "/api/v1/cubes/Sales/connections",
-        &atok,
-        None,
-    )
-    .await;
+    let (_, alist) = call(&admin, "GET", "/api/v1/connections", &atok, None).await;
     assert!(!alist["connections"][0]["program"]
         .as_str()
         .unwrap()
@@ -383,7 +376,7 @@ async fn non_admin_sees_redacted_command_line() {
     // program or args.
     let user = router_for(&dir, false, true);
     let utok = login(&user).await;
-    let (status, ulist) = call(&user, "GET", "/api/v1/cubes/Sales/connections", &utok, None).await;
+    let (status, ulist) = call(&user, "GET", "/api/v1/connections", &utok, None).await;
     assert_eq!(status, StatusCode::OK);
     let conn = &ulist["connections"][0];
     assert_eq!(conn["name"], "emit");
@@ -401,7 +394,7 @@ async fn an_unknown_output_format_is_rejected() {
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/bad",
+        "/api/v1/connections/bad",
         &token,
         Some(json!({ "name": "bad", "kind": "command", "program": "echo", "format": "xml" })),
     )
@@ -419,16 +412,16 @@ async fn a_failing_connector_reports_an_error() {
     call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/flows/load",
+        "/api/v1/flows/load",
         &token,
-        Some(json!({ "name": "load", "source": LOAD_FLOW })),
+        Some(json!({ "name": "load", "source": LOAD_FLOW, "default_cube": "Sales" })),
     )
     .await;
     // A connection whose program does not exist.
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/bad",
+        "/api/v1/connections/bad",
         &token,
         Some(json!({
             "name": "bad",
@@ -445,7 +438,7 @@ async fn a_failing_connector_reports_an_error() {
     let (status, err) = call(
         &app,
         "POST",
-        "/api/v1/cubes/Sales/flows/load/run",
+        "/api/v1/flows/load/run",
         &token,
         Some(json!({ "connection": "bad" })),
     )

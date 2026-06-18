@@ -19,11 +19,14 @@ pub mod testing;
 
 pub use csv::{parse_csv, CsvError, Row, MAX_CSV_ROWS};
 pub use ledger::{RunLedger, RunRecord, RunRetention, RunState};
-pub use run::{run_flow, validate_flow, FlowError, FlowOutcome, FlowReport, PlannedCell};
+pub use run::{
+    run_flow, validate_flow, CubeChanges, DimChanges, FlowCell, FlowError, FlowOutcome,
+    FlowReadError, FlowReader, FlowReport, NullReader, PlannedCell,
+};
 pub use scheduler::{due_firings, scheduled_run_id, Firing};
 pub use strip::{strip_types, StripError};
 pub use testing::{
-    apply_outcome, run_flow_tests, AssertionFailure, FlowTestError, FlowTestOutcome,
+    apply_cube_changes, run_flow_tests, AssertionFailure, FlowTestError, FlowTestOutcome,
 };
 
 #[cfg(test)]

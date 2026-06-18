@@ -32,6 +32,9 @@ fn cube() -> Cube {
 fn harness(name: &str, http: HttpConnectorConfig, secrets: &[(&str, &str)]) -> Router {
     let dir = std::env::temp_dir().join(format!("epiphany-http-{}-{name}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
+    let auto_dir =
+        std::env::temp_dir().join(format!("epiphany-http-auto-{}-{name}", std::process::id()));
+    std::fs::remove_dir_all(&auto_dir).ok();
     let store = Store::create(dir, cube()).unwrap();
     let mut stores = BTreeMap::new();
     stores.insert("Sales".to_string(), store);
@@ -57,6 +60,9 @@ fn harness(name: &str, http: HttpConnectorConfig, secrets: &[(&str, &str)]) -> R
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Arc::new(Mutex::new(secret_store)),
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(auto_dir).unwrap(),
+        )),
         http,
         sql: Default::default(),
     };
@@ -170,7 +176,7 @@ async fn http_connection_requires_the_capability() {
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(http_conn("https://api.example.com/data.csv", None)),
     )
@@ -185,7 +191,7 @@ async fn http_connection_host_must_be_allowlisted() {
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(http_conn("https://evil.example.net/data.csv", None)),
     )
@@ -204,7 +210,7 @@ async fn http_connection_unknown_secret_is_rejected() {
     let (status, body) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(http_conn(
             "https://api.example.com/data.csv",
@@ -223,7 +229,7 @@ async fn http_connection_defines_and_round_trips() {
     let (status, body) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(http_conn("https://api.example.com/data.csv", Some("tok"))),
     )
@@ -235,14 +241,7 @@ async fn http_connection_defines_and_round_trips() {
     assert_eq!(body["auth"]["secret"], "tok");
 
     // It comes back from GET, with the secret referenced by name (never a value).
-    let (status, got) = call(
-        &app,
-        "GET",
-        "/api/v1/cubes/Sales/connections/feed",
-        &admin,
-        None,
-    )
-    .await;
+    let (status, got) = call(&app, "GET", "/api/v1/connections/feed", &admin, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got["auth"]["secret"], "tok");
     assert!(!got.to_string().contains("abc123"));
@@ -259,7 +258,7 @@ async fn http_preview_reports_not_built_without_the_feature() {
     call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(http_conn("https://api.example.com/data.csv", Some("tok"))),
     )
@@ -267,7 +266,7 @@ async fn http_preview_reports_not_built_without_the_feature() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/cubes/Sales/connections/feed/preview",
+        "/api/v1/connections/feed/preview",
         &admin,
         None,
     )

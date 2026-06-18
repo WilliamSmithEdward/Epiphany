@@ -34,6 +34,9 @@ fn app(tag: &str) -> Router {
     let dir = std::env::temp_dir().join(format!("epiphany-rbac-{}-{tag}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).unwrap();
+    // The automation store is per-test (keyed by tag) so parallel tests that
+    // author flows do not collide in one shared file (ADR-0035).
+    let auto_dir = dir.join("automation");
     let mut stores = BTreeMap::new();
     stores.insert(
         "Sales".to_string(),
@@ -112,6 +115,9 @@ fn app(tag: &str) -> Router {
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Default::default(),
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(auto_dir).unwrap(),
+        )),
         http: Default::default(),
         sql: Default::default(),
     };
@@ -189,7 +195,7 @@ async fn per_kind_gates_separate_modeler_from_data_entry() {
         send(
             &app,
             "PUT",
-            "/api/v1/cubes/Sales/flows/load",
+            "/api/v1/flows/load",
             &admin,
             Some(flow_body.clone())
         )
@@ -202,7 +208,7 @@ async fn per_kind_gates_separate_modeler_from_data_entry() {
         send(
             &app,
             "PUT",
-            "/api/v1/cubes/Sales/flows/fa_flow",
+            "/api/v1/flows/fa_flow",
             &fa,
             Some(flow_body.clone())
         )
@@ -213,7 +219,7 @@ async fn per_kind_gates_separate_modeler_from_data_entry() {
         send(
             &app,
             "POST",
-            "/api/v1/cubes/Sales/flows/fa_flow/run",
+            "/api/v1/flows/fa_flow/run",
             &fa,
             Some(json!({ "input": "" })),
         )
@@ -261,7 +267,7 @@ async fn per_kind_gates_separate_modeler_from_data_entry() {
         send(
             &app,
             "PUT",
-            "/api/v1/cubes/Sales/flows/de_flow",
+            "/api/v1/flows/de_flow",
             &de,
             Some(flow_body.clone())
         )
@@ -286,7 +292,7 @@ async fn per_kind_gates_separate_modeler_from_data_entry() {
         send(
             &app,
             "PUT",
-            "/api/v1/cubes/Sales/flows/x",
+            "/api/v1/flows/x",
             &nobody,
             Some(flow_body.clone())
         )
@@ -313,27 +319,22 @@ async fn flow_run_cannot_exceed_runners_data_access() {
     let fa = login(&app, "fa").await; // Flow:Write, NO cube write
     let power = login(&app, "power").await; // Flow:Write AND cube write
 
-    // Store a flow that writes a cell (admin can).
-    let writing = json!({ "name": "w", "source": WRITING_FLOW });
+    // Store a flow that writes a cell into Sales (admin can). Its default cube is
+    // Sales, so the cube-less `ctx.writeCells` targets it (ADR-0035).
+    let writing = json!({ "name": "w", "source": WRITING_FLOW, "default_cube": "Sales" });
     assert_eq!(
-        send(
-            &app,
-            "PUT",
-            "/api/v1/cubes/Sales/flows/wflow",
-            &admin,
-            Some(writing)
-        )
-        .await,
+        send(&app, "PUT", "/api/v1/flows/wflow", &admin, Some(writing)).await,
         StatusCode::OK
     );
 
-    // The flow author can run flows in general, but running THIS one is denied:
-    // it would write a cell they cannot write directly (no cube Write).
+    // A manual flow run executes as the caller (ADR-0035). The flow author can run
+    // flows in general, but running THIS one is denied: it would write a cell they
+    // cannot write directly (no cube Write).
     assert_eq!(
         send(
             &app,
             "POST",
-            "/api/v1/cubes/Sales/flows/wflow/run",
+            "/api/v1/flows/wflow/run",
             &fa,
             Some(json!({ "input": "" }))
         )
@@ -347,7 +348,7 @@ async fn flow_run_cannot_exceed_runners_data_access() {
         send(
             &app,
             "POST",
-            "/api/v1/cubes/Sales/flows/wflow/run",
+            "/api/v1/flows/wflow/run",
             &power,
             Some(json!({ "input": "" }))
         )
@@ -356,20 +357,61 @@ async fn flow_run_cannot_exceed_runners_data_access() {
     );
 }
 
+/// As [`send`], but also returns the parsed response body, for the run-as-owner
+/// job-kick test (which inspects the returned run record's state).
+async fn send_body(
+    app: &Router,
+    method: &str,
+    uri: &str,
+    token: &str,
+    body: Option<Value>,
+) -> (StatusCode, Value) {
+    let mut req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"));
+    let body = match body {
+        Some(b) => {
+            req = req.header("content-type", "application/json");
+            Body::from(b.to_string())
+        }
+        None => Body::empty(),
+    };
+    let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    (status, v)
+}
+
 #[tokio::test]
-async fn manual_job_kick_cannot_exceed_runners_access() {
+async fn manual_job_kick_runs_steps_as_the_flow_owner() {
+    // A scheduled/job step executes as the FLOW's owner, not the kicker (ADR-0035
+    // decision 7), so a kick is bounded by the owner's access. The kicker needs
+    // only Job:Write to trigger it; the run then fails or succeeds on the owner's
+    // rights. This replaces the old "kick runs as the kicker" semantics.
     let app = app("jobkick");
     let admin = login(&app, "admin").await;
     let jobber = login(&app, "jobber").await; // Job:Write only, no cube write
 
-    // Admin defines a flow and a job that runs it.
+    // Admin defines a cell-writing flow OWNED BY fa (no cube write) and a job that
+    // runs it. (As an admin, the PUT may set an arbitrary owner.)
     assert_eq!(
         send(
             &app,
             "PUT",
-            "/api/v1/cubes/Sales/flows/load",
+            "/api/v1/flows/wflow",
             &admin,
-            Some(json!({ "name": "load", "source": FLOW_SRC }))
+            Some(json!({
+                "name": "wflow",
+                "source": WRITING_FLOW,
+                "default_cube": "Sales",
+                "owner": "fa"
+            }))
         )
         .await,
         StatusCode::OK
@@ -378,39 +420,51 @@ async fn manual_job_kick_cannot_exceed_runners_access() {
         send(
             &app,
             "PUT",
-            "/api/v1/cubes/Sales/jobs/nightly",
+            "/api/v1/schedules/nightly",
             &admin,
-            Some(json!({ "name": "nightly", "steps": ["load"], "every_millis": 3_600_000, "enabled": false })),
+            Some(json!({ "name": "nightly", "steps": ["wflow"], "every_millis": 3_600_000, "enabled": false })),
         )
         .await,
         StatusCode::OK
     );
 
-    // The job author can edit jobs (Job:Write) but a manual kick is denied: it
-    // would run flows as them, and they lack cube/dimension write.
+    // A non-admin without Job:Write cannot kick at all (the trigger gate).
+    let de = login(&app, "de").await; // cube Write, but no Job:Write
     assert_eq!(
-        send(
-            &app,
-            "POST",
-            "/api/v1/cubes/Sales/jobs/nightly/run",
-            &jobber,
-            None
-        )
-        .await,
+        send(&app, "POST", "/api/v1/schedules/nightly/run", &de, None).await,
         StatusCode::FORBIDDEN
     );
-    // Admin can kick it.
+
+    // The job author (Job:Write) may kick. The kick succeeds (200) but the run
+    // FAILS, because it executes as the flow's owner (fa), who cannot write the
+    // cube. So the kick is bounded by the OWNER's access, not the kicker's.
+    let (status, run) =
+        send_body(&app, "POST", "/api/v1/schedules/nightly/run", &jobber, None).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["state"], "failed", "owner fa lacks cube write: {run}");
+
+    // Reassign the flow's owner to the power user (cube write), then the same kick
+    // succeeds: the run is now within the owner's rights.
     assert_eq!(
         send(
             &app,
-            "POST",
-            "/api/v1/cubes/Sales/jobs/nightly/run",
+            "PUT",
+            "/api/v1/flows/wflow",
             &admin,
-            None
+            Some(json!({
+                "name": "wflow",
+                "source": WRITING_FLOW,
+                "default_cube": "Sales",
+                "owner": "power"
+            }))
         )
         .await,
         StatusCode::OK
     );
+    let (status, run) =
+        send_body(&app, "POST", "/api/v1/schedules/nightly/run", &jobber, None).await;
+    assert_eq!(status, StatusCode::OK, "{run}");
+    assert_eq!(run["state"], "succeeded", "owner power can write: {run}");
 }
 
 #[tokio::test]

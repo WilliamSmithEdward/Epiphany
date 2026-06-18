@@ -55,6 +55,13 @@ fn harness(commands: bool) -> Harness {
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Default::default(),
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(
+                std::env::temp_dir()
+                    .join(format!("epiphany-test-auto-{}-audit-0", std::process::id())),
+            )
+            .unwrap(),
+        )),
         http: Default::default(),
         sql: Default::default(),
     };
@@ -100,7 +107,7 @@ async fn put_connection(app: &Router, token: &str) -> StatusCode {
         .oneshot(
             Request::builder()
                 .method("PUT")
-                .uri("/api/v1/cubes/Sales/connections/c")
+                .uri("/api/v1/connections/c")
                 .header("authorization", format!("Bearer {token}"))
                 .header("content-type", "application/json")
                 .body(Body::from(body.to_string()))
@@ -159,9 +166,9 @@ async fn login_denial_and_object_change_are_audited() {
     assert_eq!(denied.len(), 1);
     assert_eq!(denied[0].actor, "ann");
     assert_eq!(denied[0].object_kind, "connection");
-    // The denial is at the Connection kind for the cube (ADR-0023 kind-access
-    // gate), so the target is the cube, not a specific connection name.
-    assert_eq!(denied[0].target, "Sales/");
+    // The denial is at the global Connection kind (ADR-0023/0035 kind-access
+    // gate), so the target is the empty global name, not a cube-scoped one.
+    assert_eq!(denied[0].target, "");
 
     // An admin connection write succeeds and is audited as an object change.
     assert_eq!(put_connection(&h.app, &admin).await, StatusCode::OK);

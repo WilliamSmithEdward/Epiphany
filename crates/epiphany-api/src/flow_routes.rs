@@ -1,8 +1,13 @@
-//! Flow endpoints: CRUD over a cube's flows and flow tests, flow preview
-//! (strip + parse validation), running a flow over uploaded data, a guided CSV
-//! import, and running the flow test suite. All AuthPrincipal-gated. A flow's
-//! staged outcome is applied through the engine: elements/edges first (so new
-//! members exist), then cell writes.
+//! Flow endpoints (ADR-0035): CRUD over the server-global flows and flow tests,
+//! flow preview (strip + parse validation), running a flow over its declared and
+//! ad-hoc inputs against any mix of cubes and global dimensions, a cube-scoped
+//! guided CSV import, and running the flow test suite. All AuthPrincipal-gated.
+//! Authoring is gated by the global `Flow:Write` grant; a run is never a
+//! privilege-escalation path, so every staged effect is re-authorized against the
+//! running principal's object and element security per target before it is
+//! applied. A flow's staged outcome is applied through the engine per target cube
+//! (elements/edges first, then cells) and per target global dimension
+//! (`grow_dimension`).
 
 use std::collections::BTreeMap;
 
@@ -12,22 +17,24 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use epiphany_core::{ElementKind, ElementSpec, Flow, FlowTest};
+use epiphany_core::{
+    Connection, ConnectionSpec, ElementKind, ElementSpec, Flow, FlowInput, FlowInputBinding,
+    FlowTest,
+};
 use epiphany_engine::CellWrite;
+use epiphany_flow::FlowTestError;
 use epiphany_flow::{
-    parse_csv, run_flow, run_flow_tests, validate_flow, FlowError, FlowOutcome, FlowTestError,
-    PlannedCell,
+    parse_csv, run_flow, run_flow_tests, validate_flow, CubeChanges, FlowError, FlowOutcome,
+    PlannedCell, Row,
 };
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{
-    audit, deny_if_element_restricted, require_cube_access, require_element_write,
-    require_kind_access,
-};
-use crate::connection_routes::fetch_connection_rows;
+use crate::authz::{audit, require_cube_access, require_element_write, require_kind_access};
+use crate::connection_routes::{fetch_connection_rows, spec_from_dto, ConnectionDto};
 use crate::dto::{from_cell, to_cell, FailureDto, TestCellDto, TestOutcomeDto, TestReportDto};
-use crate::routes::{broadcast, build_write, map_batch_error, snapshot};
+use crate::flow_reader::ApiFlowReader;
+use crate::routes::{broadcast, build_write, map_batch_error, map_persist_error};
 use crate::{ApiError, AppState};
 
 /// Map a flow run/validate failure to the API envelope, attaching line/column
@@ -40,90 +47,240 @@ fn map_flow_error(err: FlowError) -> ApiError {
     }
 }
 
-/// Apply a flow's staged outcome through the engine: add elements/edges, then
-/// write the cells. Returns `(elements_added, cells_written)`.
-///
-/// Everything is pre-validated against a clone of the cube (with the new
-/// elements applied) before anything is committed, so an unresolvable cell or a
-/// rejected schema change commits nothing. On success the elements are committed
-/// first (so the new members exist) and then the cells as one batch.
+/// Apply a flow's multi-target staged outcome through the engine (ADR-0035). For
+/// each target cube, schema growth is pre-validated against a clone (and every
+/// cell resolved against it) before any commit, then elements/edges are committed
+/// (so new members exist) and the cell batch applied. For each target global
+/// dimension, the registry dimension is grown (which fans out to its cubes).
+/// Returns `(elements_added, cells_written)` aggregated across all targets. Each
+/// per-cube write and each dimension grow is transactional; across targets it is
+/// sequential after the per-cube pre-validation pass (cross-target atomicity is a
+/// documented future item, ADR-0035 decision 3).
 pub(crate) fn apply_outcome(
     state: &AppState,
-    cube: &str,
     outcome: &FlowOutcome,
 ) -> Result<(usize, usize), ApiError> {
-    let snap = snapshot(state, cube)?;
-    // Stage the schema growth on a clone and resolve every cell against it, so a
-    // resolution failure surfaces before any commit.
-    let mut preview = snap.cube().clone();
-    preview
-        .extend_schema(&outcome.elements, &outcome.edges)
-        .map_err(|e| ApiError::unprocessable("FLOW_SCHEMA_ERROR", e.to_string()))?;
-    let writes: Vec<CellWrite> = outcome
-        .cells
-        .iter()
-        .map(|cell| build_write(&preview, &cell.coord, &cell.value))
-        .collect::<Result<_, _>>()?;
+    let mut elements_added = 0usize;
+    let mut cells_written = 0usize;
 
-    // All valid: commit elements first, then the cell batch.
-    let mut elements_added = 0;
-    if !outcome.elements.is_empty() || !outcome.edges.is_empty() {
-        let (_, added) = state
-            .engine
-            .define_elements(cube, None, &outcome.elements, &outcome.edges)
-            .map_err(map_batch_error)?;
-        elements_added = added;
+    // ---- per-cube writes ----
+    for (cube, changes) in &outcome.cubes {
+        // A snapshot for an unknown target cube is a 422 (the flow named a cube
+        // that does not exist), distinct from the 404 of an unknown route cube.
+        let snap = state.engine.snapshot(cube).ok_or_else(|| {
+            ApiError::unprocessable(
+                "FLOW_UNKNOWN_TARGET",
+                format!("flow targets unknown cube '{cube}'"),
+            )
+        })?;
+        // Stage the schema growth on a clone and resolve every cell against it, so a
+        // resolution failure surfaces before any commit.
+        let mut preview = snap.cube().clone();
+        preview
+            .extend_schema(&changes.elements, &changes.edges)
+            .map_err(|e| ApiError::unprocessable("FLOW_SCHEMA_ERROR", e.to_string()))?;
+        let writes: Vec<CellWrite> = changes
+            .cells
+            .iter()
+            .map(|cell| build_write(&preview, &cell.coord, &cell.value))
+            .collect::<Result<_, _>>()?;
+
+        // All valid for this cube: commit elements first, then the cell batch.
+        if !changes.elements.is_empty() || !changes.edges.is_empty() {
+            let (_, added) = state
+                .engine
+                .define_elements(cube, None, &changes.elements, &changes.edges)
+                .map_err(map_batch_error)?;
+            elements_added += added;
+        }
+        if !writes.is_empty() {
+            cells_written += writes.len();
+            state
+                .engine
+                .apply_batch(cube, None, &writes)
+                .map_err(map_batch_error)?;
+        }
     }
-    let cells_written = writes.len();
-    if !writes.is_empty() {
-        state
-            .engine
-            .apply_batch(cube, None, &writes)
-            .map_err(map_batch_error)?;
+
+    // ---- per-global-dimension growth ----
+    for (dim, changes) in &outcome.dimensions {
+        let id = state.engine.dimension_id_by_name(dim).ok_or_else(|| {
+            ApiError::unprocessable(
+                "FLOW_UNKNOWN_TARGET",
+                format!("flow targets unknown global dimension '{dim}'"),
+            )
+        })?;
+        if !changes.elements.is_empty() || !changes.edges.is_empty() {
+            let before = elements_added;
+            let _ = state
+                .engine
+                .grow_dimension(id, &changes.elements, &changes.edges)
+                .map_err(map_batch_error)?;
+            // grow_dimension does not report a per-call count, so count the staged
+            // new members (idempotent; an exact delta is a future refinement).
+            elements_added = before + changes.elements.len();
+        }
     }
+
     Ok((elements_added, cells_written))
 }
 
-/// Authorize a flow/import outcome AS THE RUNNER (ADR-0023): a flow is never a
-/// privilege-escalation path, so every effect it stages must be something the
-/// runner could do directly. Structure changes (new elements/edges) require
-/// `Dimension:Write` on the cube; cell writes require `Cube:Write` and that every
-/// target cell is element-writable by the runner. Holding only `Flow:Write` lets
-/// a user author and launch flows, but never edit a cube or dimension they lack
-/// access to.
+/// Authorize a flow/import outcome AS THE RUNNER (ADR-0023 + ADR-0035): a flow is
+/// never a privilege-escalation path, so every effect it stages must be something
+/// the runner could do directly. For each target cube, structure changes (new
+/// elements/edges) require `Dimension:Write` on the cube; cell writes require
+/// `Cube:Write` and that every target cell is element-writable by the runner. For
+/// each target global dimension, growth requires the global `Dimension:Write`.
+/// Holding only `Flow:Write` lets a user author and launch flows, but never edit a
+/// cube or dimension they lack access to.
 pub(crate) fn authorize_outcome(
     state: &AppState,
     auth: &AuthPrincipal,
-    cube: &str,
     outcome: &FlowOutcome,
 ) -> Result<(), ApiError> {
-    if !outcome.elements.is_empty() || !outcome.edges.is_empty() {
-        require_kind_access(
-            state,
-            auth,
-            ObjectKind::Dimension,
-            Some(cube),
-            AccessLevel::Write,
-        )?;
+    for (cube, changes) in &outcome.cubes {
+        if !changes.elements.is_empty() || !changes.edges.is_empty() {
+            require_kind_access(
+                state,
+                auth,
+                ObjectKind::Dimension,
+                Some(cube),
+                AccessLevel::Write,
+            )?;
+        }
+        if !changes.cells.is_empty() {
+            // Cell writes use the same gate as the direct cell-write endpoint (the
+            // cube-level grant), plus per-cell element access, so a flow can write
+            // exactly what the runner could write by hand.
+            require_cube_access(state, auth, cube, AccessLevel::Write)?;
+            for cell in &changes.cells {
+                require_element_write(state, auth, cube, &cell.coord)?;
+            }
+        }
     }
-    if !outcome.cells.is_empty() {
-        // Cell writes use the same gate as the direct cell-write endpoint (the
-        // cube-level grant during the migration), plus per-cell element access, so
-        // a flow can write exactly what the runner could write by hand.
-        require_cube_access(state, auth, cube, AccessLevel::Write)?;
-        for cell in &outcome.cells {
-            require_element_write(state, auth, cube, &cell.coord)?;
+    // Growing a global dimension is gated by the global `Dimension:Write` grant.
+    for _dim in outcome.dimensions.keys() {
+        if !outcome.dimensions.is_empty() {
+            require_kind_access(state, auth, ObjectKind::Dimension, None, AccessLevel::Write)?;
         }
     }
     Ok(())
 }
 
-// ---- flow CRUD ----
+/// As [`authorize_outcome`], but for an arbitrary principal by username (ADR-0035):
+/// a scheduled run executes as the flow's recorded owner, so its effects are gated
+/// by the owner's rights, re-resolved from the live store. Fail-closed: an unknown
+/// owner has no access.
+pub(crate) fn authorize_outcome_as(
+    state: &AppState,
+    username: &str,
+    outcome: &FlowOutcome,
+) -> Result<(), ApiError> {
+    let auth = AuthPrincipal::synthetic(username);
+    authorize_outcome(state, &auth, outcome)
+}
+
+// ---- flow inputs ----
+
+/// Resolve a flow's inputs to a `{address: rows}` map (ADR-0035). Each declared
+/// input is fetched: a `Global` binding reads the named global connection; a
+/// `Local` binding reads its embedded connection. Ad-hoc `inline` content (parsed
+/// as CSV, keyed by address) is merged on top, and a legacy single source
+/// (`legacy_single`, when non-empty) is keyed under the flow's first declared
+/// source address (or `"data"`). All fetches go through the shared connection
+/// fetcher, so a flow-scoped connection obeys the same connector controls as a
+/// global one.
+pub(crate) fn resolve_flow_inputs(
+    state: &AppState,
+    flow: &Flow,
+    inline: &BTreeMap<String, String>,
+    legacy_single: &str,
+) -> Result<BTreeMap<String, Vec<Row>>, ApiError> {
+    let mut inputs: BTreeMap<String, Vec<Row>> = BTreeMap::new();
+
+    // (a) the flow's declared inputs, fetched from their connections.
+    for input in &flow.inputs {
+        let rows = match &input.binding {
+            FlowInputBinding::Global => {
+                let conn = {
+                    let store = state.automation.lock().expect("automation store mutex");
+                    store
+                        .automation()
+                        .connections
+                        .get(&input.name)
+                        .cloned()
+                        .ok_or_else(|| {
+                            ApiError::unprocessable(
+                                "UNKNOWN_CONNECTION",
+                                format!(
+                                    "flow input references unknown connection '{}'",
+                                    input.name
+                                ),
+                            )
+                        })?
+                };
+                fetch_connection_rows(state, &conn)?
+            }
+            FlowInputBinding::Local(spec) => {
+                let conn = Connection {
+                    name: input.name.clone(),
+                    spec: spec.clone(),
+                };
+                fetch_connection_rows(state, &conn)?
+            }
+        };
+        inputs.insert(input.address(), rows);
+    }
+
+    // (b) ad-hoc inline sources from the run body, parsed as CSV, by address.
+    for (address, content) in inline {
+        let rows = parse_csv(content)
+            .map_err(|e| ApiError::unprocessable("FLOW_INPUT_ERROR", e.to_string()))?;
+        inputs.insert(address.clone(), rows);
+    }
+
+    // (c) the legacy single source, keyed under the flow's first declared source
+    // address (or "data"), so a single-source flow's `ctx.input()` still resolves.
+    if !legacy_single.is_empty() {
+        let key = flow
+            .inputs
+            .first()
+            .map(|i| i.address())
+            .unwrap_or_else(|| "data".to_string());
+        let rows = parse_csv(legacy_single)
+            .map_err(|e| ApiError::unprocessable("FLOW_INPUT_ERROR", e.to_string()))?;
+        inputs.insert(key, rows);
+    }
+
+    Ok(inputs)
+}
+
+// ---- flow DTOs ----
+
+/// A flow's data input in JSON form: a named source bound either to a global
+/// connection (`scope: "global"`, locked to the connection name) or to an inline
+/// flow-scoped connection (`scope: "local"`, carrying the connection definition).
+#[derive(Serialize, Deserialize, Clone)]
+pub(crate) struct FlowInputDto {
+    pub name: String,
+    /// `"global"` (reference a global connection by name) or `"local"` (inline).
+    pub scope: String,
+    /// The embedded connection definition for a `"local"` scope; ignored for
+    /// `"global"`.
+    #[serde(default)]
+    pub connection: Option<ConnectionDto>,
+}
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct FlowDto {
     pub name: String,
     pub source: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub default_cube: Option<String>,
+    #[serde(default)]
+    pub inputs: Vec<FlowInputDto>,
 }
 
 #[derive(Serialize)]
@@ -131,60 +288,108 @@ pub(crate) struct FlowListDto {
     pub flows: Vec<FlowDto>,
 }
 
-/// `GET /cubes/{cube}/flows` -> the cube's flows.
+/// Render a flow input as its DTO (a local connection echoes unredacted, since the
+/// caller holds `Flow:Read` over the global automation surface).
+fn input_dto(input: &FlowInput) -> FlowInputDto {
+    match &input.binding {
+        FlowInputBinding::Global => FlowInputDto {
+            name: input.name.clone(),
+            scope: "global".to_string(),
+            connection: None,
+        },
+        FlowInputBinding::Local(spec) => FlowInputDto {
+            name: input.name.clone(),
+            scope: "local".to_string(),
+            connection: Some(crate::connection_routes::spec_to_dto(
+                &input.name,
+                spec,
+                true,
+            )),
+        },
+    }
+}
+
+fn flow_dto(flow: &Flow) -> FlowDto {
+    FlowDto {
+        name: flow.name.clone(),
+        source: flow.source.clone(),
+        owner: flow.owner.clone(),
+        default_cube: flow.default_cube.clone(),
+        inputs: flow.inputs.iter().map(input_dto).collect(),
+    }
+}
+
+/// Build the core [`FlowInput`] list from the DTOs, parsing each local connection
+/// through the shared connector-gated parser (ADR-0035).
+fn inputs_from_dtos(state: &AppState, dtos: &[FlowInputDto]) -> Result<Vec<FlowInput>, ApiError> {
+    let mut inputs = Vec::with_capacity(dtos.len());
+    for dto in dtos {
+        let binding = match dto.scope.as_str() {
+            "global" => FlowInputBinding::Global,
+            "local" => {
+                let conn = dto.connection.as_ref().ok_or_else(|| {
+                    ApiError::bad_request(format!(
+                        "flow input '{}' is local but carries no connection",
+                        dto.name
+                    ))
+                })?;
+                let spec: ConnectionSpec = spec_from_dto(state, conn)?;
+                FlowInputBinding::Local(spec)
+            }
+            other => {
+                return Err(ApiError::bad_request(format!(
+                    "unknown flow input scope '{other}' (expected 'global' or 'local')"
+                )))
+            }
+        };
+        inputs.push(FlowInput {
+            name: dto.name.clone(),
+            binding,
+        });
+    }
+    Ok(inputs)
+}
+
+// ---- flow CRUD ----
+
+/// `GET /flows` -> the global flows.
 pub(crate) async fn list_flows(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path(cube): Path<String>,
 ) -> Result<Json<FlowListDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
-    let snap = snapshot(&state, &cube)?;
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Read)?;
+    let store = state.automation.lock().expect("automation store mutex");
     Ok(Json(FlowListDto {
-        flows: snap
-            .model()
-            .flows
-            .values()
-            .map(|f| FlowDto {
-                name: f.name.clone(),
-                source: f.source.clone(),
-            })
-            .collect(),
+        flows: store.automation().flows.values().map(flow_dto).collect(),
     }))
 }
 
-/// `GET /cubes/{cube}/flows/{name}` -> one flow.
+/// `GET /flows/{name}` -> one flow.
 pub(crate) async fn get_flow(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Result<Json<FlowDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
-    let snap = snapshot(&state, &cube)?;
-    let flow = snap
-        .model()
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Read)?;
+    let store = state.automation.lock().expect("automation store mutex");
+    let flow = store
+        .automation()
         .flows
         .get(&name)
         .ok_or_else(|| ApiError::not_found(format!("unknown flow '{name}'")))?;
-    Ok(Json(FlowDto {
-        name: flow.name.clone(),
-        source: flow.source.clone(),
-    }))
+    Ok(Json(flow_dto(flow)))
 }
 
-/// `PUT /cubes/{cube}/flows/{name}` -> validate and store a flow.
+/// `PUT /flows/{name}` -> validate and store a global flow. The owner is set to
+/// the caller on first authoring and preserved on replace, unless the caller is an
+/// admin overriding it.
 pub(crate) async fn put_flow(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
     Json(body): Json<FlowDto>,
 ) -> Result<Json<FlowDto>, ApiError> {
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Flow,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Write)?;
     // Validate (strip + parse) before persisting; a bad flow is never stored.
     if body.source.trim().is_empty() {
         return Err(ApiError::unprocessable(
@@ -193,53 +398,73 @@ pub(crate) async fn put_flow(
         ));
     }
     validate_flow(&body.source).map_err(map_flow_error)?;
-    let flow = Flow {
-        name: name.clone(),
-        source: body.source.clone(),
+    let inputs = inputs_from_dtos(&state, &body.inputs)?;
+
+    // Resolve the owner: preserve the existing owner on replace; on first authoring
+    // (or an explicit admin override) stamp the requested or calling owner. A
+    // non-admin may never set the owner to someone else (fail-closed).
+    let flow = {
+        let mut store = state.automation.lock().expect("automation store mutex");
+        let existing_owner = store
+            .automation()
+            .flows
+            .get(&name)
+            .and_then(|f| f.owner.clone());
+        let owner = if auth.principal.is_admin {
+            // An admin may set or override the owner; default to the existing owner,
+            // then the request body, then the admin themselves.
+            body.owner
+                .clone()
+                .or(existing_owner)
+                .or_else(|| Some(auth.principal.username.clone()))
+        } else {
+            // A non-admin keeps the existing owner, or becomes the owner on first
+            // authoring; they cannot reassign it.
+            existing_owner.or_else(|| Some(auth.principal.username.clone()))
+        };
+        let flow = Flow {
+            name: name.clone(),
+            source: body.source.clone(),
+            owner,
+            default_cube: body.default_cube.clone(),
+            inputs,
+        };
+        store.define_flow(flow.clone()).map_err(map_persist_error)?;
+        flow
     };
-    state
-        .engine
-        .define_flow(&cube, None, flow)
-        .map_err(map_batch_error)?;
     audit(
         &state,
         &auth.principal.username,
         AuditAction::ObjectUpdate,
-        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &name)),
+        Some(&ObjectRef::global(ObjectKind::Flow, &name)),
         true,
     );
-    broadcast(&state, &cube);
-    Ok(Json(FlowDto {
-        name,
-        source: body.source,
-    }))
+    Ok(Json(flow_dto(&flow)))
 }
 
-/// `DELETE /cubes/{cube}/flows/{name}` -> delete a flow.
+/// `DELETE /flows/{name}` -> delete a flow.
 pub(crate) async fn delete_flow(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Flow,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
-    state
-        .engine
-        .delete_flow(&cube, None, &name)
-        .map_err(map_batch_error)?;
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Write)?;
+    let removed = state
+        .automation
+        .lock()
+        .expect("automation store mutex")
+        .delete_flow(&name)
+        .map_err(map_persist_error)?;
+    if !removed {
+        return Err(ApiError::not_found(format!("unknown flow '{name}'")));
+    }
     audit(
         &state,
         &auth.principal.username,
         AuditAction::ObjectDelete,
-        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &name)),
+        Some(&ObjectRef::global(ObjectKind::Flow, &name)),
         true,
     );
-    broadcast(&state, &cube);
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -253,14 +478,13 @@ pub(crate) struct PreviewResult {
     pub ok: bool,
 }
 
-/// `POST /cubes/{cube}/flows/preview` -> validate a flow source without saving.
+/// `POST /flows/preview` -> validate a flow source without saving.
 pub(crate) async fn preview_flow(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path(cube): Path<String>,
     Json(body): Json<PreviewBody>,
 ) -> Result<Json<PreviewResult>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Read)?;
     validate_flow(&body.source).map_err(map_flow_error)?;
     Ok(Json(PreviewResult { ok: true }))
 }
@@ -269,14 +493,18 @@ pub(crate) async fn preview_flow(
 
 #[derive(Deserialize)]
 pub(crate) struct RunBody {
-    /// Inline data-source content (CSV text). Used when `connection` is unset;
-    /// empty for a source-less flow.
+    /// Inline data-source content (CSV text) for the legacy single source. Used
+    /// when `connection` is unset; empty for a source-less flow.
     #[serde(default)]
     pub input: String,
-    /// The name of a configured connection to fetch the input rows from. When
-    /// set, it supplies the rows instead of `input`.
+    /// The name of a configured global connection to fetch the legacy single
+    /// source's rows from. When set, it supplies the rows instead of `input`.
     #[serde(default)]
     pub connection: Option<String>,
+    /// Ad-hoc inline content for named sources (ADR-0035): address -> CSV text,
+    /// merged over the flow's declared inputs.
+    #[serde(default)]
+    pub inputs: BTreeMap<String, String>,
     /// Flow parameters.
     #[serde(default)]
     pub params: BTreeMap<String, String>,
@@ -290,65 +518,93 @@ pub(crate) struct RunReport {
     pub logs: Vec<String>,
 }
 
-/// `POST /cubes/{cube}/flows/{name}/run` -> run a stored flow over uploaded data.
+/// `POST /flows/{name}/run` -> run a stored flow over its declared and ad-hoc
+/// inputs, fanning its staged outcome across the cubes and dimensions its body
+/// names. The flow runs as the caller; its effects are authorized against the
+/// caller's rights before they are applied (ADR-0023/0035).
 pub(crate) async fn run_flow_handler(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
     Json(body): Json<RunBody>,
 ) -> Result<Json<RunReport>, ApiError> {
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Flow,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
-    // Resolve the flow source and (if a connection is named) the connection
-    // itself from one snapshot.
-    let (source, connection) = {
-        let snap = snapshot(&state, &cube)?;
-        let model = snap.model();
-        let source = model
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Write)?;
+    // Resolve the flow from the global automation store.
+    let flow = {
+        let store = state.automation.lock().expect("automation store mutex");
+        store
+            .automation()
             .flows
             .get(&name)
+            .cloned()
             .ok_or_else(|| ApiError::not_found(format!("unknown flow '{name}'")))?
-            .source
-            .clone();
-        let connection = match &body.connection {
-            Some(conn_name) => {
-                Some(model.connections.get(conn_name).cloned().ok_or_else(|| {
-                    ApiError::not_found(format!("unknown connection '{conn_name}'"))
-                })?)
-            }
-            None => None,
-        };
-        (source, connection)
     };
 
-    // Fetch input rows: from the connection (impure edge, with its per-kind
-    // gates applied by the shared fetcher), else inline CSV.
-    let rows = match connection {
-        Some(conn) => fetch_connection_rows(&state, &conn)?,
-        None => parse_csv(&body.input)
-            .map_err(|e| ApiError::unprocessable("FLOW_INPUT_ERROR", e.to_string()))?,
+    // The legacy single source: either a named connection's rows or inline CSV. A
+    // named connection's rows are fetched and keyed under the flow's first declared
+    // source address (or "data") via the legacy path; an inline body uses the
+    // same keying.
+    let legacy_single = match &body.connection {
+        Some(conn_name) => {
+            let conn = {
+                let store = state.automation.lock().expect("automation store mutex");
+                store
+                    .automation()
+                    .connections
+                    .get(conn_name)
+                    .cloned()
+                    .ok_or_else(|| {
+                        ApiError::not_found(format!("unknown connection '{conn_name}'"))
+                    })?
+            };
+            // Fetch now and stage under the legacy key in the inline map, so the
+            // shared resolver does not re-parse it as CSV.
+            let rows = fetch_connection_rows(&state, &conn)?;
+            (Some(rows), String::new())
+        }
+        None => (None, body.input.clone()),
     };
+
+    // Build the inputs map: declared inputs + ad-hoc inline + the legacy single.
+    let mut inputs = resolve_flow_inputs(&state, &flow, &body.inputs, &legacy_single.1)?;
+    if let Some(rows) = legacy_single.0 {
+        let key = flow
+            .inputs
+            .first()
+            .map(|i| i.address())
+            .unwrap_or_else(|| "data".to_string());
+        inputs.insert(key, rows);
+    }
+
+    let cube_names = state.engine.cube_names();
+    let reader = ApiFlowReader::new(state.clone(), &auth.principal.username);
     let now = state.clock.now_millis();
-    let outcome = run_flow(&source, &cube, rows, &body.params, now).map_err(map_flow_error)?;
+    let outcome = run_flow(
+        &flow.source,
+        flow.default_cube.as_deref(),
+        &cube_names,
+        inputs,
+        &body.params,
+        now,
+        Box::new(reader),
+    )
+    .map_err(map_flow_error)?;
 
     // A flow runs as the caller: it may only make changes the caller could make
-    // directly (ADR-0023). Authorize the staged effects before applying them, so
-    // Flow:Write alone can never edit a cube or dimension the runner lacks.
-    authorize_outcome(&state, &auth, &cube, &outcome)?;
-    let (elements_added, cells_written) = apply_outcome(&state, &cube, &outcome)?;
+    // directly (ADR-0023/0035). Authorize the staged effects before applying.
+    authorize_outcome(&state, &auth, &outcome)?;
+    let (elements_added, cells_written) = apply_outcome(&state, &outcome)?;
     audit(
         &state,
         &auth.principal.username,
         AuditAction::FlowExec,
-        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &name)),
+        Some(&ObjectRef::global(ObjectKind::Flow, &name)),
         true,
     );
-    broadcast(&state, &cube);
+    // Notify every cube the run wrote (a global flow has no single cube).
+    for cube in outcome.cubes.keys() {
+        broadcast(&state, cube);
+    }
     Ok(Json(RunReport {
         rows_read: outcome.report.rows_read,
         cells_written,
@@ -373,9 +629,10 @@ pub(crate) struct ImportBody {
     pub fixed: BTreeMap<String, String>,
 }
 
-/// `POST /cubes/{cube}/flows/import` -> a guided CSV load: build the dimension
-/// members the CSV references and write its values, without writing a flow by
-/// hand. Equivalent to a generated load flow, applied through the same path.
+/// `POST /cubes/{cube}/import` -> a guided CSV load into one cube: build the
+/// dimension members the CSV references and write its values, without writing a
+/// flow by hand. Equivalent to a generated single-cube load flow, applied through
+/// the same multi-target path.
 pub(crate) async fn import_csv(
     auth: AuthPrincipal,
     State(state): State<AppState>,
@@ -384,12 +641,12 @@ pub(crate) async fn import_csv(
 ) -> Result<Json<RunReport>, ApiError> {
     let rows = parse_csv(&body.csv)
         .map_err(|e| ApiError::unprocessable("FLOW_INPUT_ERROR", e.to_string()))?;
-    let outcome = plan_import(&rows, &body)?;
+    let outcome = plan_import(&cube, &rows, &body)?;
     // Authorize the import's effects as the caller (ADR-0023): a CSV import builds
     // members (Dimension:Write) and writes cells (Cube:Write + element write), so
     // it can never load past the caller's own access.
-    authorize_outcome(&state, &auth, &cube, &outcome)?;
-    let (elements_added, cells_written) = apply_outcome(&state, &cube, &outcome)?;
+    authorize_outcome(&state, &auth, &outcome)?;
+    let (elements_added, cells_written) = apply_outcome(&state, &outcome)?;
     audit(
         &state,
         &auth.principal.username,
@@ -406,9 +663,10 @@ pub(crate) async fn import_csv(
     }))
 }
 
-/// Build the flow outcome for a guided CSV import: ensure each mapped column's
-/// values as leaf members, then write the value column at the row's coordinate.
-fn plan_import(rows: &[epiphany_flow::Row], body: &ImportBody) -> Result<FlowOutcome, ApiError> {
+/// Build the flow outcome for a guided CSV import into `cube`: ensure each mapped
+/// column's values as leaf members, then write the value column at the row's
+/// coordinate. The result is a single-target outcome keyed by `cube`.
+fn plan_import(cube: &str, rows: &[Row], body: &ImportBody) -> Result<FlowOutcome, ApiError> {
     if body.columns.is_empty() {
         return Err(ApiError::bad_request(
             "import needs at least one column mapping",
@@ -453,10 +711,18 @@ fn plan_import(rows: &[epiphany_flow::Row], body: &ImportBody) -> Result<FlowOut
     // Dedup element specs (idempotent anyway).
     let mut seen = std::collections::HashSet::new();
     elements.retain(|e| seen.insert((e.dimension.clone(), e.name.clone())));
+    let mut cubes = BTreeMap::new();
+    cubes.insert(
+        cube.to_string(),
+        CubeChanges {
+            elements,
+            edges: Vec::new(),
+            cells,
+        },
+    );
     Ok(FlowOutcome {
-        elements,
-        edges: Vec::new(),
-        cells,
+        cubes,
+        dimensions: BTreeMap::new(),
         report: Default::default(),
     })
 }
@@ -469,6 +735,13 @@ pub(crate) struct FlowTestDto {
     pub flow: String,
     #[serde(default)]
     pub input: String,
+    /// Named-source contents for a multi-source flow (ADR-0035): address -> CSV.
+    #[serde(default)]
+    pub inputs: BTreeMap<String, String>,
+    /// The target cube whose staged cells the assertions check; `None` uses the
+    /// flow's default cube.
+    #[serde(default)]
+    pub cube: Option<String>,
     #[serde(default)]
     pub params: BTreeMap<String, String>,
     #[serde(default)]
@@ -485,22 +758,23 @@ fn flow_test_dto(t: &FlowTest) -> FlowTestDto {
         name: t.name.clone(),
         flow: t.flow.clone(),
         input: t.input.clone(),
+        inputs: t.inputs.clone(),
+        cube: t.cube.clone(),
         params: t.params.clone(),
         assertions: t.assertions.iter().map(from_cell).collect(),
     }
 }
 
-/// `GET /cubes/{cube}/flows/tests` -> the cube's flow tests.
+/// `GET /flows/tests` -> the global flow tests.
 pub(crate) async fn list_flow_tests(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path(cube): Path<String>,
 ) -> Result<Json<FlowTestListDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
-    let snap = snapshot(&state, &cube)?;
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Read)?;
+    let store = state.automation.lock().expect("automation store mutex");
     Ok(Json(FlowTestListDto {
-        tests: snap
-            .model()
+        tests: store
+            .automation()
             .flow_tests
             .values()
             .map(flow_test_dto)
@@ -508,83 +782,87 @@ pub(crate) async fn list_flow_tests(
     }))
 }
 
-/// `POST /cubes/{cube}/flows/tests` -> create or replace a flow test.
+/// `POST /flows/tests` -> create or replace a global flow test.
 pub(crate) async fn put_flow_test(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path(cube): Path<String>,
     Json(body): Json<FlowTestDto>,
 ) -> Result<(StatusCode, Json<FlowTestDto>), ApiError> {
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Flow,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Write)?;
     let test = FlowTest {
         name: body.name.clone(),
         flow: body.flow.clone(),
         input: body.input.clone(),
+        inputs: body.inputs.clone(),
+        cube: body.cube.clone(),
         params: body.params.clone(),
         assertions: body.assertions.into_iter().map(to_cell).collect(),
     };
     let response = flow_test_dto(&test);
     state
-        .engine
-        .define_flow_test(&cube, None, test)
-        .map_err(map_batch_error)?;
+        .automation
+        .lock()
+        .expect("automation store mutex")
+        .define_flow_test(test)
+        .map_err(map_persist_error)?;
     audit(
         &state,
         &auth.principal.username,
         AuditAction::ObjectUpdate,
-        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &body.name)),
+        Some(&ObjectRef::global(ObjectKind::Flow, &body.name)),
         true,
     );
-    broadcast(&state, &cube);
     Ok((StatusCode::CREATED, Json(response)))
 }
 
-/// `DELETE /cubes/{cube}/flows/tests/{name}` -> delete a flow test.
+/// `DELETE /flows/tests/{name}` -> delete a global flow test.
 pub(crate) async fn delete_flow_test(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Flow,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
-    state
-        .engine
-        .delete_flow_test(&cube, None, &name)
-        .map_err(map_batch_error)?;
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Write)?;
+    let removed = state
+        .automation
+        .lock()
+        .expect("automation store mutex")
+        .delete_flow_test(&name)
+        .map_err(map_persist_error)?;
+    if !removed {
+        return Err(ApiError::not_found(format!("unknown flow test '{name}'")));
+    }
     audit(
         &state,
         &auth.principal.username,
         AuditAction::ObjectDelete,
-        Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, &name)),
+        Some(&ObjectRef::global(ObjectKind::Flow, &name)),
         true,
     );
-    broadcast(&state, &cube);
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /cubes/{cube}/flows/tests/run` -> run the cube's flow tests.
+/// `POST /flows/tests/run` -> run the global flow tests. Tests evaluate over cube
+/// clones and may target any cube, surfacing values across them, so an
+/// element-restricted caller could otherwise observe a denied member; rather than
+/// partially redact across an unknown set of cubes, the run requires a server
+/// admin (fail-closed, ADR-0015/0035). A future increment may relax this to a
+/// per-cube element-restriction check.
 pub(crate) async fn run_flow_tests_handler(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path(cube): Path<String>,
 ) -> Result<Json<TestReportDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
-    let snap = snapshot(&state, &cube)?;
-    // Tests evaluate over a clone of the live cube; an element-restricted caller
-    // is denied so they cannot observe a denied member's value (ADR-0015).
-    deny_if_element_restricted(&state, &auth, &snap)?;
-    let outcomes = run_flow_tests(snap.model()).map_err(map_flow_test_error)?;
+    require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Read)?;
+    // The global flow-test run can read live cell values across many cubes via its
+    // assertions, so it is admin-only (least-surprising fail-closed posture).
+    crate::authz::require_admin(&state, &auth)?;
+    let automation = {
+        let store = state.automation.lock().expect("automation store mutex");
+        store.automation().clone()
+    };
+    let outcomes = run_flow_tests(&automation, |name| {
+        state.engine.snapshot(name).map(|s| s.cube().clone())
+    })
+    .map_err(map_flow_test_error)?;
     let all_passed = outcomes.iter().all(|o| o.passed);
     Ok(Json(TestReportDto {
         all_passed,

@@ -32,6 +32,9 @@ fn cube() -> Cube {
 fn harness(name: &str, sql: SqlConnectorConfig, secrets: &[(&str, &str)]) -> Router {
     let dir = std::env::temp_dir().join(format!("epiphany-sql-{}-{name}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
+    let auto_dir =
+        std::env::temp_dir().join(format!("epiphany-sql-auto-{}-{name}", std::process::id()));
+    std::fs::remove_dir_all(&auto_dir).ok();
     let store = Store::create(dir, cube()).unwrap();
     let mut stores = BTreeMap::new();
     stores.insert("Sales".to_string(), store);
@@ -57,6 +60,9 @@ fn harness(name: &str, sql: SqlConnectorConfig, secrets: &[(&str, &str)]) -> Rou
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Arc::new(Mutex::new(secret_store)),
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(auto_dir).unwrap(),
+        )),
         http: Default::default(),
         sql,
     };
@@ -147,7 +153,7 @@ async fn sql_connection_requires_the_capability() {
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(sql_conn("db.internal", None)),
     )
@@ -162,7 +168,7 @@ async fn sql_connection_host_must_be_allowlisted() {
     let (status, _) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(sql_conn("db.evil.example.net", None)),
     )
@@ -181,7 +187,7 @@ async fn sql_connection_unknown_secret_is_rejected() {
     let (status, body) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(sql_conn("db.internal", Some("missing"))),
     )
@@ -197,7 +203,7 @@ async fn sql_connection_defines_and_round_trips() {
     let (status, body) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(sql_conn("db.internal", Some("pw"))),
     )
@@ -210,14 +216,7 @@ async fn sql_connection_defines_and_round_trips() {
     // The password value is never echoed, only its secret name.
     assert!(!body.to_string().contains("s3cret"));
 
-    let (status, got) = call(
-        &app,
-        "GET",
-        "/api/v1/cubes/Sales/connections/feed",
-        &admin,
-        None,
-    )
-    .await;
+    let (status, got) = call(&app, "GET", "/api/v1/connections/feed", &admin, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got["host"], "db.internal");
     assert_eq!(got["query"], "SELECT region, amount::text FROM sales");
@@ -243,7 +242,7 @@ async fn sql_mysql_connection_defines_and_round_trips() {
     let (status, got) = call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/mariadb",
+        "/api/v1/connections/mariadb",
         &admin,
         Some(body),
     )
@@ -267,7 +266,7 @@ async fn sql_preview_reports_not_built_without_the_feature() {
     call(
         &app,
         "PUT",
-        "/api/v1/cubes/Sales/connections/feed",
+        "/api/v1/connections/feed",
         &admin,
         Some(sql_conn("db.internal", Some("pw"))),
     )
@@ -275,7 +274,7 @@ async fn sql_preview_reports_not_built_without_the_feature() {
     let (status, body) = call(
         &app,
         "POST",
-        "/api/v1/cubes/Sales/connections/feed/preview",
+        "/api/v1/connections/feed/preview",
         &admin,
         None,
     )

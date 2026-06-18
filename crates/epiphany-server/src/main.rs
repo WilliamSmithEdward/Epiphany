@@ -106,6 +106,19 @@ where
     let admin_override = std::env::var("EPIPHANY_ADMIN_PASSWORD").ok();
     let (mut security, generated) =
         SecurityStore::open_or_bootstrap(security_path, false, admin_override.as_deref())?;
+
+    // The server-global automation store (ADR-0035), migrating any legacy per-cube
+    // automation on first boot. The first admin (alphabetically) becomes the owner
+    // of a migrated flow that recorded none, so its scheduled runs have a real
+    // run-as principal. A migration failure logs and starts empty rather than
+    // blocking boot.
+    let first_admin = security
+        .list_users()
+        .into_iter()
+        .filter(|u| u.is_admin)
+        .map(|u| u.username)
+        .next();
+    let automation = boot::load_automation(&config.data_dir, &engine, first_admin.as_deref())?;
     // Authorization is fail-closed (ADR-0023): a cube is accessible only to a
     // server admin or the holder of a matching Cube grant; there is no open
     // default posture.
@@ -238,6 +251,7 @@ where
             enabled: sql_connectors_enabled,
             allowed_hosts: sql_allowed_hosts,
         },
+        automation: Arc::new(Mutex::new(automation)),
     };
 
     // Start the scheduler reconcile loop (ADR-0013) on the real clock unless it

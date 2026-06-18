@@ -11,10 +11,12 @@
 //! it rewrites the snapshot and clears the WAL. The text model remains the
 //! source of truth; this layer is a derived cache for fast, crash-safe restart.
 
+mod automation;
 mod registry;
 mod store;
 mod wal;
 
+pub use automation::{write_automation, AutomationStore};
 pub use registry::{load_registry, save_registry, RegistryEntry};
 pub use store::{CellWrite, PersistError, Store};
 

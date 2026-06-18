@@ -25,15 +25,15 @@ pub use dimension::{AttributeDef, AttributeKind, AttributeValue, Dimension, Elem
 pub use element_mask::ElementMask;
 pub use error::ModelError;
 pub use query::{
-    execute_view, execute_view_with, resolve_subset, validate_subset, validate_view, Axis,
-    AxisSpec, CellResolver, CellTrace, Cellset, CommandSpec, Connection, ConnectionSpec,
-    ExplainDepth, Flow, FlowTest, HttpAuth, HttpAuthKind, HttpSpec, Job, Model, NoSetEvaluator,
-    Parallelism, QueryError, RuleSet, RuleTest, Sandbox, SetEvaluator, SourceFormat, SqlEngine,
-    SqlSpec, SqlSslMode, StoredCells, Subset, SubsetKind, TestCell, TraceKind, Trigger, View,
-    Visibility,
+    execute_view, execute_view_with, resolve_subset, validate_subset, validate_view, Automation,
+    Axis, AxisSpec, CellResolver, CellTrace, Cellset, CommandSpec, Connection, ConnectionSpec,
+    ExplainDepth, Flow, FlowInput, FlowInputBinding, FlowTest, HttpAuth, HttpAuthKind, HttpSpec,
+    Job, Model, NoSetEvaluator, Parallelism, QueryError, RuleSet, RuleTest, Sandbox, SetEvaluator,
+    SourceFormat, SqlEngine, SqlSpec, SqlSslMode, StoredCells, Subset, SubsetKind, TestCell,
+    TraceKind, Trigger, View, Visibility,
 };
 pub use spread::{spread_leaves, SpreadError, SpreadMethod, MAX_SPREAD_LEAVES};
-pub use text::{LoadError, SaveError};
+pub use text::{extract_legacy_automation, LoadError, SaveError};
 pub use value::{Fixed, SCALE, SCALE_DECIMALS};
 
 /// Stable crate identifier, reported by the server's wiring banner.

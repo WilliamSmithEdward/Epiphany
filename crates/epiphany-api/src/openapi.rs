@@ -343,54 +343,52 @@ fn document() -> Value {
                 "parameters": [cube_param(), name_param()],
                 "responses": { "204": { "description": "Deleted" } }
             }},
-            "/api/v1/cubes/{cube}/flows": { "get": {
-                "summary": "The cube's flows", "security": bearer(),
-                "parameters": [cube_param()], "responses": ok("The flows")
+            "/api/v1/flows": { "get": {
+                "summary": "The global flows (ADR-0035)", "security": bearer(),
+                "responses": ok("The flows")
             }},
-            "/api/v1/cubes/{cube}/flows/preview": { "post": {
+            "/api/v1/flows/preview": { "post": {
                 "summary": "Validate a flow source without saving", "security": bearer(),
-                "parameters": [cube_param()],
                 "requestBody": json_body("#/components/schemas/FlowPreview"),
                 "responses": {
                     "200": { "description": "Valid" },
                     "422": { "description": "A strip/parse error (with line/column)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
                 }
             }},
-            "/api/v1/cubes/{cube}/flows/import": { "post": {
-                "summary": "Guided CSV import (build members and load values)", "security": bearer(),
+            "/api/v1/cubes/{cube}/import": { "post": {
+                "summary": "Guided CSV import into one cube (build members and load values)", "security": bearer(),
                 "parameters": [cube_param()],
                 "requestBody": json_body("#/components/schemas/FlowImport"),
                 "responses": ok("The run report")
             }},
-            "/api/v1/cubes/{cube}/flows/tests": {
+            "/api/v1/flows/tests": {
                 "get": {
-                    "summary": "The cube's flow tests", "security": bearer(),
-                    "parameters": [cube_param()], "responses": ok("The flow tests")
+                    "summary": "The global flow tests", "security": bearer(),
+                    "responses": ok("The flow tests")
                 },
                 "post": {
                     "summary": "Create or replace a flow test", "security": bearer(),
-                    "parameters": [cube_param()],
                     "requestBody": json_body("#/components/schemas/FlowTest"),
                     "responses": { "201": { "description": "The created test" } }
                 }
             },
-            "/api/v1/cubes/{cube}/flows/tests/run": { "post": {
-                "summary": "Run the cube's flow tests", "security": bearer(),
-                "parameters": [cube_param()], "responses": ok("The test report")
+            "/api/v1/flows/tests/run": { "post": {
+                "summary": "Run the global flow tests (admin)", "security": bearer(),
+                "responses": ok("The test report")
             }},
-            "/api/v1/cubes/{cube}/flows/tests/{name}": { "delete": {
+            "/api/v1/flows/tests/{name}": { "delete": {
                 "summary": "Delete a flow test", "security": bearer(),
-                "parameters": [cube_param(), name_param()],
+                "parameters": [name_param()],
                 "responses": { "204": { "description": "Deleted" } }
             }},
-            "/api/v1/cubes/{cube}/flows/{name}": {
+            "/api/v1/flows/{name}": {
                 "get": {
                     "summary": "One flow", "security": bearer(),
-                    "parameters": [cube_param(), name_param()], "responses": ok("The flow")
+                    "parameters": [name_param()], "responses": ok("The flow")
                 },
                 "put": {
                     "summary": "Validate and store a flow", "security": bearer(),
-                    "parameters": [cube_param(), name_param()],
+                    "parameters": [name_param()],
                     "requestBody": json_body("#/components/schemas/FlowBody"),
                     "responses": {
                         "200": { "description": "The stored flow" },
@@ -399,29 +397,29 @@ fn document() -> Value {
                 },
                 "delete": {
                     "summary": "Delete a flow", "security": bearer(),
-                    "parameters": [cube_param(), name_param()],
+                    "parameters": [name_param()],
                     "responses": { "204": { "description": "Deleted" } }
                 }
             },
-            "/api/v1/cubes/{cube}/flows/{name}/run": { "post": {
-                "summary": "Run a stored flow over uploaded data or a connection", "security": bearer(),
-                "parameters": [cube_param(), name_param()],
+            "/api/v1/flows/{name}/run": { "post": {
+                "summary": "Run a stored flow over its declared and ad-hoc inputs", "security": bearer(),
+                "parameters": [name_param()],
                 "requestBody": json_body("#/components/schemas/FlowRun"),
                 "responses": ok("The run report")
             }},
-            "/api/v1/cubes/{cube}/jobs": { "get": {
-                "summary": "The cube's scheduled jobs (ADR-0013)", "security": bearer(),
-                "parameters": [cube_param()], "responses": ok("The jobs")
+            "/api/v1/schedules": { "get": {
+                "summary": "The global scheduled jobs (ADR-0013/0035)", "security": bearer(),
+                "responses": ok("The jobs")
             }},
-            "/api/v1/cubes/{cube}/jobs/{name}": {
+            "/api/v1/schedules/{name}": {
                 "get": {
                     "summary": "One job", "security": bearer(),
-                    "parameters": [cube_param(), name_param()], "responses": ok("The job")
+                    "parameters": [name_param()], "responses": ok("The job")
                 },
                 "put": {
                     "summary": "Create or replace a job (each step must be an existing flow)",
                     "security": bearer(),
-                    "parameters": [cube_param(), name_param()],
+                    "parameters": [name_param()],
                     "requestBody": json_body("#/components/schemas/Job"),
                     "responses": {
                         "200": { "description": "The stored job" },
@@ -430,53 +428,49 @@ fn document() -> Value {
                 },
                 "delete": {
                     "summary": "Delete a job", "security": bearer(),
-                    "parameters": [cube_param(), name_param()],
+                    "parameters": [name_param()],
                     "responses": { "204": { "description": "Deleted" } }
                 }
             },
-            "/api/v1/cubes/{cube}/jobs/{name}/run": { "post": {
+            "/api/v1/schedules/{name}/run": { "post": {
                 "summary": "Run a job now (manual kick), returning the run record",
                 "security": bearer(),
-                "parameters": [cube_param(), name_param()],
+                "parameters": [name_param()],
                 "responses": ok("The run record")
             }},
-            "/api/v1/cubes/{cube}/runs": { "get": {
-                "summary": "Recent runs for the cube (newest first)", "security": bearer(),
-                "parameters": [cube_param()], "responses": ok("The runs")
+            "/api/v1/runs/{id}": { "get": {
+                "summary": "One run by id (admin)", "security": bearer(),
+                "parameters": [id_param()], "responses": ok("The run record")
             }},
-            "/api/v1/cubes/{cube}/runs/{id}": { "get": {
-                "summary": "One run by id", "security": bearer(),
-                "parameters": [cube_param(), id_param()], "responses": ok("The run record")
+            "/api/v1/connections": { "get": {
+                "summary": "The global data-source connections (ADR-0035)", "security": bearer(),
+                "responses": ok("The connections")
             }},
-            "/api/v1/cubes/{cube}/connections": { "get": {
-                "summary": "The cube's data-source connections", "security": bearer(),
-                "parameters": [cube_param()], "responses": ok("The connections")
-            }},
-            "/api/v1/cubes/{cube}/connections/{name}": {
+            "/api/v1/connections/{name}": {
                 "get": {
                     "summary": "One connection", "security": bearer(),
-                    "parameters": [cube_param(), name_param()], "responses": ok("The connection")
+                    "parameters": [name_param()], "responses": ok("The connection")
                 },
                 "put": {
-                    "summary": "Define a connection (admin; command kind requires server opt-in)",
+                    "summary": "Define a connection (Connection:Write; command kind requires server opt-in)",
                     "security": bearer(),
-                    "parameters": [cube_param(), name_param()],
+                    "parameters": [name_param()],
                     "requestBody": json_body("#/components/schemas/Connection"),
                     "responses": {
                         "200": { "description": "The stored connection" },
-                        "403": { "description": "Not an admin, or command connectors disabled", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                        "403": { "description": "Lacks Connection:Write, or command connectors disabled", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
                     }
                 },
                 "delete": {
-                    "summary": "Delete a connection (admin)", "security": bearer(),
-                    "parameters": [cube_param(), name_param()],
+                    "summary": "Delete a connection", "security": bearer(),
+                    "parameters": [name_param()],
                     "responses": { "204": { "description": "Deleted" } }
                 }
             },
-            "/api/v1/cubes/{cube}/connections/{name}/preview": { "post": {
+            "/api/v1/connections/{name}/preview": { "post": {
                 "summary": "Run a connection and return sample rows (Connection:Write; command opt-in; ADR-0027)",
                 "security": bearer(),
-                "parameters": [cube_param(), name_param()],
+                "parameters": [name_param()],
                 "responses": {
                     "200": { "description": "Up to 20 sample rows plus the total row count" },
                     "403": { "description": "Lacks Connection:Write, or command connectors disabled", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
@@ -947,22 +941,21 @@ mod tests {
         "/api/v1/cubes/{cube}/rules/tests",
         "/api/v1/cubes/{cube}/rules/tests/run",
         "/api/v1/cubes/{cube}/rules/tests/{name}",
-        "/api/v1/cubes/{cube}/flows",
-        "/api/v1/cubes/{cube}/flows/preview",
-        "/api/v1/cubes/{cube}/flows/import",
-        "/api/v1/cubes/{cube}/flows/tests",
-        "/api/v1/cubes/{cube}/flows/tests/run",
-        "/api/v1/cubes/{cube}/flows/tests/{name}",
-        "/api/v1/cubes/{cube}/flows/{name}",
-        "/api/v1/cubes/{cube}/flows/{name}/run",
-        "/api/v1/cubes/{cube}/jobs",
-        "/api/v1/cubes/{cube}/jobs/{name}",
-        "/api/v1/cubes/{cube}/jobs/{name}/run",
-        "/api/v1/cubes/{cube}/runs",
-        "/api/v1/cubes/{cube}/runs/{id}",
-        "/api/v1/cubes/{cube}/connections",
-        "/api/v1/cubes/{cube}/connections/{name}",
-        "/api/v1/cubes/{cube}/connections/{name}/preview",
+        "/api/v1/flows",
+        "/api/v1/flows/preview",
+        "/api/v1/cubes/{cube}/import",
+        "/api/v1/flows/tests",
+        "/api/v1/flows/tests/run",
+        "/api/v1/flows/tests/{name}",
+        "/api/v1/flows/{name}",
+        "/api/v1/flows/{name}/run",
+        "/api/v1/schedules",
+        "/api/v1/schedules/{name}",
+        "/api/v1/schedules/{name}/run",
+        "/api/v1/runs/{id}",
+        "/api/v1/connections",
+        "/api/v1/connections/{name}",
+        "/api/v1/connections/{name}/preview",
         "/api/v1/cubes/{cube}/sandboxes",
         "/api/v1/cubes/{cube}/sandboxes/{name}",
         "/api/v1/cubes/{cube}/sandboxes/{name}/commit",

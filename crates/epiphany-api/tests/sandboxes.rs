@@ -73,6 +73,13 @@ fn router(dir: &Path) -> Router {
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Default::default(),
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(std::env::temp_dir().join(format!(
+                "epiphany-test-auto-{}-sandboxes-0",
+                std::process::id()
+            )))
+            .unwrap(),
+        )),
         http: Default::default(),
         sql: Default::default(),
     };
@@ -200,6 +207,13 @@ fn router_calc(dir: &Path) -> (Router, Engine) {
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Default::default(),
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(std::env::temp_dir().join(format!(
+                "epiphany-test-auto-{}-sandboxes-1",
+                std::process::id()
+            )))
+            .unwrap(),
+        )),
         http: Default::default(),
         sql: Default::default(),
     };
@@ -592,6 +606,13 @@ async fn sandbox_rejects_string_what_if_but_allows_numeric() {
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Default::default(),
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(std::env::temp_dir().join(format!(
+                "epiphany-test-auto-{}-sandboxes-2",
+                std::process::id()
+            )))
+            .unwrap(),
+        )),
         http: Default::default(),
         sql: Default::default(),
     };

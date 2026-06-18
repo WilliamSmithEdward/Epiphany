@@ -23,6 +23,7 @@ use serde::Serialize;
 use epiphany_core::SetEvaluator;
 use epiphany_determinism::Clock;
 use epiphany_engine::{CellResolverFactory, Engine};
+use epiphany_persist::AutomationStore;
 use epiphany_security::{AuditLog, SecretStore, SecurityStore};
 use tokio::sync::broadcast;
 
@@ -33,6 +34,7 @@ mod connection_routes;
 mod dimension_routes;
 mod dto;
 mod error;
+mod flow_reader;
 mod flow_routes;
 mod http_connector;
 mod job_routes;
@@ -111,6 +113,10 @@ pub struct AppState {
     /// SQL connector capability and host allowlist (ADR-0034). Fail-closed:
     /// disabled with an empty allowlist unless the operator opts in.
     pub sql: SqlConnectorConfig,
+    /// The server-global automation store (ADR-0035): flows, flow tests,
+    /// connections, and jobs, owned by no cube. Held behind its own lock,
+    /// separate from the cube engine, and persisted under `{data_dir}/automation`.
+    pub automation: Arc<Mutex<AutomationStore>>,
 }
 
 /// The HTTP connector capability and its SSRF host allowlist (ADR-0030).
@@ -331,68 +337,60 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/cubes/{cube}/rules/tests/{name}",
             axum::routing::delete(rule_routes::delete_rule_test),
         )
-        // Flows (TypeScript ETL). Static sub-paths (preview/import/tests) take
-        // precedence over the `{name}` route, so "preview"/"import"/"tests" are
-        // reserved flow names.
-        .route("/api/v1/cubes/{cube}/flows", get(flow_routes::list_flows))
+        // Flows (TypeScript ETL) are server-global (ADR-0035): a flow's body names
+        // the cubes and dimensions it acts on. Static sub-paths (preview/tests)
+        // take precedence over the `{name}` route, so "preview"/"tests" are
+        // reserved flow names. The guided CSV import stays cube-scoped (it loads
+        // one named cube).
+        .route("/api/v1/flows", get(flow_routes::list_flows))
+        .route("/api/v1/flows/preview", post(flow_routes::preview_flow))
+        .route("/api/v1/cubes/{cube}/import", post(flow_routes::import_csv))
         .route(
-            "/api/v1/cubes/{cube}/flows/preview",
-            post(flow_routes::preview_flow),
-        )
-        .route(
-            "/api/v1/cubes/{cube}/flows/import",
-            post(flow_routes::import_csv),
-        )
-        .route(
-            "/api/v1/cubes/{cube}/flows/tests",
+            "/api/v1/flows/tests",
             get(flow_routes::list_flow_tests).post(flow_routes::put_flow_test),
         )
         .route(
-            "/api/v1/cubes/{cube}/flows/tests/run",
+            "/api/v1/flows/tests/run",
             post(flow_routes::run_flow_tests_handler),
         )
         .route(
-            "/api/v1/cubes/{cube}/flows/tests/{name}",
+            "/api/v1/flows/tests/{name}",
             axum::routing::delete(flow_routes::delete_flow_test),
         )
         .route(
-            "/api/v1/cubes/{cube}/flows/{name}",
+            "/api/v1/flows/{name}",
             get(flow_routes::get_flow)
                 .put(flow_routes::put_flow)
                 .delete(flow_routes::delete_flow),
         )
         .route(
-            "/api/v1/cubes/{cube}/flows/{name}/run",
+            "/api/v1/flows/{name}/run",
             post(flow_routes::run_flow_handler),
         )
-        // Scheduled jobs (ADR-0013): CRUD, a manual async kick, and run queries.
-        .route("/api/v1/cubes/{cube}/jobs", get(job_routes::list_jobs))
+        // Scheduled jobs (ADR-0013) are server-global (ADR-0035), exposed as
+        // "schedules": CRUD, a manual async kick, and the global run queries.
+        .route("/api/v1/schedules", get(job_routes::list_jobs))
         .route(
-            "/api/v1/cubes/{cube}/jobs/{name}",
+            "/api/v1/schedules/{name}",
             get(job_routes::get_job)
                 .put(job_routes::put_job)
                 .delete(job_routes::delete_job),
         )
-        .route(
-            "/api/v1/cubes/{cube}/jobs/{name}/run",
-            post(job_routes::run_job),
-        )
-        .route("/api/v1/cubes/{cube}/runs", get(job_routes::list_runs))
-        .route("/api/v1/cubes/{cube}/runs/{id}", get(job_routes::get_run))
+        .route("/api/v1/schedules/{name}/run", post(job_routes::run_job))
         // Data-source connections (admin-defined; command kind also requires the
-        // server opt-in).
+        // server opt-in) are server-global (ADR-0035).
         .route(
-            "/api/v1/cubes/{cube}/connections",
+            "/api/v1/connections",
             get(connection_routes::list_connections),
         )
         .route(
-            "/api/v1/cubes/{cube}/connections/{name}",
+            "/api/v1/connections/{name}",
             get(connection_routes::get_connection)
                 .put(connection_routes::put_connection)
                 .delete(connection_routes::delete_connection),
         )
         .route(
-            "/api/v1/cubes/{cube}/connections/{name}/preview",
+            "/api/v1/connections/{name}/preview",
             post(connection_routes::preview_connection),
         )
         // Sandboxes (per-user what-if overlays, ADR-0014). Data endpoints select
@@ -439,6 +437,7 @@ pub fn build_router(state: AppState) -> Router {
             get(security_routes::list_grants).put(security_routes::put_grant),
         )
         .route("/api/v1/runs", get(job_routes::list_all_runs))
+        .route("/api/v1/runs/{id}", get(job_routes::get_run))
         .route("/api/v1/overview", get(overview_routes::overview))
         .route("/api/v1/secrets", get(secret_routes::list_secrets))
         .route(
@@ -554,6 +553,9 @@ mod tests {
         let store = Store::create(dir, cube).unwrap();
         let mut stores = BTreeMap::new();
         stores.insert("Sales".to_string(), store);
+        let automation_dir =
+            std::env::temp_dir().join(format!("epiphany-api-auto-{}-{name}", std::process::id()));
+        std::fs::remove_dir_all(&automation_dir).ok();
         AppState {
             engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
             clock,
@@ -570,6 +572,7 @@ mod tests {
             secrets: Default::default(),
             http: HttpConnectorConfig::default(),
             sql: SqlConnectorConfig::default(),
+            automation: Arc::new(Mutex::new(AutomationStore::open(automation_dir).unwrap())),
         }
     }
 

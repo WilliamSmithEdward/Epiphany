@@ -57,6 +57,13 @@ fn state(name: &str) -> AppState {
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Default::default(),
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(
+                std::env::temp_dir()
+                    .join(format!("epiphany-test-auto-{}-cells-0", std::process::id())),
+            )
+            .unwrap(),
+        )),
         http: Default::default(),
         sql: Default::default(),
     }

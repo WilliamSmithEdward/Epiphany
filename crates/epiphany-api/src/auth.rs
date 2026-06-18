@@ -26,6 +26,25 @@ pub struct AuthPrincipal {
     pub token: String,
 }
 
+impl AuthPrincipal {
+    /// A synthetic principal carrying only a username, with no session token
+    /// (ADR-0035). Used to authorize a scheduled flow run as the flow's recorded
+    /// owner: every `require_*` gate re-resolves the caller's rights from the live
+    /// security store by username (so a revoked grant takes effect immediately),
+    /// so the synthetic `is_admin`/`groups` here are never consulted. Fail-closed:
+    /// an unknown username resolves to no access.
+    pub(crate) fn synthetic(username: impl Into<String>) -> Self {
+        Self {
+            principal: Principal {
+                username: username.into(),
+                is_admin: false,
+                groups: Vec::new(),
+            },
+            token: String::new(),
+        }
+    }
+}
+
 impl FromRequestParts<AppState> for AuthPrincipal {
     type Rejection = ApiError;
 

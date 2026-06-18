@@ -16,13 +16,16 @@ use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 
 use crate::query::{
-    AxisSpec, CommandSpec, Connection, ConnectionSpec, Flow, FlowTest, HttpAuth, HttpAuthKind,
-    HttpSpec, Job, Model, RuleSet, RuleTest, Sandbox, SourceFormat, SqlEngine, SqlSpec, SqlSslMode,
-    Subset, SubsetKind, TestCell, Trigger, View, Visibility,
+    Automation, AxisSpec, CommandSpec, Connection, ConnectionSpec, Flow, FlowInput,
+    FlowInputBinding, FlowTest, HttpAuth, HttpAuthKind, HttpSpec, Job, Model, RuleSet, RuleTest,
+    Sandbox, SourceFormat, SqlEngine, SqlSpec, SqlSslMode, Subset, SubsetKind, TestCell, Trigger,
+    View, Visibility,
 };
 use crate::{AttributeKind, AttributeValue, Cube, Dimension, ElementKind, Fixed, ModelError};
 
 const FORMAT_TAG: &str = "epiphany-model/v0";
+/// The format tag for the server-global automation model file (ADR-0035).
+const AUTOMATION_FORMAT_TAG: &str = "epiphany-automation/v0";
 
 /// An error loading a model from text.
 #[derive(Debug)]
@@ -129,22 +132,22 @@ struct ModelDoc {
     rules: Option<RuleSetDoc>,
     #[serde(default, rename = "rule_test", skip_serializing_if = "Vec::is_empty")]
     rule_tests: Vec<RuleTestDoc>,
-    // Flows and flow tests are optional and skipped when empty, so a model
-    // without them serializes byte-identically to the pre-5A format.
-    #[serde(default, rename = "flow", skip_serializing_if = "Vec::is_empty")]
-    flows: Vec<FlowDoc>,
-    #[serde(default, rename = "flow_test", skip_serializing_if = "Vec::is_empty")]
-    flow_tests: Vec<FlowTestDoc>,
-    // Connections are optional and skipped when empty (backward-compatible).
-    #[serde(default, rename = "connection", skip_serializing_if = "Vec::is_empty")]
-    connections: Vec<ConnectionDoc>,
     // Sandboxes are optional and skipped when empty, so a model without any
     // serializes byte-identically to the pre-6A format.
     #[serde(default, rename = "sandbox", skip_serializing_if = "Vec::is_empty")]
     sandboxes: Vec<SandboxDoc>,
-    // Jobs are optional and skipped when empty, so a model without any serializes
-    // byte-identically to the pre-8B format.
-    #[serde(default, rename = "job", skip_serializing_if = "Vec::is_empty")]
+    // Flows, flow tests, connections, and jobs are no longer per-cube (ADR-0035):
+    // they live in the server-global automation model. A `[[flow]]`/`[[job]]`/
+    // `[[connection]]`/`[[flow_test]]` block in an old cube model is ignored on
+    // load (boot migration lifts them into the global store), and is no longer
+    // emitted, so a model without them stays byte-identical to the pre-5A format.
+    #[serde(default, rename = "flow", skip_serializing)]
+    flows: Vec<FlowDoc>,
+    #[serde(default, rename = "flow_test", skip_serializing)]
+    flow_tests: Vec<FlowTestDoc>,
+    #[serde(default, rename = "connection", skip_serializing)]
+    connections: Vec<ConnectionDoc>,
+    #[serde(default, rename = "job", skip_serializing)]
     jobs: Vec<JobDoc>,
 }
 
@@ -485,9 +488,29 @@ fn build_rule_test(doc: &RuleTestDoc) -> RuleTest {
 }
 
 #[derive(Serialize, Deserialize)]
+struct FlowInputDoc {
+    name: String,
+    /// "global" (references a server-global connection by name) or "local" (an
+    /// embedded flow-scoped connection).
+    scope: String,
+    /// For a local input, the embedded connection spec (its `name` mirrors the
+    /// input `name`). Absent for a global input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    connection: Option<ConnectionDoc>,
+}
+
+#[derive(Serialize, Deserialize)]
 struct FlowDoc {
     name: String,
     source: String,
+    // Flow metadata (ADR-0035), all optional so a flow without them stays
+    // byte-compatible with the pre-0035 single-field shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    owner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_cube: Option<String>,
+    #[serde(default, rename = "input", skip_serializing_if = "Vec::is_empty")]
+    inputs: Vec<FlowInputDoc>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -504,8 +527,16 @@ struct FlowTestDoc {
     flow: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     input: String,
+    // The target cube the assertions check (ADR-0035); `None` uses the flow's
+    // default cube.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cube: Option<String>,
     #[serde(default, rename = "param", skip_serializing_if = "Vec::is_empty")]
     params: Vec<ParamEntryDoc>,
+    // Named-source contents for a multi-source flow (ADR-0035): address -> inline
+    // content (the `name` field holds the source address, `value` the content).
+    #[serde(default, rename = "source", skip_serializing_if = "Vec::is_empty")]
+    inputs: Vec<ParamEntryDoc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     assertions: Vec<TestCellDoc>,
 }
@@ -514,6 +545,27 @@ fn flow_doc(flow: &Flow) -> FlowDoc {
     FlowDoc {
         name: flow.name.clone(),
         source: flow.source.clone(),
+        owner: flow.owner.clone(),
+        default_cube: flow.default_cube.clone(),
+        inputs: flow.inputs.iter().map(flow_input_doc).collect(),
+    }
+}
+
+fn flow_input_doc(input: &FlowInput) -> FlowInputDoc {
+    match &input.binding {
+        FlowInputBinding::Global => FlowInputDoc {
+            name: input.name.clone(),
+            scope: "global".to_string(),
+            connection: None,
+        },
+        FlowInputBinding::Local(spec) => FlowInputDoc {
+            name: input.name.clone(),
+            scope: "local".to_string(),
+            connection: Some(connection_doc(&Connection {
+                name: input.name.clone(),
+                spec: spec.clone(),
+            })),
+        },
     }
 }
 
@@ -521,6 +573,32 @@ fn build_flow(doc: &FlowDoc) -> Flow {
     Flow {
         name: doc.name.clone(),
         source: doc.source.clone(),
+        owner: doc.owner.clone(),
+        default_cube: doc.default_cube.clone(),
+        inputs: doc.inputs.iter().map(build_flow_input).collect(),
+    }
+}
+
+fn build_flow_input(doc: &FlowInputDoc) -> FlowInput {
+    let binding = match doc.scope.as_str() {
+        "local" => {
+            // A local input embeds its connection spec; a malformed/absent block
+            // degrades to an empty command spec rather than failing the load (the
+            // model file is a full-trust boundary).
+            let spec = doc
+                .connection
+                .as_ref()
+                .map(|cd| build_connection(cd).spec)
+                .unwrap_or_else(|| ConnectionSpec::Command(CommandSpec::default()));
+            FlowInputBinding::Local(spec)
+        }
+        // "global" (and, forward-compatibly, any unknown scope) references a
+        // server-global connection by name.
+        _ => FlowInputBinding::Global,
+    };
+    FlowInput {
+        name: doc.name.clone(),
+        binding,
     }
 }
 
@@ -529,9 +607,19 @@ fn flow_test_doc(test: &FlowTest) -> FlowTestDoc {
         name: test.name.clone(),
         flow: test.flow.clone(),
         input: test.input.clone(),
-        // Params sorted by name (the BTreeMap iterates sorted) for canonical output.
+        cube: test.cube.clone(),
+        // Params and named sources sorted by name (BTreeMap iterates sorted) for
+        // canonical output.
         params: test
             .params
+            .iter()
+            .map(|(name, value)| ParamEntryDoc {
+                name: name.clone(),
+                value: value.clone(),
+            })
+            .collect(),
+        inputs: test
+            .inputs
             .iter()
             .map(|(name, value)| ParamEntryDoc {
                 name: name.clone(),
@@ -547,6 +635,12 @@ fn build_flow_test(doc: &FlowTestDoc) -> FlowTest {
         name: doc.name.clone(),
         flow: doc.flow.clone(),
         input: doc.input.clone(),
+        inputs: doc
+            .inputs
+            .iter()
+            .map(|p| (p.name.clone(), p.value.clone()))
+            .collect(),
+        cube: doc.cube.clone(),
         params: doc
             .params
             .iter()
@@ -1067,18 +1161,13 @@ fn resolve_coord(cube: &Cube, cube_name: &str, names: &[String]) -> Result<Vec<u
 /// [`Model::to_model_text`]. The per-object-type doc vectors are passed
 /// positionally; bundling them into a struct would not aid this single internal
 /// assembly point.
-#[allow(clippy::too_many_arguments)]
 fn build_model_doc(
     cube: &Cube,
     subsets: Vec<SubsetDoc>,
     views: Vec<ViewDoc>,
     rules: Option<RuleSetDoc>,
     rule_tests: Vec<RuleTestDoc>,
-    flows: Vec<FlowDoc>,
-    flow_tests: Vec<FlowTestDoc>,
-    connections: Vec<ConnectionDoc>,
     sandboxes: Vec<SandboxDoc>,
-    jobs: Vec<JobDoc>,
 ) -> ModelDoc {
     let dimensions: Vec<DimDoc> = cube.dimensions().iter().map(dim_doc).collect();
 
@@ -1138,11 +1227,12 @@ fn build_model_doc(
         views,
         rules,
         rule_tests,
-        flows,
-        flow_tests,
-        connections,
         sandboxes,
-        jobs,
+        // Parse-only (ADR-0035): never emitted; a cube model carries no automation.
+        flows: Vec::new(),
+        flow_tests: Vec::new(),
+        connections: Vec::new(),
+        jobs: Vec::new(),
     }
 }
 
@@ -1191,28 +1281,12 @@ impl Model {
             })
         };
         let rule_tests: Vec<RuleTestDoc> = self.tests.values().map(rule_test_doc).collect();
-        let flows: Vec<FlowDoc> = self.flows.values().map(flow_doc).collect();
-        let flow_tests: Vec<FlowTestDoc> = self.flow_tests.values().map(flow_test_doc).collect();
-        let connections: Vec<ConnectionDoc> =
-            self.connections.values().map(connection_doc).collect();
         let sandboxes: Vec<SandboxDoc> = self
             .sandboxes
             .values()
             .map(|sb| sandbox_doc(&self.cube, sb))
             .collect();
-        let jobs: Vec<JobDoc> = self.jobs.values().map(job_doc).collect();
-        let doc = build_model_doc(
-            &self.cube,
-            subsets,
-            views,
-            rules,
-            rule_tests,
-            flows,
-            flow_tests,
-            connections,
-            sandboxes,
-            jobs,
-        );
+        let doc = build_model_doc(&self.cube, subsets, views, rules, rule_tests, sandboxes);
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
 
@@ -1245,37 +1319,21 @@ impl Model {
         for td in &doc.rule_tests {
             tests.insert(td.name.clone(), build_rule_test(td));
         }
-        let mut flows = BTreeMap::new();
-        for fd in &doc.flows {
-            flows.insert(fd.name.clone(), build_flow(fd));
-        }
-        let mut flow_tests = BTreeMap::new();
-        for ftd in &doc.flow_tests {
-            flow_tests.insert(ftd.name.clone(), build_flow_test(ftd));
-        }
-        let mut connections = BTreeMap::new();
-        for cd in &doc.connections {
-            connections.insert(cd.name.clone(), build_connection(cd));
-        }
         let mut sandboxes = BTreeMap::new();
         for sd in &doc.sandboxes {
             sandboxes.insert(sd.name.clone(), build_sandbox(&cube, &doc.cube.name, sd)?);
         }
-        let mut jobs = BTreeMap::new();
-        for jd in &doc.jobs {
-            jobs.insert(jd.name.clone(), build_job(jd));
-        }
+        // Any `[[flow]]`/`[[flow_test]]`/`[[connection]]`/`[[job]]` blocks in an
+        // old cube model are parsed but ignored here (ADR-0035): boot migration
+        // lifts them into the global automation model via
+        // [`extract_legacy_automation`].
         Ok(Model {
             cube,
             subsets,
             views,
             rules,
             tests,
-            flows,
-            flow_tests,
-            connections,
             sandboxes,
-            jobs,
         })
     }
 
@@ -1290,6 +1348,104 @@ impl Model {
         let text = std::fs::read_to_string(path).map_err(LoadError::Io)?;
         Model::from_model_text(&text)
     }
+}
+
+/// The serialized shape of the server-global automation model (ADR-0035).
+#[derive(Serialize, Deserialize)]
+struct AutomationDoc {
+    format: String,
+    #[serde(default, rename = "flow", skip_serializing_if = "Vec::is_empty")]
+    flows: Vec<FlowDoc>,
+    #[serde(default, rename = "flow_test", skip_serializing_if = "Vec::is_empty")]
+    flow_tests: Vec<FlowTestDoc>,
+    #[serde(default, rename = "connection", skip_serializing_if = "Vec::is_empty")]
+    connections: Vec<ConnectionDoc>,
+    #[serde(default, rename = "job", skip_serializing_if = "Vec::is_empty")]
+    jobs: Vec<JobDoc>,
+}
+
+/// Assemble an [`Automation`] from already-parsed doc collections.
+fn automation_from_docs(
+    flows: &[FlowDoc],
+    flow_tests: &[FlowTestDoc],
+    connections: &[ConnectionDoc],
+    jobs: &[JobDoc],
+) -> Automation {
+    let mut a = Automation::new();
+    for fd in flows {
+        a.flows.insert(fd.name.clone(), build_flow(fd));
+    }
+    for ftd in flow_tests {
+        a.flow_tests.insert(ftd.name.clone(), build_flow_test(ftd));
+    }
+    for cd in connections {
+        a.connections.insert(cd.name.clone(), build_connection(cd));
+    }
+    for jd in jobs {
+        a.jobs.insert(jd.name.clone(), build_job(jd));
+    }
+    a
+}
+
+impl Automation {
+    /// Serialize the global automation model (flows, flow tests, connections,
+    /// jobs) to canonical model-as-code TOML (ADR-0035). Each collection is
+    /// emitted sorted by name (the `BTreeMap`s iterate sorted), so re-serializing
+    /// a parsed model reproduces byte-identical text.
+    pub fn to_model_text(&self) -> Result<String, SaveError> {
+        let doc = AutomationDoc {
+            format: AUTOMATION_FORMAT_TAG.to_string(),
+            flows: self.flows.values().map(flow_doc).collect(),
+            flow_tests: self.flow_tests.values().map(flow_test_doc).collect(),
+            connections: self.connections.values().map(connection_doc).collect(),
+            jobs: self.jobs.values().map(job_doc).collect(),
+        };
+        toml::to_string(&doc).map_err(SaveError::Toml)
+    }
+
+    /// Parse the global automation model from model-as-code TOML.
+    pub fn from_model_text(text: &str) -> Result<Automation, LoadError> {
+        let doc: AutomationDoc = toml::from_str(text).map_err(LoadError::Toml)?;
+        if doc.format != AUTOMATION_FORMAT_TAG {
+            return Err(LoadError::UnknownFormat(doc.format));
+        }
+        Ok(automation_from_docs(
+            &doc.flows,
+            &doc.flow_tests,
+            &doc.connections,
+            &doc.jobs,
+        ))
+    }
+
+    /// Save the automation model to a model-as-code file (canonical TOML).
+    pub fn save_to_path(&self, path: impl AsRef<std::path::Path>) -> Result<(), SaveError> {
+        let text = self.to_model_text()?;
+        std::fs::write(path, text).map_err(SaveError::Io)
+    }
+
+    /// Load the automation model from a model-as-code file.
+    pub fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Automation, LoadError> {
+        let text = std::fs::read_to_string(path).map_err(LoadError::Io)?;
+        Automation::from_model_text(&text)
+    }
+}
+
+/// Extract the legacy per-cube automation objects from an old cube model's text
+/// (ADR-0035 migration): any `[[flow]]`/`[[flow_test]]`/`[[connection]]`/`[[job]]`
+/// blocks become an [`Automation`]. Returns an empty automation if the text has
+/// none. The caller lifts these into the global store and re-saves the cube model
+/// (which no longer emits them).
+pub fn extract_legacy_automation(text: &str) -> Result<Automation, LoadError> {
+    let doc: ModelDoc = toml::from_str(text).map_err(LoadError::Toml)?;
+    if doc.format != FORMAT_TAG {
+        return Err(LoadError::UnknownFormat(doc.format));
+    }
+    Ok(automation_from_docs(
+        &doc.flows,
+        &doc.flow_tests,
+        &doc.connections,
+        &doc.jobs,
+    ))
 }
 
 impl Dimension {
@@ -1311,18 +1467,7 @@ impl Dimension {
 impl Cube {
     /// Serialize this cube and its dimensions to canonical model-as-code TOML.
     pub fn to_model_text(&self) -> Result<String, SaveError> {
-        let doc = build_model_doc(
-            self,
-            Vec::new(),
-            Vec::new(),
-            None,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-        );
+        let doc = build_model_doc(self, Vec::new(), Vec::new(), None, Vec::new(), Vec::new());
         toml::to_string(&doc).map_err(SaveError::Toml)
     }
 
@@ -1620,15 +1765,18 @@ mod tests {
     }
 
     #[test]
-    fn model_round_trips_flows_and_flow_tests() {
-        use crate::{Flow, FlowTest, TestCell};
+    fn automation_round_trips_flows_and_flow_tests() {
+        use crate::{Automation, Flow, FlowTest, TestCell};
 
-        let mut model = Model::new(sample_cube());
-        model.flows.insert(
+        let mut automation = Automation::new();
+        automation.flows.insert(
             "load".to_string(),
             Flow {
                 name: "load".to_string(),
                 source: "export function rows(ctx: FlowContext): void {\n  for (const r of ctx.input()) ctx.writeCells([]);\n}".to_string(),
+                owner: Some("ann".to_string()),
+                default_cube: Some("Sales".to_string()),
+                inputs: Vec::new(),
             },
         );
         let mut params = std::collections::BTreeMap::new();
@@ -1637,12 +1785,14 @@ mod tests {
         let mut coord = std::collections::BTreeMap::new();
         coord.insert("Region".to_string(), "North".to_string());
         coord.insert("Version".to_string(), "Actual".to_string());
-        model.flow_tests.insert(
+        automation.flow_tests.insert(
             "load_test".to_string(),
             FlowTest {
                 name: "load_test".to_string(),
                 flow: "load".to_string(),
                 input: "Region,Value\nNorth,100\n".to_string(),
+                inputs: std::collections::BTreeMap::new(),
+                cube: Some("Sales".to_string()),
                 params,
                 assertions: vec![TestCell {
                     coord,
@@ -1651,23 +1801,75 @@ mod tests {
             },
         );
 
-        let text1 = model.to_model_text().unwrap();
-        let model2 = Model::from_model_text(&text1).unwrap();
-        let text2 = model2.to_model_text().unwrap();
+        let text1 = automation.to_model_text().unwrap();
+        let a2 = Automation::from_model_text(&text1).unwrap();
+        let text2 = a2.to_model_text().unwrap();
         assert_eq!(
             text1, text2,
             "flows and flow tests must round-trip byte-identically"
         );
-        assert_eq!(model2.flows.len(), 1);
-        assert!(model2.flows["load"].source.contains("writeCells"));
-        assert_eq!(model2.flow_tests.len(), 1);
-        let ft = &model2.flow_tests["load_test"];
+        assert_eq!(a2.flows.len(), 1);
+        assert!(a2.flows["load"].source.contains("writeCells"));
+        assert_eq!(a2.flows["load"].owner.as_deref(), Some("ann"));
+        assert_eq!(a2.flows["load"].default_cube.as_deref(), Some("Sales"));
+        assert_eq!(a2.flow_tests.len(), 1);
+        let ft = &a2.flow_tests["load_test"];
         assert_eq!(ft.flow, "load");
         assert_eq!(ft.input, "Region,Value\nNorth,100\n");
+        assert_eq!(ft.cube.as_deref(), Some("Sales"));
         assert_eq!(ft.params["version"], "Actual");
         assert_eq!(ft.params["scale"], "1000");
         assert_eq!(ft.params.len(), 2);
         assert_eq!(ft.assertions[0].value, "100");
+    }
+
+    #[test]
+    fn automation_round_trips_flow_inputs_global_and_local() {
+        use crate::{
+            Automation, CommandSpec, ConnectionSpec, Flow, FlowInput, FlowInputBinding,
+            SourceFormat,
+        };
+
+        let mut automation = Automation::new();
+        automation.flows.insert(
+            "join".to_string(),
+            Flow {
+                name: "join".to_string(),
+                source: "function rows(ctx) {}".to_string(),
+                owner: None,
+                default_cube: None,
+                inputs: vec![
+                    FlowInput {
+                        name: "sales_db".to_string(),
+                        binding: FlowInputBinding::Global,
+                    },
+                    FlowInput {
+                        name: "daily_csv".to_string(),
+                        binding: FlowInputBinding::Local(ConnectionSpec::Command(CommandSpec {
+                            program: "cat".to_string(),
+                            args: vec!["daily.csv".to_string()],
+                            format: SourceFormat::Csv,
+                            json_path: None,
+                            timeout_ms: 5_000,
+                            working_dir: None,
+                        })),
+                    },
+                ],
+            },
+        );
+
+        let text1 = automation.to_model_text().unwrap();
+        let a2 = Automation::from_model_text(&text1).unwrap();
+        assert_eq!(text1, a2.to_model_text().unwrap());
+        let inputs = &a2.flows["join"].inputs;
+        assert_eq!(inputs.len(), 2);
+        assert_eq!(inputs[0].name, "sales_db");
+        assert!(matches!(inputs[0].binding, FlowInputBinding::Global));
+        assert_eq!(inputs[1].name, "daily_csv");
+        let FlowInputBinding::Local(ConnectionSpec::Command(cmd)) = &inputs[1].binding else {
+            panic!("expected a local command connection");
+        };
+        assert_eq!(cmd.program, "cat");
     }
 
     #[test]
@@ -1711,11 +1913,11 @@ mod tests {
     }
 
     #[test]
-    fn model_round_trips_connections() {
-        use crate::{CommandSpec, Connection, ConnectionSpec, SourceFormat};
+    fn automation_round_trips_connections() {
+        use crate::{Automation, CommandSpec, Connection, ConnectionSpec, SourceFormat};
 
-        let mut model = Model::new(sample_cube());
-        model.connections.insert(
+        let mut automation = Automation::new();
+        automation.connections.insert(
             "py_extract".to_string(),
             Connection {
                 name: "py_extract".to_string(),
@@ -1733,8 +1935,8 @@ mod tests {
             },
         );
 
-        let text1 = model.to_model_text().unwrap();
-        let model2 = Model::from_model_text(&text1).unwrap();
+        let text1 = automation.to_model_text().unwrap();
+        let model2 = Automation::from_model_text(&text1).unwrap();
         let text2 = model2.to_model_text().unwrap();
         assert_eq!(text1, text2, "connections must round-trip byte-identically");
         assert_eq!(model2.connections.len(), 1);
@@ -1750,11 +1952,13 @@ mod tests {
     }
 
     #[test]
-    fn model_round_trips_http_connections() {
-        use crate::{Connection, ConnectionSpec, HttpAuth, HttpAuthKind, HttpSpec, SourceFormat};
+    fn automation_round_trips_http_connections() {
+        use crate::{
+            Automation, Connection, ConnectionSpec, HttpAuth, HttpAuthKind, HttpSpec, SourceFormat,
+        };
 
-        let mut model = Model::new(sample_cube());
-        model.connections.insert(
+        let mut automation = Automation::new();
+        automation.connections.insert(
             "rates_api".to_string(),
             Connection {
                 name: "rates_api".to_string(),
@@ -1772,10 +1976,10 @@ mod tests {
             },
         );
 
-        let text1 = model.to_model_text().unwrap();
+        let text1 = automation.to_model_text().unwrap();
         // The model text references the secret by NAME, never the value (RG-13).
         assert!(text1.contains("rates_token"));
-        let model2 = Model::from_model_text(&text1).unwrap();
+        let model2 = Automation::from_model_text(&text1).unwrap();
         let text2 = model2.to_model_text().unwrap();
         assert_eq!(
             text1, text2,
@@ -1796,11 +2000,11 @@ mod tests {
     }
 
     #[test]
-    fn model_round_trips_sql_connections() {
-        use crate::{Connection, ConnectionSpec, SqlEngine, SqlSpec, SqlSslMode};
+    fn automation_round_trips_sql_connections() {
+        use crate::{Automation, Connection, ConnectionSpec, SqlEngine, SqlSpec, SqlSslMode};
 
-        let mut model = Model::new(sample_cube());
-        model.connections.insert(
+        let mut automation = Automation::new();
+        automation.connections.insert(
             "warehouse".to_string(),
             Connection {
                 name: "warehouse".to_string(),
@@ -1818,10 +2022,10 @@ mod tests {
             },
         );
 
-        let text1 = model.to_model_text().unwrap();
+        let text1 = automation.to_model_text().unwrap();
         // The model text references the password by secret NAME, never a value.
         assert!(text1.contains("warehouse_pw"));
-        let model2 = Model::from_model_text(&text1).unwrap();
+        let model2 = Automation::from_model_text(&text1).unwrap();
         let text2 = model2.to_model_text().unwrap();
         assert_eq!(
             text1, text2,
@@ -1842,11 +2046,11 @@ mod tests {
     }
 
     #[test]
-    fn model_round_trips_mysql_engine() {
-        use crate::{Connection, ConnectionSpec, SqlEngine, SqlSpec, SqlSslMode};
+    fn automation_round_trips_mysql_engine() {
+        use crate::{Automation, Connection, ConnectionSpec, SqlEngine, SqlSpec, SqlSslMode};
 
-        let mut model = Model::new(sample_cube());
-        model.connections.insert(
+        let mut automation = Automation::new();
+        automation.connections.insert(
             "mariadb".to_string(),
             Connection {
                 name: "mariadb".to_string(),
@@ -1863,9 +2067,9 @@ mod tests {
                 }),
             },
         );
-        let text1 = model.to_model_text().unwrap();
+        let text1 = automation.to_model_text().unwrap();
         assert!(text1.contains("mysql"), "engine token must serialize");
-        let model2 = Model::from_model_text(&text1).unwrap();
+        let model2 = Automation::from_model_text(&text1).unwrap();
         assert_eq!(text1, model2.to_model_text().unwrap());
         let ConnectionSpec::Sql(sql) = &model2.connections["mariadb"].spec else {
             panic!("expected a sql connection");
@@ -1875,11 +2079,11 @@ mod tests {
     }
 
     #[test]
-    fn model_round_trips_jobs() {
-        use crate::{Job, Trigger};
+    fn automation_round_trips_jobs() {
+        use crate::{Automation, Job, Trigger};
 
-        let mut model = Model::new(sample_cube());
-        model.jobs.insert(
+        let mut automation = Automation::new();
+        automation.jobs.insert(
             "nightly".to_string(),
             Job {
                 name: "nightly".to_string(),
@@ -1891,8 +2095,8 @@ mod tests {
             },
         );
 
-        let text1 = model.to_model_text().unwrap();
-        let model2 = Model::from_model_text(&text1).unwrap();
+        let text1 = automation.to_model_text().unwrap();
+        let model2 = Automation::from_model_text(&text1).unwrap();
         let text2 = model2.to_model_text().unwrap();
         assert_eq!(text1, text2, "jobs must round-trip byte-identically");
         assert_eq!(model2.jobs.len(), 1);

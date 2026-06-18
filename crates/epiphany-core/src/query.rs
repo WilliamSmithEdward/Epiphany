@@ -885,16 +885,76 @@ pub struct RuleTest {
     pub assertions: Vec<TestCell>,
 }
 
+/// How a flow's named data input is bound to a source (ADR-0035). Inputs are
+/// configured on the flow in the UI; outputs (cubes, dimensions) are named in
+/// code. A global input references a server-global connection by name; a
+/// flow-scoped input carries its own connection definition, private to the flow.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FlowInputBinding {
+    /// References a server-global [`Connection`] by name. The flow input's `name`
+    /// equals that connection's name (the UI locks it), and code reads it by the
+    /// bare name: `ctx.input('sales_db')`.
+    Global,
+    /// A flow-scoped connection defined inline on the flow. Code reads it by a
+    /// `local.` prefix: `ctx.input('local.daily_csv')`. It obeys the same
+    /// connector controls (build feature, enable flag, host allowlist, secrets by
+    /// name) as a global connection.
+    Local(ConnectionSpec),
+}
+
+/// A named data input on a flow (ADR-0035). A flow may declare zero or more; at
+/// run time the API resolves each to rows and passes the name->rows map to the
+/// runner, so one flow can join several sources (e.g. a CSV and a SQL query).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlowInput {
+    /// The in-flow name. For a [`Global`](FlowInputBinding::Global) binding this
+    /// equals the referenced connection's name; for a
+    /// [`Local`](FlowInputBinding::Local) binding the author chooses it (unique
+    /// within the flow). The code address is the bare name for a global source
+    /// and `local.<name>` for a flow-scoped source, so the two namespaces never
+    /// collide.
+    pub name: String,
+    /// How the input is bound to a source.
+    pub binding: FlowInputBinding,
+}
+
+impl FlowInput {
+    /// The address the flow body reads this source by (`ctx.input(address)`): the
+    /// bare name for a global input, `local.<name>` for a flow-scoped one, so the
+    /// two namespaces never collide.
+    pub fn address(&self) -> String {
+        match self.binding {
+            FlowInputBinding::Global => self.name.clone(),
+            FlowInputBinding::Local(_) => format!("local.{}", self.name),
+        }
+    }
+}
+
 /// A flow definition: a TypeScript ETL/automation script, stored as model-as-code
 /// source text. Core keeps it opaque (the way a cube's rules carry opaque rule
 /// source); `epiphany-flow` strips its types, runs it on the embedded engine, and
-/// turns its staged outputs into element and cell changes.
+/// turns its staged outputs into element and cell changes. A flow is a
+/// server-global object (ADR-0035), owned by no cube; its body names the cubes
+/// and dimensions it acts on.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Flow {
-    /// The flow name (unique within the cube).
+    /// The flow name (unique across the server).
     pub name: String,
     /// The TypeScript source text.
     pub source: String,
+    /// The principal a scheduled run executes as (ADR-0035): a flow run is gated
+    /// by this owner's object and element security, so an unattended run is bound
+    /// to a real principal's rights rather than running privileged. `None` for a
+    /// flow that has never recorded an owner (migration stamps one).
+    pub owner: Option<String>,
+    /// An optional back-compatibility target cube (ADR-0035): when set, the legacy
+    /// cube-less `ctx.writeCells`/`ctx.ensureElements`/... calls target it. A
+    /// migration shim for lifted per-cube flows, not an authoring picker; `None`
+    /// means a cube-less call errors and the body must name a cube.
+    pub default_cube: Option<String>,
+    /// The flow's data inputs (ADR-0035), configured in the UI. Resolved to rows
+    /// at run time and read in code via `ctx.input(name)`.
+    pub inputs: Vec<FlowInput>,
 }
 
 /// A flow unit test: run the flow over a fixed `input` and `params`, then assert
@@ -903,12 +963,21 @@ pub struct Flow {
 /// because the input and parameters are pinned and the runtime is deterministic.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FlowTest {
-    /// The test name (unique within the cube).
+    /// The test name (unique across the server).
     pub name: String,
     /// The name of the flow this test runs.
     pub flow: String,
-    /// The data-source content the flow reads (e.g. inline CSV text).
+    /// The sole-source content the flow reads (e.g. inline CSV text), for a
+    /// single-source flow. Back-compatible with the pre-ADR-0035 single input.
     pub input: String,
+    /// Named-source contents for a multi-source flow (ADR-0035): the source
+    /// address (bare name for a global input, `local.<name>` for a flow-scoped
+    /// one) to the inline content the test pins for it. Empty falls back to
+    /// `input` for the sole source.
+    pub inputs: BTreeMap<String, String>,
+    /// The target cube whose staged cells the assertions check (ADR-0035). `None`
+    /// uses the flow's `default_cube`; a multi-cube flow names the cube here.
+    pub cube: Option<String>,
     /// Flow parameters (name -> value), available to the flow as `ctx.param(...)`.
     pub params: BTreeMap<String, String>,
     /// Cells whose value is asserted after the flow runs.
@@ -941,15 +1010,16 @@ impl Trigger {
     }
 }
 
-/// A scheduled job (ADR-0013): an ordered sequence of the cube's flows, run on a
-/// trigger. This is *desired state*, persisted as model-as-code like a flow; run
-/// history lives in the separate durable run ledger, never here. The owning cube
-/// is implied by the model the job lives in (like a [`Flow`]).
+/// A scheduled job (ADR-0013, made global by ADR-0035): an ordered sequence of
+/// global flows, run on a trigger. This is *desired state*, persisted as
+/// model-as-code like a flow; run history lives in the separate durable run
+/// ledger, never here. A job is owned by no cube; the cubes it writes are
+/// whatever its flows' bodies address.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Job {
-    /// The job name (unique within the cube).
+    /// The job name (unique across the server).
     pub name: String,
-    /// The flow names to run in order (fail-fast), each a flow of this cube.
+    /// The flow names to run in order (fail-fast), each a server-global flow.
     pub steps: Vec<String>,
     /// When the job fires.
     pub trigger: Trigger,
@@ -1111,12 +1181,15 @@ pub enum ConnectionSpec {
     Sql(SqlSpec),
 }
 
-/// A named, admin-defined data-source connection. Flows reference it by name to
-/// ingest external data; the connection itself (and the capability it grants) is
-/// an operator artifact, never authored by a flow.
+/// A named, admin-defined data-source connection. A server-global connection
+/// (ADR-0035) is referenced by global flows by name to ingest external data; the
+/// connection itself (and the capability it grants) is an operator artifact,
+/// never authored by a flow. The same shape is reused for a flow-scoped
+/// connection embedded on a flow ([`FlowInputBinding::Local`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Connection {
-    /// The connection name (unique within the cube).
+    /// The connection name (unique across the server for a global connection;
+    /// unique within the flow for a flow-scoped one).
     pub name: String,
     /// What the connection does.
     pub spec: ConnectionSpec,
@@ -1179,12 +1252,13 @@ impl Sandbox {
 }
 
 /// A complete durable model: a cube plus its named subsets, views, rules, rule
-/// tests, flows, flow tests, connections, and per-user sandboxes.
+/// tests, and per-user sandboxes.
 ///
 /// Subsets are keyed by `(dimension, name)` (a subset name is unique within its
-/// dimension); views, tests, flows, and flow tests are keyed by name (unique
-/// within the cube). This is the unit the store owns and persists and the
-/// snapshot serializes.
+/// dimension); views and tests are keyed by name (unique within the cube). This
+/// is the unit the store owns and persists and the snapshot serializes. Flows,
+/// flow tests, connections, and jobs are no longer per-cube (ADR-0035): they live
+/// in the server-global [`Automation`] model.
 #[derive(Clone, Debug)]
 pub struct Model {
     /// The cube and its dimensions.
@@ -1197,20 +1271,12 @@ pub struct Model {
     pub rules: RuleSet,
     /// Rule unit tests, keyed by name.
     pub tests: BTreeMap<String, RuleTest>,
-    /// Named flows (TypeScript ETL/automation), keyed by name.
-    pub flows: BTreeMap<String, Flow>,
-    /// Flow unit tests, keyed by name.
-    pub flow_tests: BTreeMap<String, FlowTest>,
-    /// Named data-source connections (admin-defined), keyed by name.
-    pub connections: BTreeMap<String, Connection>,
     /// Per-user what-if sandboxes, keyed by name (ADR-0014).
     pub sandboxes: BTreeMap<String, Sandbox>,
-    /// Scheduled jobs (ADR-0013), keyed by name.
-    pub jobs: BTreeMap<String, Job>,
 }
 
 impl Model {
-    /// A model wrapping `cube` with no subsets, views, rules, tests, or flows.
+    /// A model wrapping `cube` with no subsets, views, rules, tests, or sandboxes.
     pub fn new(cube: Cube) -> Self {
         Self {
             cube,
@@ -1218,17 +1284,8 @@ impl Model {
             views: BTreeMap::new(),
             rules: RuleSet::default(),
             tests: BTreeMap::new(),
-            flows: BTreeMap::new(),
-            flow_tests: BTreeMap::new(),
-            connections: BTreeMap::new(),
             sandboxes: BTreeMap::new(),
-            jobs: BTreeMap::new(),
         }
-    }
-
-    /// Look up a job by name.
-    pub fn job(&self, name: &str) -> Option<&Job> {
-        self.jobs.get(name)
     }
 
     /// Look up a sandbox by name.
@@ -1264,6 +1321,50 @@ impl Model {
             eval,
             mask,
         )
+    }
+}
+
+/// The server-global automation model (ADR-0035): flows, flow tests, jobs
+/// (schedules), and connections, owned by no cube. Persisted as its own
+/// model-as-code file (`{data_dir}/automation/automation.model`) and loaded at
+/// boot, separate from the cube engine. A flow's body names the cubes and
+/// dimensions it acts on; a connection is referenced by flows by name.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Automation {
+    /// Named flows (TypeScript ETL/automation), keyed by name.
+    pub flows: BTreeMap<String, Flow>,
+    /// Flow unit tests, keyed by name.
+    pub flow_tests: BTreeMap<String, FlowTest>,
+    /// Named global data-source connections (admin-defined), keyed by name.
+    pub connections: BTreeMap<String, Connection>,
+    /// Scheduled jobs (ADR-0013), keyed by name.
+    pub jobs: BTreeMap<String, Job>,
+}
+
+impl Automation {
+    /// An empty automation model.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Look up a flow by name.
+    pub fn flow(&self, name: &str) -> Option<&Flow> {
+        self.flows.get(name)
+    }
+
+    /// Look up a flow test by name.
+    pub fn flow_test(&self, name: &str) -> Option<&FlowTest> {
+        self.flow_tests.get(name)
+    }
+
+    /// Look up a job by name.
+    pub fn job(&self, name: &str) -> Option<&Job> {
+        self.jobs.get(name)
+    }
+
+    /// Look up a connection by name.
+    pub fn connection(&self, name: &str) -> Option<&Connection> {
+        self.connections.get(name)
     }
 }
 

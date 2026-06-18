@@ -20,7 +20,8 @@ use epiphany_flow::{due_firings, run_flow, Firing, FlowError, RunRecord, RunStat
 use epiphany_security::{AuditAction, ObjectKind, ObjectRef};
 
 use crate::authz::audit_at;
-use crate::flow_routes::apply_outcome;
+use crate::flow_reader::ApiFlowReader;
+use crate::flow_routes::{apply_outcome, authorize_outcome_as, resolve_flow_inputs};
 use crate::AppState;
 
 /// The service principal recorded for timer-fired runs (ADR-0013 decision 9).
@@ -81,72 +82,129 @@ impl Scheduler {
         dispatched
     }
 
-    /// Every cube's jobs, from live snapshots, paired with the owning cube. The
-    /// selector filters by `enabled`.
+    /// The server-global jobs (ADR-0035), each paired with an empty cube string so
+    /// the unchanged `due_firings`/`Firing`/ledger plumbing (which keys by cube
+    /// name) treats every job under one global namespace. The selector filters by
+    /// `enabled`.
     fn gather_jobs(&self) -> Vec<(String, Job)> {
-        let mut jobs = Vec::new();
-        for cube in self.state.engine.cube_names() {
-            if let Some(snap) = self.state.engine.snapshot(&cube) {
-                for job in snap.model().jobs.values() {
-                    jobs.push((cube.clone(), job.clone()));
-                }
-            }
-        }
-        jobs
+        self.state
+            .automation
+            .lock()
+            .expect("automation store mutex")
+            .automation()
+            .jobs
+            .values()
+            .map(|job| (String::new(), job.clone()))
+            .collect()
     }
 
-    /// Execute one job firing: record `Queued` then `Running`, run each step flow
-    /// with the frozen fire time, apply its outcome, then record `Succeeded` (or
-    /// `Failed` on the first failing step, fail-fast). Reused by the manual kick.
-    pub(crate) fn execute(&self, firing: &Firing, principal: &str) {
-        self.record(firing, RunState::Queued, (0, 0, 0), "", principal);
-        self.record(firing, RunState::Running, (0, 0, 0), "", principal);
+    /// Execute one job firing (ADR-0035): record `Queued` then `Running`, run each
+    /// step flow with the frozen fire time, apply its multi-cube outcome, then
+    /// record `Succeeded` (or `Failed` on the first failing step, fail-fast).
+    /// `firing_principal` is the kicker (the caller for a manual kick, the
+    /// scheduler service principal for a timer firing), but each step *runs as the
+    /// flow's recorded owner* and is gated by that owner's object and element
+    /// security; a flow with no owner fails the run (fail-closed). The run record
+    /// is stamped with the owner where there is one. Reused by the manual kick.
+    pub(crate) fn execute(&self, firing: &Firing, firing_principal: &str) {
+        self.record(firing, RunState::Queued, (0, 0, 0), "", firing_principal);
+        self.record(firing, RunState::Running, (0, 0, 0), "", firing_principal);
 
-        let Some(snap) = self.state.engine.snapshot(&firing.cube) else {
-            self.fail(firing, (0, 0, 0), "unknown cube", principal);
-            return;
+        let job = {
+            let store = self
+                .state
+                .automation
+                .lock()
+                .expect("automation store mutex");
+            store.automation().job(&firing.job).cloned()
         };
-        let Some(job) = snap.model().job(&firing.job).cloned() else {
-            self.fail(firing, (0, 0, 0), "unknown job", principal);
+        let Some(job) = job else {
+            self.fail(firing, (0, 0, 0), "unknown job", firing_principal);
             return;
         };
 
         // (rows_read, cells_written, elements_added) aggregated across steps.
         let mut agg = (0u64, 0u64, 0u64);
         for step in &job.steps {
-            let Some(flow) = snap.model().flows.get(step) else {
-                self.fail(firing, agg, &format!("unknown flow '{step}'"), principal);
+            // Resolve the step's flow from the global automation store.
+            let flow = {
+                let store = self
+                    .state
+                    .automation
+                    .lock()
+                    .expect("automation store mutex");
+                store.automation().flow(step).cloned()
+            };
+            let Some(flow) = flow else {
+                self.fail(
+                    firing,
+                    agg,
+                    &format!("unknown flow '{step}'"),
+                    firing_principal,
+                );
                 return;
             };
-            // A scheduled step runs the flow with no external input (binding a
-            // connection to a job step is a deferred increment). The fire time is
-            // the frozen tick value (ADR-0013 decision 0), never a fresh read.
+            // A scheduled run executes as the flow's owner (ADR-0035); without one
+            // there is no principal to bound its rights, so the run fails.
+            let Some(owner) = flow.owner.clone() else {
+                self.fail(
+                    firing,
+                    agg,
+                    &format!("flow '{}' has no owner", flow.name),
+                    firing_principal,
+                );
+                return;
+            };
+
+            // Resolve the flow's declared inputs (global + local connections) to
+            // rows, exactly as a manual run does; a scheduled run fetches its
+            // declared sources (ADR-0035).
+            let inputs = match resolve_flow_inputs(&self.state, &flow, &BTreeMap::new(), "") {
+                Ok(inputs) => inputs,
+                Err(e) => {
+                    self.fail(firing, agg, e.message(), &owner);
+                    return;
+                }
+            };
+            let cube_names = self.state.engine.cube_names();
+            let reader = ApiFlowReader::new(self.state.clone(), &owner);
+            // The fire time is the frozen tick value (ADR-0013 decision 0).
             let outcome = match run_flow(
                 &flow.source,
-                &firing.cube,
-                Vec::new(),
+                flow.default_cube.as_deref(),
+                &cube_names,
+                inputs,
                 &BTreeMap::new(),
                 firing.fire_millis,
+                Box::new(reader),
             ) {
                 Ok(o) => o,
                 Err(e) => {
-                    self.fail(firing, agg, &flow_error_message(&e), principal);
+                    self.fail(firing, agg, &flow_error_message(&e), &owner);
                     return;
                 }
             };
             agg.0 += outcome.report.rows_read as u64;
-            match apply_outcome(&self.state, &firing.cube, &outcome) {
+            // Authorize and apply AS THE OWNER, so an unattended flow can only touch
+            // what its owner could touch by hand (fail-closed).
+            if let Err(e) = authorize_outcome_as(&self.state, &owner, &outcome) {
+                self.fail(firing, agg, e.message(), &owner);
+                return;
+            }
+            match apply_outcome(&self.state, &outcome) {
                 Ok((elements, cells)) => {
                     agg.2 += elements as u64;
                     agg.1 += cells as u64;
                 }
                 Err(e) => {
-                    self.fail(firing, agg, e.message(), principal);
+                    self.fail(firing, agg, e.message(), &owner);
                     return;
                 }
             }
         }
-        self.record(firing, RunState::Succeeded, agg, "", principal);
+        // The run succeeded; record it under the firing principal (a job with no
+        // steps records the kicker, an unusual but valid case).
+        self.record(firing, RunState::Succeeded, agg, "", firing_principal);
         self.audit_job(firing, true);
     }
 
@@ -193,11 +251,7 @@ impl Scheduler {
             &self.state,
             SCHEDULER_PRINCIPAL,
             AuditAction::JobExec,
-            Some(&ObjectRef::in_cube(
-                ObjectKind::Job,
-                &firing.cube,
-                &firing.job,
-            )),
+            Some(&ObjectRef::global(ObjectKind::Job, &firing.job)),
             allowed,
             firing.fire_millis,
         );

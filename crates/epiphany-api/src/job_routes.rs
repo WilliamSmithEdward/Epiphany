@@ -1,8 +1,10 @@
-//! Scheduled-job endpoints (ADR-0013): CRUD over a cube's jobs, a manual kick,
-//! and run queries. Jobs are cube-scoped secured objects; defining or running one
-//! requires cube `Write`, reading requires `Read`. A manual kick runs the job
-//! through the same path the reconcile loop uses and records it in the durable
-//! run ledger.
+//! Scheduled-job endpoints (ADR-0013/0035): CRUD over the server-global jobs
+//! (exposed as "schedules"), a manual kick, and the global run queries. Jobs are
+//! server-global secured objects; defining or running one requires `Job:Write`,
+//! reading requires `Job:Read`. A job's steps reference global flows by name. A
+//! manual kick runs the job through the same path the reconcile loop uses,
+//! executing each step as the flow's owner (ADR-0035), and records it in the
+//! durable run ledger.
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -14,8 +16,8 @@ use epiphany_flow::{Firing, RunRecord};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::{audit, require_admin, require_cube_access, require_kind_access};
-use crate::routes::{broadcast, map_batch_error, snapshot};
+use crate::authz::{audit, require_admin, require_kind_access};
+use crate::routes::map_persist_error;
 use crate::scheduler::Scheduler;
 use crate::{ApiError, AppState};
 
@@ -50,6 +52,8 @@ fn job_dto(job: &Job) -> JobDto {
 #[derive(Serialize)]
 pub(crate) struct RunDto {
     pub id: String,
+    /// The cube a run wrote. Empty for a global flow/job run (ADR-0035): a global
+    /// run is labelled by its flow/job, not a cube.
     pub cube: String,
     pub target: String,
     pub is_job: bool,
@@ -86,61 +90,42 @@ fn run_dto(r: &RunRecord) -> RunDto {
 
 // ---- job CRUD ----
 
-/// `GET /cubes/{cube}/jobs` -> the cube's jobs.
+/// `GET /schedules` -> the global jobs.
 pub(crate) async fn list_jobs(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path(cube): Path<String>,
 ) -> Result<Json<JobListDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
-    let snap = snapshot(&state, &cube)?;
+    require_kind_access(&state, &auth, ObjectKind::Job, None, AccessLevel::Read)?;
+    let store = state.automation.lock().expect("automation store mutex");
     Ok(Json(JobListDto {
-        jobs: snap.model().jobs.values().map(job_dto).collect(),
+        jobs: store.automation().jobs.values().map(job_dto).collect(),
     }))
 }
 
-/// `GET /cubes/{cube}/jobs/{name}` -> one job.
+/// `GET /schedules/{name}` -> one job.
 pub(crate) async fn get_job(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Result<Json<JobDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
-    let snap = snapshot(&state, &cube)?;
-    let job = snap
-        .model()
+    require_kind_access(&state, &auth, ObjectKind::Job, None, AccessLevel::Read)?;
+    let store = state.automation.lock().expect("automation store mutex");
+    let job = store
+        .automation()
         .job(&name)
         .ok_or_else(|| ApiError::not_found(format!("unknown job '{name}'")))?;
     Ok(Json(job_dto(job)))
 }
 
-/// `PUT /cubes/{cube}/jobs/{name}` -> validate and store a job. Every step must
-/// name an existing flow of the cube.
+/// `PUT /schedules/{name}` -> validate and store a job. Every step must name an
+/// existing global flow.
 pub(crate) async fn put_job(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
     Json(body): Json<JobDto>,
 ) -> Result<Json<JobDto>, ApiError> {
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Job,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
-    let existed = {
-        let snap = snapshot(&state, &cube)?;
-        for step in &body.steps {
-            if !snap.model().flows.contains_key(step) {
-                return Err(ApiError::unprocessable(
-                    "UNKNOWN_FLOW",
-                    format!("job step references unknown flow '{step}'"),
-                ));
-            }
-        }
-        snap.model().job(&name).is_some()
-    };
+    require_kind_access(&state, &auth, ObjectKind::Job, None, AccessLevel::Write)?;
     let job = Job {
         name: name.clone(),
         steps: body.steps.clone(),
@@ -149,10 +134,20 @@ pub(crate) async fn put_job(
         },
         enabled: body.enabled,
     };
-    state
-        .engine
-        .define_job(&cube, None, job.clone())
-        .map_err(map_batch_error)?;
+    let existed = {
+        let mut store = state.automation.lock().expect("automation store mutex");
+        for step in &body.steps {
+            if !store.automation().flows.contains_key(step) {
+                return Err(ApiError::unprocessable(
+                    "UNKNOWN_FLOW",
+                    format!("job step references unknown flow '{step}'"),
+                ));
+            }
+        }
+        let existed = store.automation().job(&name).is_some();
+        store.define_job(job.clone()).map_err(map_persist_error)?;
+        existed
+    };
     audit(
         &state,
         &auth.principal.username,
@@ -161,81 +156,61 @@ pub(crate) async fn put_job(
         } else {
             AuditAction::ObjectCreate
         },
-        Some(&ObjectRef::in_cube(ObjectKind::Job, &cube, &name)),
+        Some(&ObjectRef::global(ObjectKind::Job, &name)),
         true,
     );
-    broadcast(&state, &cube);
     Ok(Json(job_dto(&job)))
 }
 
-/// `DELETE /cubes/{cube}/jobs/{name}` -> delete a job.
+/// `DELETE /schedules/{name}` -> delete a job.
 pub(crate) async fn delete_job(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Job,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
-    state
-        .engine
-        .delete_job(&cube, None, &name)
-        .map_err(map_batch_error)?;
+    require_kind_access(&state, &auth, ObjectKind::Job, None, AccessLevel::Write)?;
+    let removed = state
+        .automation
+        .lock()
+        .expect("automation store mutex")
+        .delete_job(&name)
+        .map_err(map_persist_error)?;
+    if !removed {
+        return Err(ApiError::not_found(format!("unknown job '{name}'")));
+    }
     audit(
         &state,
         &auth.principal.username,
         AuditAction::ObjectDelete,
-        Some(&ObjectRef::in_cube(ObjectKind::Job, &cube, &name)),
+        Some(&ObjectRef::global(ObjectKind::Job, &name)),
         true,
     );
-    broadcast(&state, &cube);
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `POST /cubes/{cube}/jobs/{name}/run` -> run a job now (manual kick), through
-/// the same path the reconcile loop uses, and return the resulting run record.
+/// `POST /schedules/{name}/run` -> run a job now (manual kick), through the same
+/// path the reconcile loop uses, and return the resulting run record. The kick is
+/// authorized as the caller (`Job:Write`); each step still executes as the flow's
+/// owner and is gated by that owner's data access (ADR-0035), so a kick is never a
+/// privilege-escalation path.
 pub(crate) async fn run_job(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Result<Json<RunDto>, ApiError> {
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Job,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
-    // A manual kick runs the job's flow steps immediately as the caller, so the
-    // caller must also be able to make the changes those flows could make (a kick
-    // is never a privilege-escalation path; ADR-0023). The scheduler applies the
-    // steps internally, so we require, conservatively, the writes any flow effect
-    // could need on this cube: cell write and structure (dimension) edit. The
-    // unattended scheduler remains a trusted system actor (ADR-0013).
-    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Dimension,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
+    require_kind_access(&state, &auth, ObjectKind::Job, None, AccessLevel::Write)?;
     {
-        let snap = snapshot(&state, &cube)?;
-        if snap.model().job(&name).is_none() {
+        let store = state.automation.lock().expect("automation store mutex");
+        if store.automation().job(&name).is_none() {
             return Err(ApiError::not_found(format!("unknown job '{name}'")));
         }
     }
     // A manual firing: the fire time is the current clock, the id is distinct from
-    // the scheduled-id scheme so the two never collide.
+    // the scheduled-id scheme so the two never collide. A global job has no cube.
     let fire_millis = state.clock.now_millis();
-    let run_id = format!("manual:{cube}:{name}:{fire_millis}");
+    let run_id = format!("manual:{name}:{fire_millis}");
     let firing = Firing {
-        cube: cube.clone(),
+        cube: String::new(),
         job: name.clone(),
         fire_millis,
         run_id: run_id.clone(),
@@ -260,25 +235,6 @@ pub(crate) async fn run_job(
 
 // ---- run queries ----
 
-/// `GET /cubes/{cube}/runs` -> recent runs for the cube (newest first).
-pub(crate) async fn list_runs(
-    auth: AuthPrincipal,
-    State(state): State<AppState>,
-    Path(cube): Path<String>,
-) -> Result<Json<RunListDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
-    snapshot(&state, &cube)?;
-    let runs = state
-        .runs
-        .lock()
-        .expect("run ledger mutex")
-        .recent(&cube, 200)
-        .iter()
-        .map(run_dto)
-        .collect();
-    Ok(Json(RunListDto { runs }))
-}
-
 /// Query for the global runs listing.
 #[derive(Deserialize)]
 pub(crate) struct RunsQuery {
@@ -286,7 +242,7 @@ pub(crate) struct RunsQuery {
     limit: Option<usize>,
 }
 
-/// `GET /runs` -> recent runs across all cubes (admin only), for the server
+/// `GET /runs` -> recent runs across the server (admin only), for the server
 /// overview dashboard. `limit` defaults to 50, capped at 500.
 pub(crate) async fn list_all_runs(
     auth: AuthPrincipal,
@@ -306,19 +262,18 @@ pub(crate) async fn list_all_runs(
     Ok(Json(RunListDto { runs }))
 }
 
-/// `GET /cubes/{cube}/runs/{id}` -> one run by id.
+/// `GET /runs/{id}` -> one run by id (admin only). Global: no cube filter.
 pub(crate) async fn get_run(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, id)): Path<(String, String)>,
+    Path(id): Path<String>,
 ) -> Result<Json<RunDto>, ApiError> {
-    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    require_admin(&state, &auth)?;
     let record = state
         .runs
         .lock()
         .expect("run ledger mutex")
         .get(&id)
-        .filter(|r| r.cube == cube)
         .cloned()
         .ok_or_else(|| ApiError::not_found(format!("unknown run '{id}'")))?;
     Ok(Json(run_dto(&record)))

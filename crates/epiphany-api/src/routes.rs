@@ -450,6 +450,12 @@ pub(crate) fn build_write(
     }
 }
 
+/// Map a persistence failure from the global automation store (ADR-0035) into a
+/// 500: the cause is never serialized (RG-12), matching the cube write path.
+pub(crate) fn map_persist_error(_error: epiphany_persist::PersistError) -> ApiError {
+    ApiError::internal()
+}
+
 pub(crate) fn map_batch_error(error: BatchError) -> ApiError {
     match error {
         BatchError::UnknownCube(cube) => ApiError::not_found(format!("unknown cube '{cube}'")),

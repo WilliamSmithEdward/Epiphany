@@ -87,6 +87,13 @@ fn harness(dir: &Path, audit_path: std::path::PathBuf) -> Harness {
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Default::default(),
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(std::env::temp_dir().join(format!(
+                "epiphany-test-auto-{}-m7_acceptance-0",
+                std::process::id()
+            )))
+            .unwrap(),
+        )),
         http: Default::default(),
         sql: Default::default(),
     };
@@ -201,15 +208,15 @@ async fn non_admin_is_confined_by_object_and_element_security_managed_via_rest()
     .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // Cube security now holds: bob (ungranted) is denied the cube entirely --
-    // cells and the cube's connection list alike;
+    // Cube security now holds: bob (ungranted) is denied the cube's cells, and
+    // the global connection list (he holds no Connection grant either, ADR-0035);
     // ann reads but, granted only Read, cannot write; the admin bypasses.
     assert_eq!(
         read_status(&h.app, &bob, "North").await,
         StatusCode::FORBIDDEN
     );
     assert_eq!(
-        send(&h.app, "GET", "/api/v1/cubes/Sales/connections", &bob, None)
+        send(&h.app, "GET", "/api/v1/connections", &bob, None)
             .await
             .0,
         StatusCode::FORBIDDEN

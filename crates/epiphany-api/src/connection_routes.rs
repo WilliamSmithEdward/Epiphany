@@ -1,8 +1,9 @@
-//! Connection endpoints: CRUD over a cube's data-source connections. Reading a
-//! connection requires `Connection:Read`; defining or deleting one requires
-//! `Connection:Write` (ADR-0023), and a command (process-execution) connection
-//! additionally requires the server to have opted in (ADR-0012 decision 6): two
-//! independent gates before the host can ever run a program.
+//! Connection endpoints: CRUD over the server-global data-source connections
+//! (ADR-0035). Reading a connection requires `Connection:Read`; defining or
+//! deleting one requires `Connection:Write` (ADR-0023), and a command
+//! (process-execution) connection additionally requires the server to have opted
+//! in (ADR-0012 decision 6): two independent gates before the host can ever run a
+//! program. Connections live in the global automation store, not a cube model.
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -22,18 +23,17 @@ use crate::http_connector::{
     format_token, parse_format, require_http_host_allowed, require_sql_host_allowed,
     resolve_auth_header,
 };
-use crate::routes::{map_batch_error, snapshot};
-use crate::ws::ChangeEvent;
+use crate::routes::map_persist_error;
 use crate::{ApiError, AppState};
 
-/// The securable reference for a cube's connection.
-fn connection_ref(cube: &str, name: &str) -> ObjectRef {
-    ObjectRef::in_cube(ObjectKind::Connection, cube, name)
+/// The securable reference for a global connection (ADR-0035).
+fn connection_ref(name: &str) -> ObjectRef {
+    ObjectRef::global(ObjectKind::Connection, name)
 }
 
 /// A connection in JSON form (flat). The command fields apply when `kind` is
 /// `"command"`; the http fields when `kind` is `"http"` (ADR-0030).
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub(crate) struct ConnectionDto {
     /// Ignored on a request (the name comes from the path); always set on a
     /// response.
@@ -274,6 +274,18 @@ fn to_dto(conn: &Connection, is_admin: bool) -> ConnectionDto {
     }
 }
 
+/// Render a connection's name + spec as a DTO (ADR-0035): used to echo a flow's
+/// embedded (local) connection. Same redaction policy as [`to_dto`].
+pub(crate) fn spec_to_dto(name: &str, spec: &ConnectionSpec, is_admin: bool) -> ConnectionDto {
+    to_dto(
+        &Connection {
+            name: name.to_string(),
+            spec: spec.clone(),
+        },
+        is_admin,
+    )
+}
+
 /// Validate an optional connector working directory (ADR-0012 addendum): if
 /// present it must be an absolute path with no `..` traversal component.
 /// Fail-closed: a relative path or a traversal is rejected (422). Validation is
@@ -303,25 +315,24 @@ fn validate_working_dir(dir: &Option<String>) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// `GET /cubes/{cube}/connections` -> the cube's connections (command lines
-/// redacted for non-admins).
+/// `GET /connections` -> the global connections (command lines redacted for
+/// non-admins).
 pub(crate) async fn list_connections(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path(cube): Path<String>,
 ) -> Result<Json<ConnectionListDto>, ApiError> {
     require_kind_access(
         &state,
         &auth,
         ObjectKind::Connection,
-        Some(&cube),
+        None,
         AccessLevel::Read,
     )?;
-    let snap = snapshot(&state, &cube)?;
     let is_admin = auth.principal.is_admin;
+    let store = state.automation.lock().expect("automation store mutex");
     Ok(Json(ConnectionListDto {
-        connections: snap
-            .model()
+        connections: store
+            .automation()
             .connections
             .values()
             .map(|c| to_dto(c, is_admin))
@@ -329,51 +340,46 @@ pub(crate) async fn list_connections(
     }))
 }
 
-/// `GET /cubes/{cube}/connections/{name}` -> one connection (command line
-/// redacted for non-admins).
+/// `GET /connections/{name}` -> one connection (command line redacted for
+/// non-admins).
 pub(crate) async fn get_connection(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Result<Json<ConnectionDto>, ApiError> {
     require_kind_access(
         &state,
         &auth,
         ObjectKind::Connection,
-        Some(&cube),
+        None,
         AccessLevel::Read,
     )?;
-    let snap = snapshot(&state, &cube)?;
-    let conn = snap
-        .model()
+    let store = state.automation.lock().expect("automation store mutex");
+    let conn = store
+        .automation()
         .connections
         .get(&name)
         .ok_or_else(|| ApiError::not_found(format!("unknown connection '{name}'")))?;
     Ok(Json(to_dto(conn, auth.principal.is_admin)))
 }
 
-/// `PUT /cubes/{cube}/connections/{name}` -> define a connection (admin only).
-pub(crate) async fn put_connection(
-    auth: AuthPrincipal,
-    State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
-    Json(body): Json<ConnectionDto>,
-) -> Result<Json<ConnectionDto>, ApiError> {
-    let obj = connection_ref(&cube, &name);
-    require_kind_access(
-        &state,
-        &auth,
-        ObjectKind::Connection,
-        Some(&cube),
-        AccessLevel::Write,
-    )?;
+/// Build a [`ConnectionSpec`] from a DTO, applying the per-kind controls (command
+/// opt-in, HTTP/SQL build feature plus enable flag plus host allowlist, and a
+/// referenced secret must already exist). Shared by the connection PUT handler and
+/// the flow-scoped (local) connection on a flow input (ADR-0035), so a
+/// flow-scoped connection obeys the same gates as a global one. `timeout_ms` of 0
+/// defaults to 30s so a misconfigured connection cannot hang.
+pub(crate) fn spec_from_dto(
+    state: &AppState,
+    body: &ConnectionDto,
+) -> Result<ConnectionSpec, ApiError> {
     // Default an unset timeout to 30s so a misconfigured connection cannot hang.
     let timeout_ms = if body.timeout_ms == 0 {
         30_000
     } else {
         body.timeout_ms
     };
-    let spec = match body.kind.as_str() {
+    match body.kind.as_str() {
         "command" => {
             // A command connection is host code execution: require the opt-in.
             if !state.command_connectors_enabled {
@@ -387,14 +393,14 @@ pub(crate) async fn put_connection(
                 ));
             }
             validate_working_dir(&body.working_dir)?;
-            ConnectionSpec::Command(CommandSpec {
+            Ok(ConnectionSpec::Command(CommandSpec {
                 program: body.program.clone(),
                 args: body.args.clone(),
                 format: parse_format(&body.format)?,
                 json_path: body.json_path.clone(),
                 timeout_ms,
                 working_dir: body.working_dir.as_ref().filter(|d| !d.is_empty()).cloned(),
-            })
+            }))
         }
         "http" => {
             // An HTTP connection fetches an external URL: require the opt-in and
@@ -408,7 +414,7 @@ pub(crate) async fn put_connection(
             if body.url.trim().is_empty() {
                 return Err(ApiError::bad_request("an http connection needs a url"));
             }
-            require_http_host_allowed(&state, &body.url)?;
+            require_http_host_allowed(state, &body.url)?;
             let auth = match &body.auth {
                 None => None,
                 Some(a) => {
@@ -441,7 +447,7 @@ pub(crate) async fn put_connection(
                     })
                 }
             };
-            ConnectionSpec::Http(HttpSpec {
+            Ok(ConnectionSpec::Http(HttpSpec {
                 url: body.url.clone(),
                 headers: body
                     .headers
@@ -452,7 +458,7 @@ pub(crate) async fn put_connection(
                 format: parse_format(&body.format)?,
                 json_path: body.json_path.clone(),
                 timeout_ms,
-            })
+            }))
         }
         "sql" => {
             // A SQL connection queries an external database: require the opt-in
@@ -472,7 +478,7 @@ pub(crate) async fn put_connection(
             if body.query.trim().is_empty() {
                 return Err(ApiError::bad_request("a sql connection needs a query"));
             }
-            require_sql_host_allowed(&state, &body.host)?;
+            require_sql_host_allowed(state, &body.host)?;
             let password_secret = match body
                 .password_secret
                 .as_ref()
@@ -489,7 +495,7 @@ pub(crate) async fn put_connection(
                     Some(name.clone())
                 }
             };
-            ConnectionSpec::Sql(SqlSpec {
+            Ok(ConnectionSpec::Sql(SqlSpec {
                 engine: parse_sql_engine(&body.engine)?,
                 host: body.host.clone(),
                 port: body.port,
@@ -499,24 +505,43 @@ pub(crate) async fn put_connection(
                 query: body.query.clone(),
                 ssl_mode: parse_ssl_mode(&body.ssl_mode)?,
                 timeout_ms,
-            })
+            }))
         }
-        other => {
-            return Err(ApiError::bad_request(format!(
-                "unsupported connection kind '{other}'"
-            )))
-        }
-    };
+        other => Err(ApiError::bad_request(format!(
+            "unsupported connection kind '{other}'"
+        ))),
+    }
+}
+
+/// `PUT /connections/{name}` -> define a global connection (admin or a holder of
+/// a global `Connection:Write` grant).
+pub(crate) async fn put_connection(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<ConnectionDto>,
+) -> Result<Json<ConnectionDto>, ApiError> {
+    let obj = connection_ref(&name);
+    require_kind_access(
+        &state,
+        &auth,
+        ObjectKind::Connection,
+        None,
+        AccessLevel::Write,
+    )?;
+    let spec = spec_from_dto(&state, &body)?;
     let connection = Connection {
         name: name.clone(),
         spec,
     };
-    // The caller is an admin (checked above), so the echoed DTO is unredacted.
-    let response = to_dto(&connection, true);
-    let outcome = state
-        .engine
-        .define_connection(&cube, None, connection)
-        .map_err(map_batch_error)?;
+    // The echoed DTO is unredacted for the admin/grant-holder who just defined it.
+    let response = to_dto(&connection, auth.principal.is_admin);
+    state
+        .automation
+        .lock()
+        .expect("automation store mutex")
+        .define_connection(connection)
+        .map_err(map_persist_error)?;
     audit(
         &state,
         &auth.principal.username,
@@ -524,31 +549,32 @@ pub(crate) async fn put_connection(
         Some(&obj),
         true,
     );
-    let _ = state.events.send(ChangeEvent::ObjectsChanged {
-        cube: cube.clone(),
-        version: outcome.version,
-    });
     Ok(Json(response))
 }
 
-/// `DELETE /cubes/{cube}/connections/{name}` -> delete a connection (admin only).
+/// `DELETE /connections/{name}` -> delete a global connection.
 pub(crate) async fn delete_connection(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let obj = connection_ref(&cube, &name);
+    let obj = connection_ref(&name);
     require_kind_access(
         &state,
         &auth,
         ObjectKind::Connection,
-        Some(&cube),
+        None,
         AccessLevel::Write,
     )?;
-    let outcome = state
-        .engine
-        .delete_connection(&cube, None, &name)
-        .map_err(map_batch_error)?;
+    let removed = state
+        .automation
+        .lock()
+        .expect("automation store mutex")
+        .delete_connection(&name)
+        .map_err(map_persist_error)?;
+    if !removed {
+        return Err(ApiError::not_found(format!("unknown connection '{name}'")));
+    }
     audit(
         &state,
         &auth.principal.username,
@@ -556,10 +582,6 @@ pub(crate) async fn delete_connection(
         Some(&obj),
         true,
     );
-    let _ = state.events.send(ChangeEvent::ObjectsChanged {
-        cube: cube.clone(),
-        version: outcome.version,
-    });
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -577,24 +599,25 @@ pub(crate) struct ConnectionPreviewDto {
 /// How many rows the preview returns; the rest are counted but not sent.
 const PREVIEW_ROW_LIMIT: usize = 20;
 
-/// `POST /cubes/{cube}/connections/{name}/preview` -> run the connection and
-/// return a small sample of its parsed rows (ADR-0027). Requires `Connection:Write`
-/// and the command-connector enable flag; never stages a model change.
+/// `POST /connections/{name}/preview` -> run the global connection and return a
+/// small sample of its parsed rows (ADR-0027). Requires `Connection:Write` and
+/// the per-kind enable flags; never stages a model change.
 pub(crate) async fn preview_connection(
     auth: AuthPrincipal,
     State(state): State<AppState>,
-    Path((cube, name)): Path<(String, String)>,
+    Path(name): Path<String>,
 ) -> Result<Json<ConnectionPreviewDto>, ApiError> {
     require_kind_access(
         &state,
         &auth,
         ObjectKind::Connection,
-        Some(&cube),
+        None,
         AccessLevel::Write,
     )?;
     let conn = {
-        let snap = snapshot(&state, &cube)?;
-        snap.model()
+        let store = state.automation.lock().expect("automation store mutex");
+        store
+            .automation()
             .connections
             .get(&name)
             .cloned()
@@ -607,7 +630,7 @@ pub(crate) async fn preview_connection(
         &state,
         &auth.principal.username,
         AuditAction::ObjectUpdate,
-        Some(&connection_ref(&cube, &name)),
+        Some(&connection_ref(&name)),
         true,
     );
     let columns: Vec<String> = rows

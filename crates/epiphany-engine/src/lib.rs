@@ -21,9 +21,9 @@ use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
 use epiphany_core::{
-    AttributeKind, AttributeValue, CellResolver, Connection, Cube, Dimension, DimensionDef,
-    EdgeSpec, ElementMask, ElementSpec, Fixed, Flow, FlowTest, Job, Model, ModelError, QueryError,
-    RuleSet, RuleTest, Sandbox, Subset, View,
+    AttributeKind, AttributeValue, CellResolver, Cube, Dimension, DimensionDef, EdgeSpec,
+    ElementMask, ElementSpec, Fixed, Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox,
+    Subset, View,
 };
 use epiphany_determinism::IdGen;
 use epiphany_persist::{load_registry, save_registry, PersistError, RegistryEntry, Store};
@@ -851,123 +851,25 @@ impl Engine {
         })
     }
 
-    /// Define (create or replace) a flow definition and publish a new version.
-    /// The source is stored verbatim; the caller validates it (via the flow
-    /// layer) first.
-    pub fn define_flow(
-        &self,
-        cube: &str,
-        base: Option<Version>,
-        flow: Flow,
-    ) -> Result<CommitOutcome, BatchError> {
-        self.define(cube, base, |store| store.define_flow(flow))
+    // Flows, flow tests, connections, and jobs are no longer per-cube (ADR-0035):
+    // the API mutates them through the server-global `AutomationStore`, not the
+    // cube engine.
+
+    /// The registry id of the global dimension named `name` (ADR-0031/0035), if
+    /// any. A flow addresses a global dimension by bare name; the apply path
+    /// resolves the name to an id here, then grows it via [`grow_dimension`].
+    pub fn dimension_id_by_name(&self, name: &str) -> Option<DimensionId> {
+        self.dimensions.load().id_of(name)
     }
 
-    /// Delete a flow by name and publish a new version. A missing flow returns
-    /// [`BatchError::Invalid`].
-    pub fn delete_flow(
-        &self,
-        cube: &str,
-        base: Option<Version>,
-        name: &str,
-    ) -> Result<CommitOutcome, BatchError> {
-        self.define(cube, base, |store| {
-            if store.delete_flow(name)? {
-                Ok(())
-            } else {
-                Err(PersistError::Query(QueryError::Calc {
-                    message: format!("no flow '{name}'"),
-                }))
-            }
-        })
-    }
-
-    /// Define (create or replace) a scheduled job (ADR-0013) and publish a new
-    /// version. The caller validates the job's step flows first.
-    pub fn define_job(
-        &self,
-        cube: &str,
-        base: Option<Version>,
-        job: Job,
-    ) -> Result<CommitOutcome, BatchError> {
-        self.define(cube, base, |store| store.define_job(job))
-    }
-
-    /// Delete a job by name and publish a new version. A missing job returns
-    /// [`BatchError::Invalid`].
-    pub fn delete_job(
-        &self,
-        cube: &str,
-        base: Option<Version>,
-        name: &str,
-    ) -> Result<CommitOutcome, BatchError> {
-        self.define(cube, base, |store| {
-            if store.delete_job(name)? {
-                Ok(())
-            } else {
-                Err(PersistError::Query(QueryError::Calc {
-                    message: format!("no job '{name}'"),
-                }))
-            }
-        })
-    }
-
-    /// Define (create or replace) a flow unit test and publish a new version.
-    pub fn define_flow_test(
-        &self,
-        cube: &str,
-        base: Option<Version>,
-        test: FlowTest,
-    ) -> Result<CommitOutcome, BatchError> {
-        self.define(cube, base, |store| store.define_flow_test(test))
-    }
-
-    /// Delete a flow test by name and publish a new version. A missing test
-    /// returns [`BatchError::Invalid`].
-    pub fn delete_flow_test(
-        &self,
-        cube: &str,
-        base: Option<Version>,
-        name: &str,
-    ) -> Result<CommitOutcome, BatchError> {
-        self.define(cube, base, |store| {
-            if store.delete_flow_test(name)? {
-                Ok(())
-            } else {
-                Err(PersistError::Query(QueryError::Calc {
-                    message: format!("no flow test '{name}'"),
-                }))
-            }
-        })
-    }
-
-    /// Define (create or replace) a data-source connection and publish a new
-    /// version.
-    pub fn define_connection(
-        &self,
-        cube: &str,
-        base: Option<Version>,
-        connection: Connection,
-    ) -> Result<CommitOutcome, BatchError> {
-        self.define(cube, base, |store| store.define_connection(connection))
-    }
-
-    /// Delete a connection by name and publish a new version. A missing
-    /// connection returns [`BatchError::Invalid`].
-    pub fn delete_connection(
-        &self,
-        cube: &str,
-        base: Option<Version>,
-        name: &str,
-    ) -> Result<CommitOutcome, BatchError> {
-        self.define(cube, base, |store| {
-            if store.delete_connection(name)? {
-                Ok(())
-            } else {
-                Err(PersistError::Query(QueryError::Calc {
-                    message: format!("no connection '{name}'"),
-                }))
-            }
+    /// The current member names of the global dimension named `name`, if it
+    /// exists (used by a flow's `ctx.dimension(name).members()` read).
+    pub fn registry_dimension_members(&self, name: &str) -> Option<Vec<String>> {
+        self.dimensions.load().named(name).map(|s| {
+            s.dimension
+                .iter_elements()
+                .map(|e| e.name.clone())
+                .collect()
         })
     }
 

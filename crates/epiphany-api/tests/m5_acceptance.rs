@@ -69,6 +69,11 @@ fn router_for(dir: &Path) -> Router {
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),
         secrets: Default::default(),
+        // The automation store lives under the test data dir so flows and flow
+        // tests survive the session-2 restart (ADR-0035).
+        automation: Arc::new(Mutex::new(
+            epiphany_persist::AutomationStore::open(dir.join("automation")).unwrap(),
+        )),
         http: Default::default(),
         sql: Default::default(),
     };
@@ -172,7 +177,7 @@ async fn m5_definition_of_done() {
         let (status, err) = call(
             &app,
             "PUT",
-            "/api/v1/cubes/Sales/flows/load",
+            "/api/v1/flows/load",
             &token,
             Some(json!({ "name": "load", "source": "enum Bad { A }\nfunction rows(ctx) {}" })),
         )
@@ -180,7 +185,7 @@ async fn m5_definition_of_done() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
         assert_eq!(err["error"]["code"], "FLOW_STRIP_ERROR");
         assert!(err["error"]["details"]["line"].is_number());
-        let (status, body) = call(&app, "GET", "/api/v1/cubes/Sales/flows", &token, None).await;
+        let (status, body) = call(&app, "GET", "/api/v1/flows", &token, None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             body["flows"].as_array().unwrap().len(),
@@ -192,9 +197,9 @@ async fn m5_definition_of_done() {
         let (status, _) = call(
             &app,
             "PUT",
-            "/api/v1/cubes/Sales/flows/load",
+            "/api/v1/flows/load",
             &token,
-            Some(json!({ "name": "load", "source": LOAD_FLOW })),
+            Some(json!({ "name": "load", "source": LOAD_FLOW, "default_cube": "Sales" })),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -202,7 +207,7 @@ async fn m5_definition_of_done() {
         let (status, report) = call(
             &app,
             "POST",
-            "/api/v1/cubes/Sales/flows/load/run",
+            "/api/v1/flows/load/run",
             &token,
             Some(json!({ "input": CSV })),
         )
@@ -221,7 +226,7 @@ async fn m5_definition_of_done() {
         let (status, _) = call(
             &app,
             "POST",
-            "/api/v1/cubes/Sales/flows/tests",
+            "/api/v1/flows/tests",
             &token,
             Some(json!({
                 "name": "loads_total",
@@ -235,14 +240,7 @@ async fn m5_definition_of_done() {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED);
-        let (status, report) = call(
-            &app,
-            "POST",
-            "/api/v1/cubes/Sales/flows/tests/run",
-            &token,
-            None,
-        )
-        .await;
+        let (status, report) = call(&app, "POST", "/api/v1/flows/tests/run", &token, None).await;
         assert_eq!(status, StatusCode::OK, "{report}");
         assert_eq!(report["all_passed"], true, "flow tests green: {report}");
         assert_eq!(report["outcomes"].as_array().unwrap().len(), 1);
@@ -251,16 +249,16 @@ async fn m5_definition_of_done() {
         let (status, _) = call(
             &app,
             "PUT",
-            "/api/v1/cubes/Sales/flows/boom",
+            "/api/v1/flows/boom",
             &token,
-            Some(json!({ "name": "boom", "source": "function rows(ctx) { throw new Error('nope'); }" })),
+            Some(json!({ "name": "boom", "source": "function rows(ctx) { throw new Error('nope'); }", "default_cube": "Sales" })),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
         let (status, err) = call(
             &app,
             "POST",
-            "/api/v1/cubes/Sales/flows/boom/run",
+            "/api/v1/flows/boom/run",
             &token,
             Some(json!({ "input": "" })),
         )
@@ -273,7 +271,7 @@ async fn m5_definition_of_done() {
         let (status, report) = call(
             &app,
             "POST",
-            "/api/v1/cubes/Sales/flows/import",
+            "/api/v1/cubes/Sales/import",
             &token,
             Some(json!({
                 "csv": "Region,Value\nEast,40\nWest,60\n",
@@ -302,7 +300,7 @@ async fn m5_definition_of_done() {
         assert_eq!(read_value(&app, &token, sales_coord("Total")).await, "300");
         assert_eq!(read_value(&app, &token, sales_coord("East")).await, "40");
 
-        let (status, body) = call(&app, "GET", "/api/v1/cubes/Sales/flows", &token, None).await;
+        let (status, body) = call(&app, "GET", "/api/v1/flows", &token, None).await;
         assert_eq!(status, StatusCode::OK);
         let names: Vec<&str> = body["flows"]
             .as_array()
@@ -312,14 +310,7 @@ async fn m5_definition_of_done() {
             .collect();
         assert!(names.contains(&"load"), "flow persisted: {names:?}");
 
-        let (status, report) = call(
-            &app,
-            "POST",
-            "/api/v1/cubes/Sales/flows/tests/run",
-            &token,
-            None,
-        )
-        .await;
+        let (status, report) = call(&app, "POST", "/api/v1/flows/tests/run", &token, None).await;
         assert_eq!(status, StatusCode::OK);
         assert_eq!(
             report["all_passed"], true,

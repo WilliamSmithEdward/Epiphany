@@ -1,13 +1,17 @@
 //! Load existing cubes from the data directory, or materialize the bundled demo
-//! model on first run, and assemble the engine.
+//! model on first run, and assemble the engine. Also opens the server-global
+//! automation store (ADR-0035) and, on first boot under the new layout, lifts any
+//! legacy per-cube flows/flow-tests/connections/jobs out of the cube models into
+//! the global store.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
+use epiphany_core::{extract_legacy_automation, Automation};
 use epiphany_determinism::IdGen;
 use epiphany_engine::Engine;
-use epiphany_persist::Store;
+use epiphany_persist::{write_automation, AutomationStore, Store};
 
 use crate::demo;
 
@@ -47,6 +51,142 @@ pub fn load_or_init(data_dir: &Path) -> Result<Engine, Box<dyn std::error::Error
     Ok(Engine::from_stores(stores, Arc::new(IdGen::default()))
         .with_cubes_dir(cubes_dir)
         .with_dimensions_dir(data_dir.join("dimensions")))
+}
+
+/// Open the server-global automation store (ADR-0035) at `<data_dir>/automation`,
+/// migrating any legacy per-cube automation on first boot under the new layout.
+///
+/// Migration (ADR-0035 decision 8): for each cube, the cube's `snapshot.model`
+/// text is scanned for legacy `[[flow]]`/`[[flow_test]]`/`[[connection]]`/`[[job]]`
+/// blocks (the cube model parser already ignores them). Each is lifted into the
+/// global model; on a name collision the cube-scoped name is prefixed with
+/// `"{cube}_"` and a warning is logged. A migrated flow gets `default_cube =
+/// Some(origin_cube)` if it had none, and `owner = first_admin` if it had none, so
+/// its body keeps working and scheduled runs have a real run-as principal. After
+/// merging, the global file is written and each migrated cube is re-checkpointed
+/// (dropping the legacy blocks from its snapshot). Resilient: a migration error is
+/// logged and boot continues with whatever merged cleanly (an empty store at
+/// worst), never crashing.
+pub fn load_automation(
+    data_dir: &Path,
+    engine: &Engine,
+    first_admin: Option<&str>,
+) -> Result<AutomationStore, Box<dyn std::error::Error>> {
+    let automation_dir = data_dir.join("automation");
+    let cubes_dir = data_dir.join("cubes");
+
+    // If the global file already exists, the migration ran on a prior boot; just
+    // open it (no re-scan of cube snapshots).
+    if automation_dir.join("automation.model").is_file() {
+        return Ok(AutomationStore::open(automation_dir)?);
+    }
+
+    // First boot under the new layout: scan every cube for legacy automation.
+    let mut merged = Automation::new();
+    let mut migrated_cubes: Vec<String> = Vec::new();
+    for cube in engine.cube_names() {
+        let snapshot_path = cubes_dir.join(&cube).join("snapshot.model");
+        let text = match std::fs::read_to_string(&snapshot_path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let legacy = match extract_legacy_automation(&text) {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(cube = %cube, error = %e, "could not read legacy automation; skipping");
+                continue;
+            }
+        };
+        if legacy.flows.is_empty()
+            && legacy.flow_tests.is_empty()
+            && legacy.connections.is_empty()
+            && legacy.jobs.is_empty()
+        {
+            continue;
+        }
+        merge_legacy(&mut merged, legacy, &cube, first_admin);
+        migrated_cubes.push(cube);
+    }
+
+    if migrated_cubes.is_empty() {
+        // Nothing to lift; just open (creates) an empty global store.
+        return Ok(AutomationStore::open(automation_dir)?);
+    }
+
+    // Persist the merged global model, then re-checkpoint each migrated cube so the
+    // legacy blocks are dropped from its snapshot. A persist failure logs and falls
+    // back to an empty store rather than blocking boot.
+    if let Err(e) = write_automation(&automation_dir, &merged) {
+        tracing::error!(error = %e, "failed to write the migrated automation; starting empty");
+        return Ok(AutomationStore::open(automation_dir)?);
+    }
+    for cube in &migrated_cubes {
+        if let Err(e) = engine.checkpoint(cube) {
+            tracing::warn!(cube = %cube, error = ?e, "could not re-checkpoint a migrated cube; its snapshot still carries legacy automation blocks (harmless, ignored on load)");
+        }
+    }
+    tracing::info!(
+        cubes = migrated_cubes.len(),
+        flows = merged.flows.len(),
+        connections = merged.connections.len(),
+        jobs = merged.jobs.len(),
+        "migrated legacy per-cube automation into the global store (ADR-0035)"
+    );
+
+    Ok(AutomationStore::open(automation_dir)?)
+}
+
+/// Merge one cube's legacy automation into the global model, prefixing on a name
+/// collision and stamping a migrated flow's `default_cube`/`owner` defaults.
+fn merge_legacy(
+    merged: &mut Automation,
+    legacy: Automation,
+    cube: &str,
+    first_admin: Option<&str>,
+) {
+    for (name, mut flow) in legacy.flows {
+        if flow.default_cube.is_none() {
+            flow.default_cube = Some(cube.to_string());
+        }
+        if flow.owner.is_none() {
+            flow.owner = first_admin.map(str::to_string);
+        }
+        let key = unique_key(&merged.flows, &name, cube);
+        flow.name = key.clone();
+        merged.flows.insert(key, flow);
+    }
+    for (name, mut test) in legacy.flow_tests {
+        let key = unique_key(&merged.flow_tests, &name, cube);
+        test.name = key.clone();
+        merged.flow_tests.insert(key, test);
+    }
+    for (name, mut conn) in legacy.connections {
+        let key = unique_key(&merged.connections, &name, cube);
+        conn.name = key.clone();
+        merged.connections.insert(key, conn);
+    }
+    for (name, mut job) in legacy.jobs {
+        let key = unique_key(&merged.jobs, &name, cube);
+        job.name = key.clone();
+        merged.jobs.insert(key, job);
+    }
+}
+
+/// The key to store a migrated object under: its original name, or `"{cube}_{name}"`
+/// when that name already exists (a cross-cube collision), logging a warning.
+fn unique_key<V>(map: &BTreeMap<String, V>, name: &str, cube: &str) -> String {
+    if map.contains_key(name) {
+        let prefixed = format!("{cube}_{name}");
+        tracing::warn!(
+            name = %name,
+            cube = %cube,
+            renamed = %prefixed,
+            "legacy automation name collides across cubes; prefixed with the cube name"
+        );
+        prefixed
+    } else {
+        name.to_string()
+    }
 }
 
 #[cfg(test)]

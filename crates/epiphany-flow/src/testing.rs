@@ -1,22 +1,22 @@
 //! The flow testing framework: deterministic flow unit tests.
 //!
-//! A [`FlowTest`] pins a flow's input (CSV text) and parameters and asserts the
-//! resulting cell values. [`run_flow_tests`] runs them against a model the same
-//! way the REST runner does, but on a throwaway cube clone so a test never
-//! mutates the live model: for each test it parses the input, runs the named
-//! flow, applies the staged elements and cells to the clone, and checks each
-//! assertion's exact [`Fixed`] value. No clock or RNG, so results are
-//! deterministic.
+//! A [`FlowTest`] pins a flow's data sources (inline content) and parameters and
+//! asserts the resulting cell values in one target cube. [`run_flow_tests`] runs
+//! each test against a throwaway clone of its target cube so a test never mutates
+//! the live model: it parses the pinned inputs, runs the named flow with a
+//! [`NullReader`] (tests do not read live state), applies that cube's staged
+//! elements and cells to the clone, and checks each assertion's exact [`Fixed`]
+//! value. No clock or RNG, so results are deterministic.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use epiphany_core::{Cube, ElementKind, Fixed, Model, ModelError};
+use epiphany_core::{Automation, Cube, ElementKind, Fixed, ModelError};
 use epiphany_determinism::Deterministic;
 
 use crate::csv::parse_csv;
-use crate::run::{run_flow, FlowError, FlowOutcome};
+use crate::run::{run_flow, CubeChanges, FlowError, NullReader};
 
 /// The result of running one flow test.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,8 +44,12 @@ pub struct AssertionFailure {
 /// assertion failure.
 #[derive(Debug, Clone)]
 pub enum FlowTestError {
-    /// The test names a flow the model does not define.
+    /// The test names a flow the automation model does not define.
     UnknownFlow { test: String, flow: String },
+    /// The test does not name a target cube and its flow has no default cube.
+    NoTargetCube { test: String },
+    /// The test's target cube is not known to the runner.
+    UnknownCube { test: String, cube: String },
     /// The test's input could not be parsed as CSV.
     BadInput { test: String, message: String },
     /// The flow failed to run.
@@ -62,6 +66,15 @@ impl fmt::Display for FlowTestError {
             FlowTestError::UnknownFlow { test, flow } => {
                 write!(f, "test '{test}' references unknown flow '{flow}'")
             }
+            FlowTestError::NoTargetCube { test } => {
+                write!(
+                    f,
+                    "test '{test}' names no target cube and its flow has no default cube"
+                )
+            }
+            FlowTestError::UnknownCube { test, cube } => {
+                write!(f, "test '{test}' targets unknown cube '{cube}'")
+            }
             FlowTestError::BadInput { test, message } => {
                 write!(f, "test '{test}' input: {message}")
             }
@@ -74,13 +87,19 @@ impl fmt::Display for FlowTestError {
 
 impl std::error::Error for FlowTestError {}
 
-/// Run every flow test in a model, in name order. A malformed test (unknown
-/// flow, bad input, a flow that errors, or a bad coordinate) is a
-/// [`FlowTestError`]; a value mismatch is recorded as an [`AssertionFailure`].
-pub fn run_flow_tests(model: &Model) -> Result<Vec<FlowTestOutcome>, FlowTestError> {
-    let mut outcomes = Vec::with_capacity(model.flow_tests.len());
-    for test in model.flow_tests.values() {
-        let flow = model
+/// Run every flow test in the global automation model, in name order. Each test
+/// asserts cell values in one target cube (the test's `cube`, else the flow's
+/// `default_cube`), resolved to a fresh cube clone by `cube_for`. A malformed
+/// test (unknown flow, missing/unknown target cube, bad input, a flow that
+/// errors, or a bad coordinate) is a [`FlowTestError`]; a value mismatch is
+/// recorded as an [`AssertionFailure`].
+pub fn run_flow_tests(
+    automation: &Automation,
+    cube_for: impl Fn(&str) -> Option<Cube>,
+) -> Result<Vec<FlowTestOutcome>, FlowTestError> {
+    let mut outcomes = Vec::with_capacity(automation.flow_tests.len());
+    for test in automation.flow_tests.values() {
+        let flow = automation
             .flows
             .get(&test.flow)
             .ok_or_else(|| FlowTestError::UnknownFlow {
@@ -88,29 +107,63 @@ pub fn run_flow_tests(model: &Model) -> Result<Vec<FlowTestOutcome>, FlowTestErr
                 flow: test.flow.clone(),
             })?;
 
-        let rows = parse_csv(&test.input).map_err(|e| FlowTestError::BadInput {
+        let target = test
+            .cube
+            .clone()
+            .or_else(|| flow.default_cube.clone())
+            .ok_or_else(|| FlowTestError::NoTargetCube {
+                test: test.name.clone(),
+            })?;
+        let mut cube = cube_for(&target).ok_or_else(|| FlowTestError::UnknownCube {
             test: test.name.clone(),
-            message: e.to_string(),
+            cube: target.clone(),
         })?;
+
+        // Build the named-source map: pinned per-source content, with the
+        // sole-source `input` keyed under the flow's first declared source (or a
+        // default name) so `ctx.input()` returns it.
+        let mut inputs = BTreeMap::new();
+        for (addr, content) in &test.inputs {
+            let rows = parse_csv(content).map_err(|e| FlowTestError::BadInput {
+                test: test.name.clone(),
+                message: e.to_string(),
+            })?;
+            inputs.insert(addr.clone(), rows);
+        }
+        if !test.input.is_empty() && inputs.is_empty() {
+            let key = flow
+                .inputs
+                .first()
+                .map(|i| i.address())
+                .unwrap_or_else(|| "data".to_string());
+            let rows = parse_csv(&test.input).map_err(|e| FlowTestError::BadInput {
+                test: test.name.clone(),
+                message: e.to_string(),
+            })?;
+            inputs.insert(key, rows);
+        }
 
         let outcome = run_flow(
             &flow.source,
-            model.cube.name(),
-            rows,
+            Some(&target),
+            std::slice::from_ref(&target),
+            inputs,
             &test.params,
             Deterministic::EPOCH_2020_MILLIS,
+            Box::new(NullReader),
         )
         .map_err(|e: FlowError| FlowTestError::Flow {
             test: test.name.clone(),
             message: e.to_string(),
         })?;
 
-        // Apply to a fresh clone so tests never touch the live model.
-        let mut cube = model.cube.clone();
-        apply_outcome(&mut cube, &outcome).map_err(|e| FlowTestError::Apply {
-            test: test.name.clone(),
-            message: e.to_string(),
-        })?;
+        // Apply only the target cube's staged changes to the clone.
+        if let Some(changes) = outcome.cubes.get(&target) {
+            apply_cube_changes(&mut cube, changes).map_err(|e| FlowTestError::Apply {
+                test: test.name.clone(),
+                message: e.to_string(),
+            })?;
+        }
 
         let mut failures = Vec::new();
         for assertion in &test.assertions {
@@ -134,13 +187,14 @@ pub fn run_flow_tests(model: &Model) -> Result<Vec<FlowTestOutcome>, FlowTestErr
     Ok(outcomes)
 }
 
-/// Apply a flow's staged outcome to a cube: add its elements and edges, then
-/// write its cells. Returns the number of cells written. Used by the test runner
-/// (on a clone); the REST runner applies the same outcome through the engine.
-pub fn apply_outcome(cube: &mut Cube, outcome: &FlowOutcome) -> Result<usize, ModelError> {
-    cube.extend_schema(&outcome.elements, &outcome.edges)?;
+/// Apply one cube's staged changes to a cube clone: add its elements and edges,
+/// then write its cells. Returns the number of cells written. Used by the test
+/// runner (on a clone); the REST runner applies the same changes through the
+/// engine, per target cube.
+pub fn apply_cube_changes(cube: &mut Cube, changes: &CubeChanges) -> Result<usize, ModelError> {
+    cube.extend_schema(&changes.elements, &changes.edges)?;
     let mut written = 0;
-    for cell in &outcome.cells {
+    for cell in &changes.cells {
         let coord = resolve_coord(cube, &cell.coord)?;
         if coord_has_string(cube, &coord) {
             cube.set_string(&coord, &cell.value)?;
@@ -202,24 +256,46 @@ mod tests {
         }
     }
 
-    /// Region(Total over its leaves) x Measure(Sales) cube, with the flow free to
-    /// add region leaves under Total.
-    fn model_with_flow(source: &str, test: FlowTest) -> Model {
+    fn sales_cube() -> Cube {
         let mut region = Dimension::new("Region");
         region.add_consolidated("Total");
         let mut measure = Dimension::new("Measure");
         measure.add_leaf("Sales");
-        let cube = Cube::new("Sales", vec![region, measure]).unwrap();
-        let mut model = Model::new(cube);
-        model.flows.insert(
+        Cube::new("Sales", vec![region, measure]).unwrap()
+    }
+
+    /// An automation model with one flow named "load" (default cube "Sales") and
+    /// the given test. The flow is free to add region leaves under Total.
+    fn automation_with_flow(source: &str, test: FlowTest) -> Automation {
+        let mut automation = Automation::new();
+        automation.flows.insert(
             "load".to_string(),
             Flow {
                 name: "load".to_string(),
                 source: source.to_string(),
+                owner: None,
+                default_cube: Some("Sales".to_string()),
+                inputs: Vec::new(),
             },
         );
-        model.flow_tests.insert(test.name.clone(), test);
-        model
+        automation.flow_tests.insert(test.name.clone(), test);
+        automation
+    }
+
+    fn run(automation: &Automation) -> Result<Vec<FlowTestOutcome>, FlowTestError> {
+        run_flow_tests(automation, |name| (name == "Sales").then(sales_cube))
+    }
+
+    fn flow_test(name: &str, input: &str, assertions: Vec<TestCell>) -> FlowTest {
+        FlowTest {
+            name: name.to_string(),
+            flow: "load".to_string(),
+            input: input.to_string(),
+            inputs: BTreeMap::new(),
+            cube: None,
+            params: BTreeMap::new(),
+            assertions,
+        }
     }
 
     const LOADER: &str = "\
@@ -227,7 +303,6 @@ function rows(ctx) {
   const data = ctx.input();
   const regions = data.map(function (r) { return r.Region; });
   ctx.ensureElements('Region', regions);
-  ctx.addChild('Region', 'Total', regions[0], 1);
   regions.forEach(function (r) { ctx.addChild('Region', 'Total', r, 1); });
   ctx.writeCells(data.map(function (r) {
     return { coord: { Region: r.Region, Measure: 'Sales' }, value: r.Value };
@@ -236,34 +311,30 @@ function rows(ctx) {
 
     #[test]
     fn flow_test_passes_on_matching_assertions() {
-        let test = FlowTest {
-            name: "load_test".to_string(),
-            flow: "load".to_string(),
-            input: "Region,Value\nNorth,100\nSouth,200\n".to_string(),
-            params: BTreeMap::new(),
-            assertions: vec![
+        let test = flow_test(
+            "load_test",
+            "Region,Value\nNorth,100\nSouth,200\n",
+            vec![
                 cell("North", "Sales", "100"),
                 cell("South", "Sales", "200"),
                 cell("Total", "Sales", "300"),
             ],
-        };
-        let model = model_with_flow(LOADER, test);
-        let outcomes = run_flow_tests(&model).unwrap();
+        );
+        let automation = automation_with_flow(LOADER, test);
+        let outcomes = run(&automation).unwrap();
         assert_eq!(outcomes.len(), 1);
         assert!(outcomes[0].passed, "failures: {:?}", outcomes[0].failures);
     }
 
     #[test]
     fn flow_test_reports_a_mismatch() {
-        let test = FlowTest {
-            name: "bad".to_string(),
-            flow: "load".to_string(),
-            input: "Region,Value\nNorth,100\n".to_string(),
-            params: BTreeMap::new(),
-            assertions: vec![cell("North", "Sales", "999")],
-        };
-        let model = model_with_flow(LOADER, test);
-        let outcomes = run_flow_tests(&model).unwrap();
+        let test = flow_test(
+            "bad",
+            "Region,Value\nNorth,100\n",
+            vec![cell("North", "Sales", "999")],
+        );
+        let automation = automation_with_flow(LOADER, test);
+        let outcomes = run(&automation).unwrap();
         assert!(!outcomes[0].passed);
         assert_eq!(outcomes[0].failures.len(), 1);
         assert_eq!(outcomes[0].failures[0].expected, "999");
@@ -272,33 +343,35 @@ function rows(ctx) {
 
     #[test]
     fn unknown_flow_is_an_error() {
-        let test = FlowTest {
-            name: "t".to_string(),
-            flow: "ghost".to_string(),
-            input: String::new(),
-            params: BTreeMap::new(),
-            assertions: vec![],
-        };
-        let model = model_with_flow(LOADER, test);
+        let mut test = flow_test("t", "", vec![]);
+        test.flow = "ghost".to_string();
+        let automation = automation_with_flow(LOADER, test);
         assert!(matches!(
-            run_flow_tests(&model),
+            run(&automation),
             Err(FlowTestError::UnknownFlow { .. })
         ));
     }
 
     #[test]
-    fn outcomes_are_deterministic() {
-        let test = FlowTest {
-            name: "load_test".to_string(),
-            flow: "load".to_string(),
-            input: "Region,Value\nNorth,100\n".to_string(),
-            params: BTreeMap::new(),
-            assertions: vec![cell("Total", "Sales", "100")],
-        };
-        let model = model_with_flow(LOADER, test);
-        assert_eq!(
-            run_flow_tests(&model).unwrap(),
-            run_flow_tests(&model).unwrap()
+    fn explicit_target_cube_is_honored() {
+        let mut test = flow_test(
+            "load_test",
+            "Region,Value\nNorth,100\n",
+            vec![cell("Total", "Sales", "100")],
         );
+        test.cube = Some("Sales".to_string());
+        let automation = automation_with_flow(LOADER, test);
+        assert!(run(&automation).unwrap()[0].passed);
+    }
+
+    #[test]
+    fn outcomes_are_deterministic() {
+        let test = flow_test(
+            "load_test",
+            "Region,Value\nNorth,100\n",
+            vec![cell("Total", "Sales", "100")],
+        );
+        let automation = automation_with_flow(LOADER, test);
+        assert_eq!(run(&automation).unwrap(), run(&automation).unwrap());
     }
 }
