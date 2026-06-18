@@ -344,6 +344,278 @@ impl Dimension {
             }
         }
     }
+
+    // ---- structural editing (ADR-0036) ----
+    //
+    // These edit element order, kind, parentage, and membership. An edit that
+    // changes element indices (reorder, delete, insert) returns the old-index to
+    // new-index permutation so the owning [`Cube`](crate::Cube) can remap its
+    // stored cells; an edge-only edit (reparent) does not. Each method validates
+    // fully and mutates only on success, so the caller's clone-and-swap commit is
+    // transactional. None of them touch a wall clock or RNG (determinism, ADR-0009).
+
+    /// The child element indices of `element`, in edge-declaration order. Empty
+    /// for a leaf or a childless consolidation.
+    pub fn children_of(&self, element: u32) -> Result<Vec<u32>, ModelError> {
+        self.element(element)?;
+        Ok(self.children[element as usize]
+            .iter()
+            .map(|e| e.child)
+            .collect())
+    }
+
+    /// Rebuild every name and alias index after the element `Vec` has changed
+    /// shape (reordered, an element removed, or an element renamed-in-place). The
+    /// edges and attribute rows must already be expressed in the new index space.
+    fn reindex_names(&mut self) {
+        self.index_by_name.clear();
+        for (i, el) in self.elements.iter().enumerate() {
+            self.index_by_name.insert(el.name.clone(), i as u32);
+        }
+        // Aliases point at element indices, so they move with the elements too.
+        self.alias_to_element.clear();
+        for (i, values) in self.attr_values.iter().enumerate() {
+            for (&attr_index, value) in values {
+                if self.attributes[attr_index as usize].kind == AttributeKind::Alias {
+                    if let AttributeValue::Text(alias) = value {
+                        self.alias_to_element.insert(alias.clone(), i as u32);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply an old-index to new-index permutation (a bijection of `0..len`) to
+    /// the element list, edges, and attribute rows in place, then rebuild the name
+    /// and alias indices. `to_new[old]` is the element's new position.
+    fn apply_permutation(&mut self, to_new: &[u32]) {
+        let n = self.elements.len();
+        // Place elements and attribute rows at their new positions, draining the
+        // old vecs in old-index order and zipping each with its new index.
+        let mut new_elements: Vec<Option<Element>> = (0..n).map(|_| None).collect();
+        let mut new_attr_values: Vec<Option<HashMap<u32, AttributeValue>>> =
+            (0..n).map(|_| None).collect();
+        for ((element, values), &new) in self
+            .elements
+            .drain(..)
+            .zip(self.attr_values.drain(..))
+            .zip(to_new)
+        {
+            new_elements[new as usize] = Some(element);
+            new_attr_values[new as usize] = Some(values);
+        }
+        self.elements = new_elements
+            .into_iter()
+            .map(|e| e.expect("bijection"))
+            .collect();
+        self.attr_values = new_attr_values
+            .into_iter()
+            .map(|v| v.expect("bijection"))
+            .collect();
+        // Move each parent's edge list to its new parent index and remap children.
+        let mut new_children: Vec<Vec<Edge>> = (0..n).map(|_| Vec::new()).collect();
+        for (old_children, &new_parent) in self.children.drain(..).zip(to_new) {
+            let edges: Vec<Edge> = old_children
+                .into_iter()
+                .map(|e| Edge {
+                    child: to_new[e.child as usize],
+                    weight: e.weight,
+                })
+                .collect();
+            new_children[new_parent as usize] = edges;
+        }
+        self.children = new_children;
+        self.reindex_names();
+    }
+
+    /// Reorder the elements to `new_order` (a permutation of the current member
+    /// names), returning the old-index to new-index map for cell remapping.
+    ///
+    /// Rejects anything that is not an exact permutation (a missing, unknown, or
+    /// duplicated name, or the wrong count); on rejection nothing changes.
+    pub fn reorder(&mut self, new_order: &[String]) -> Result<Vec<u32>, ModelError> {
+        let n = self.elements.len();
+        if new_order.len() != n {
+            return Err(ModelError::InvalidReorder {
+                dimension: self.name.clone(),
+            });
+        }
+        // Build old-index -> new-index, rejecting a duplicate or unknown name.
+        let mut to_new = vec![u32::MAX; n];
+        let mut seen = vec![false; n];
+        for (new_pos, name) in new_order.iter().enumerate() {
+            let old = self
+                .index_of(name)
+                .ok_or_else(|| ModelError::InvalidReorder {
+                    dimension: self.name.clone(),
+                })?;
+            if seen[old as usize] {
+                return Err(ModelError::InvalidReorder {
+                    dimension: self.name.clone(),
+                });
+            }
+            seen[old as usize] = true;
+            to_new[old as usize] = new_pos as u32;
+        }
+        self.apply_permutation(&to_new);
+        Ok(to_new)
+    }
+
+    /// Change which consolidation `child` rolls up to. `new_parent` of `None`
+    /// detaches `child` to a root (removing every incoming edge). A numeric or
+    /// string `new_parent` is converted to a consolidation first. No index change,
+    /// so the caller remaps no cells.
+    ///
+    /// Rejects a self-parent and a cycle; on rejection nothing changes.
+    pub fn reparent(
+        &mut self,
+        child: u32,
+        new_parent: Option<u32>,
+        weight: i64,
+    ) -> Result<(), ModelError> {
+        self.element(child)?;
+        if let Some(parent) = new_parent {
+            self.element(parent)?;
+            if parent == child {
+                return Err(ModelError::SelfParent {
+                    dimension: self.name.clone(),
+                    element: self.elements[child as usize].name.clone(),
+                });
+            }
+            // child reaching parent means parent -> .. -> child already, so adding
+            // parent -> child would close a cycle.
+            if self.reaches(child, parent) {
+                return Err(ModelError::CycleDetected {
+                    dimension: self.name.clone(),
+                    parent: self.elements[parent as usize].name.clone(),
+                    child: self.elements[child as usize].name.clone(),
+                });
+            }
+        }
+        // Detach child from every current parent (a single member rolls up under
+        // one parent in the editor's model; clearing all incoming edges keeps the
+        // reparent unambiguous).
+        for edges in &mut self.children {
+            edges.retain(|e| e.child != child);
+        }
+        if let Some(parent) = new_parent {
+            // Promote a leaf/string target to a consolidation so it can hold a child.
+            if self.elements[parent as usize].kind != ElementKind::Consolidated {
+                self.elements[parent as usize].kind = ElementKind::Consolidated;
+            }
+            self.children[parent as usize].push(Edge { child, weight });
+        }
+        Ok(())
+    }
+
+    /// Convert `element` to `kind`. A conversion to consolidated drops nothing in
+    /// the dimension itself (the cube clears the element's stored leaf value).
+    /// Converting away from consolidated is allowed only when the element has no
+    /// children. Numeric and string convert freely (the cube re-types the cells).
+    ///
+    /// Returns the element's previous kind so the cube can re-type or clear cells.
+    /// On rejection nothing changes.
+    pub fn set_kind(&mut self, element: u32, kind: ElementKind) -> Result<ElementKind, ModelError> {
+        let previous = self.element(element)?.kind;
+        if previous == kind {
+            return Ok(previous);
+        }
+        if previous == ElementKind::Consolidated && !self.children[element as usize].is_empty() {
+            return Err(ModelError::ConsolidationHasChildren {
+                dimension: self.name.clone(),
+                element: self.elements[element as usize].name.clone(),
+            });
+        }
+        self.elements[element as usize].kind = kind;
+        Ok(previous)
+    }
+
+    /// Remove `element`, its edges (as a parent and as a child), and reindex the
+    /// remaining elements, returning `(removed_index, old-index -> new-index)`
+    /// where the removed element maps to `u32::MAX` and every later element shifts
+    /// down by one. The caller drops the removed coordinate's cells and remaps the
+    /// rest.
+    ///
+    /// Rejects deleting a consolidation that still has children, so a delete never
+    /// orphans a subtree. On rejection nothing changes.
+    pub fn delete(&mut self, element: u32) -> Result<(u32, Vec<u32>), ModelError> {
+        self.element(element)?;
+        if !self.children[element as usize].is_empty() {
+            return Err(ModelError::ConsolidationHasChildren {
+                dimension: self.name.clone(),
+                element: self.elements[element as usize].name.clone(),
+            });
+        }
+        let n = self.elements.len();
+        // old-index -> new-index: the removed element maps to u32::MAX, later
+        // elements shift down by one.
+        let mut to_new = vec![0u32; n];
+        for (old, slot) in to_new.iter_mut().enumerate() {
+            *slot = match (old as u32).cmp(&element) {
+                std::cmp::Ordering::Less => old as u32,
+                std::cmp::Ordering::Equal => u32::MAX,
+                std::cmp::Ordering::Greater => old as u32 - 1,
+            };
+        }
+        self.elements.remove(element as usize);
+        self.attr_values.remove(element as usize);
+        self.children.remove(element as usize);
+        // Drop any edge that pointed at the removed element, and remap the rest.
+        for edges in &mut self.children {
+            edges.retain(|e| e.child != element);
+            for edge in edges.iter_mut() {
+                edge.child = to_new[edge.child as usize];
+            }
+        }
+        self.reindex_names();
+        Ok((element, to_new))
+    }
+
+    /// Insert a new element named `name` of `kind` at `position`, returning its
+    /// final index and the old-index to new-index map for cell remapping (an
+    /// existing element at or after the insertion point shifts up by one).
+    ///
+    /// Rejects a duplicate name; on rejection nothing changes.
+    pub fn insert_at(
+        &mut self,
+        name: &str,
+        kind: ElementKind,
+        position: u32,
+    ) -> Result<(u32, Vec<u32>), ModelError> {
+        if self.index_by_name.contains_key(name) {
+            return Err(ModelError::DuplicateElement {
+                dimension: self.name.clone(),
+                element: name.to_string(),
+            });
+        }
+        let n = self.elements.len();
+        let position = position.min(n as u32); // clamp to "at end"
+                                               // old-index -> new-index: elements at or after `position` shift up by one.
+        let mut to_new = vec![0u32; n];
+        for (old, slot) in to_new.iter_mut().enumerate() {
+            *slot = if (old as u32) < position {
+                old as u32
+            } else {
+                old as u32 + 1
+            };
+        }
+        self.elements.insert(
+            position as usize,
+            Element {
+                name: name.to_string(),
+                kind,
+            },
+        );
+        self.attr_values.insert(position as usize, HashMap::new());
+        self.children.insert(position as usize, Vec::new());
+        for edges in &mut self.children {
+            for edge in edges.iter_mut() {
+                edge.child = to_new[edge.child as usize];
+            }
+        }
+        self.reindex_names();
+        Ok((position, to_new))
+    }
 }
 
 #[cfg(test)]

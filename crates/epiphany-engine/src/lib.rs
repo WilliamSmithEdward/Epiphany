@@ -32,6 +32,7 @@ pub use epiphany_persist::CellWrite;
 
 mod dimensions;
 pub use dimensions::{DimensionId, DimensionRegistry, SharedDimension};
+pub use epiphany_persist::DimensionEdit;
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-engine";
@@ -516,6 +517,88 @@ impl Engine {
             }
         }
         Ok(generation)
+    }
+
+    /// Apply a structural edit (ADR-0036) to a cube's dimension, remapping stored
+    /// cells transactionally. If the dimension is registry-backed for this cube,
+    /// the edit applies to the registry generation **and fans the same
+    /// name-addressed edit out to every referencing cube** (mirroring
+    /// [`grow_dimension`](Self::grow_dimension)), so every materialized copy and
+    /// its cells stay consistent. A cube-embedded (non-registry) dimension edits
+    /// only that cube. Holds `dim_topology` before any per-cube `writer`, the
+    /// ADR-0024 lock order.
+    ///
+    /// A rejected edit (not a permutation, a cycle, a child-bearing delete, a
+    /// duplicate insert) leaves everything unchanged: the registry edit is staged
+    /// on a clone and validated before publish, and each per-cube edit is itself
+    /// transactional.
+    pub fn edit_dimension(
+        &self,
+        cube: &str,
+        dim_name: &str,
+        edit: &DimensionEdit,
+    ) -> Result<CommitOutcome, BatchError> {
+        let _topo = self
+            .dim_topology
+            .lock()
+            .expect("dim_topology mutex poisoned");
+
+        // Registry-backed for this cube? Resolve under the held lock.
+        let backing = self.dimensions.load().backing_of(cube, dim_name);
+
+        if let Some(id) = backing {
+            // Validate the registry edit first; a rejection touches nothing.
+            let snapshot = self.dimensions.load_full();
+            let current = snapshot.get(id).cloned().ok_or_else(|| {
+                BatchError::Invalid(QueryError::Model(ModelError::UnknownDimension {
+                    cube: "registry".to_string(),
+                    dimension: format!("#{}", id.0),
+                }))
+            })?;
+            let edited = current
+                .edited(edit)
+                .map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
+
+            // Publish the new registry generation (the authoritative event).
+            let mut next = (**self.dimensions.load()).clone();
+            next.put(Arc::new(edited));
+            self.dimensions.store(Arc::new(next));
+            self.persist_registry();
+
+            // Fan the same name-addressed edit out to every referencing cube; each
+            // cube remaps its own cells. The requesting cube is included in the
+            // referrer set, so it is edited here too.
+            let mut last = None;
+            for referrer in snapshot.referencing(id) {
+                if self.has_cube(&referrer) {
+                    last = Some(self.apply_dimension_edit_to_cube(&referrer, dim_name, edit)?);
+                }
+            }
+            // If the cube somehow is not in the referrer set, edit it directly so
+            // the caller still gets a committed version for it.
+            match last {
+                Some(outcome) => Ok(outcome),
+                None => self.apply_dimension_edit_to_cube(cube, dim_name, edit),
+            }
+        } else {
+            // Cube-embedded dimension: edit only this cube.
+            self.apply_dimension_edit_to_cube(cube, dim_name, edit)
+        }
+    }
+
+    /// Apply one structural edit to a single named cube's dimension through the
+    /// shared commit path (clone the store's cube, remap, publish a new version).
+    fn apply_dimension_edit_to_cube(
+        &self,
+        cube: &str,
+        dim_name: &str,
+        edit: &DimensionEdit,
+    ) -> Result<CommitOutcome, BatchError> {
+        let edit = edit.clone();
+        let dim_name = dim_name.to_string();
+        self.define(cube, None, move |store| {
+            store.edit_dimension(&dim_name, &edit)
+        })
     }
 
     /// Create a cube whose dimensions mix inline definitions and references to
@@ -1991,5 +2074,275 @@ mod tests {
         other.add_leaf("X");
         let new_id = engine.register_dimension(other);
         assert!(new_id.0 > id.0);
+    }
+
+    // ---- structural editing fan-out (ADR-0036) ----
+
+    /// Build an engine with two cubes that each materialize a shared Region
+    /// dimension (North, South, East under Total) crossed with a local Measure
+    /// (one Amount leaf), seed distinct numeric cells in each, and return the
+    /// engine plus the shared dimension id.
+    fn fanout_engine(name: &str) -> (Engine, DimensionId) {
+        let engine = editable_engine(name);
+
+        let mut region = Dimension::new("Region");
+        let north = region.add_leaf("North");
+        let south = region.add_leaf("South");
+        let east = region.add_leaf("East");
+        let total = region.add_consolidated("Total");
+        region.add_child(total, north, 1).unwrap();
+        region.add_child(total, south, 1).unwrap();
+        region.add_child(total, east, 1).unwrap();
+        let id = engine.register_dimension(region);
+        let region_def = engine
+            .dimension_registry()
+            .get(id)
+            .unwrap()
+            .to_dimension_def();
+
+        let measure = || DimensionDef {
+            name: "Measure".into(),
+            elements: vec![("Amount".into(), ElementKind::Leaf)],
+            edges: vec![],
+            ..Default::default()
+        };
+
+        for cube in ["CubeA", "CubeB"] {
+            engine
+                .create_cube(cube, &[region_def.clone(), measure()])
+                .unwrap();
+            engine.attach_dimension(id, cube);
+        }
+
+        // Seed cells: CubeA gets 10/20/30, CubeB gets 1/2/3 across North/South/East.
+        for (cube, base) in [("CubeA", 10i32), ("CubeB", 1)] {
+            let snap = engine.snapshot(cube).unwrap();
+            let r = |n: &str| snap.cube().dimension(0).index_of(n).unwrap();
+            let amount = snap.cube().dimension(1).index_of("Amount").unwrap();
+            engine
+                .apply_batch(
+                    cube,
+                    None,
+                    &[
+                        leaf(vec![r("North"), amount], base),
+                        leaf(vec![r("South"), amount], base * 2),
+                        leaf(vec![r("East"), amount], base * 3),
+                    ],
+                )
+                .unwrap();
+        }
+        (engine, id)
+    }
+
+    /// Read a numeric cell in a cube by element names (resolving indices freshly).
+    fn read_named(engine: &Engine, cube: &str, region: &str, measure: &str) -> Fixed {
+        let snap = engine.snapshot(cube).unwrap();
+        let r = snap.cube().dimension(0).index_of(region).unwrap();
+        let m = snap.cube().dimension(1).index_of(measure).unwrap();
+        snap.cube().get(&[r, m]).unwrap()
+    }
+
+    #[test]
+    fn structural_reorder_fans_out_to_both_cubes() {
+        let (engine, id) = fanout_engine("dim-reorder-fanout");
+
+        engine
+            .edit_dimension(
+                "CubeA",
+                "Region",
+                &DimensionEdit::Reorder {
+                    new_order: vec![
+                        "East".into(),
+                        "North".into(),
+                        "South".into(),
+                        "Total".into(),
+                    ],
+                },
+            )
+            .unwrap();
+
+        // The registry generation advanced.
+        assert_eq!(engine.dimension_registry().get(id).unwrap().generation, 1);
+
+        // BOTH cubes see the new member order AND each value followed its member.
+        for cube in ["CubeA", "CubeB"] {
+            let snap = engine.snapshot(cube).unwrap();
+            let names: Vec<String> = snap
+                .cube()
+                .dimension(0)
+                .iter_elements()
+                .map(|e| e.name.clone())
+                .collect();
+            assert_eq!(
+                names,
+                vec![
+                    "East".to_string(),
+                    "North".into(),
+                    "South".into(),
+                    "Total".into()
+                ],
+                "{cube} member order"
+            );
+        }
+        // Values are intact and follow their members in each cube's own data.
+        assert_eq!(
+            read_named(&engine, "CubeA", "North", "Amount"),
+            Fixed::from(10)
+        );
+        assert_eq!(
+            read_named(&engine, "CubeA", "East", "Amount"),
+            Fixed::from(30)
+        );
+        assert_eq!(
+            read_named(&engine, "CubeA", "Total", "Amount"),
+            Fixed::from(60)
+        );
+        assert_eq!(
+            read_named(&engine, "CubeB", "South", "Amount"),
+            Fixed::from(2)
+        );
+        assert_eq!(
+            read_named(&engine, "CubeB", "Total", "Amount"),
+            Fixed::from(6)
+        );
+    }
+
+    #[test]
+    fn structural_delete_fans_out_to_both_cubes() {
+        let (engine, id) = fanout_engine("dim-delete-fanout");
+
+        engine
+            .edit_dimension(
+                "CubeB",
+                "Region",
+                &DimensionEdit::Delete {
+                    element: "South".into(),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(engine.dimension_registry().get(id).unwrap().generation, 1);
+        // South is gone in the registry and in both cubes; remaining cells intact.
+        assert!(engine
+            .dimension_registry()
+            .get(id)
+            .unwrap()
+            .dimension
+            .index_of("South")
+            .is_none());
+        for cube in ["CubeA", "CubeB"] {
+            let snap = engine.snapshot(cube).unwrap();
+            assert!(
+                snap.cube().dimension(0).index_of("South").is_none(),
+                "{cube} should have South removed"
+            );
+        }
+        // Totals reflect the removed member (its edge under Total was dropped):
+        // CubeA: North 10 + East 30 = 40; CubeB: 1 + 3 = 4.
+        assert_eq!(
+            read_named(&engine, "CubeA", "North", "Amount"),
+            Fixed::from(10)
+        );
+        assert_eq!(
+            read_named(&engine, "CubeA", "East", "Amount"),
+            Fixed::from(30)
+        );
+        assert_eq!(
+            read_named(&engine, "CubeA", "Total", "Amount"),
+            Fixed::from(40)
+        );
+        assert_eq!(
+            read_named(&engine, "CubeB", "Total", "Amount"),
+            Fixed::from(4)
+        );
+    }
+
+    #[test]
+    fn structural_edit_rejection_leaves_registry_untouched() {
+        let (engine, id) = fanout_engine("dim-edit-reject");
+        // Deleting a parent with children is rejected; nothing changes.
+        let err = engine.edit_dimension(
+            "CubeA",
+            "Region",
+            &DimensionEdit::Delete {
+                element: "Total".into(),
+            },
+        );
+        assert!(matches!(err, Err(BatchError::Invalid(_))));
+        assert_eq!(
+            engine.dimension_registry().get(id).unwrap().generation,
+            0,
+            "a rejected edit must not bump the generation"
+        );
+        // Both cubes still have all four members and their totals.
+        assert_eq!(
+            read_named(&engine, "CubeA", "Total", "Amount"),
+            Fixed::from(60)
+        );
+        assert_eq!(
+            read_named(&engine, "CubeB", "Total", "Amount"),
+            Fixed::from(6)
+        );
+    }
+
+    #[test]
+    fn structural_edit_on_embedded_dimension_edits_only_that_cube() {
+        // A cube with a purely embedded (non-registry) dimension.
+        let engine = editable_engine("dim-embedded-edit");
+        engine
+            .create_cube(
+                "Local",
+                &[
+                    DimensionDef {
+                        name: "Thing".into(),
+                        elements: vec![
+                            ("A".into(), ElementKind::Leaf),
+                            ("B".into(), ElementKind::Leaf),
+                        ],
+                        edges: vec![],
+                        ..Default::default()
+                    },
+                    DimensionDef {
+                        name: "Measure".into(),
+                        elements: vec![("Amount".into(), ElementKind::Leaf)],
+                        edges: vec![],
+                        ..Default::default()
+                    },
+                ],
+            )
+            .unwrap();
+        let snap = engine.snapshot("Local").unwrap();
+        let a = snap.cube().dimension(0).index_of("A").unwrap();
+        let b = snap.cube().dimension(0).index_of("B").unwrap();
+        let amount = snap.cube().dimension(1).index_of("Amount").unwrap();
+        engine
+            .apply_batch(
+                "Local",
+                None,
+                &[leaf(vec![a, amount], 5), leaf(vec![b, amount], 7)],
+            )
+            .unwrap();
+
+        // Reorder the embedded dimension (no registry backing).
+        engine
+            .edit_dimension(
+                "Local",
+                "Thing",
+                &DimensionEdit::Reorder {
+                    new_order: vec!["B".into(), "A".into()],
+                },
+            )
+            .unwrap();
+        let snap = engine.snapshot("Local").unwrap();
+        let names: Vec<String> = snap
+            .cube()
+            .dimension(0)
+            .iter_elements()
+            .map(|e| e.name.clone())
+            .collect();
+        assert_eq!(names, vec!["B".to_string(), "A".into()]);
+        // Values followed their members.
+        assert_eq!(read_named(&engine, "Local", "A", "Amount"), Fixed::from(5));
+        assert_eq!(read_named(&engine, "Local", "B", "Amount"), Fixed::from(7));
     }
 }

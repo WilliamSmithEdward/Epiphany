@@ -23,9 +23,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use epiphany_core::{
-    validate_subset, validate_view, AttributeKind, AttributeValue, Cube, EdgeSpec, ElementSpec,
-    Fixed, LoadError, Model, ModelError, QueryError, RuleSet, RuleTest, Sandbox, SaveError, Subset,
-    View,
+    validate_subset, validate_view, AttributeKind, AttributeValue, Cube, EdgeSpec, ElementKind,
+    ElementSpec, Fixed, LoadError, Model, ModelError, Position, QueryError, RuleSet, RuleTest,
+    Sandbox, SaveError, Subset, View,
 };
 
 use crate::wal::{self, Record};
@@ -534,6 +534,125 @@ impl Store {
             .cube
             .set_attribute_values(dimension, attribute, values)?;
         self.checkpoint()
+    }
+
+    // ---- structural dimension editing (ADR-0036) ----
+    //
+    // Each remaps the cube's stored cells transactionally (the core op stages on a
+    // clone), so a rejected edit leaves the model untouched. A successful edit
+    // changes element order/membership, so the WAL (which names elements by index)
+    // would be stale against the new order; we checkpoint immediately, rewriting
+    // the snapshot from the remapped in-memory cube and clearing the WAL, so the
+    // edit is durable and recovery never replays a pre-edit coordinate.
+
+    /// Reorder a dimension's members, remapping every stored cell, then checkpoint.
+    pub fn reorder_elements(
+        &mut self,
+        dimension: &str,
+        new_order: &[String],
+    ) -> Result<(), PersistError> {
+        self.model.cube.reorder_elements(dimension, new_order)?;
+        self.checkpoint()
+    }
+
+    /// Reparent a member (or detach to a root), then checkpoint.
+    pub fn reparent_element(
+        &mut self,
+        dimension: &str,
+        child: &str,
+        new_parent: Option<&str>,
+        weight: i64,
+    ) -> Result<(), PersistError> {
+        self.model
+            .cube
+            .reparent_element(dimension, child, new_parent, weight)?;
+        self.checkpoint()
+    }
+
+    /// Convert a member's kind (re-typing or clearing its cells), then checkpoint.
+    pub fn set_element_kind(
+        &mut self,
+        dimension: &str,
+        element: &str,
+        kind: ElementKind,
+    ) -> Result<(), PersistError> {
+        self.model.cube.set_element_kind(dimension, element, kind)?;
+        self.checkpoint()
+    }
+
+    /// Delete a member, its edges, and its cells, reindexing the rest, then
+    /// checkpoint.
+    pub fn delete_element(&mut self, dimension: &str, element: &str) -> Result<(), PersistError> {
+        self.model.cube.delete_element(dimension, element)?;
+        self.checkpoint()
+    }
+
+    /// Insert a member at a position, remapping cells, then checkpoint.
+    pub fn insert_element_at(
+        &mut self,
+        dimension: &str,
+        name: &str,
+        kind: ElementKind,
+        position: Position,
+    ) -> Result<(), PersistError> {
+        self.model
+            .cube
+            .insert_element_at(dimension, name, kind, position)?;
+        self.checkpoint()
+    }
+}
+
+/// One structural edit to a dimension (ADR-0036), addressed by member name. The
+/// engine builds these and dispatches them through [`Store::edit_dimension`] so
+/// the registry copy and every referencing cube apply the identical edit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DimensionEdit {
+    /// Reorder the members to this exact permutation of the current member names.
+    Reorder { new_order: Vec<String> },
+    /// Reparent `child` under `new_parent` (or detach to a root when `None`).
+    Reparent {
+        child: String,
+        new_parent: Option<String>,
+        weight: i64,
+    },
+    /// Convert `element` to `kind`.
+    SetKind { element: String, kind: ElementKind },
+    /// Delete `element` (rejected if it still has children).
+    Delete { element: String },
+    /// Insert a new member `name` of `kind` at `position`.
+    Insert {
+        name: String,
+        kind: ElementKind,
+        position: Position,
+    },
+}
+
+impl Store {
+    /// Dispatch one structural dimension edit (ADR-0036) to the named dimension,
+    /// remapping cells and checkpointing. Each branch is itself transactional, so
+    /// a rejected edit leaves the model and snapshot untouched.
+    pub fn edit_dimension(
+        &mut self,
+        dimension: &str,
+        edit: &DimensionEdit,
+    ) -> Result<(), PersistError> {
+        match edit {
+            DimensionEdit::Reorder { new_order } => self.reorder_elements(dimension, new_order),
+            DimensionEdit::Reparent {
+                child,
+                new_parent,
+                weight,
+            } => self.reparent_element(dimension, child, new_parent.as_deref(), *weight),
+            DimensionEdit::SetKind { element, kind } => {
+                self.set_element_kind(dimension, element, *kind)
+            }
+            DimensionEdit::Delete { element } => self.delete_element(dimension, element),
+            DimensionEdit::Insert {
+                name,
+                kind,
+                position,
+            } => self.insert_element_at(dimension, name, *kind, position.clone()),
+        }
     }
 }
 

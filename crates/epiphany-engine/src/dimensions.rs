@@ -10,7 +10,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use epiphany_core::{Dimension, DimensionDef, EdgeSpec, ElementKind, ElementSpec, ModelError};
+use epiphany_core::{
+    Dimension, DimensionDef, EdgeSpec, ElementKind, ElementSpec, ModelError, Position,
+};
+use epiphany_persist::DimensionEdit;
 
 /// A server-unique dimension identifier, minted from the engine's `IdGen`. It is
 /// stable for the life of the dimension and is never a positional index.
@@ -157,6 +160,94 @@ impl SharedDimension {
             } else {
                 self.generation
             },
+            dimension: next,
+        })
+    }
+
+    /// Apply one structural edit (ADR-0036) to this dimension and return the new
+    /// generation. The registry copy carries no cells, so the edit is just the
+    /// dimension mutation (the per-cube fan-out remaps each cube's cells). The
+    /// edit is staged on a clone, so a rejected edit returns an error and the
+    /// original is untouched. Mirrors the same validation the cube ops use because
+    /// it calls the same [`Dimension`] primitives.
+    pub fn edited(&self, edit: &DimensionEdit) -> Result<SharedDimension, ModelError> {
+        let mut next = self.dimension.clone();
+        match edit {
+            DimensionEdit::Reorder { new_order } => {
+                next.reorder(new_order)?;
+            }
+            DimensionEdit::Reparent {
+                child,
+                new_parent,
+                weight,
+            } => {
+                let child_idx =
+                    next.index_of(child)
+                        .ok_or_else(|| ModelError::ElementNotFound {
+                            dimension: next.name().to_string(),
+                            element: child.clone(),
+                        })?;
+                let parent_idx = match new_parent {
+                    Some(p) => {
+                        Some(
+                            next.index_of(p)
+                                .ok_or_else(|| ModelError::ElementNotFound {
+                                    dimension: next.name().to_string(),
+                                    element: p.clone(),
+                                })?,
+                        )
+                    }
+                    None => None,
+                };
+                next.reparent(child_idx, parent_idx, *weight)?;
+            }
+            DimensionEdit::SetKind { element, kind } => {
+                let element_idx =
+                    next.index_of(element)
+                        .ok_or_else(|| ModelError::ElementNotFound {
+                            dimension: next.name().to_string(),
+                            element: element.clone(),
+                        })?;
+                next.set_kind(element_idx, *kind)?;
+            }
+            DimensionEdit::Delete { element } => {
+                let element_idx =
+                    next.index_of(element)
+                        .ok_or_else(|| ModelError::ElementNotFound {
+                            dimension: next.name().to_string(),
+                            element: element.clone(),
+                        })?;
+                next.delete(element_idx)?;
+            }
+            DimensionEdit::Insert {
+                name,
+                kind,
+                position,
+            } => {
+                let insert_index = match position {
+                    Position::AtEnd => next.len(),
+                    Position::Before(anchor) | Position::After(anchor) => {
+                        let anchor_idx =
+                            next.index_of(anchor)
+                                .ok_or_else(|| ModelError::ElementNotFound {
+                                    dimension: next.name().to_string(),
+                                    element: anchor.clone(),
+                                })?;
+                        match position {
+                            Position::Before(_) => anchor_idx,
+                            Position::After(_) => anchor_idx + 1,
+                            Position::AtEnd => unreachable!(),
+                        }
+                    }
+                };
+                next.insert_at(name, *kind, insert_index)?;
+            }
+        }
+        Ok(SharedDimension {
+            id: self.id,
+            // A structural edit always changes the dimension, so the generation
+            // bumps (a rejected edit returned earlier and never reaches here).
+            generation: self.generation + 1,
             dimension: next,
         })
     }

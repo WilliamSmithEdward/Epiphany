@@ -273,6 +273,19 @@ pub struct ElementSpec {
     pub kind: ElementKind,
 }
 
+/// Where to insert a new element relative to a dimension's existing members
+/// (ADR-0036): at the end, or immediately before or after a named member. The
+/// drag-and-drop editor's "drop before/after" maps to these.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Position {
+    /// Append after the last existing member.
+    AtEnd,
+    /// Insert immediately before the named member.
+    Before(String),
+    /// Insert immediately after the named member.
+    After(String),
+}
+
 /// A request to add one weighted consolidation edge to a named dimension.
 /// Idempotent: an edge that already exists is a no-op.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -472,6 +485,258 @@ impl Cube {
             next.set_attribute(element, attribute, value.clone())?;
         }
         self.dimensions[d] = next;
+        Ok(())
+    }
+
+    // ---- structural editing (ADR-0036) ----
+    //
+    // Each op stages on a clone, validates fully through the dimension primitive,
+    // remaps stored cells for the index change it reports, and only then swaps the
+    // clone in. A rejected edit returns the model error and changes nothing.
+
+    /// Remap every stored numeric and string cell's coordinate component for
+    /// dimension `d` through `to_new` (old element index -> new element index),
+    /// dropping any cell whose component for `d` maps to `u32::MAX` (a removed
+    /// element). The other coordinate components are untouched. Both cell stores
+    /// are rebuilt under the (possibly re-widened) layout, so a reorder/insert/
+    /// delete that changes the dimension's bit-width re-packs correctly.
+    ///
+    /// Deterministic: cells are re-inserted into a fresh store, and the result is
+    /// independent of iteration order (each remapped coordinate is unique because
+    /// `to_new` is injective on the surviving elements). Runs after the dimension
+    /// edit is already staged on `self`, so the new layout reflects the edit.
+    fn remap_cells_for_dimension(&mut self, d: usize, to_new: &[u32]) {
+        let rank = self.rank();
+        // Collect under the OLD layout (the one the current keys were packed with),
+        // then re-pack under the new layout, exactly as `relayout` does.
+        let numeric: Vec<(Vec<u32>, Fixed)> = self
+            .cells
+            .entries(&self.layout, rank)
+            .map(|(coord, &value)| (coord, value))
+            .collect();
+        let strings: Vec<(Vec<u32>, u32)> = self
+            .string_cells
+            .entries(&self.layout, rank)
+            .map(|(coord, &id)| (coord, id))
+            .collect();
+        let new_layout = Layout::new(&self.dimensions);
+        let mut new_cells = CellStore::new(new_layout.narrow);
+        for (mut coord, value) in numeric {
+            let mapped = to_new[coord[d] as usize];
+            if mapped == u32::MAX {
+                continue; // a removed element: drop the cell
+            }
+            coord[d] = mapped;
+            new_cells.put(&new_layout, &coord, value);
+        }
+        let mut new_strings = CellStore::new(new_layout.narrow);
+        for (mut coord, id) in strings {
+            let mapped = to_new[coord[d] as usize];
+            if mapped == u32::MAX {
+                continue;
+            }
+            coord[d] = mapped;
+            new_strings.put(&new_layout, &coord, id);
+        }
+        self.cells = new_cells;
+        self.string_cells = new_strings;
+        self.layout = new_layout;
+    }
+
+    /// Reorder a dimension's members to `new_order` (a permutation of its current
+    /// member names), remapping every stored cell so each value follows its
+    /// member to its new index. Transactional: a non-permutation is rejected and
+    /// the cube is unchanged.
+    pub fn reorder_elements(
+        &mut self,
+        dimension: &str,
+        new_order: &[String],
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.clone();
+        let to_new = next.dimensions[d].reorder(new_order)?;
+        next.remap_cells_for_dimension(d, &to_new);
+        *self = next;
+        Ok(())
+    }
+
+    /// Reparent `child` under `new_parent` (or detach to a root when `None`) in a
+    /// dimension, converting a numeric/string `new_parent` to a consolidation
+    /// first. An edge-only change, so no cell remap. Transactional: a self-parent
+    /// or a cycle is rejected and the cube is unchanged.
+    pub fn reparent_element(
+        &mut self,
+        dimension: &str,
+        child: &str,
+        new_parent: Option<&str>,
+        weight: i64,
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.clone();
+        let dim = &mut next.dimensions[d];
+        let child_idx = dim
+            .index_of(child)
+            .ok_or_else(|| ModelError::ElementNotFound {
+                dimension: dimension.to_string(),
+                element: child.to_string(),
+            })?;
+        let parent_idx = match new_parent {
+            Some(p) => Some(dim.index_of(p).ok_or_else(|| ModelError::ElementNotFound {
+                dimension: dimension.to_string(),
+                element: p.to_string(),
+            })?),
+            None => None,
+        };
+        dim.reparent(child_idx, parent_idx, weight)?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Convert a dimension element's kind. A numeric/string change re-types the
+    /// element's stored cells (an incompatible value is cleared, not crashed); a
+    /// change to consolidated drops the element's stored leaf value (a
+    /// consolidation is computed). Converting away from consolidated requires no
+    /// children. Transactional: a rejected conversion leaves the cube unchanged.
+    pub fn set_element_kind(
+        &mut self,
+        dimension: &str,
+        element: &str,
+        kind: ElementKind,
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.clone();
+        let element_idx =
+            next.dimensions[d]
+                .index_of(element)
+                .ok_or_else(|| ModelError::ElementNotFound {
+                    dimension: dimension.to_string(),
+                    element: element.to_string(),
+                })?;
+        let previous = next.dimensions[d].set_kind(element_idx, kind)?;
+        next.retype_cells_for_kind(d, element_idx, previous, kind);
+        *self = next;
+        Ok(())
+    }
+
+    /// Re-type or clear an element's stored cells after its kind changed (no index
+    /// change). Numeric<->string moves the value to the matching store when it
+    /// transfers cleanly and clears it otherwise; any change to or from
+    /// consolidated clears the element's stored cells (a consolidation is computed,
+    /// and a fresh leaf/string starts empty). Operates on cells whose component
+    /// for `d` equals `element`.
+    fn retype_cells_for_kind(
+        &mut self,
+        d: usize,
+        element: u32,
+        previous: ElementKind,
+        kind: ElementKind,
+    ) {
+        use ElementKind::{Consolidated, Leaf, String as Str};
+        match (previous, kind) {
+            (Leaf, Str) => {
+                // Numeric leaf -> string: a number has no faithful text cell, so the
+                // incompatible stored value is cleared.
+                self.drop_cells_for_element(d, element, true, false);
+            }
+            (Str, Leaf) => {
+                // String leaf -> numeric: text has no numeric value, so clear it.
+                self.drop_cells_for_element(d, element, false, true);
+            }
+            (Leaf, Consolidated) | (Str, Consolidated) => {
+                // A consolidation holds no stored value of its own.
+                self.drop_cells_for_element(d, element, true, true);
+            }
+            // Consolidated -> leaf/string starts with no stored value (there was
+            // none), and leaf<->leaf or string<->string keeps its cells.
+            _ => {}
+        }
+    }
+
+    /// Drop stored cells whose component for dimension `d` equals `element`, from
+    /// the numeric store (`numeric`) and/or the string store (`strings`). Used by
+    /// kind conversion; no index change, so the layout is untouched.
+    fn drop_cells_for_element(&mut self, d: usize, element: u32, numeric: bool, strings: bool) {
+        let rank = self.rank();
+        if numeric {
+            let kept: Vec<(Vec<u32>, Fixed)> = self
+                .cells
+                .entries(&self.layout, rank)
+                .filter(|(coord, _)| coord[d] != element)
+                .map(|(coord, &value)| (coord, value))
+                .collect();
+            let mut store = CellStore::new(self.layout.narrow);
+            for (coord, value) in kept {
+                store.put(&self.layout, &coord, value);
+            }
+            self.cells = store;
+        }
+        if strings {
+            let kept: Vec<(Vec<u32>, u32)> = self
+                .string_cells
+                .entries(&self.layout, rank)
+                .filter(|(coord, _)| coord[d] != element)
+                .map(|(coord, &id)| (coord, id))
+                .collect();
+            let mut store = CellStore::new(self.layout.narrow);
+            for (coord, id) in kept {
+                store.put(&self.layout, &coord, id);
+            }
+            self.string_cells = store;
+        }
+    }
+
+    /// Delete a dimension element, its edges (as parent and as child), and its
+    /// stored cells, then reindex the remaining elements and remap their cells.
+    /// Transactional: deleting a consolidation that still has children is rejected
+    /// (detach or delete the children first) and the cube is unchanged.
+    pub fn delete_element(&mut self, dimension: &str, element: &str) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.clone();
+        let element_idx =
+            next.dimensions[d]
+                .index_of(element)
+                .ok_or_else(|| ModelError::ElementNotFound {
+                    dimension: dimension.to_string(),
+                    element: element.to_string(),
+                })?;
+        let (_removed, to_new) = next.dimensions[d].delete(element_idx)?;
+        next.remap_cells_for_dimension(d, &to_new);
+        *self = next;
+        Ok(())
+    }
+
+    /// Insert a new element `name` of `kind` into a dimension at `position`
+    /// (`Position::AtEnd`, or before/after an existing member), remapping cells for
+    /// the index shift. Transactional: a duplicate name or an unknown anchor is
+    /// rejected and the cube is unchanged.
+    pub fn insert_element_at(
+        &mut self,
+        dimension: &str,
+        name: &str,
+        kind: ElementKind,
+        position: Position,
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.clone();
+        let insert_index = match &position {
+            Position::AtEnd => next.dimensions[d].len(),
+            Position::Before(anchor) | Position::After(anchor) => {
+                let anchor_idx = next.dimensions[d].index_of(anchor).ok_or_else(|| {
+                    ModelError::ElementNotFound {
+                        dimension: dimension.to_string(),
+                        element: anchor.clone(),
+                    }
+                })?;
+                match position {
+                    Position::Before(_) => anchor_idx,
+                    Position::After(_) => anchor_idx + 1,
+                    Position::AtEnd => unreachable!(),
+                }
+            }
+        };
+        let (_at, to_new) = next.dimensions[d].insert_at(name, kind, insert_index)?;
+        next.remap_cells_for_dimension(d, &to_new);
+        *self = next;
         Ok(())
     }
 
@@ -1589,5 +1854,336 @@ mod tests {
                 assert_eq!(via, cube.get(&c).unwrap(), "mismatch at {c:?}");
             }
         }
+    }
+
+    // ---- structural editing (ADR-0036) ----
+
+    /// A Region x Measure cube. Region: North, South, East leaves under Total.
+    /// Measure: Sales numeric leaf and Comment string leaf. Seeded with numeric
+    /// cells per (region, Sales) and a string cell at (North, Comment).
+    fn edit_cube() -> Cube {
+        let mut region = Dimension::new("Region");
+        let north = region.add_leaf("North");
+        let south = region.add_leaf("South");
+        let east = region.add_leaf("East");
+        let total = region.add_consolidated("Total");
+        region.add_child(total, north, 1).unwrap();
+        region.add_child(total, south, 1).unwrap();
+        region.add_child(total, east, 1).unwrap();
+
+        let mut measure = Dimension::new("Measure");
+        measure.add_leaf("Sales");
+        measure.add_string("Comment");
+
+        let mut cube = Cube::new("Sales", vec![region, measure]).unwrap();
+        let sales = cube.dimension(1).index_of("Sales").unwrap();
+        let comment = cube.dimension(1).index_of("Comment").unwrap();
+        cube.set_leaf(&[north, sales], fix(10)).unwrap();
+        cube.set_leaf(&[south, sales], fix(20)).unwrap();
+        cube.set_leaf(&[east, sales], fix(30)).unwrap();
+        cube.set_string(&[north, comment], "hi").unwrap();
+        cube
+    }
+
+    /// Read a numeric cell by element names, resolving indices freshly each call
+    /// (so the read follows a member across structural edits).
+    fn read(cube: &Cube, region: &str, measure: &str) -> Fixed {
+        let r = cube.dimension(0).index_of(region).unwrap();
+        let m = cube.dimension(1).index_of(measure).unwrap();
+        cube.get(&[r, m]).unwrap()
+    }
+
+    #[test]
+    fn reorder_moves_values_with_their_members() {
+        let mut cube = edit_cube();
+        // Reverse the leaves but keep Total last.
+        cube.reorder_elements(
+            "Region",
+            &[
+                "East".into(),
+                "South".into(),
+                "North".into(),
+                "Total".into(),
+            ],
+        )
+        .unwrap();
+        // The member list is in the new order.
+        let names: Vec<&str> = cube
+            .dimension(0)
+            .iter_elements()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["East", "South", "North", "Total"]);
+        // Each value followed its member, not its old slot.
+        assert_eq!(read(&cube, "North", "Sales"), fix(10));
+        assert_eq!(read(&cube, "South", "Sales"), fix(20));
+        assert_eq!(read(&cube, "East", "Sales"), fix(30));
+        // The consolidation still sums correctly and the string cell followed too.
+        assert_eq!(read(&cube, "Total", "Sales"), fix(60));
+        let north = cube.dimension(0).index_of("North").unwrap();
+        let comment = cube.dimension(1).index_of("Comment").unwrap();
+        assert_eq!(cube.get_string(&[north, comment]).unwrap(), Some("hi"));
+    }
+
+    #[test]
+    fn reorder_rejects_non_permutation_and_is_unchanged() {
+        let mut cube = edit_cube();
+        // Wrong count.
+        assert!(matches!(
+            cube.reorder_elements("Region", &["North".into(), "South".into()]),
+            Err(ModelError::InvalidReorder { .. })
+        ));
+        // A duplicate name.
+        assert!(matches!(
+            cube.reorder_elements(
+                "Region",
+                &[
+                    "North".into(),
+                    "North".into(),
+                    "East".into(),
+                    "Total".into(),
+                ],
+            ),
+            Err(ModelError::InvalidReorder { .. })
+        ));
+        // An unknown name.
+        assert!(matches!(
+            cube.reorder_elements(
+                "Region",
+                &["North".into(), "South".into(), "East".into(), "Nope".into(),],
+            ),
+            Err(ModelError::InvalidReorder { .. })
+        ));
+        // Untouched: original order and values intact.
+        let names: Vec<&str> = cube
+            .dimension(0)
+            .iter_elements()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["North", "South", "East", "Total"]);
+        assert_eq!(read(&cube, "South", "Sales"), fix(20));
+    }
+
+    #[test]
+    fn reorder_is_deterministic_and_identity_is_a_no_op() {
+        let order = vec![
+            "East".to_string(),
+            "North".to_string(),
+            "Total".to_string(),
+            "South".to_string(),
+        ];
+        let run = || {
+            let mut cube = edit_cube();
+            cube.reorder_elements("Region", &order).unwrap();
+            cube.cell_entries().collect::<Vec<_>>()
+        };
+        let a = run();
+        let b = run();
+        assert_eq!(a, b, "reorder is deterministic across runs");
+
+        // A no-op reorder (current order) leaves cells byte-identical.
+        let mut cube = edit_cube();
+        let before: std::collections::BTreeMap<Vec<u32>, Fixed> = cube.cell_entries().collect();
+        cube.reorder_elements(
+            "Region",
+            &[
+                "North".into(),
+                "South".into(),
+                "East".into(),
+                "Total".into(),
+            ],
+        )
+        .unwrap();
+        let after: std::collections::BTreeMap<Vec<u32>, Fixed> = cube.cell_entries().collect();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn reparent_recomputes_rollup_and_converts_leaf_parent() {
+        let mut cube = edit_cube();
+        // Move East out from under Total and under a brand-new... actually convert
+        // the leaf South into a consolidation by parenting East under it.
+        cube.reparent_element("Region", "East", Some("South"), 1)
+            .unwrap();
+        // South was a leaf; gaining a child converts it to a consolidation.
+        let south = cube.dimension(0).index_of("South").unwrap();
+        assert_eq!(
+            cube.dimension(0).element(south).unwrap().kind,
+            ElementKind::Consolidated
+        );
+        // South is now a consolidation summing its own (none) plus child East = 30.
+        assert_eq!(read(&cube, "South", "Sales"), fix(30));
+        // reparent detaches East from its old parent (Total) before re-attaching it
+        // under South, so East now reaches Total only through South. Total =
+        // North(10) + South[East 30] = 40.
+        assert_eq!(read(&cube, "Total", "Sales"), fix(40));
+        // Detach East to a root: it stops contributing to South.
+        cube.reparent_element("Region", "East", None, 1).unwrap();
+        assert_eq!(read(&cube, "South", "Sales"), Fixed::ZERO);
+    }
+
+    #[test]
+    fn reparent_rejects_cycle_and_self_parent() {
+        let mut cube = edit_cube();
+        // Self-parent.
+        assert!(matches!(
+            cube.reparent_element("Region", "North", Some("North"), 1),
+            Err(ModelError::SelfParent { .. })
+        ));
+        // Total -> North already; parenting Total under North would cycle.
+        assert!(matches!(
+            cube.reparent_element("Region", "Total", Some("North"), 1),
+            Err(ModelError::CycleDetected { .. })
+        ));
+        // Unchanged: Total still sums its three leaves.
+        assert_eq!(read(&cube, "Total", "Sales"), fix(60));
+    }
+
+    #[test]
+    fn set_element_kind_retypes_and_clears_values() {
+        let mut cube = edit_cube();
+        let sales = cube.dimension(1).index_of("Sales").unwrap();
+
+        // Numeric Sales -> string: the stored numeric cells are cleared.
+        cube.set_element_kind("Measure", "Sales", ElementKind::String)
+            .unwrap();
+        assert_eq!(
+            cube.dimension(1).element(sales).unwrap().kind,
+            ElementKind::String
+        );
+        assert_eq!(cube.cell_count(), 0, "numeric cells cleared on re-type");
+        // Sales is now a string leaf and a string write addresses it.
+        let north = cube.dimension(0).index_of("North").unwrap();
+        cube.set_string(&[north, sales], "note").unwrap();
+        assert_eq!(cube.get_string(&[north, sales]).unwrap(), Some("note"));
+
+        // String Sales -> numeric: the string cell is cleared.
+        cube.set_element_kind("Measure", "Sales", ElementKind::Leaf)
+            .unwrap();
+        assert_eq!(cube.get_string(&[north, sales]).unwrap(), None);
+    }
+
+    #[test]
+    fn set_element_kind_to_consolidated_drops_leaf_value() {
+        let mut cube = edit_cube();
+        // North holds Sales = 10; converting it to a consolidation drops that value.
+        cube.set_element_kind("Region", "North", ElementKind::Consolidated)
+            .unwrap();
+        assert_eq!(read(&cube, "North", "Sales"), Fixed::ZERO);
+        // Total no longer gets North's old leaf value (South 20 + East 30).
+        assert_eq!(read(&cube, "Total", "Sales"), fix(50));
+    }
+
+    #[test]
+    fn set_element_kind_consolidated_to_leaf_requires_no_children() {
+        let mut cube = edit_cube();
+        // Total has children; converting it to a leaf is rejected.
+        assert!(matches!(
+            cube.set_element_kind("Region", "Total", ElementKind::Leaf),
+            Err(ModelError::ConsolidationHasChildren { .. })
+        ));
+        // After detaching all children, the convert succeeds.
+        for child in ["North", "South", "East"] {
+            cube.reparent_element("Region", child, None, 1).unwrap();
+        }
+        cube.set_element_kind("Region", "Total", ElementKind::Leaf)
+            .unwrap();
+        let total = cube.dimension(0).index_of("Total").unwrap();
+        assert_eq!(
+            cube.dimension(0).element(total).unwrap().kind,
+            ElementKind::Leaf
+        );
+    }
+
+    #[test]
+    fn delete_removes_member_and_reindexes_remaining_cells() {
+        let mut cube = edit_cube();
+        // Detach South from Total (a leaf delete is fine but Total would still
+        // reference it; delete only removes edges where the member is the child,
+        // which delete handles), then delete South.
+        cube.delete_element("Region", "South").unwrap();
+        // South is gone; the other members and their cells are intact.
+        assert!(cube.dimension(0).index_of("South").is_none());
+        assert_eq!(read(&cube, "North", "Sales"), fix(10));
+        assert_eq!(read(&cube, "East", "Sales"), fix(30));
+        // Total now sums only North + East = 40 (South's edge was removed).
+        assert_eq!(read(&cube, "Total", "Sales"), fix(40));
+        // The string cell at North/Comment survived the reindex.
+        let north = cube.dimension(0).index_of("North").unwrap();
+        let comment = cube.dimension(1).index_of("Comment").unwrap();
+        assert_eq!(cube.get_string(&[north, comment]).unwrap(), Some("hi"));
+    }
+
+    #[test]
+    fn delete_rejects_parent_with_children_and_is_unchanged() {
+        let mut cube = edit_cube();
+        assert!(matches!(
+            cube.delete_element("Region", "Total"),
+            Err(ModelError::ConsolidationHasChildren { .. })
+        ));
+        // Unchanged.
+        assert_eq!(cube.dimension(0).len(), 4);
+        assert_eq!(read(&cube, "Total", "Sales"), fix(60));
+    }
+
+    #[test]
+    fn insert_element_at_places_correctly_and_keeps_other_cells() {
+        let mut cube = edit_cube();
+        // Insert West before East.
+        cube.insert_element_at(
+            "Region",
+            "West",
+            ElementKind::Leaf,
+            Position::Before("East".into()),
+        )
+        .unwrap();
+        let names: Vec<&str> = cube
+            .dimension(0)
+            .iter_elements()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["North", "South", "West", "East", "Total"]);
+        // Existing cells are intact after the index shift.
+        assert_eq!(read(&cube, "North", "Sales"), fix(10));
+        assert_eq!(read(&cube, "South", "Sales"), fix(20));
+        assert_eq!(read(&cube, "East", "Sales"), fix(30));
+        // The new member is writable and rolls up if parented.
+        cube.reparent_element("Region", "West", Some("Total"), 1)
+            .unwrap();
+        let west = cube.dimension(0).index_of("West").unwrap();
+        let sales = cube.dimension(1).index_of("Sales").unwrap();
+        cube.set_leaf(&[west, sales], fix(5)).unwrap();
+        assert_eq!(read(&cube, "Total", "Sales"), fix(65));
+
+        // Insert after a member, and at end.
+        cube.insert_element_at(
+            "Region",
+            "NE",
+            ElementKind::Leaf,
+            Position::After("North".into()),
+        )
+        .unwrap();
+        cube.insert_element_at("Region", "Far", ElementKind::Leaf, Position::AtEnd)
+            .unwrap();
+        let names: Vec<&str> = cube
+            .dimension(0)
+            .iter_elements()
+            .map(|e| e.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["North", "NE", "South", "West", "East", "Total", "Far"]
+        );
+        assert_eq!(read(&cube, "North", "Sales"), fix(10));
+    }
+
+    #[test]
+    fn insert_rejects_duplicate_name() {
+        let mut cube = edit_cube();
+        assert!(matches!(
+            cube.insert_element_at("Region", "North", ElementKind::Leaf, Position::AtEnd),
+            Err(ModelError::DuplicateElement { .. })
+        ));
+        assert_eq!(cube.dimension(0).len(), 4);
     }
 }

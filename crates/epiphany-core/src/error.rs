@@ -64,6 +64,17 @@ pub enum ModelError {
         parent: String,
         child: String,
     },
+    /// A reorder was not an exact permutation of the dimension's members (a name
+    /// was missing, duplicated, or unknown, or the count differed).
+    InvalidReorder { dimension: String },
+    /// A reparent named the same element as both child and parent.
+    SelfParent { dimension: String, element: String },
+    /// A structural edit (delete, or a convert away from consolidated) was
+    /// rejected because the element still has children that would be orphaned.
+    ConsolidationHasChildren { dimension: String, element: String },
+    /// A structural edit named an element that already exists (e.g. inserting a
+    /// duplicate name).
+    DuplicateElement { dimension: String, element: String },
 }
 
 impl fmt::Display for ModelError {
@@ -155,6 +166,22 @@ impl fmt::Display for ModelError {
             } => write!(
                 f,
                 "edge '{parent}' -> '{child}' already exists in dimension '{dimension}' with a different weight"
+            ),
+            ModelError::InvalidReorder { dimension } => write!(
+                f,
+                "the new order is not an exact permutation of dimension '{dimension}'"
+            ),
+            ModelError::SelfParent { dimension, element } => write!(
+                f,
+                "element '{element}' in dimension '{dimension}' cannot be its own parent"
+            ),
+            ModelError::ConsolidationHasChildren { dimension, element } => write!(
+                f,
+                "element '{element}' in dimension '{dimension}' still has children; detach or delete them first"
+            ),
+            ModelError::DuplicateElement { dimension, element } => write!(
+                f,
+                "element '{element}' already exists in dimension '{dimension}'"
             ),
         }
     }

@@ -18,7 +18,7 @@ mod wal;
 
 pub use automation::{write_automation, AutomationStore};
 pub use registry::{load_registry, save_registry, RegistryEntry};
-pub use store::{CellWrite, PersistError, Store};
+pub use store::{CellWrite, DimensionEdit, PersistError, Store};
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-persist";
