@@ -601,6 +601,17 @@ export default function ModelExplorer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadSignal])
 
+  // On first mount, load the children of any initially-expanded node (the Cubes
+  // root). Otherwise it renders expanded-but-empty until the user toggles it,
+  // since `toggle` loads only on user expand and the reload effect above is gated
+  // to model changes (reloadSignal > 0).
+  useEffect(() => {
+    for (const n of collectLoaders(roots, childrenById)) {
+      if (expanded.has(n.id)) load(n)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const toggle = useCallback(
     (node: Node) => {
       setExpanded((s) => {
@@ -654,6 +665,10 @@ export default function ModelExplorer({
 
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent, node: Node) => {
+      // A key on the focused row is handled once by that row; stop it bubbling to
+      // ancestor <li> onKeyDown handlers (the same bubbling class as onContextMenu
+      // and onClick), which would otherwise re-handle it for the wrong node.
+      e.stopPropagation()
       const idx = visible.findIndex((v) => v.node.id === node.id)
       // Match the rendered open state: during a search, expansion is driven by
       // searchExpand, not the user's manual `expanded` set, and is not manually
@@ -787,6 +802,10 @@ export default function ModelExplorer({
             hasMenu
               ? (e) => {
                   e.preventDefault()
+                  // Stop the right-click bubbling to ancestor <li>s, or the last
+                  // (root) handler would win and open the wrong (e.g. Cubes) menu,
+                  // mirroring the onClick stopPropagation below.
+                  e.stopPropagation()
                   setFocusId(node.id)
                   setMenuOpenId(node.id)
                 }
