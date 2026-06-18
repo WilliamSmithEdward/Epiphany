@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   connectWs,
+  deleteConnection,
   deleteDimension,
   deleteFlow,
-  deleteJob,
+  deleteSchedule,
   deleteView,
   listCubes,
   logout,
   promoteDimension,
-  runJob,
+  runSchedule,
   type CubeSummary,
 } from '../api/client'
 import DimensionsWorkspace from './DimensionsWorkspace'
@@ -63,6 +64,7 @@ interface NavIntent {
   flow?: string
   view?: string
   job?: string
+  connection?: string
   dim?: string
   dimId?: number
 }
@@ -91,9 +93,11 @@ function tabId(s: Selection): string {
     case 'dimension':
       return `dim:${s.id}`
     case 'flow':
-      return `flow:${s.cube}/${s.flow}`
+      return `flow:${s.flow}`
     case 'schedule':
-      return `sched:${s.cube}/${s.job}`
+      return `sched:${s.schedule}`
+    case 'connection':
+      return `conn:${s.connection}`
     case 'overview':
       return 'overview'
     case 'security':
@@ -101,7 +105,8 @@ function tabId(s: Selection): string {
   }
 }
 
-/** The cube a selection targets, or null for cube-independent surfaces. */
+/** The cube a selection targets, or null for cube-independent surfaces. Flows,
+ * schedules, and connections are server-global (ADR-0035), so they return null. */
 function cubeOf(s: Selection | null): string | null {
   if (!s) return null
   switch (s.kind) {
@@ -110,8 +115,6 @@ function cubeOf(s: Selection | null): string | null {
     case 'cube-views':
     case 'view':
     case 'cube-rules':
-    case 'flow':
-    case 'schedule':
       return s.cube
     default:
       return null
@@ -134,6 +137,7 @@ function crumbs(s: Selection | null, opts: { autoNew?: boolean } = {}): Crumb[] 
   const dimsRoot: Crumb = { label: 'Dimensions', to: null }
   const flowsRoot: Crumb = { label: 'Flows', to: null }
   const schedRoot: Crumb = { label: 'Schedules', to: null }
+  const connRoot: Crumb = { label: 'Connections', to: null }
   const adminRoot: Crumb = { label: 'Administration', to: null }
   if (!s) return [{ label: 'Home', to: null }]
   switch (s.kind) {
@@ -162,9 +166,11 @@ function crumbs(s: Selection | null, opts: { autoNew?: boolean } = {}): Crumb[] 
     case 'dimension':
       return [dimsRoot, { label: s.name || (opts.autoNew ? 'New dimension' : 'Dimension'), to: null }]
     case 'flow':
-      return [flowsRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: s.flow || 'New flow', to: null }]
+      return [flowsRoot, { label: s.flow || 'New flow', to: null }]
     case 'schedule':
-      return [schedRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: s.job || 'New schedule', to: null }]
+      return [schedRoot, { label: s.schedule || 'New schedule', to: null }]
+    case 'connection':
+      return [connRoot, { label: s.connection || 'Connections', to: null }]
     case 'overview':
       return [adminRoot, { label: 'Server overview', to: null }]
     case 'security':
@@ -338,8 +344,9 @@ export default function CubeApp({
   //     forms already live inside those workspaces, so we reuse them.
   const onAction = useCallback(
     (action: NodeAction, ctx: ActionContext) => {
-      // Flows/schedules belong to a cube; a root-level "New…" resolves one from
-      // the context, the current selection, then the first available cube.
+      // Some cube-scoped actions (e.g. the CSV import host) resolve a cube from
+      // the context, the current selection, then the first available cube. Flows
+      // and schedules are global (ADR-0035) and need no cube.
       const resolveCube = () => ctx.cube ?? cubeOf(selection) ?? cubes[0]?.name ?? null
 
       switch (action) {
@@ -365,18 +372,19 @@ export default function CubeApp({
           return
         }
         case 'delete-flow': {
-          if (!ctx.cube || !ctx.flow) return
-          const { cube: c, flow: f } = ctx
+          if (!ctx.flow) return
+          const f = ctx.flow
           void (async () => {
             const ok = await confirm({
               title: 'Delete flow',
-              body: `Delete flow "${f}" from ${c}? This cannot be undone, and any schedule that runs it will fail.`,
+              body: `Delete flow "${f}"? This cannot be undone, and any schedule that runs it will fail.`,
               confirmLabel: 'Delete',
               danger: true,
             })
             if (!ok) return
             try {
-              await deleteFlow(c, f)
+              await deleteFlow(f)
+              closeTab(tabId({ kind: 'flow', flow: f }))
               bumpReload()
             } catch (e) {
               setError(e instanceof Error ? e.message : 'Could not delete the flow')
@@ -385,21 +393,42 @@ export default function CubeApp({
           return
         }
         case 'delete-schedule': {
-          if (!ctx.cube || !ctx.job) return
-          const { cube: c, job: j } = ctx
+          if (!ctx.job) return
+          const j = ctx.job
           void (async () => {
             const ok = await confirm({
               title: 'Delete schedule',
-              body: `Delete schedule "${j}" from ${c}? This permanently removes the schedule and cannot be undone.`,
+              body: `Delete schedule "${j}"? This permanently removes the schedule and cannot be undone.`,
               confirmLabel: 'Delete',
               danger: true,
             })
             if (!ok) return
             try {
-              await deleteJob(c, j)
+              await deleteSchedule(j)
+              closeTab(tabId({ kind: 'schedule', schedule: j }))
               bumpReload()
             } catch (e) {
               setError(e instanceof Error ? e.message : 'Could not delete the schedule')
+            }
+          })()
+          return
+        }
+        case 'delete-connection': {
+          if (!ctx.connection) return
+          const c = ctx.connection
+          void (async () => {
+            const ok = await confirm({
+              title: 'Delete connection',
+              body: `Delete connection "${c}"? Flows or schedules that read from it will fail until you re-create it. This cannot be undone.`,
+              confirmLabel: 'Delete',
+              danger: true,
+            })
+            if (!ok) return
+            try {
+              await deleteConnection(c)
+              bumpReload()
+            } catch (e) {
+              setError(e instanceof Error ? e.message : 'Could not delete the connection')
             }
           })()
           return
@@ -428,11 +457,11 @@ export default function CubeApp({
 
         // ---- direct, non-destructive ----
         case 'run-schedule': {
-          if (!ctx.cube || !ctx.job) return
-          const { cube: c, job: j } = ctx
+          if (!ctx.job) return
+          const j = ctx.job
           void (async () => {
             try {
-              await runJob(c, j)
+              await runSchedule(j)
               bumpReload()
             } catch (e) {
               setError(e instanceof Error ? e.message : 'Could not run the schedule')
@@ -440,11 +469,11 @@ export default function CubeApp({
           })()
           return
         }
-        // Running a flow needs a CSV/connection payload, so navigate to its run
-        // panel rather than guessing one (the run panel is in FlowsWorkspace).
+        // Running a flow runs its declared sources (or needs ad-hoc data), so
+        // navigate to its run panel rather than guessing (it is in FlowsWorkspace).
         case 'run-flow':
         case 'open-flow':
-          if (ctx.cube && ctx.flow) navigate({ kind: 'flow', cube: ctx.cube, flow: ctx.flow }, { flow: ctx.flow })
+          if (ctx.flow) navigate({ kind: 'flow', flow: ctx.flow }, { flow: ctx.flow })
           return
 
         // ---- navigate to an existing create/edit form ----
@@ -527,20 +556,21 @@ export default function CubeApp({
         case 'register-dimension':
           navigate({ kind: 'dimension', id: -1, name: '' }, { autoNew: true })
           return
-        case 'new-flow': {
-          const host = resolveCube()
-          if (host) navigate({ kind: 'flow', cube: host, flow: '' }, { autoNew: true })
-          else setError('Create a cube first, then add flows to it.')
+        case 'new-flow':
+          // Flows are global (ADR-0035): no cube needed to author one.
+          navigate({ kind: 'flow', flow: '' }, { autoNew: true })
           return
-        }
-        case 'new-schedule': {
-          const host = resolveCube()
-          if (host) navigate({ kind: 'schedule', cube: host, job: '' }, { autoNew: true })
-          else setError('Create a cube first, then add schedules to it.')
+        case 'new-schedule':
+          // Schedules are global (ADR-0035): no cube needed to author one.
+          navigate({ kind: 'schedule', schedule: '' }, { autoNew: true })
           return
-        }
         case 'open-schedule':
-          if (ctx.cube && ctx.job) navigate({ kind: 'schedule', cube: ctx.cube, job: ctx.job }, { job: ctx.job })
+          if (ctx.job) navigate({ kind: 'schedule', schedule: ctx.job }, { job: ctx.job })
+          return
+        case 'open-connections':
+          // The global connections panel lives in the flow workspace; open it on
+          // a blank (global) flow form so the admin reaches the Connections panel.
+          navigate({ kind: 'connection', connection: ctx.connection ?? '' }, { connection: ctx.connection })
           return
       }
     },
@@ -599,6 +629,15 @@ export default function CubeApp({
       group: 'Go to',
       run: () => onAction('new-schedule', {}),
     })
+    if (isAdmin) {
+      list.push({
+        id: 'go:connections',
+        label: 'Go to Connections',
+        group: 'Go to',
+        keywords: 'data source connector secret',
+        run: () => onAction('open-connections', {}),
+      })
+    }
     // Create actions, dispatched through the same handler the tree uses.
     if (isAdmin) {
       list.push({ id: 'new:cube', label: 'New cube…', group: 'Create', run: () => onAction('new-cube', {}) })
@@ -861,9 +900,9 @@ export default function CubeApp({
                 />
               ) : activeTab.selection.kind === 'cube-rules' && cube ? (
                 <RulesWorkspace cube={cube} reloadSignal={reload} onDirtyChange={setPaneDirty} />
-              ) : activeTab.selection.kind === 'flow' && cube ? (
+              ) : activeTab.selection.kind === 'flow' ? (
+                // Flows are global (ADR-0035): no cube needed to author or run.
                 <FlowsWorkspace
-                  cube={cube}
                   reloadSignal={reload}
                   isAdmin={isAdmin}
                   initialFlow={activeTab.selection.flow || activeTab.nav.flow}
@@ -871,12 +910,23 @@ export default function CubeApp({
                   navSignal={activeTab.nav.signal}
                   onDirtyChange={setPaneDirty}
                 />
-              ) : activeTab.selection.kind === 'schedule' && cube ? (
+              ) : activeTab.selection.kind === 'schedule' ? (
+                // Schedules are global (ADR-0035): no cube needed.
                 <JobsWorkspace
-                  cube={cube}
                   reloadSignal={reload}
-                  initialJob={activeTab.selection.job || activeTab.nav.job}
+                  initialJob={activeTab.selection.schedule || activeTab.nav.job}
                   autoNew={activeTab.nav.autoNew}
+                  navSignal={activeTab.nav.signal}
+                  onDirtyChange={setPaneDirty}
+                />
+              ) : activeTab.selection.kind === 'connection' && isAdmin ? (
+                // Global connections are managed in the flow workspace's
+                // (admin-only) Connections panel; open it on a blank flow form so
+                // the panel is in view (ADR-0035).
+                <FlowsWorkspace
+                  reloadSignal={reload}
+                  isAdmin={isAdmin}
+                  autoNew
                   navSignal={activeTab.nav.signal}
                   onDirtyChange={setPaneDirty}
                 />

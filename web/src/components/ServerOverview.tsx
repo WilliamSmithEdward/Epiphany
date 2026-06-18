@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import {
   getOverview,
-  listAllRuns,
   listCubes,
+  listRuns,
   queryAudit,
   type AuditRecordDto,
   type CubeSummary,
@@ -24,7 +24,7 @@ export default function ServerOverview() {
   const refresh = useCallback(() => {
     Promise.all([
       listCubes(),
-      listAllRuns(20),
+      listRuns(20),
       queryAudit({ outcome: 'denied', limit: 10 }),
       getOverview(),
     ])
@@ -114,10 +114,10 @@ export default function ServerOverview() {
               {runs.map((r) => (
                 <tr key={r.id}>
                   <td>{runBadge(r.state)}</td>
-                  <td>{r.cube}</td>
+                  <td>{r.cube || '—'}</td>
                   <td>
                     {r.target}
-                    {r.is_job ? ' (job)' : ''}
+                    {r.is_job ? ' (schedule)' : ''}
                   </td>
                   <td>{formatTime(r.fire_millis)}</td>
                   <td>{r.principal}</td>

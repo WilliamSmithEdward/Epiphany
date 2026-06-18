@@ -600,12 +600,32 @@ export async function runRuleTests(cube: string): Promise<TestReportDto> {
   )
 }
 
-// ---- flows (Phase 5) ----
+// ---- flows (Phase 5; server-global, ADR-0035) ----
 
-/** A flow: name and TypeScript source. */
+/** One declared data source on a flow (ADR-0035). A `global` input references a
+ * server-global connection by its name (the connection itself lives in the
+ * global store, so `connection` is omitted); a `local` (flow-scoped) input
+ * carries its own embedded ConnectionDto whose name mirrors `name`. In code a
+ * global source reads as `ctx.input('NAME')` and a local source as
+ * `ctx.input('local.NAME')`. */
+export interface FlowInputDto {
+  name: string
+  scope: 'global' | 'local'
+  connection?: ConnectionDto | null
+}
+
+/** A flow: name, TypeScript source, recorded owner, an optional default target
+ * cube (a back-compatibility convenience, not ownership), and its declared data
+ * sources (ADR-0035). Flows are server-global, not owned by any cube. */
 export interface FlowDto {
   name: string
   source: string
+  /** The principal a scheduled run executes as (read-only in the UI). */
+  owner?: string | null
+  /** A convenience target for legacy cube-less calls (ctx.writeCells, ...). */
+  default_cube?: string | null
+  /** The flow's declared data sources (global references + flow-scoped). */
+  inputs: FlowInputDto[]
 }
 
 /** The structured result of validating a flow source without saving it. */
@@ -619,21 +639,23 @@ export interface RunReport {
   logs: string[]
 }
 
-function flowBase(cube: string): string {
-  return `/api/v1/cubes/${encodeURIComponent(cube)}/flows`
-}
+const FLOW_BASE = '/api/v1/flows'
 
-export async function listFlows(cube: string): Promise<FlowDto[]> {
-  const result = await request<{ flows: FlowDto[] }>('GET', flowBase(cube))
+export async function listFlows(): Promise<FlowDto[]> {
+  const result = await request<{ flows: FlowDto[] }>('GET', FLOW_BASE)
   return result.flows
 }
 
-export async function putFlow(cube: string, name: string, source: string): Promise<FlowDto> {
-  return request<FlowDto>('PUT', `${flowBase(cube)}/${encodeURIComponent(name)}`, { name, source })
+export async function getFlow(name: string): Promise<FlowDto> {
+  return request<FlowDto>('GET', `${FLOW_BASE}/${encodeURIComponent(name)}`)
 }
 
-export async function deleteFlow(cube: string, name: string): Promise<void> {
-  return request<void>('DELETE', `${flowBase(cube)}/${encodeURIComponent(name)}`)
+export async function putFlow(flow: FlowDto): Promise<FlowDto> {
+  return request<FlowDto>('PUT', `${FLOW_BASE}/${encodeURIComponent(flow.name)}`, flow)
+}
+
+export async function deleteFlow(name: string): Promise<void> {
+  return request<void>('DELETE', `${FLOW_BASE}/${encodeURIComponent(name)}`)
 }
 
 /**
@@ -641,17 +663,24 @@ export async function deleteFlow(cube: string, name: string): Promise<void> {
  * `{ ok: false }` with the message and, when located, the line/column - so the
  * editor can mark the error inline rather than throwing.
  */
-export async function previewFlow(cube: string, source: string): Promise<FlowPreview> {
-  return previewSource(`${flowBase(cube)}/preview`, source)
+export async function previewFlow(source: string): Promise<FlowPreview> {
+  return previewSource(`${FLOW_BASE}/preview`, source)
 }
 
-/** Run a flow over inline CSV (`input`) or a named `connection`. */
+/** Run a flow. With declared inputs the backend fetches every source, so a plain
+ * run only needs `params`. For quick testing an ad-hoc inline payload may pass a
+ * single CSV body (`input`) or a name->content map (`inputs`) for a named source,
+ * or a named `connection` to fetch. */
 export async function runFlow(
-  cube: string,
   name: string,
-  body: { input?: string; connection?: string; params?: Record<string, string> },
+  body: {
+    input?: string
+    connection?: string
+    inputs?: Record<string, string>
+    params?: Record<string, string>
+  },
 ): Promise<RunReport> {
-  return request<RunReport>('POST', `${flowBase(cube)}/${encodeURIComponent(name)}/run`, body)
+  return request<RunReport>('POST', `${FLOW_BASE}/${encodeURIComponent(name)}/run`, body)
 }
 
 // ---- connections (ADR-0012) ----
@@ -711,26 +740,28 @@ export interface ConnectionPreview {
   row_count: number
 }
 
-function connBase(cube: string): string {
-  return `/api/v1/cubes/${encodeURIComponent(cube)}/connections`
-}
+const CONN_BASE = '/api/v1/connections'
 
-export async function listConnections(cube: string): Promise<ConnectionDto[]> {
-  const result = await request<{ connections: ConnectionDto[] }>('GET', connBase(cube))
+export async function listConnections(): Promise<ConnectionDto[]> {
+  const result = await request<{ connections: ConnectionDto[] }>('GET', CONN_BASE)
   return result.connections
 }
 
-export async function putConnection(cube: string, conn: ConnectionDto): Promise<ConnectionDto> {
-  return request<ConnectionDto>('PUT', `${connBase(cube)}/${encodeURIComponent(conn.name)}`, conn)
+export async function getConnection(name: string): Promise<ConnectionDto> {
+  return request<ConnectionDto>('GET', `${CONN_BASE}/${encodeURIComponent(name)}`)
 }
 
-export async function deleteConnection(cube: string, name: string): Promise<void> {
-  return request<void>('DELETE', `${connBase(cube)}/${encodeURIComponent(name)}`)
+export async function putConnection(conn: ConnectionDto): Promise<ConnectionDto> {
+  return request<ConnectionDto>('PUT', `${CONN_BASE}/${encodeURIComponent(conn.name)}`, conn)
+}
+
+export async function deleteConnection(name: string): Promise<void> {
+  return request<void>('DELETE', `${CONN_BASE}/${encodeURIComponent(name)}`)
 }
 
 /** Run a connection and return up to 20 sample rows plus the total count. */
-export async function previewConnection(cube: string, name: string): Promise<ConnectionPreview> {
-  return request<ConnectionPreview>('POST', `${connBase(cube)}/${encodeURIComponent(name)}/preview`)
+export async function previewConnection(name: string): Promise<ConnectionPreview> {
+  return request<ConnectionPreview>('POST', `${CONN_BASE}/${encodeURIComponent(name)}/preview`)
 }
 
 // ---- operator secrets (ADR-0030, admin) ----
@@ -758,40 +789,51 @@ export interface ImportRequest {
   fixed?: Record<string, string>
 }
 
+/** CSV import stays cube-scoped (ADR-0035 keeps `POST /cubes/{cube}/import`). */
 export async function importCsv(cube: string, req: ImportRequest): Promise<RunReport> {
-  return request<RunReport>('POST', `${flowBase(cube)}/import`, req)
+  return request<RunReport>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/import`, req)
 }
 
-/** A flow unit test. */
+/** A flow unit test (server-global, ADR-0035). `input` is the single-source
+ * inline content; `inputs` maps a source address to inline content for the
+ * multi-source case; `cube` is the target cube the assertions check (blank =
+ * none in particular). */
 export interface FlowTestDto {
   name: string
   flow: string
   input: string
   params: Record<string, string>
   assertions: TestCellDto[]
+  /** Source address -> inline content (multi-source tests, ADR-0035). */
+  inputs?: Record<string, string>
+  /** The target cube the assertions check; blank/null targets none specifically. */
+  cube?: string | null
 }
 
-export async function listFlowTests(cube: string): Promise<FlowTestDto[]> {
-  const result = await request<{ tests: FlowTestDto[] }>('GET', `${flowBase(cube)}/tests`)
+const FLOW_TESTS_BASE = `${FLOW_BASE}/tests`
+
+export async function listFlowTests(): Promise<FlowTestDto[]> {
+  const result = await request<{ tests: FlowTestDto[] }>('GET', FLOW_TESTS_BASE)
   return result.tests
 }
 
-export async function putFlowTest(cube: string, test: FlowTestDto): Promise<FlowTestDto> {
-  return request<FlowTestDto>('POST', `${flowBase(cube)}/tests`, test)
+export async function putFlowTest(test: FlowTestDto): Promise<FlowTestDto> {
+  return request<FlowTestDto>('POST', FLOW_TESTS_BASE, test)
 }
 
-export async function deleteFlowTest(cube: string, name: string): Promise<void> {
-  return request<void>('DELETE', `${flowBase(cube)}/tests/${encodeURIComponent(name)}`)
+export async function deleteFlowTest(name: string): Promise<void> {
+  return request<void>('DELETE', `${FLOW_TESTS_BASE}/${encodeURIComponent(name)}`)
 }
 
-export async function runFlowTests(cube: string): Promise<TestReportDto> {
-  return request<TestReportDto>('POST', `${flowBase(cube)}/tests/run`)
+export async function runFlowTests(): Promise<TestReportDto> {
+  return request<TestReportDto>('POST', `${FLOW_TESTS_BASE}/run`)
 }
 
-// ---- scheduled jobs + run history (Phase 8, ADR-0013) ----
+// ---- schedules + run history (Phase 8, ADR-0013; server-global, ADR-0035) ----
 
-/** A scheduled job: an ordered list of flow steps run on a fixed interval. */
-export interface JobDto {
+/** A schedule: an ordered list of flow steps run on a fixed interval. Schedules
+ * are server-global (ADR-0035); the cubes written are whatever its flows name. */
+export interface ScheduleDto {
   name: string
   /** Flow names, run in order each firing. */
   steps: string[]
@@ -800,11 +842,13 @@ export interface JobDto {
   enabled: boolean
 }
 
-/** One execution of a job or flow, as recorded in the durable run ledger. */
+/** One execution of a schedule or flow, as recorded in the durable run ledger.
+ * `cube` may be empty for a global run (ADR-0035): show a dash, do not assume a
+ * cube. */
 export interface RunDto {
   id: string
   cube: string
-  /** The job name (when is_job) or flow name. */
+  /** The schedule name (when is_job) or flow name. */
   target: string
   is_job: boolean
   fire_millis: number
@@ -816,40 +860,33 @@ export interface RunDto {
   principal: string
 }
 
-function jobBase(cube: string): string {
-  return `/api/v1/cubes/${encodeURIComponent(cube)}/jobs`
+const SCHED_BASE = '/api/v1/schedules'
+
+export async function listSchedules(): Promise<ScheduleDto[]> {
+  const result = await request<{ schedules: ScheduleDto[] }>('GET', SCHED_BASE)
+  return result.schedules
 }
 
-export async function listJobs(cube: string): Promise<JobDto[]> {
-  const result = await request<{ jobs: JobDto[] }>('GET', jobBase(cube))
-  return result.jobs
+export async function getSchedule(name: string): Promise<ScheduleDto> {
+  return request<ScheduleDto>('GET', `${SCHED_BASE}/${encodeURIComponent(name)}`)
 }
 
-/** Create or replace a job. Each step must name an existing flow of the cube. */
-export async function putJob(cube: string, job: JobDto): Promise<JobDto> {
-  return request<JobDto>('PUT', `${jobBase(cube)}/${encodeURIComponent(job.name)}`, job)
+/** Create or replace a schedule. Each step must name an existing flow. */
+export async function putSchedule(schedule: ScheduleDto): Promise<ScheduleDto> {
+  return request<ScheduleDto>('PUT', `${SCHED_BASE}/${encodeURIComponent(schedule.name)}`, schedule)
 }
 
-export async function deleteJob(cube: string, name: string): Promise<void> {
-  await request<void>('DELETE', `${jobBase(cube)}/${encodeURIComponent(name)}`)
+export async function deleteSchedule(name: string): Promise<void> {
+  await request<void>('DELETE', `${SCHED_BASE}/${encodeURIComponent(name)}`)
 }
 
-/** Run a job now (manual kick); resolves with the resulting run record. */
-export async function runJob(cube: string, name: string): Promise<RunDto> {
-  return request<RunDto>('POST', `${jobBase(cube)}/${encodeURIComponent(name)}/run`)
+/** Run a schedule now (manual kick); resolves with the resulting run record. */
+export async function runSchedule(name: string): Promise<RunDto> {
+  return request<RunDto>('POST', `${SCHED_BASE}/${encodeURIComponent(name)}/run`)
 }
 
-/** Recent runs for the cube, newest first. */
-export async function listRuns(cube: string): Promise<RunDto[]> {
-  const result = await request<{ runs: RunDto[] }>(
-    'GET',
-    `/api/v1/cubes/${encodeURIComponent(cube)}/runs`,
-  )
-  return result.runs
-}
-
-/** Recent runs across all cubes, newest first (admin only). */
-export async function listAllRuns(limit = 50): Promise<RunDto[]> {
+/** Recent runs across the server, newest first (admin only). */
+export async function listRuns(limit = 50): Promise<RunDto[]> {
   const result = await request<{ runs: RunDto[] }>('GET', `/api/v1/runs?limit=${limit}`)
   return result.runs
 }

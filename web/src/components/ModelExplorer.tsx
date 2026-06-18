@@ -13,20 +13,21 @@ import {
   ApiError,
   getCube,
   getDimension,
+  listConnections,
   listCubes,
   listDimensions,
   listFlows,
-  listJobs,
+  listSchedules,
   listViews,
   type DimensionDto,
   type SharedDimensionSummary,
 } from '../api/client'
 import { buildElementTree, type TreeNode } from '../model/tree'
 
-// What the tree currently has open in the detail pane. The IA is cube-centric
-// (research-validated): cube-owned objects (its dimensions, views, rules+feeders)
-// nest under the cube; the global dimension namespace, flows, and schedules are
-// their own resource-type roots (flows/schedules grouped by their owning cube).
+// What the tree currently has open in the detail pane. Cube-owned objects (its
+// dimensions, views, rules+feeders) nest under the cube; the global dimension
+// namespace, flows, schedules, and connections are their own server-global
+// resource-type roots, listed directly (no cube layer; ADR-0035).
 export type Selection =
   | { kind: 'cube'; cube: string } // the cube's data (pivot grid)
   | { kind: 'cube-dimension'; cube: string; dim: string } // a cube's dimension
@@ -34,8 +35,9 @@ export type Selection =
   | { kind: 'view'; cube: string; view: string } // one saved view, opened
   | { kind: 'cube-rules'; cube: string } // the cube's rules + feeders
   | { kind: 'dimension'; id: number; name: string } // a global (registry) dimension
-  | { kind: 'flow'; cube: string; flow: string }
-  | { kind: 'schedule'; cube: string; job: string }
+  | { kind: 'flow'; flow: string } // a global flow (ADR-0035)
+  | { kind: 'schedule'; schedule: string } // a global schedule (ADR-0035)
+  | { kind: 'connection'; connection: string } // a global connection (ADR-0035)
   | { kind: 'overview' }
   | { kind: 'security' }
 
@@ -67,6 +69,8 @@ export type NodeAction =
   | 'open-schedule'
   | 'run-schedule'
   | 'delete-schedule'
+  | 'open-connections'
+  | 'delete-connection'
 
 /** Everything an action handler may need; fields are filled per node kind. */
 export interface ActionContext {
@@ -75,6 +79,7 @@ export interface ActionContext {
   view?: string
   flow?: string
   job?: string
+  connection?: string
   dimId?: number
 }
 
@@ -124,9 +129,11 @@ function selectionId(s: Selection): string {
     case 'dimension':
       return `dim:${s.id}`
     case 'flow':
-      return `flow:${s.cube}/${s.flow}`
+      return `flow:${s.flow}`
     case 'schedule':
-      return `sched:${s.cube}/${s.job}`
+      return `sched:${s.schedule}`
+    case 'connection':
+      return `conn:${s.connection}`
     case 'overview':
       return 'overview'
     case 'security':
@@ -248,60 +255,63 @@ function cubeNode(name: string): Node {
   }
 }
 
-async function flowsByCube(): Promise<Node[]> {
-  const cubes = await listCubes()
-  return cubes.map((c) => ({
-    id: `flows:${c.name}`,
-    label: c.name,
-    icon: '▤',
-    menu: [{ action: 'new-flow', label: 'New flow…' }],
-    actionCtx: { cube: c.name },
-    loader: async () => {
-      const flows = await listFlows(c.name)
-      return flows.length === 0
-        ? [{ id: `flows:${c.name}/none`, label: 'No flows yet', icon: ' ', info: true } as Node]
-        : flows.map((f) => ({
-            id: `flow:${c.name}/${f.name}`,
-            label: f.name,
-            icon: '⇄',
-            selection: { kind: 'flow', cube: c.name, flow: f.name } as Selection,
-            menu: [
-              { action: 'open-flow', label: 'Open' },
-              { action: 'run-flow', label: 'Run' },
-              { action: 'delete-flow', label: 'Delete…', danger: true },
-            ] as NodeMenuItem[],
-            actionCtx: { cube: c.name, flow: f.name },
-          }))
-    },
-  }))
+/** Flows are server-global (ADR-0035): listed directly, with no cube layer. */
+async function flowNodes(): Promise<Node[]> {
+  const flows = await listFlows()
+  return flows.length === 0
+    ? [{ id: 'flows/none', label: 'No flows yet', icon: ' ', info: true } as Node]
+    : flows.map((f) => ({
+        id: `flow:${f.name}`,
+        label: f.name,
+        icon: '⇄',
+        selection: { kind: 'flow', flow: f.name } as Selection,
+        menu: [
+          { action: 'open-flow', label: 'Open' },
+          { action: 'run-flow', label: 'Run' },
+          { action: 'delete-flow', label: 'Delete…', danger: true },
+        ] as NodeMenuItem[],
+        actionCtx: { flow: f.name },
+      }))
 }
 
-async function schedulesByCube(): Promise<Node[]> {
-  const cubes = await listCubes()
-  return cubes.map((c) => ({
-    id: `sched:${c.name}`,
-    label: c.name,
-    icon: '▤',
-    menu: [{ action: 'new-schedule', label: 'New schedule…' }],
-    actionCtx: { cube: c.name },
-    loader: async () => {
-      const jobs = await listJobs(c.name)
-      return jobs.length === 0
-        ? [{ id: `sched:${c.name}/none`, label: 'No schedules yet', icon: ' ', info: true } as Node]
-        : jobs.map((j) => ({
-            id: `sched:${c.name}/${j.name}`,
-            label: j.name,
-            icon: '⏱',
-            selection: { kind: 'schedule', cube: c.name, job: j.name } as Selection,
-            menu: [
-              { action: 'open-schedule', label: 'Edit' },
-              { action: 'run-schedule', label: 'Run now' },
-              { action: 'delete-schedule', label: 'Delete…', danger: true },
-            ] as NodeMenuItem[],
-            actionCtx: { cube: c.name, job: j.name },
-          }))
-    },
-  }))
+/** Schedules are server-global (ADR-0035): listed directly, with no cube layer. */
+async function scheduleNodes(): Promise<Node[]> {
+  const schedules = await listSchedules()
+  return schedules.length === 0
+    ? [{ id: 'sched/none', label: 'No schedules yet', icon: ' ', info: true } as Node]
+    : schedules.map((j) => ({
+        id: `sched:${j.name}`,
+        label: j.name,
+        icon: '⏱',
+        selection: { kind: 'schedule', schedule: j.name } as Selection,
+        menu: [
+          { action: 'open-schedule', label: 'Edit' },
+          { action: 'run-schedule', label: 'Run now' },
+          { action: 'delete-schedule', label: 'Delete…', danger: true },
+        ] as NodeMenuItem[],
+        actionCtx: { job: j.name },
+      }))
+}
+
+/** Connections are server-global (ADR-0035; admin-only root). Each opens the
+ * global connections panel; delete dispatches a confirmed removal. */
+async function connectionNodes(): Promise<Node[]> {
+  const connections = await listConnections()
+  return connections.length === 0
+    ? [{ id: 'conn/none', label: 'No connections yet', icon: ' ', info: true } as Node]
+    : connections.map((c) => ({
+        id: `conn:${c.name}`,
+        label: c.name,
+        icon: '⇲',
+        badge: c.kind,
+        badgeTitle: `${c.kind} connection`,
+        selection: { kind: 'connection', connection: c.name } as Selection,
+        menu: [
+          { action: 'open-connections', label: 'Manage' },
+          { action: 'delete-connection', label: 'Delete…', danger: true },
+        ] as NodeMenuItem[],
+        actionCtx: { connection: c.name },
+      }))
 }
 
 /** The "Dimensions" section: one global namespace (ADR-0031). Lists the registry
@@ -423,7 +433,8 @@ function rootNodes(isAdmin: boolean): Node[] {
       icon: '⇄',
       menu: [{ action: 'new-flow', label: 'New flow…' }],
       actionCtx: {},
-      loader: flowsByCube,
+      // Flows are server-global (ADR-0035): listed directly, no cube layer.
+      loader: flowNodes,
     },
     {
       id: 'root:schedules',
@@ -431,9 +442,22 @@ function rootNodes(isAdmin: boolean): Node[] {
       icon: '⏱',
       menu: [{ action: 'new-schedule', label: 'New schedule…' }],
       actionCtx: {},
-      loader: schedulesByCube,
+      // Schedules are server-global (ADR-0035): listed directly, no cube layer.
+      loader: scheduleNodes,
     },
   ]
+  // Connections are server-global operator configuration (ADR-0035); the root
+  // is admin-only (the non-admin tree never shows connector internals).
+  if (isAdmin) {
+    roots.push({
+      id: 'root:connections',
+      label: 'Connections',
+      icon: '⇲',
+      menu: [{ action: 'open-connections', label: 'Manage connections' }],
+      actionCtx: {},
+      loader: connectionNodes,
+    })
+  }
   // Administration is not a model object, so it no longer lives in the tree; it
   // opens from a top-bar button (admin only) into its own view (see CubeApp).
   return roots

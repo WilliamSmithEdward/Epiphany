@@ -189,6 +189,18 @@ global, cube-targeted flows directly.
 
 ## Deferred
 
-Cross-cube atomic commit; per-step target-cube overrides on a schedule (a flow
-already chooses its cubes); a flow "dry-run against cube X" preview that resolves
-coordinates (today preview only compiles the body).
+The first increment ships the data-CRUD `ctx` surface (cell `readCell`/`readText`/
+`writeCell`/`writeCells`, member and hierarchy growth on cubes and global
+dimensions, and the `members`/`property` reads). The rest of the CRUD surface is a
+documented follow-on under this ADR, because each needs its own staging, apply
+ordering, and authorization design: `clearCell` (a true clear in the write path);
+structural creation from a flow (`ctx.createCube`, `cube.defineDimension`,
+`cube.defineAttribute`/`setAttributeValue`); and cube-property writes
+(`cube.setProperty`). Global-dimension member reads are admin-only for now
+(`ctx.dimension(name).members()`), pending the same union-of-referencing-cube
+masking the read path uses (ADR-0033); a non-admin read is denied (fail-closed).
+
+Also deferred: cross-cube atomic commit; per-step target-cube overrides on a
+schedule (a flow already chooses its cubes); a flow "dry-run against cube X"
+preview that resolves coordinates (today preview only compiles the body); a
+fixture reader so flow tests can exercise live reads (today they read nothing).

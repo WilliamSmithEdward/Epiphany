@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   listFlows,
-  listJobs,
   listRuns,
-  putJob,
-  runJob,
+  listSchedules,
+  putSchedule,
+  runSchedule,
   type FlowDto,
   type RunDto,
 } from '../api/client'
@@ -52,25 +52,24 @@ function runTone(state: string): 'success' | 'danger' | 'info' | 'neutral' {
 
 const BLANK = { name: '', steps: [] as string[], count: 5, unit: 'minutes' as UnitKey, enabled: true }
 
-// The scheduler workspace for one cube (Phase 8, ADR-0013): list, create, and
-// edit scheduled jobs (ordered flow steps on a fixed interval), kick a job by
-// hand, and read the recent run history. Built on the shared design system.
+// The scheduler workspace (Phase 8, ADR-0013; server-global, ADR-0035): list,
+// create, and edit schedules (ordered flow steps on a fixed interval), kick one
+// by hand, and read the recent run history. Schedules are global, not owned by a
+// cube; the cubes a schedule writes are whatever its flows' bodies address.
 export default function JobsWorkspace({
-  cube,
   reloadSignal,
   initialJob,
   autoNew,
   navSignal,
   onDirtyChange,
 }: {
-  cube: string
   reloadSignal: number
   /** Open this schedule in the editor on mount / when it changes (from the tree). */
   initialJob?: string
   /** Start with a blank "new schedule" form (the tree's "New schedule…" action). */
   autoNew?: boolean
-  /** Bumped by the navigator to re-apply initialJob/autoNew when the cube is
-   * unchanged (e.g. re-clicking the same schedule). */
+  /** Bumped by the navigator to re-apply initialJob/autoNew (e.g. re-clicking the
+   * same schedule). */
   navSignal?: number
   /** Reports unsaved-edit state up so the navigator can guard against silently
    * discarding an in-progress schedule when the user clicks away in the tree. */
@@ -87,20 +86,20 @@ export default function JobsWorkspace({
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(() => {
-    Promise.all([listFlows(cube), listRuns(cube)])
+    Promise.all([listFlows(), listRuns()])
       .then(([f, r]) => {
         setFlows(f)
         setRuns(r)
       })
-      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load jobs'))
-  }, [cube])
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load schedules'))
+  }, [])
 
   useEffect(() => {
     load()
   }, [load, reloadSignal])
 
   // Open the schedule the navigator (tree) asked for, or a blank "new schedule"
-  // form. Driven by cube/initialJob/autoNew/navSignal so re-clicking re-applies.
+  // form. Driven by initialJob/autoNew/navSignal so re-clicking re-applies.
   useEffect(() => {
     if (autoNew) {
       setSelected(null)
@@ -112,7 +111,7 @@ export default function JobsWorkspace({
     }
     if (!initialJob) return
     let live = true
-    listJobs(cube)
+    listSchedules()
       .then((js) => {
         if (!live) return
         const job = js.find((j) => j.name === initialJob)
@@ -130,7 +129,7 @@ export default function JobsWorkspace({
     return () => {
       live = false
     }
-  }, [cube, initialJob, autoNew, navSignal])
+  }, [initialJob, autoNew, navSignal])
 
   // The form is dirty when any edited field diverges from the loaded/saved draft.
   const dirty =
@@ -189,7 +188,7 @@ export default function JobsWorkspace({
     setBusy(true)
     setError(null)
     try {
-      await putJob(cube, {
+      await putSchedule({
         name,
         steps: draft.steps,
         every_millis: everyMillis,
@@ -210,10 +209,10 @@ export default function JobsWorkspace({
     setBusy(true)
     setError(null)
     try {
-      await runJob(cube, name)
+      await runSchedule(name)
       load()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not run the job')
+      setError(e instanceof Error ? e.message : 'Could not run the schedule')
     } finally {
       setBusy(false)
     }
@@ -229,8 +228,7 @@ export default function JobsWorkspace({
       <Card title={selected ? `Edit "${selected}"` : 'New schedule'}>
         {noFlows ? (
           <p className="muted">
-            This cube has no flows yet. Create a flow in the Flows section first, then schedule it
-            here.
+            There are no flows yet. Create a flow in the Flows section first, then schedule it here.
           </p>
         ) : (
           <div className="job-editor">
@@ -355,7 +353,7 @@ export default function JobsWorkspace({
 
       <Card
         title="Recent runs"
-        subtitle="The latest scheduled and manual runs for this cube, newest first."
+        subtitle="The latest scheduled and manual runs across the server, newest first."
         actions={
           <Button size="sm" variant="ghost" icon="↻" onClick={load}>
             Refresh
@@ -372,6 +370,7 @@ export default function JobsWorkspace({
                 <tr>
                   <th scope="col">Status</th>
                   <th scope="col">Target</th>
+                  <th scope="col">Cube</th>
                   <th scope="col">When</th>
                   <th scope="col" className="num">Rows</th>
                   <th scope="col" className="num">Cells</th>
@@ -390,6 +389,7 @@ export default function JobsWorkspace({
                       {run.is_job ? <span className="run-table__tag">schedule</span> : null}
                       {run.error ? <div className="run-table__err">{run.error}</div> : null}
                     </td>
+                    <td>{run.cube || '—'}</td>
                     <td className="run-table__when">{humanizeTime(run.fire_millis)}</td>
                     <td className="num">{run.rows_read}</td>
                     <td className="num">{run.cells_written}</td>

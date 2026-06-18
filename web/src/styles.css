@@ -631,32 +631,67 @@ table.pivot th.rowhead {
 /* Flows workspace (Phase 5) */
 .flows-workspace {
   display: grid;
-  grid-template-columns: 11rem minmax(0, 1.3fr) minmax(0, 1fr);
+  /* Flows are global (ADR-0035): the tree is the navigator, so there is no
+     in-pane flow list column. The editor takes the left, supporting panels
+     (data sources, run, tests, import) the right; connections span both. */
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
   gap: 1rem;
   align-items: start;
 }
 
-.flow-list {
+.flow-editor {
   grid-column: 1 / 2;
-  grid-row: 1 / 5;
 }
 
-.flow-editor {
+/* The data-source, run, import, and test panels sit in the right column. */
+.flow-sources,
+.flow-run,
+.flow-import,
+.flows-workspace .test-panel {
   grid-column: 2 / 3;
 }
 
-.flow-list .saved-views li {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
+.flow-sources {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.8rem;
 }
 
-.flow-list .link {
+/* The code address a flow body uses to read a source (ctx.input('...')). */
+.flow-source__addr {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  background: var(--code-bg, rgba(127, 127, 127, 0.12));
+  padding: 0.05rem 0.3rem;
+  border-radius: 4px;
+}
+
+.flow-source__add {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+
+.flow-source__add-global {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+/* Inline text-buttons (test / copy / delete) inside the flow workspace panels. */
+.flows-workspace .link {
   border: none;
   background: none;
   color: var(--muted);
   cursor: pointer;
   padding: 0 0.3rem;
+}
+
+.flows-workspace .link:hover:not(:disabled) {
+  color: var(--text, inherit);
+  text-decoration: underline;
 }
 
 .flow-run,
@@ -694,7 +729,7 @@ table.pivot th.rowhead {
 }
 
 .connections-panel {
-  grid-column: 2 / 4;
+  grid-column: 1 / 3;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
