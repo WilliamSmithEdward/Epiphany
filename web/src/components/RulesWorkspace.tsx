@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   explainCell,
   feederDiagnostics,
@@ -45,15 +45,41 @@ export default function RulesWorkspace({
   const [saveError, setSaveError] = useState<string | null>(null)
   const [savedNote, setSavedNote] = useState(false)
 
+  // Read the latest source/saved inside the load effect without making them
+  // effect deps (which would re-run the load on every keystroke). Lets the
+  // effect decide whether the editor is mid-edit before it overwrites anything.
+  const sourceRef = useRef(source)
+  const savedRef = useRef(saved)
+  sourceRef.current = source
+  savedRef.current = saved
+  // The cube whose rules are currently loaded into the buffer, so we can tell an
+  // initial / cube-change load (always adopt the server copy) apart from a live
+  // WebSocket reloadSignal bump (preserve an unsaved buffer).
+  const loadedCube = useRef<string | null>(null)
+
   // Load the cube structure (for the explain picker) and its current rules.
+  // reloadSignal bumps on EVERY cells_changed/objects_changed from any tab or
+  // user, so this effect must not blindly overwrite an in-progress edit with the
+  // server copy (data loss). It always refreshes `detail` (the explain picker
+  // depends on it), but only resets the editor buffer when it is CLEAN
+  // (source === saved) or this is an initial / cube-change load.
   useEffect(() => {
     let live = true
     Promise.all([getCube(cube), getRules(cube)])
       .then(([d, rules]) => {
         if (!live) return
+        // detail backs the explain picker; always keep it current.
         setDetail(d)
-        setSource(rules.source)
-        setSaved(rules.source)
+        const isInitialOrCubeChange = loadedCube.current !== cube
+        const clean = sourceRef.current === savedRef.current
+        if (isInitialOrCubeChange || clean) {
+          setSource(rules.source)
+          setSaved(rules.source)
+          loadedCube.current = cube
+        }
+        // Else: a dirty buffer on a live reloadSignal bump. Leave both source and
+        // saved untouched so the user's unsaved edits (and their Revert target)
+        // survive a remote cells/objects change mid-edit (the data-loss fix).
       })
       .catch(() => undefined)
     return () => {

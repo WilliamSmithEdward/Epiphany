@@ -14,6 +14,7 @@ import {
 } from '../api/client'
 import DimensionEditor from './DimensionEditor'
 import DimensionsWorkspace from './DimensionsWorkspace'
+import ErrorBoundary from './ErrorBoundary'
 import FlowsWorkspace from './FlowsWorkspace'
 import JobsWorkspace from './JobsWorkspace'
 import ModelWorkspace from './ModelWorkspace'
@@ -209,6 +210,16 @@ export default function CubeApp({
   // breadcrumb, palette, all funnel through navigate()) confirms first so a
   // one-click selection cannot silently discard work.
   const paneDirty = useRef(false)
+  // The tab "label" buttons, keyed by tab id, so closing the active tab can move
+  // focus to the neighbor it activates instead of stranding focus on <body>
+  // (WCAG 2.4.3). The empty-state region is the fallback when the last tab goes.
+  const tabButtons = useRef(new Map<string, HTMLButtonElement>())
+  const tabGroupRef = useRef<HTMLDivElement | null>(null)
+  // Set after a close re-activates a neighbor: an effect moves focus to that
+  // tab's button once the new tab strip has rendered. null = focus the empty
+  // state (the last tab closed).
+  const focusAfterClose = useRef<string | null | undefined>(undefined)
+  const emptyStateRef = useRef<HTMLDivElement | null>(null)
 
   // The active tab (its selection + nav intent drive the content routing).
   const activeTab = useMemo(
@@ -268,29 +279,42 @@ export default function CubeApp({
     [confirm, activeId],
   )
 
-  // Close a tab. If it is removed: when it was the active tab, activate the
-  // neighbor (prefer the one to the left, else the right, else null -> empty
-  // state). Closing the active tab while its pane is dirty confirms first.
+  // Remove a tab unconditionally (no dirty guard). If it was the active tab,
+  // activate the neighbor (prefer the one to the left, else the right, else null
+  // -> empty state) and record which element should receive focus once the new
+  // tab strip renders, so closing the active tab does not strand focus on <body>
+  // (WCAG 2.4.3). Also drop the closed tab's button ref so the Map cannot grow.
+  const removeTab = useCallback((id: string) => {
+    setTabs((list) => {
+      const idx = list.findIndex((t) => t.id === id)
+      if (idx === -1) return list
+      const next = list.filter((t) => t.id !== id)
+      tabButtons.current.delete(id)
+      setActiveId((cur) => {
+        if (cur !== id) {
+          // Closing a background tab leaves the active one in place; keep focus
+          // where it is (the user did not act on the active pane).
+          focusAfterClose.current = undefined
+          return cur
+        }
+        // Reactivating means a fresh mount, so the (now closed) dirty pane
+        // cannot leak edits forward.
+        paneDirty.current = false
+        const neighbor = next[idx - 1] ?? next[idx] ?? null
+        // null -> the last tab closed; focus the empty state instead.
+        focusAfterClose.current = neighbor ? neighbor.id : null
+        return neighbor ? neighbor.id : null
+      })
+      return next
+    })
+  }, [])
+
+  // Close a tab from a user gesture (the tab's x button). Closing the active tab
+  // while its pane is dirty confirms first.
   const closeTab = useCallback(
     (id: string) => {
-      const remove = () => {
-        setTabs((list) => {
-          const idx = list.findIndex((t) => t.id === id)
-          if (idx === -1) return list
-          const next = list.filter((t) => t.id !== id)
-          setActiveId((cur) => {
-            if (cur !== id) return cur
-            // Reactivating means a fresh mount, so the (now closed) dirty pane
-            // cannot leak edits forward.
-            paneDirty.current = false
-            const neighbor = next[idx - 1] ?? next[idx] ?? null
-            return neighbor ? neighbor.id : null
-          })
-          return next
-        })
-      }
       if (id !== activeId || !paneDirty.current) {
-        remove()
+        removeTab(id)
         return
       }
       void (async () => {
@@ -300,10 +324,21 @@ export default function CubeApp({
           confirmLabel: 'Discard',
           danger: true,
         })
-        if (ok) remove()
+        if (ok) removeTab(id)
       })()
     },
-    [confirm, activeId],
+    [confirm, activeId, removeTab],
+  )
+
+  // Close a tab that the underlying object was just deleted out from under:
+  // bypass the dirty guard so a successful server delete does not then pop a
+  // nonsensical "discard unsaved edits" confirm for an object that no longer
+  // exists. Used only after a confirmed delete of the object itself.
+  const forceCloseTab = useCallback(
+    (id: string) => {
+      removeTab(id)
+    },
+    [removeTab],
   )
 
   // Object-centric launch: never auto-open a cube/tab on load. The cube list
@@ -385,7 +420,9 @@ export default function CubeApp({
             if (!ok) return
             try {
               await deleteFlow(f)
-              closeTab(tabId({ kind: 'flow', flow: f }))
+              // The object is gone server-side; force-close so the dirty guard
+              // does not pop a nonsensical post-delete "discard edits" confirm.
+              forceCloseTab(tabId({ kind: 'flow', flow: f }))
               bumpReload()
             } catch (e) {
               setError(e instanceof Error ? e.message : 'Could not delete the flow')
@@ -406,7 +443,9 @@ export default function CubeApp({
             if (!ok) return
             try {
               await deleteSchedule(j)
-              closeTab(tabId({ kind: 'schedule', schedule: j }))
+              // The object is gone server-side; force-close so the dirty guard
+              // does not pop a nonsensical post-delete "discard edits" confirm.
+              forceCloseTab(tabId({ kind: 'schedule', schedule: j }))
               bumpReload()
             } catch (e) {
               setError(e instanceof Error ? e.message : 'Could not delete the schedule')
@@ -572,7 +611,7 @@ export default function CubeApp({
           return
       }
     },
-    [confirm, navigate, closeTab, bumpReload, selection, cubes],
+    [confirm, navigate, closeTab, forceCloseTab, bumpReload, selection, cubes],
   )
 
   useEffect(() => {
@@ -587,11 +626,54 @@ export default function CubeApp({
     return () => socket.close()
   }, [])
 
+  // After closing the active tab, move focus to the neighbor we re-activated
+  // (or the empty state when the last tab closed) so focus is never stranded on
+  // <body> (WCAG 2.4.3). Runs after the new tab strip has rendered; cleared so
+  // it fires only for the close that requested it.
+  useEffect(() => {
+    const target = focusAfterClose.current
+    if (target === undefined) return
+    focusAfterClose.current = undefined
+    if (target === null) {
+      emptyStateRef.current?.focus()
+      return
+    }
+    tabButtons.current.get(target)?.focus()
+  }, [tabs])
+
   const signOut = useCallback(() => {
     logout()
       .catch(() => undefined)
       .finally(onLogout)
   }, [onLogout])
+
+  // Enter the Administration view, honoring the same unsaved-edit guard that all
+  // model navigation funnels through navigate() (the Admin button and the
+  // palette admin commands are reachable from a dirty pane, so a bare
+  // setAdminView() would silently discard the pane's edits). Confirms first when
+  // the active pane is dirty; clears the flag once we leave it.
+  const goAdmin = useCallback(
+    (view: 'overview' | 'security') => {
+      const go = () => {
+        paneDirty.current = false
+        setAdminView(view)
+      }
+      if (!paneDirty.current) {
+        go()
+        return
+      }
+      void (async () => {
+        const ok = await confirm({
+          title: 'Discard unsaved changes',
+          body: 'You have unsaved edits in this pane. Discard them and continue?',
+          confirmLabel: 'Discard',
+          danger: true,
+        })
+        if (ok) go()
+      })()
+    },
+    [confirm],
+  )
 
   // Command palette: keep parity with the tree IA. Open any cube, jump to the
   // resource-type roots, invoke the same create actions, reach admin surfaces.
@@ -644,13 +726,13 @@ export default function CubeApp({
     list.push({ id: 'new:flow', label: 'New flow...', group: 'Create', run: () => onAction('new-flow', {}) })
     list.push({ id: 'new:schedule', label: 'New schedule...', group: 'Create', run: () => onAction('new-schedule', {}) })
     if (isAdmin) {
-      list.push({ id: 'go:overview', label: 'Go to Server overview', group: 'Admin', run: () => setAdminView('overview') })
-      list.push({ id: 'go:security', label: 'Go to Security & audit', group: 'Admin', run: () => setAdminView('security') })
+      list.push({ id: 'go:overview', label: 'Go to Server overview', group: 'Admin', run: () => goAdmin('overview') })
+      list.push({ id: 'go:security', label: 'Go to Security & audit', group: 'Admin', run: () => goAdmin('security') })
     }
     list.push({ id: 'pw', label: 'Change password', group: 'Account', run: () => setPwOpen(true) })
     list.push({ id: 'signout', label: 'Sign out', group: 'Account', run: signOut })
     return list
-  }, [cubes, isAdmin, signOut, navigate, onAction])
+  }, [cubes, isAdmin, signOut, navigate, onAction, goAdmin])
 
   const segs = crumbs(selection, { autoNew: activeTab?.nav.autoNew })
   const cube = cubeOf(selection)
@@ -705,7 +787,7 @@ export default function CubeApp({
             variant="ghost"
             size="sm"
             className="appbar__admin"
-            onClick={() => setAdminView('overview')}
+            onClick={() => goAdmin('overview')}
             aria-pressed={adminView !== null}
           >
             Administration
@@ -764,11 +846,15 @@ export default function CubeApp({
               <Button variant="ghost" size="sm" onClick={() => setAdminView(null)}>
                 &larr; Back
               </Button>
-              <div className="admin-view__nav" role="tablist" aria-label="Administration">
+              {/* A labelled group of switch-buttons, not an APG tabs widget: the
+                  switched content is not a role=tabpanel and there is no
+                  aria-controls / roving-tabindex / arrow-key contract, so
+                  role=group + aria-pressed is the honest semantic (matching the
+                  open-objects strip and SecurityWorkspace sub-nav convention). */}
+              <div className="admin-view__nav" role="group" aria-label="Administration">
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={adminView === 'overview'}
+                  aria-pressed={adminView === 'overview'}
                   className={`seg${adminView === 'overview' ? ' is-active' : ''}`}
                   onClick={() => setAdminView('overview')}
                 >
@@ -776,8 +862,7 @@ export default function CubeApp({
                 </button>
                 <button
                   type="button"
-                  role="tab"
-                  aria-selected={adminView === 'security'}
+                  aria-pressed={adminView === 'security'}
                   className={`seg${adminView === 'security' ? ' is-active' : ''}`}
                   onClick={() => setAdminView('security')}
                 >
@@ -808,7 +893,7 @@ export default function CubeApp({
                 // is independently closable and opens a different object kind, so
                 // role=group with aria-current on the active button is the honest
                 // semantic (no tabpanel/roving-tabindex contract to fulfil).
-                <div className="objtabs" role="group" aria-label="Open objects">
+                <div className="objtabs" role="group" aria-label="Open objects" ref={tabGroupRef}>
                   {tabs.map((t) => {
                     const segsForTab = crumbs(t.selection, { autoNew: t.nav.autoNew })
                     const label = segsForTab[segsForTab.length - 1]?.label ?? 'Untitled'
@@ -821,6 +906,13 @@ export default function CubeApp({
                       <div key={t.id} className={`objtab${isActive ? ' is-active' : ''}`}>
                         <button
                           type="button"
+                          ref={(el) => {
+                            // Track each tab's label button so closing the active
+                            // tab can move focus to the neighbor it re-activates
+                            // (WCAG 2.4.3) instead of stranding it on <body>.
+                            if (el) tabButtons.current.set(t.id, el)
+                            else tabButtons.current.delete(t.id)
+                          }}
                           aria-current={isActive ? 'true' : undefined}
                           className="objtab__label"
                           title={fullPath}
@@ -854,14 +946,20 @@ export default function CubeApp({
               ) : null}
 
               {activeTab === null ? (
-                <EmptyState icon="▤" title="Pick an object to open">
-                  {cubes.length === 0
-                    ? isAdmin
-                      ? 'No cubes yet. Create one from the Cubes section to get started.'
-                      : 'No objects are available to you yet. Ask an administrator for access.'
-                    : 'Choose a cube, dimension, flow, or schedule from the explorer on the left to open it.'}
-                </EmptyState>
-              ) : activeTab.selection.kind === 'dimension' &&
+                // tabIndex=-1 so closing the last tab can move focus here
+                // programmatically (WCAG 2.4.3) without adding it to the tab order.
+                <div ref={emptyStateRef} tabIndex={-1} className="objtabs__empty-focus">
+                  <EmptyState icon="▤" title="Pick an object to open">
+                    {cubes.length === 0
+                      ? isAdmin
+                        ? 'No cubes yet. Create one from the Cubes section to get started.'
+                        : 'No objects are available to you yet. Ask an administrator for access.'
+                      : 'Choose a cube, dimension, flow, or schedule from the explorer on the left to open it.'}
+                  </EmptyState>
+                </div>
+              ) : (
+              <ErrorBoundary resetKey={activeId}>
+              {activeTab.selection.kind === 'dimension' &&
                 activeTab.selection.id >= 0 &&
                 !activeTab.nav.autoNew ? (
                 // A specific registry (global) dimension: open the standalone,
@@ -962,6 +1060,8 @@ export default function CubeApp({
                   onDirtyChange={setPaneDirty}
                 />
               ) : null}
+              </ErrorBoundary>
+              )}
             </main>
           </>
         )}

@@ -83,6 +83,11 @@ export default function FlowsWorkspace({
   const [preview, setPreview] = useState<FlowPreview | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
+  // Set when the open flow is deleted out from under us (e.g. another tab/user).
+  // putFlow is an idempotent PUT-by-name upsert, so a still-enabled Save would
+  // silently re-create the just-deleted flow (lost-update). Disable Save and show
+  // the not-found notice until the user starts a fresh flow / opens another.
+  const [deleted, setDeleted] = useState(false)
   // The guided CSV import is cube-scoped (ADR-0035), but flows are global, so the
   // import target is chosen here rather than inherited from an ambient cube. The
   // picked cube's detail backs the column-to-dimension mapping.
@@ -127,6 +132,7 @@ export default function FlowsWorkspace({
       setSavedSource(STARTER)
       setSavedInputs('[]')
       setError(null)
+      setDeleted(false)
       return
     }
     if (!initialFlow) return
@@ -147,6 +153,7 @@ export default function FlowsWorkspace({
           setSavedSource(f.source)
           setSavedInputs(JSON.stringify(fi))
           setError(null)
+          setDeleted(false)
         } else {
           // The requested flow is gone (e.g. deleted in another tab). Reset.
           setSelected(null)
@@ -159,6 +166,7 @@ export default function FlowsWorkspace({
           setSavedSource(STARTER)
           setSavedInputs('[]')
           setError(`Flow "${initialFlow}" was not found; it may have been deleted.`)
+          setDeleted(false)
         }
       })
       .catch((e: unknown) =>
@@ -168,6 +176,35 @@ export default function FlowsWorkspace({
       live = false
     }
   }, [initialFlow, autoNew, navSignal])
+
+  // While a flow is open, react to live reloadSignal bumps (a remote
+  // objects_changed) by re-listing flows: if the open flow has been deleted out
+  // from under us, surface the not-found notice and disable Save (putFlow is an
+  // idempotent upsert that would otherwise silently re-create it). The editor
+  // buffer is left intact so unsaved edits are not clobbered beyond reflecting
+  // the deletion. Skipped while authoring a brand-new (unsaved) flow.
+  useEffect(() => {
+    if (!selected) return
+    let live = true
+    listFlows()
+      .then((fs) => {
+        if (!live) return
+        const stillExists = fs.some((x) => x.name === selected)
+        if (stillExists) {
+          // Re-appeared (e.g. recreated) after a prior deletion notice: clear it.
+          setDeleted(false)
+        } else {
+          setDeleted(true)
+          setError(`Flow "${selected}" was deleted elsewhere. Your edits are kept, but Save is disabled so it is not re-created. Start a new flow or rename to save a copy.`)
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+    // Keyed on reloadSignal (+ selected) only: re-checking on every keystroke is
+    // unnecessary, and `selected` only changes via the open effect above.
+  }, [reloadSignal, selected])
 
   // Debounced validation of the edited source.
   useEffect(() => {
@@ -187,6 +224,9 @@ export default function FlowsWorkspace({
 
   const inputsJson = useMemo(() => JSON.stringify(inputs), [inputs])
   const dirty = name !== savedName || source !== savedSource || inputsJson !== savedInputs
+  // Block Save only when it would resurrect the deleted flow under its own name.
+  // Renaming turns it into a genuinely new flow, which is allowed to save.
+  const wouldResurrect = deleted && name.trim() === (selected ?? '')
 
   // Report dirtiness up so the navigator can confirm before discarding edits;
   // clear it on unmount so a stale "dirty" never blocks the next navigation.
@@ -219,6 +259,8 @@ export default function FlowsWorkspace({
       setSavedName(saved.name)
       setSavedSource(source)
       setSavedInputs(JSON.stringify(savedFi))
+      // A successful save (e.g. under a new name) means it exists again.
+      setDeleted(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save the flow')
     } finally {
@@ -282,7 +324,11 @@ export default function FlowsWorkspace({
         />
         {error ? <p className="error" role="alert">{error}</p> : null}
         <div className="actions">
-          <button className="primary" disabled={saving || preview?.ok === false} onClick={() => void save()}>
+          <button
+            className="primary"
+            disabled={saving || preview?.ok === false || wouldResurrect}
+            onClick={() => void save()}
+          >
             {saving ? 'Saving...' : 'Save flow'}
           </button>
         </div>

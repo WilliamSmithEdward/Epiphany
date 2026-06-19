@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import Login from './components/Login'
 import CubeApp from './components/CubeApp'
 import ChangePassword from './components/ChangePassword'
+import ErrorBoundary from './components/ErrorBoundary'
 import ThemeToggle from './ui/ThemeToggle'
 import { TooltipProvider, ConfirmProvider } from './ui'
 import { getMe } from './api/client'
@@ -96,11 +97,18 @@ export default function App() {
           </div>
         </div>
       ) : (
-        <CubeApp
-          username={session.username}
-          isAdmin={session.isAdmin}
-          onLogout={() => setSession(null)}
-        />
+        // Wrap the authenticated app so a crash inside it shows a recoverable
+        // fallback (with a Reload button) instead of React unmounting the whole
+        // root and blanking the document. Login / change-password live outside
+        // this boundary (each carries its own ThemeToggle), so an unauthenticated
+        // user always has a working chrome to recover through.
+        <ErrorBoundary>
+          <CubeApp
+            username={session.username}
+            isAdmin={session.isAdmin}
+            onLogout={() => setSession(null)}
+          />
+        </ErrorBoundary>
       )}
       </ConfirmProvider>
     </TooltipProvider>

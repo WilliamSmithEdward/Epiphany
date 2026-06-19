@@ -84,6 +84,11 @@ export default function JobsWorkspace({
   const [stepPick, setStepPick] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Set when the open schedule is deleted out from under us (e.g. another
+  // tab/user). putSchedule is an idempotent PUT-by-name upsert, so a still-enabled
+  // Save would silently re-create the just-deleted schedule (lost-update). Disable
+  // Save and show a notice until the user starts a fresh schedule / opens another.
+  const [deleted, setDeleted] = useState(false)
 
   const load = useCallback(() => {
     // Flows (and schedules) drive the editor and gate on Flow/Job access, so a
@@ -111,6 +116,7 @@ export default function JobsWorkspace({
       setSavedDraft({ ...BLANK })
       setStepPick('')
       setError(null)
+      setDeleted(false)
       return
     }
     if (!initialJob) return
@@ -127,6 +133,7 @@ export default function JobsWorkspace({
           setSavedDraft({ ...loaded, steps: [...loaded.steps] })
           setStepPick('')
           setError(null)
+          setDeleted(false)
         }
       })
       .catch(() => undefined)
@@ -135,6 +142,35 @@ export default function JobsWorkspace({
     }
   }, [initialJob, autoNew, navSignal])
 
+  // While a schedule is open, react to live reloadSignal bumps (a remote
+  // objects_changed) by re-listing schedules: if the open schedule has been
+  // deleted out from under us, surface a not-found notice and disable Save
+  // (putSchedule is an idempotent upsert that would otherwise silently re-create
+  // it). The draft is left intact so unsaved edits are not clobbered beyond
+  // reflecting the deletion. Skipped while authoring a brand-new (unsaved) one.
+  useEffect(() => {
+    if (!selected) return
+    let live = true
+    listSchedules()
+      .then((js) => {
+        if (!live) return
+        const stillExists = js.some((j) => j.name === selected)
+        if (stillExists) {
+          // Re-appeared (e.g. recreated) after a prior deletion notice: clear it.
+          setDeleted(false)
+        } else {
+          setDeleted(true)
+          setError(`Schedule "${selected}" was deleted elsewhere. Your edits are kept, but Save is disabled so it is not re-created. Start a new schedule or rename to save a copy.`)
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      live = false
+    }
+    // Keyed on reloadSignal (+ selected) only: re-checking on every keystroke is
+    // unnecessary, and `selected` only changes via the open effect above.
+  }, [reloadSignal, selected])
+
   // The form is dirty when any edited field diverges from the loaded/saved draft.
   const dirty =
     draft.name !== savedDraft.name ||
@@ -142,6 +178,10 @@ export default function JobsWorkspace({
     draft.unit !== savedDraft.unit ||
     draft.enabled !== savedDraft.enabled ||
     draft.steps.join('\n') !== savedDraft.steps.join('\n')
+
+  // Block Save only when it would resurrect the deleted schedule under its own
+  // name. Renaming turns it into a genuinely new schedule, which is allowed.
+  const wouldResurrect = deleted && draft.name.trim() === (selected ?? '')
 
   // Report dirtiness up so the navigator can confirm before discarding edits;
   // clear it on unmount so a stale "dirty" never blocks the next navigation.
@@ -201,6 +241,8 @@ export default function JobsWorkspace({
       setSelected(name)
       // The saved draft becomes the new clean baseline.
       setSavedDraft({ name: draft.name, steps: [...draft.steps], count: draft.count, unit: draft.unit, enabled: draft.enabled })
+      // A successful save (e.g. under a new name) means it exists again.
+      setDeleted(false)
       load()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save the schedule')
@@ -342,7 +384,7 @@ export default function JobsWorkspace({
 
             {error ? <p className="error" role="alert">{error}</p> : null}
             <div className="actions">
-              <Button variant="primary" disabled={busy} onClick={() => void save()}>
+              <Button variant="primary" disabled={busy || wouldResurrect} onClick={() => void save()}>
                 {busy ? 'Saving...' : selected ? 'Save changes' : 'Create schedule'}
               </Button>
               {selected ? (
