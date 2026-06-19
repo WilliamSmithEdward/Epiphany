@@ -30,6 +30,52 @@ matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/release
 - **Dimension editor: right-clicking a member opens the action menu at the cursor**
   (it previously anchored to the row's ⋯ button).
 - **Cube tab strip: removed the spurious vertical scroll arrows.**
+- **Durability: a checkpoint can no longer lose data on a crash.** The snapshot is
+  fsynced (file and directory) before the write-ahead log is cleared, and a
+  reindexing dimension edit (reorder/delete/insert) folds outstanding writes and
+  empties the WAL before rewriting the snapshot, so recovery can never replay a
+  stale element index onto the new layout. A WAL truncated below its header by a
+  crash is now treated as fresh rather than failing the open.
+- **A failed model-definition commit no longer leaks into the next one.** If
+  persisting a definition change fails midway, the in-memory model is rolled back
+  to the last published version, so the partial change cannot ride out on a later
+  successful commit.
+- **What-if sandbox overrides now follow structural dimension edits.** Reordering,
+  inserting, or deleting a member remaps each sandbox override to its member's new
+  index (and drops overrides on a deleted member) instead of leaving them on the
+  wrong member or panicking the checkpoint.
+- **Flows: the TypeScript stripper no longer drops `switch` case bodies** such as
+  `case 0: break;` (a case/default colon was mistaken for a type annotation), and
+  no longer corrupts `interface` used as an ordinary identifier.
+- **Dimension aliases: reassigning an alias no longer leaves the old one
+  resolvable** (which also falsely blocked another member from claiming the freed
+  name).
+- **Cube view: an alternate-rollup member can now be expanded independently under
+  each parent** (expansion is keyed by drill path, not member name); a slow cell
+  read can no longer overwrite a newer one; and a set that fails to resolve surfaces
+  the error instead of silently blanking the axis.
+- **Dimension editor: rapid keyboard and context-menu structural edits are gated**
+  so they cannot race a prior in-flight edit, and **member-table range selection**
+  survives a re-sort or filter.
+- **A non-admin schedule author can open the jobs workspace** again (the admin-only
+  run list no longer fails the whole load), and **opening a saved view** no longer
+  drops its layout when the cube loads slowly.
+- **Windows service: a failed startup now reports a non-zero exit to the SCM**
+  instead of a clean stop.
+
+### Security
+
+- **The last administrator can no longer be deleted or demoted**, which would have
+  locked everyone out of the admin control plane.
+- **Sandbox lifecycle endpoints now require cube access** (Read to list/create/get/
+  discard, Write to commit), matching the data endpoints; a user with no grant on a
+  cube could previously enumerate and operate sandboxes there.
+- **Deleting a user, resetting their password, or an admin setting their password
+  now revokes that user's sessions**, so a stale token stops working immediately.
+- **The session cookie is marked `Secure` when the server serves over TLS**, so it
+  is never sent on a plain-HTTP request.
+- **Serving plain HTTP on a non-loopback address now logs a warning** that the API
+  and login are exposed unencrypted.
 
 ## [m8.8] - 2026-06-18
 
