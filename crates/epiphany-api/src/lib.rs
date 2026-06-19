@@ -6,10 +6,6 @@
 //! shared [`ApiError`] envelope. Every route except `/healthz` and the login
 //! endpoint requires a valid session (the [`auth::AuthPrincipal`] extractor).
 
-// The hand-authored OpenAPI document (openapi.rs) is one large `json!` literal;
-// its expansion needs a higher macro recursion limit than the default.
-#![recursion_limit = "512"]
-
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{DefaultBodyLimit, State};
