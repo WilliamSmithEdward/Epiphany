@@ -564,107 +564,102 @@ fn read_error(e: &FlowReadError) -> boa_engine::JsError {
     JsNativeError::error().with_message(e.to_string()).into()
 }
 
+/// Shared scaffold for the staging host functions (`cubeEnsureElementsJson`,
+/// `cubeAddChildJson`, `cubeWriteCellsJson`, `dimEnsureElementsJson`,
+/// `dimAddChildJson`): parse the target name (`args[0]`) and the JSON item array
+/// (`args[1]`, a no-op when absent or not an array), then under the run state run
+/// `stage` -- which pushes the parsed specs and returns how many it staged -- and
+/// enforce the `MAX_STAGED` budget exactly (the running total is bumped by the
+/// staged count and exceeding the cap throws [`budget_error`]). Each host function
+/// supplies only its specific `stage` body.
+fn stage_items(
+    args: &[JsValue],
+    ctx: &mut Context,
+    stage: impl FnOnce(&mut FlowState, String, &[serde_json::Value]) -> usize,
+) -> JsResult<JsValue> {
+    let name = arg_string(args, 0, ctx)?;
+    let Some(items) = json_array(args, 1, ctx)? else {
+        return Ok(JsValue::undefined());
+    };
+    let over = with_flow(|s| {
+        let added = stage(s, name, &items);
+        s.staged += added;
+        over_budget(s)
+    });
+    if over {
+        return Err(budget_error());
+    }
+    Ok(JsValue::undefined())
+}
+
 fn host_cube_ensure_elements(
     _t: &JsValue,
     args: &[JsValue],
     ctx: &mut Context,
 ) -> JsResult<JsValue> {
-    let cube = arg_string(args, 0, ctx)?;
-    let Some(items) = json_array(args, 1, ctx)? else {
-        return Ok(JsValue::undefined());
-    };
-    let over = with_flow(|s| {
+    stage_items(args, ctx, |s, cube, items| {
         let mut added = 0;
-        {
-            let entry = s.cubes.entry(cube).or_default();
-            for item in &items {
-                let dimension = str_field(item, "dimension");
-                let name = str_field(item, "name");
-                if !dimension.is_empty() && !name.is_empty() {
-                    entry.elements.push(ElementSpec {
-                        dimension,
-                        name,
-                        kind: parse_kind(item),
-                    });
-                    added += 1;
-                }
+        let entry = s.cubes.entry(cube).or_default();
+        for item in items {
+            let dimension = str_field(item, "dimension");
+            let name = str_field(item, "name");
+            if !dimension.is_empty() && !name.is_empty() {
+                entry.elements.push(ElementSpec {
+                    dimension,
+                    name,
+                    kind: parse_kind(item),
+                });
+                added += 1;
             }
         }
-        s.staged += added;
-        over_budget(s)
-    });
-    if over {
-        return Err(budget_error());
-    }
-    Ok(JsValue::undefined())
+        added
+    })
 }
 
 fn host_cube_add_child(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-    let cube = arg_string(args, 0, ctx)?;
-    let Some(items) = json_array(args, 1, ctx)? else {
-        return Ok(JsValue::undefined());
-    };
-    let over = with_flow(|s| {
+    stage_items(args, ctx, |s, cube, items| {
         let mut added = 0;
-        {
-            let entry = s.cubes.entry(cube).or_default();
-            for item in &items {
-                let dimension = str_field(item, "dimension");
-                let parent = str_field(item, "parent");
-                let child = str_field(item, "child");
-                let weight = item.get("weight").and_then(|w| w.as_i64()).unwrap_or(1);
-                if !dimension.is_empty() && !parent.is_empty() && !child.is_empty() {
-                    entry.edges.push(EdgeSpec {
-                        dimension,
-                        parent,
-                        child,
-                        weight,
-                    });
-                    added += 1;
-                }
+        let entry = s.cubes.entry(cube).or_default();
+        for item in items {
+            let dimension = str_field(item, "dimension");
+            let parent = str_field(item, "parent");
+            let child = str_field(item, "child");
+            let weight = item.get("weight").and_then(|w| w.as_i64()).unwrap_or(1);
+            if !dimension.is_empty() && !parent.is_empty() && !child.is_empty() {
+                entry.edges.push(EdgeSpec {
+                    dimension,
+                    parent,
+                    child,
+                    weight,
+                });
+                added += 1;
             }
         }
-        s.staged += added;
-        over_budget(s)
-    });
-    if over {
-        return Err(budget_error());
-    }
-    Ok(JsValue::undefined())
+        added
+    })
 }
 
 fn host_cube_write_cells(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-    let cube = arg_string(args, 0, ctx)?;
-    let Some(items) = json_array(args, 1, ctx)? else {
-        return Ok(JsValue::undefined());
-    };
-    let over = with_flow(|s| {
+    stage_items(args, ctx, |s, cube, items| {
         let mut added = 0;
-        {
-            let entry = s.cubes.entry(cube).or_default();
-            for item in &items {
-                let value = str_field(item, "value");
-                let mut coord = BTreeMap::new();
-                if let Some(obj) = item.get("coord").and_then(|c| c.as_object()) {
-                    for (dim, member) in obj {
-                        if let Some(m) = member.as_str() {
-                            coord.insert(dim.clone(), m.to_string());
-                        }
+        let entry = s.cubes.entry(cube).or_default();
+        for item in items {
+            let value = str_field(item, "value");
+            let mut coord = BTreeMap::new();
+            if let Some(obj) = item.get("coord").and_then(|c| c.as_object()) {
+                for (dim, member) in obj {
+                    if let Some(m) = member.as_str() {
+                        coord.insert(dim.clone(), m.to_string());
                     }
                 }
-                if !coord.is_empty() {
-                    entry.cells.push(PlannedCell { coord, value });
-                    added += 1;
-                }
+            }
+            if !coord.is_empty() {
+                entry.cells.push(PlannedCell { coord, value });
+                added += 1;
             }
         }
-        s.staged += added;
-        over_budget(s)
-    });
-    if over {
-        return Err(budget_error());
-    }
-    Ok(JsValue::undefined())
+        added
+    })
 }
 
 fn host_dim_ensure_elements(
@@ -672,66 +667,44 @@ fn host_dim_ensure_elements(
     args: &[JsValue],
     ctx: &mut Context,
 ) -> JsResult<JsValue> {
-    let dim = arg_string(args, 0, ctx)?;
-    let Some(items) = json_array(args, 1, ctx)? else {
-        return Ok(JsValue::undefined());
-    };
-    let over = with_flow(|s| {
+    stage_items(args, ctx, |s, dim, items| {
         let mut added = 0;
-        {
-            let entry = s.dimensions.entry(dim.clone()).or_default();
-            for item in &items {
-                let name = str_field(item, "name");
-                if !name.is_empty() {
-                    entry.elements.push(ElementSpec {
-                        dimension: dim.clone(),
-                        name,
-                        kind: parse_kind(item),
-                    });
-                    added += 1;
-                }
+        let entry = s.dimensions.entry(dim.clone()).or_default();
+        for item in items {
+            let name = str_field(item, "name");
+            if !name.is_empty() {
+                entry.elements.push(ElementSpec {
+                    dimension: dim.clone(),
+                    name,
+                    kind: parse_kind(item),
+                });
+                added += 1;
             }
         }
-        s.staged += added;
-        over_budget(s)
-    });
-    if over {
-        return Err(budget_error());
-    }
-    Ok(JsValue::undefined())
+        added
+    })
 }
 
 fn host_dim_add_child(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
-    let dim = arg_string(args, 0, ctx)?;
-    let Some(items) = json_array(args, 1, ctx)? else {
-        return Ok(JsValue::undefined());
-    };
-    let over = with_flow(|s| {
+    stage_items(args, ctx, |s, dim, items| {
         let mut added = 0;
-        {
-            let entry = s.dimensions.entry(dim.clone()).or_default();
-            for item in &items {
-                let parent = str_field(item, "parent");
-                let child = str_field(item, "child");
-                let weight = item.get("weight").and_then(|w| w.as_i64()).unwrap_or(1);
-                if !parent.is_empty() && !child.is_empty() {
-                    entry.edges.push(EdgeSpec {
-                        dimension: dim.clone(),
-                        parent,
-                        child,
-                        weight,
-                    });
-                    added += 1;
-                }
+        let entry = s.dimensions.entry(dim.clone()).or_default();
+        for item in items {
+            let parent = str_field(item, "parent");
+            let child = str_field(item, "child");
+            let weight = item.get("weight").and_then(|w| w.as_i64()).unwrap_or(1);
+            if !parent.is_empty() && !child.is_empty() {
+                entry.edges.push(EdgeSpec {
+                    dimension: dim.clone(),
+                    parent,
+                    child,
+                    weight,
+                });
+                added += 1;
             }
         }
-        s.staged += added;
-        over_budget(s)
-    });
-    if over {
-        return Err(budget_error());
-    }
-    Ok(JsValue::undefined())
+        added
+    })
 }
 
 fn host_cube_read_cell(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {

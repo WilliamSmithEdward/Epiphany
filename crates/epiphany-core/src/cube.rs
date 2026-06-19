@@ -506,40 +506,74 @@ impl Cube {
     /// `to_new` is injective on the surviving elements). Runs after the dimension
     /// edit is already staged on `self`, so the new layout reflects the edit.
     fn remap_cells_for_dimension(&mut self, d: usize, to_new: &[u32]) {
-        let rank = self.rank();
-        // Collect under the OLD layout (the one the current keys were packed with),
-        // then re-pack under the new layout, exactly as `relayout` does.
-        let numeric: Vec<(Vec<u32>, Fixed)> = self
-            .cells
-            .entries(&self.layout, rank)
-            .map(|(coord, &value)| (coord, value))
-            .collect();
-        let strings: Vec<(Vec<u32>, u32)> = self
-            .string_cells
-            .entries(&self.layout, rank)
-            .map(|(coord, &id)| (coord, id))
-            .collect();
+        // Re-pack both stores under the (possibly re-widened) layout, mapping each
+        // cell's component for `d` through `to_new` and dropping any cell whose
+        // component maps to `u32::MAX` (a removed element).
         let new_layout = Layout::new(&self.dimensions);
-        let mut new_cells = CellStore::new(new_layout.narrow);
-        for (mut coord, value) in numeric {
+        self.rebuild_stores(new_layout, true, true, |coord| {
             let mapped = to_new[coord[d] as usize];
             if mapped == u32::MAX {
-                continue; // a removed element: drop the cell
+                return false; // a removed element: drop the cell
             }
             coord[d] = mapped;
-            new_cells.put(&new_layout, &coord, value);
-        }
-        let mut new_strings = CellStore::new(new_layout.narrow);
-        for (mut coord, id) in strings {
-            let mapped = to_new[coord[d] as usize];
-            if mapped == u32::MAX {
-                continue;
+            true
+        });
+    }
+
+    /// Rebuild the numeric and/or string cell store(s) under `new_layout`, applying
+    /// `transform` to each stored coordinate: a returned `false` drops the cell, and
+    /// a `true` keeps the (possibly mutated) coordinate, re-put under the new layout.
+    ///
+    /// This is the single rebuild primitive shared by the cell-store reshaping ops
+    /// ([`remap_cells_for_dimension`](Self::remap_cells_for_dimension),
+    /// [`relayout`](Self::relayout), and
+    /// [`drop_cells_for_element`](Self::drop_cells_for_element)): each collects every
+    /// cell from both stores via `entries()`, builds a fresh store under the new
+    /// layout, and re-puts each surviving (and optionally transformed) cell. Cells
+    /// are collected under the OLD layout (the one the current keys were packed
+    /// with), then re-packed under `new_layout`.
+    ///
+    /// Deterministic: cells are re-inserted into a fresh store and the result is
+    /// independent of iteration order, because each retained coordinate is unique
+    /// (the callers' transforms preserve that). When `numeric`/`strings` is false
+    /// the matching store is left untouched (and `new_layout` must equal the current
+    /// layout, since that store keeps its existing keys).
+    fn rebuild_stores(
+        &mut self,
+        new_layout: Layout,
+        numeric: bool,
+        strings: bool,
+        mut transform: impl FnMut(&mut Vec<u32>) -> bool,
+    ) {
+        let rank = self.rank();
+        if numeric {
+            let collected: Vec<(Vec<u32>, Fixed)> = self
+                .cells
+                .entries(&self.layout, rank)
+                .map(|(coord, &value)| (coord, value))
+                .collect();
+            let mut new_cells = CellStore::new(new_layout.narrow);
+            for (mut coord, value) in collected {
+                if transform(&mut coord) {
+                    new_cells.put(&new_layout, &coord, value);
+                }
             }
-            coord[d] = mapped;
-            new_strings.put(&new_layout, &coord, id);
+            self.cells = new_cells;
         }
-        self.cells = new_cells;
-        self.string_cells = new_strings;
+        if strings {
+            let collected: Vec<(Vec<u32>, u32)> = self
+                .string_cells
+                .entries(&self.layout, rank)
+                .map(|(coord, &id)| (coord, id))
+                .collect();
+            let mut new_strings = CellStore::new(new_layout.narrow);
+            for (mut coord, id) in collected {
+                if transform(&mut coord) {
+                    new_strings.put(&new_layout, &coord, id);
+                }
+            }
+            self.string_cells = new_strings;
+        }
         self.layout = new_layout;
     }
 
@@ -777,33 +811,10 @@ impl Cube {
     /// the numeric store (`numeric`) and/or the string store (`strings`). Used by
     /// kind conversion; no index change, so the layout is untouched.
     fn drop_cells_for_element(&mut self, d: usize, element: u32, numeric: bool, strings: bool) {
-        let rank = self.rank();
-        if numeric {
-            let kept: Vec<(Vec<u32>, Fixed)> = self
-                .cells
-                .entries(&self.layout, rank)
-                .filter(|(coord, _)| coord[d] != element)
-                .map(|(coord, &value)| (coord, value))
-                .collect();
-            let mut store = CellStore::new(self.layout.narrow);
-            for (coord, value) in kept {
-                store.put(&self.layout, &coord, value);
-            }
-            self.cells = store;
-        }
-        if strings {
-            let kept: Vec<(Vec<u32>, u32)> = self
-                .string_cells
-                .entries(&self.layout, rank)
-                .filter(|(coord, _)| coord[d] != element)
-                .map(|(coord, &id)| (coord, id))
-                .collect();
-            let mut store = CellStore::new(self.layout.narrow);
-            for (coord, id) in kept {
-                store.put(&self.layout, &coord, id);
-            }
-            self.string_cells = store;
-        }
+        // No index change, so the layout is unchanged; keep only cells whose
+        // component for `d` differs from `element` in the selected store(s).
+        let layout = self.layout.clone();
+        self.rebuild_stores(layout, numeric, strings, |coord| coord[d] != element);
     }
 
     /// Delete a dimension element, its edges (as parent and as child), and its
@@ -949,28 +960,8 @@ impl Cube {
         if new_layout == self.layout {
             return;
         }
-        let rank = self.rank();
-        let cells: Vec<(Vec<u32>, Fixed)> = self
-            .cells
-            .entries(&self.layout, rank)
-            .map(|(coord, &value)| (coord, value))
-            .collect();
-        let strings: Vec<(Vec<u32>, u32)> = self
-            .string_cells
-            .entries(&self.layout, rank)
-            .map(|(coord, &id)| (coord, id))
-            .collect();
-        let mut new_cells = CellStore::new(new_layout.narrow);
-        for (coord, value) in cells {
-            new_cells.put(&new_layout, &coord, value);
-        }
-        let mut new_strings = CellStore::new(new_layout.narrow);
-        for (coord, id) in strings {
-            new_strings.put(&new_layout, &coord, id);
-        }
-        self.cells = new_cells;
-        self.string_cells = new_strings;
-        self.layout = new_layout;
+        // Re-pack both stores under the wider layout; coordinates are unchanged.
+        self.rebuild_stores(new_layout, true, true, |_coord| true);
     }
 
     /// Number of populated numeric leaf cells.

@@ -660,40 +660,7 @@ pub(crate) async fn execute_adhoc(
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let snap = snapshot(&state, &cube)?;
     let view = view_from_body("adhoc".to_string(), cube.clone(), None, &body)?;
-    let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
-    let sandbox = sandbox_name
-        .as_deref()
-        .and_then(|n| snap.model().sandbox(n));
-    let mask = element_mask(&state, &auth, &snap);
-    // Read-through the view cache (ADR-0028), ad-hoc pool. The resolver is built
-    // lazily inside the closure so a cache hit skips rule compilation.
-    let cellset = state.view_cache.get_or_compute(
-        crate::view_cache::ViewRead {
-            cube: &cube,
-            version: snap.version(),
-            view: &view,
-            sandbox,
-            mask: mask.as_ref(),
-            is_adhoc: true,
-        },
-        || {
-            let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
-            execute_view(
-                snap.cube(),
-                &view,
-                &*resolver,
-                &|d, n| snap.subset(d, n),
-                state.evaluator(),
-                mask.as_ref(),
-            )
-        },
-    )?;
-    Ok(Json(cellset_dto(
-        snap.cube(),
-        &cellset,
-        snap.version(),
-        sandbox,
-    )))
+    execute_adhoc_view(&state, &auth, &cube, &snap, &selector, &view)
 }
 
 /// `POST /cubes/{cube}/mdx` -> parse and execute a full MDX `SELECT` query to a
@@ -712,27 +679,42 @@ pub(crate) async fn execute_mdx(
     let query = epiphany_mdx::parse_query(&body.mdx)
         .map_err(|e| ApiError::unprocessable("MDX_PARSE_ERROR", e.to_string()))?;
     let view = view_from_mdx(snap.cube(), &cube, &query)?;
-    let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
+    execute_adhoc_view(&state, &auth, &cube, &snap, &selector, &view)
+}
+
+/// Resolve the active sandbox + element mask and execute an ad-hoc `view` through
+/// the view cache's ad-hoc pool (ADR-0028), returning the cellset DTO. Shared by
+/// [`execute_adhoc`] and [`execute_mdx`], which differ only in how they build the
+/// [`View`] (`view_from_body` vs `view_from_mdx`); the `Read` gate and snapshot are
+/// applied by each caller before the view is built. The resolver is constructed
+/// lazily inside the cache closure, so a cache hit skips rule compilation.
+fn execute_adhoc_view(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    cube: &str,
+    snap: &ReadSnapshot,
+    selector: &SandboxSelector,
+    view: &View,
+) -> Result<Json<CellsetDto>, ApiError> {
+    let sandbox_name = resolve_sandbox(snap, &auth.principal, selector)?;
     let sandbox = sandbox_name
         .as_deref()
         .and_then(|n| snap.model().sandbox(n));
-    let mask = element_mask(&state, &auth, &snap);
-    // Read-through the view cache (ADR-0028), ad-hoc pool. The resolver is built
-    // lazily inside the closure so a cache hit skips rule compilation.
+    let mask = element_mask(state, auth, snap);
     let cellset = state.view_cache.get_or_compute(
         crate::view_cache::ViewRead {
-            cube: &cube,
+            cube,
             version: snap.version(),
-            view: &view,
+            view,
             sandbox,
             mask: mask.as_ref(),
             is_adhoc: true,
         },
         || {
-            let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
+            let resolver = state.cells.resolver_with(snap, sandbox, mask.as_ref());
             execute_view(
                 snap.cube(),
-                &view,
+                view,
                 &*resolver,
                 &|d, n| snap.subset(d, n),
                 state.evaluator(),
