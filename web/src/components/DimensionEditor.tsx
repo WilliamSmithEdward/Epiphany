@@ -220,6 +220,40 @@ export default function DimensionEditor({
     return m
   }, [dimension])
 
+  // parent name -> its direct children, for computing the reachable descendants of
+  // the dragged member (to suppress the as-child indicator on a cycle-forming
+  // target: dropping a member into its own descendant would form a cycle, which the
+  // backend rejects). UX only - the backend remains the source of truth.
+  const childrenByParent = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const e of dimension?.edges ?? []) {
+      const list = m.get(e.parent)
+      if (list) list.push(e.child)
+      else m.set(e.parent, [e.child])
+    }
+    return m
+  }, [dimension])
+
+  // The set of members reachable below the currently-dragged member (its transitive
+  // descendants), recomputed when the drag source changes. An as-child drop onto any
+  // of these - or onto the member itself - would form a cycle, so we suppress the
+  // as-child indicator there (the self guard covers the member itself).
+  const dragDescendants = useMemo(() => {
+    const out = new Set<string>()
+    if (!drag) return out
+    const stack = [drag.name]
+    while (stack.length) {
+      const cur = stack.pop() as string
+      for (const child of childrenByParent.get(cur) ?? []) {
+        if (!out.has(child)) {
+          out.add(child)
+          stack.push(child)
+        }
+      }
+    }
+    return out
+  }, [drag, childrenByParent])
+
   // The consolidations a member could be added to by keyboard (every member of
   // kind consolidated), for the "Add to consolidation" picker.
   const consolidations = useMemo(
@@ -309,6 +343,45 @@ export default function DimensionEditor({
     [target, load, onChanged],
   )
 
+  // Run a SEQUENCE of structural edits in order, reloading the tree once at the
+  // end. This backs a multi-op move (e.g. remove_child then add_child then
+  // reorder): the editDimension API is one-op-per-call, so a multi-op move is NOT
+  // atomic - if a later op fails, the earlier ops have already committed; we stop
+  // at the first failure, surface its error, and still reload so the UI reflects
+  // whatever did commit. Empty / single-op lists are handled by the callers.
+  const runEdits = useCallback(
+    async (edits: DimensionEdit[]): Promise<boolean> => {
+      if (edits.length === 0) return true
+      setBusy(true)
+      setError(null)
+      setNotice(null)
+      let ok = true
+      const fannedOut = new Set<string>()
+      try {
+        for (const edit of edits) {
+          if (target.kind === 'cube') {
+            await editCubeDimension(target.cube, target.dim, edit)
+          } else {
+            const result = await editDimensionById(target.id, edit)
+            for (const c of result.fanned_out_to) fannedOut.add(c)
+          }
+        }
+      } catch (e) {
+        ok = false
+        setError(e instanceof Error ? e.message : 'Could not apply the change')
+      } finally {
+        if (ok && fannedOut.size > 0) {
+          setNotice(`Updated, and applied to ${[...fannedOut].join(', ')}.`)
+        }
+        load()
+        onChanged?.()
+        setBusy(false)
+      }
+      return ok
+    },
+    [target, load, onChanged],
+  )
+
   // The new full member order placing `moved` immediately before/after `ref`.
   const orderMoving = useCallback(
     (moved: string, ref: string, side: 'before' | 'after'): string[] => {
@@ -322,28 +395,39 @@ export default function DimensionEditor({
     [dimension],
   )
 
-  // Add `child` to consolidation `parent` ADDITIVELY: the child keeps its existing
-  // parents (a member may roll up to several consolidations), unlike Detach +
-  // reparent which moves it. When the target is currently a leaf/string it gets
-  // converted to a consolidation and any value stored directly on it is cleared,
-  // so confirm first; a target that is already a consolidation is purely additive
-  // and needs no confirmation.
-  const addChild = useCallback(
+  // When `parent` is a leaf/string, adding a child converts it to a consolidation
+  // and clears any value stored directly on it, so confirm first; a parent that is
+  // already a consolidation is purely additive and needs no confirmation. Resolves
+  // false if the user cancels. Shared by addChild and moveMember so an as-child
+  // drop onto a leaf gets the same warning whether it is additive or a move.
+  const confirmConsolidationConversion = useCallback(
     async (parent: string, child: string): Promise<boolean> => {
-      if (parent === child) return false
       const parentKind = kindOf.get(parent)
       if (parentKind && parentKind !== 'consolidated') {
-        const ok = await confirm({
+        return confirm({
           title: `Add "${child}" as a child of "${parent}"`,
           body: `"${parent}" becomes a Consolidation, which is calculated from its children, so any value stored directly on "${parent}" will be cleared. Continue?`,
           confirmLabel: 'Add as child',
           danger: true,
         })
-        if (!ok) return false
       }
+      return true
+    },
+    [confirm, kindOf],
+  )
+
+  // Add `child` to consolidation `parent` ADDITIVELY: the child keeps its existing
+  // parents (a member may roll up to several consolidations), unlike Detach +
+  // reparent which moves it. Backs the "Add to consolidation" menu action and the
+  // "add member as child" inline form; the drag as-child gesture is a MOVE and goes
+  // through moveMember instead.
+  const addChild = useCallback(
+    async (parent: string, child: string): Promise<boolean> => {
+      if (parent === child) return false
+      if (!(await confirmConsolidationConversion(parent, child))) return false
       return runEdit({ op: 'add_child', parent, child })
     },
-    [confirm, kindOf, runEdit],
+    [confirmConsolidationConversion, runEdit],
   )
 
   // Remove just the one `parent -> child` edge (keep the member, its data, and its
@@ -356,27 +440,76 @@ export default function DimensionEditor({
     [runEdit],
   )
 
-  // Resolve a drop: before/after -> reorder; as-child -> add the moved member as a
-  // child of the target additively (it keeps its existing parents).
-  const doDrop = useCallback(
-    (moved: string, targetName: string, zone: DropZone) => {
+  // Parent-aware MOVE resolver: emit the minimal, idempotent, duplicate-free op set
+  // for moving the dragged occurrence `moved` (dragged out of `fromParent`, null when
+  // it was a root) to a destination derived from the target row, by diffing the
+  // source parent against the desired target. ALWAYS removes only `fromParent` so the
+  // member keeps its OTHER parents (the multi-parent rule). A multi-op move is NOT
+  // atomic (one op per API call); runEdits stops at the first failure and reloads once.
+  //
+  // - as-child onto `target` (MOVE): if fromParent is null -> add_child(target). If
+  //   fromParent != target -> remove_child(fromParent) then add_child(target). If
+  //   fromParent == target -> no-op. A leaf/string target is converted (confirmed).
+  // - before/after a sibling under the SAME parent (toParent === fromParent, both may
+  //   be null=root): a pure within-list reorder.
+  // - before/after a row under a DIFFERENT parent: remove_child(fromParent) [skip if
+  //   root] + add_child(toParent) [skip if toParent null=root] + reorder to position.
+  const moveMember = useCallback(
+    async (
+      moved: string,
+      fromParent: string | null,
+      zone: DropZone,
+      targetName: string,
+      toParent: string | null,
+    ): Promise<void> => {
       if (moved === targetName) return
+
       if (zone === 'as-child') {
-        void addChild(targetName, moved)
-      } else {
-        void runEdit({ op: 'reorder', new_order: orderMoving(moved, targetName, zone) })
+        if (fromParent === targetName) return // already a child here: no-op
+        if (!(await confirmConsolidationConversion(targetName, moved))) return
+        const edits: DimensionEdit[] = []
+        if (fromParent) edits.push({ op: 'remove_child', parent: fromParent, child: moved })
+        edits.push({ op: 'add_child', parent: targetName, child: moved })
+        await runEdits(edits)
+        return
       }
+
+      // before / after a target row.
+      const newOrder = orderMoving(moved, targetName, zone)
+      if (toParent === fromParent) {
+        // Same parent (or both root): a pure reorder within the element list.
+        await runEdits([{ op: 'reorder', new_order: newOrder }])
+        return
+      }
+      // Different parent: positional MOVE into the target's parent.
+      if (toParent && !(await confirmConsolidationConversion(toParent, moved))) return
+      const edits: DimensionEdit[] = []
+      if (fromParent) edits.push({ op: 'remove_child', parent: fromParent, child: moved })
+      if (toParent) edits.push({ op: 'add_child', parent: toParent, child: moved })
+      edits.push({ op: 'reorder', new_order: newOrder })
+      await runEdits(edits)
     },
-    [runEdit, orderMoving, addChild],
+    [confirmConsolidationConversion, orderMoving, runEdits],
   )
 
-  // Compute the drop zone (top third / middle / bottom third) from the pointer
-  // position within a row.
+  // Resolve a drop against the target row actually under the pointer: dispatch to
+  // moveMember with the dragged occurrence's source parent (drag.parent) and the
+  // target row's parent so the move is parent-aware (MOVE semantics, not additive).
+  const doDrop = useCallback(
+    (moved: string, fromParent: string | null, target: FlatRow, zone: DropZone) => {
+      void moveMember(moved, fromParent, zone, target.name, target.parent)
+    },
+    [moveMember],
+  )
+
+  // Compute the drop zone from the pointer position within a row. The as-child band
+  // is the middle ~50% (a large, easy-to-hit container target); before/after are
+  // thin ~25% edge bands so an insertion line is still reachable.
   const zoneFor = (e: DragEvent<HTMLElement>): DropZone => {
     const rect = e.currentTarget.getBoundingClientRect()
     const y = e.clientY - rect.top
-    if (y < rect.height / 3) return 'before'
-    if (y > (rect.height * 2) / 3) return 'after'
+    if (y < rect.height * 0.25) return 'before'
+    if (y > rect.height * 0.75) return 'after'
     return 'as-child'
   }
 
@@ -790,6 +923,10 @@ export default function DimensionEditor({
                 onDragStart={(e) => {
                   setDrag({ name: r.name, parent: r.parent })
                   setPicked(null)
+                  // Mirror the working PivotFields pattern: set both a payload and
+                  // effectAllowed so Firefox actually starts the drag and the cursor
+                  // shows a move.
+                  e.dataTransfer.setData('text/plain', r.name)
                   e.dataTransfer.effectAllowed = 'move'
                 }}
                 onDragEnd={endDrag}
@@ -797,8 +934,17 @@ export default function DimensionEditor({
                   if (!drag || drag.name === r.name) return
                   e.preventDefault()
                   e.stopPropagation()
+                  e.dataTransfer.dropEffect = 'move'
                   setRootOver(false)
-                  const z = zoneFor(e)
+                  let z = zoneFor(e)
+                  // Suppress the as-child indicator on a cycle-forming target (the
+                  // dragged member's own descendant): nudge it to the nearer edge so
+                  // the user sees a valid before/after insertion instead. The backend
+                  // is still the source of truth and rejects an actual cycle.
+                  if (z === 'as-child' && dragDescendants.has(r.name)) {
+                    const rect = e.currentTarget.getBoundingClientRect()
+                    z = e.clientY - rect.top < rect.height / 2 ? 'before' : 'after'
+                  }
                   scheduleHoverExpand(r)
                   setOver((cur) =>
                     cur?.path === r.path && cur.zone === z ? cur : { path: r.path, zone: z },
@@ -807,7 +953,17 @@ export default function DimensionEditor({
                 onDrop={(e) => {
                   e.preventDefault()
                   e.stopPropagation()
-                  if (drag && over) doDrop(drag.name, r.name, over.zone)
+                  // Recompute the zone from the event so the drop lands where the
+                  // pointer actually is, not a stale `over` (which can lag the last
+                  // dragOver, e.g. after a hover-auto-expand shifted rows).
+                  if (drag) {
+                    let z = zoneFor(e)
+                    if (z === 'as-child' && dragDescendants.has(r.name)) {
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      z = e.clientY - rect.top < rect.height / 2 ? 'before' : 'after'
+                    }
+                    doDrop(drag.name, drag.parent, r, z)
+                  }
                   endDrag()
                 }}
               >

@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest'
 import {
   allExpandableKeys,
+  buildElementTree,
   buildForest,
   computeHeaderSpans,
   flattenForest,
   pathKey,
   subsetVisibleMembers,
+  type TreeNode,
 } from './tree'
 import type { DimensionDto } from '../api/client'
 
@@ -41,6 +43,61 @@ describe('subsetVisibleMembers (saved static subset)', () => {
       depth: 0,
       expandable: false,
     })
+  })
+})
+
+describe('buildElementTree (element-order sorted children)', () => {
+  it('orders each node\'s children by element order, not raw edge order', () => {
+    // The edges below list children out of element order (Charlie before Bravo).
+    // buildElementTree must sort each parent's children by the dimension's element
+    // order so the editor matches buildForest (the pivot's reference) and a global
+    // `reorder` reorders siblings consistently in both views.
+    const dim: DimensionDto = {
+      name: 'Region',
+      elements: [
+        { name: 'Total', kind: 'consolidated' },
+        { name: 'Alpha', kind: 'numeric' },
+        { name: 'Bravo', kind: 'numeric' },
+        { name: 'Charlie', kind: 'numeric' },
+      ],
+      edges: [
+        { parent: 'Total', child: 'Charlie', weight: 1 },
+        { parent: 'Total', child: 'Alpha', weight: 1 },
+        { parent: 'Total', child: 'Bravo', weight: 1 },
+      ],
+    }
+    const tree = buildElementTree(dim)
+    expect(tree.map((n) => n.name)).toEqual(['Total'])
+    expect(tree[0].children.map((n) => n.name)).toEqual(['Alpha', 'Bravo', 'Charlie'])
+  })
+
+  it('sorts children at every depth to agree with buildForest', () => {
+    const dim: DimensionDto = {
+      name: 'Region',
+      elements: [
+        { name: 'Total', kind: 'consolidated' },
+        { name: 'West', kind: 'consolidated' },
+        { name: 'East', kind: 'consolidated' },
+        { name: 'NY', kind: 'numeric' },
+        { name: 'NJ', kind: 'numeric' },
+      ],
+      edges: [
+        { parent: 'Total', child: 'West', weight: 1 },
+        { parent: 'Total', child: 'East', weight: 1 },
+        // East's children listed reversed vs. element order (NJ before NY).
+        { parent: 'East', child: 'NJ', weight: 1 },
+        { parent: 'East', child: 'NY', weight: 1 },
+      ],
+    }
+    const tree = buildElementTree(dim)
+    const total = tree[0]
+    expect(total.children.map((n) => n.name)).toEqual(['West', 'East'])
+    const east = total.children.find((n) => n.name === 'East') as TreeNode
+    // Element order is NY (index 3) then NJ (index 4), so the sorted children must
+    // be [NY, NJ], the same order buildForest produces.
+    expect(east.children.map((n) => n.name)).toEqual(['NY', 'NJ'])
+    const forest = buildForest(dim)
+    expect(forest.childrenOf.get('East')).toEqual(['NY', 'NJ'])
   })
 })
 
