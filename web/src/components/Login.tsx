@@ -77,7 +77,7 @@ export default function Login({
           </p>
         ) : null}
         <Button variant="primary" type="submit" disabled={busy} className="login__submit">
-          {busy ? 'Signing in…' : 'Sign in'}
+          {busy ? 'Signing in...' : 'Sign in'}
         </Button>
         <p className="login__hint">
           Use the username and password your administrator gave you.

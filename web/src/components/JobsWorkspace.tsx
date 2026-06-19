@@ -66,7 +66,7 @@ export default function JobsWorkspace({
   reloadSignal: number
   /** Open this schedule in the editor on mount / when it changes (from the tree). */
   initialJob?: string
-  /** Start with a blank "new schedule" form (the tree's "New schedule…" action). */
+  /** Start with a blank "new schedule" form (the tree's "New schedule..." action). */
   autoNew?: boolean
   /** Bumped by the navigator to re-apply initialJob/autoNew (e.g. re-clicking the
    * same schedule). */
@@ -324,7 +324,7 @@ export default function JobsWorkspace({
                   value={stepPick}
                   onValueChange={setStepPick}
                   options={flowOptions}
-                  placeholder="Pick a flow…"
+                  placeholder="Pick a flow..."
                   ariaLabel="Flow to add as a step"
                 />
                 <Button size="sm" variant="secondary" disabled={stepPick === ''} onClick={addStep}>
@@ -343,7 +343,7 @@ export default function JobsWorkspace({
             {error ? <p className="error" role="alert">{error}</p> : null}
             <div className="actions">
               <Button variant="primary" disabled={busy} onClick={() => void save()}>
-                {busy ? 'Saving…' : selected ? 'Save changes' : 'Create schedule'}
+                {busy ? 'Saving...' : selected ? 'Save changes' : 'Create schedule'}
               </Button>
               {selected ? (
                 <Button variant="ghost" disabled={busy} onClick={() => void kick(selected)}>

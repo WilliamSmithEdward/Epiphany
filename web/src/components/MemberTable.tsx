@@ -688,7 +688,7 @@ export default function MemberTable({
                               setEditText(val)
                             }}
                           >
-                            {val !== '' ? val : <span className="mtable__cellempty">Set…</span>}
+                            {val !== '' ? val : <span className="mtable__cellempty">Set...</span>}
                           </button>
                         )
                       }

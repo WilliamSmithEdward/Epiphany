@@ -13,7 +13,7 @@ describe('subsetVisibleMembers (saved static subset)', () => {
   it('de-dups a repeated member name so axis keys stay unique', () => {
     // Regression: a subset whose stored member list repeats a name (a hand-edited
     // model TOML or a raw API POST that bypasses the picker's de-dup) must not mint
-    // two members with the same key — that gave sibling <tr>/<CellView> the same
+    // two members with the same key: that gave sibling <tr>/<CellView> the same
     // React key, duplicating rows and stranding cells on that axis.
     const members = subsetVisibleMembers(['North', 'East', 'North'])
     expect(members.map((m) => m.name)).toEqual(['North', 'East']) // first occurrence wins

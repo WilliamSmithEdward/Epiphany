@@ -102,7 +102,7 @@ export default function AuditViewer() {
       </div>
       {loading ? (
         <p className="banner" role="status" aria-live="polite">
-          Loading audit records…
+          Loading audit records...
         </p>
       ) : records.length === 0 ? (
         <p className="muted">No matching records.</p>

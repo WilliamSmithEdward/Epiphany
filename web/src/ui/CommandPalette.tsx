@@ -65,7 +65,7 @@ export function CommandPalette({
             ref={inputRef}
             className="cmdk__input"
             aria-label="Search cubes, sections, and actions"
-            placeholder="Search cubes, sections, actions…"
+            placeholder="Search cubes, sections, actions..."
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {

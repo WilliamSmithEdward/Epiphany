@@ -61,7 +61,7 @@ export default function FlowsWorkspace({
   isAdmin: boolean
   /** Open this flow in the editor on mount / when it changes (from the tree). */
   initialFlow?: string
-  /** Start with a blank "new flow" form (the tree's "New flow…" action). */
+  /** Start with a blank "new flow" form (the tree's "New flow..." action). */
   autoNew?: boolean
   /** Bumped by the navigator to re-apply initialFlow/autoNew (e.g. clicking the
    * same flow twice). */
@@ -263,7 +263,7 @@ export default function FlowsWorkspace({
               e.target.value = ''
             }}
           >
-            <option value="">Insert template…</option>
+            <option value="">Insert template...</option>
             {FLOW_TEMPLATES.map((t, i) => (
               <option key={i} value={i} title={t.description}>
                 {t.label}
@@ -460,7 +460,7 @@ function DataSourcesPanel({
                     ? 'No global connections defined'
                     : available.length === 0
                       ? 'All global connections already added'
-                      : 'Pick a connection…'}
+                      : 'Pick a connection...'}
                 </option>
                 {available.map((c) => (
                   <option key={c.name} value={c.name}>
@@ -488,7 +488,7 @@ function DataSourcesPanel({
           />
         ) : (
           <button type="button" onClick={() => setAddingLocal(true)}>
-            Add local source…
+            Add local source...
           </button>
         )}
       </div>
@@ -974,7 +974,7 @@ function ConnectionsPanel({ reloadSignal }: { reloadSignal: number }) {
               disabled={testing === c.name}
               title="Run the connection and preview its output"
             >
-              {testing === c.name ? 'testing…' : 'test'}
+              {testing === c.name ? 'testing...' : 'test'}
             </button>{' '}
             <button
               className="link"

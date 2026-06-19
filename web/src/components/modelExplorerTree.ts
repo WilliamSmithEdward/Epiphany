@@ -171,11 +171,11 @@ export function elementTreeNodes(
 /** The shared context-menu action for a cube dimension (the "Dimensions" group
  * node and each individual cube dimension open the same editor). The editor
  * shows the member/roll-up/attribute forms together, so a single "Edit
- * dimension…" item that lands there is honest about the destination rather than
+ * dimension..." item that lands there is honest about the destination rather than
  * three labels that all open the same multi-section pane at its top. */
 const CUBE_DIM_MENU: NodeMenuItem[] = [
-  { action: 'edit-attributes', label: 'Edit dimension…' },
-  { action: 'manage-sets', label: 'Manage sets…' },
+  { action: 'edit-attributes', label: 'Edit dimension...' },
+  { action: 'manage-sets', label: 'Manage sets...' },
 ]
 
 export async function cubeChildren(cube: string): Promise<Node[]> {
@@ -206,7 +206,7 @@ export async function cubeChildren(cube: string): Promise<Node[]> {
     label: 'Views',
     icon: '◫',
     selection: { kind: 'cube-views', cube },
-    menu: [{ action: 'add-view', label: 'Add view…' }],
+    menu: [{ action: 'add-view', label: 'Add view...' }],
     actionCtx: { cube },
     loader: async () => {
       const vs = await listViews(cube)
@@ -217,7 +217,7 @@ export async function cubeChildren(cube: string): Promise<Node[]> {
         selection: { kind: 'view', cube, view: v.name },
         menu: [
           { action: 'open-view', label: 'Open' },
-          { action: 'delete-view', label: 'Delete…', danger: true },
+          { action: 'delete-view', label: 'Delete...', danger: true },
         ],
         actionCtx: { cube, view: v.name },
       }))
@@ -243,8 +243,8 @@ export function cubeNode(name: string): Node {
     // A superset of the actions its child nodes expose, so the cube row offers
     // a direct path to its structure (consistency / recognition over recall).
     menu: [
-      { action: 'open-model', label: 'Edit dimensions…' },
-      { action: 'add-view', label: 'Add view…' },
+      { action: 'open-model', label: 'Edit dimensions...' },
+      { action: 'add-view', label: 'Add view...' },
     ],
     actionCtx: { cube: name },
     loader: () => cubeChildren(name),
@@ -264,7 +264,7 @@ export async function flowNodes(): Promise<Node[]> {
         menu: [
           { action: 'open-flow', label: 'Open' },
           { action: 'run-flow', label: 'Run' },
-          { action: 'delete-flow', label: 'Delete…', danger: true },
+          { action: 'delete-flow', label: 'Delete...', danger: true },
         ] as NodeMenuItem[],
         actionCtx: { flow: f.name },
       }))
@@ -283,7 +283,7 @@ export async function scheduleNodes(): Promise<Node[]> {
         menu: [
           { action: 'open-schedule', label: 'Edit' },
           { action: 'run-schedule', label: 'Run now' },
-          { action: 'delete-schedule', label: 'Delete…', danger: true },
+          { action: 'delete-schedule', label: 'Delete...', danger: true },
         ] as NodeMenuItem[],
         actionCtx: { job: j.name },
       }))
@@ -304,7 +304,7 @@ export async function connectionNodes(): Promise<Node[]> {
         selection: { kind: 'connection', connection: c.name } as Selection,
         menu: [
           { action: 'open-connections', label: 'Manage' },
-          { action: 'delete-connection', label: 'Delete…', danger: true },
+          { action: 'delete-connection', label: 'Delete...', danger: true },
         ] as NodeMenuItem[],
         actionCtx: { connection: c.name },
       }))
@@ -331,11 +331,11 @@ export async function dimensionNamespace(): Promise<Node[]> {
     // Delete is only offered when the dimension is unreferenced; the backend
     // rejects deleting a referenced one (409) anyway.
     menu: [
-      { action: 'add-member', label: 'Add member…' },
-      { action: 'grow-dimension', label: 'Grow…' },
+      { action: 'add-member', label: 'Add member...' },
+      { action: 'grow-dimension', label: 'Grow...' },
       {
         action: 'delete-dimension',
-        label: 'Delete…',
+        label: 'Delete...',
         danger: true,
         disabled: d.references.length > 0,
       },
@@ -347,8 +347,8 @@ export async function dimensionNamespace(): Promise<Node[]> {
         `dim:${d.id}`,
         buildElementTree(detail),
         [
-          { action: 'add-member', label: 'Add member…' },
-          { action: 'grow-dimension', label: 'Grow…' },
+          { action: 'add-member', label: 'Add member...' },
+          { action: 'grow-dimension', label: 'Grow...' },
         ],
         { dimId: d.id, dim: d.name },
       )
@@ -371,7 +371,7 @@ export async function dimensionNamespace(): Promise<Node[]> {
       selection: { kind: 'cube-dimension', cube, dim: d.name },
       // An embedded dimension can be promoted into the global registry so other
       // cubes can reference it (ADR-0031 Phase 1), alongside the usual edit/sets.
-      menu: [...CUBE_DIM_MENU, { action: 'promote-dimension', label: 'Reuse in other cubes…' }],
+      menu: [...CUBE_DIM_MENU, { action: 'promote-dimension', label: 'Reuse in other cubes...' }],
       actionCtx: { cube, dim: d.name },
       loader: async () =>
         elementTreeNodes(id, buildElementTree(d), CUBE_DIM_MENU, { cube, dim: d.name }),
@@ -412,7 +412,7 @@ export function rootNodes(isAdmin: boolean): Node[] {
       id: 'root:cubes',
       label: 'Cubes',
       icon: '▤',
-      menu: isAdmin ? [{ action: 'new-cube', label: 'New cube…' }] : undefined,
+      menu: isAdmin ? [{ action: 'new-cube', label: 'New cube...' }] : undefined,
       actionCtx: {},
       loader: async () => (await listCubes()).map((c) => cubeNode(c.name)),
     },
@@ -420,7 +420,7 @@ export function rootNodes(isAdmin: boolean): Node[] {
       id: 'root:dimensions',
       label: 'Dimensions',
       icon: '⬡',
-      menu: [{ action: 'register-dimension', label: 'New dimension…' }],
+      menu: [{ action: 'register-dimension', label: 'New dimension...' }],
       actionCtx: {},
       // Global dimension namespace (ADR-0031): one list = the registry (global)
       // dimensions plus every cube's embedded-only dimensions, presented
@@ -434,7 +434,7 @@ export function rootNodes(isAdmin: boolean): Node[] {
       id: 'root:flows',
       label: 'Flows',
       icon: '⇄',
-      menu: [{ action: 'new-flow', label: 'New flow…' }],
+      menu: [{ action: 'new-flow', label: 'New flow...' }],
       actionCtx: {},
       // Flows are server-global (ADR-0035): listed directly, no cube layer.
       loader: flowNodes,
@@ -443,7 +443,7 @@ export function rootNodes(isAdmin: boolean): Node[] {
       id: 'root:schedules',
       label: 'Schedules',
       icon: '⏱',
-      menu: [{ action: 'new-schedule', label: 'New schedule…' }],
+      menu: [{ action: 'new-schedule', label: 'New schedule...' }],
       actionCtx: {},
       // Schedules are server-global (ADR-0035): listed directly, no cube layer.
       loader: scheduleNodes,

@@ -66,7 +66,7 @@ describe('elementTreeNodes', () => {
   })
 
   it('propagates the shared menu and action context down every level', async () => {
-    const menu: NodeMenuItem[] = [{ action: 'add-member', label: 'Add member…' }]
+    const menu: NodeMenuItem[] = [{ action: 'add-member', label: 'Add member...' }]
     const ctx = { dimId: 7, dim: 'Region' }
     const [total] = elementTreeNodes('dim:7', tree, menu, ctx)
     expect(total.menu).toBe(menu)

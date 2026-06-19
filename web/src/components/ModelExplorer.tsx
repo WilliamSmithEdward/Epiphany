@@ -87,7 +87,7 @@ export default function ModelExplorer({
       delete n[node.id]
       return n
     })
-    setLiveMsg(`Loading ${node.label}…`)
+    setLiveMsg(`Loading ${node.label}...`)
     node
       .loader()
       .then((kids) => {
@@ -396,7 +396,7 @@ export default function ModelExplorer({
                 {node.badge}
               </span>
             ) : null}
-            {isLoading ? <span className="tree__spinner" aria-hidden="true">…</span> : null}
+            {isLoading ? <span className="tree__spinner" aria-hidden="true">...</span> : null}
             {hasMenu ? (
               <RowMenu
                 node={node}
@@ -439,7 +439,7 @@ export default function ModelExplorer({
           type="search"
           className="tree__search-input"
           value={query}
-          placeholder="Search…"
+          placeholder="Search..."
           aria-label="Search objects"
           aria-controls="model-explorer-tree"
           onChange={(e) => setQuery(e.target.value)}

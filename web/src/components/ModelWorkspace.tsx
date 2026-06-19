@@ -52,7 +52,7 @@ export default function ModelWorkspace({
   onOpenDimension?: (dim: string) => void
   /** Focus this dimension on mount / when it changes (from the tree). */
   initialDim?: string
-  /** Open the New-cube wizard immediately (the tree's "New cube…" action). */
+  /** Open the New-cube wizard immediately (the tree's "New cube..." action). */
   autoNew?: boolean
   /** Bumped by the navigator to re-apply initialDim/autoNew when unchanged. */
   navSignal?: number
@@ -81,7 +81,7 @@ export default function ModelWorkspace({
     if (initialDim) setDimName(initialDim)
   }, [cube, initialDim, navSignal])
 
-  // Open the New-cube wizard when the tree's "New cube…" action navigates here.
+  // Open the New-cube wizard when the tree's "New cube..." action navigates here.
   useEffect(() => {
     if (autoNew) setShowNewCube(true)
   }, [autoNew, navSignal])
@@ -92,7 +92,7 @@ export default function ModelWorkspace({
   )
 
   if (!detail) {
-    return <p className="banner" role="status">Loading {cube}…</p>
+    return <p className="banner" role="status">Loading {cube}...</p>
   }
 
   return (
@@ -311,7 +311,7 @@ function DimensionDetailPanel({
                   value={parent}
                   onValueChange={setParent}
                   options={parentOptions}
-                  placeholder="Total…"
+                  placeholder="Total..."
                   ariaLabel="Total element"
                 />
                 <span className="muted">includes</span>
@@ -319,7 +319,7 @@ function DimensionDetailPanel({
                   value={child}
                   onValueChange={setChild}
                   options={elementOptions}
-                  placeholder="Member…"
+                  placeholder="Member..."
                   ariaLabel="Member to roll up"
                 />
                 <Input
@@ -510,7 +510,7 @@ function NewCubeDialog({
             Cancel
           </Button>
           <Button variant="primary" disabled={busy} onClick={() => void create()}>
-            {busy ? 'Creating…' : 'Create cube'}
+            {busy ? 'Creating...' : 'Create cube'}
           </Button>
         </>
       }
@@ -560,7 +560,7 @@ function NewCubeDialog({
                     value={d.ref !== null ? String(d.ref) : undefined}
                     onValueChange={(v) => update(i, { ref: Number(v) })}
                     options={libraryOptions}
-                    placeholder="Pick a dimension…"
+                    placeholder="Pick a dimension..."
                     ariaLabel={`Dimension ${i + 1} reuse an existing dimension`}
                   />
                 )}

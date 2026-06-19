@@ -36,7 +36,7 @@ export default function ViewWorkspace({
   reloadSignal: number
   /** Open this saved view on mount / when it changes (from the tree). */
   initialView?: string
-  /** Start with a blank "new view" draft (the tree's "Add view…" action), even
+  /** Start with a blank "new view" draft (the tree's "Add view..." action), even
    * when a saved view was already open in this persisted instance. */
   autoNew?: boolean
   /** Bumped by the navigator to re-open initialView when the cube is unchanged. */
@@ -115,7 +115,7 @@ export default function ViewWorkspace({
     }
   }, [cube, loadSubsets, computeDefaults])
 
-  // The tree's "Add view…" action starts a blank draft even when a saved view
+  // The tree's "Add view..." action starts a blank draft even when a saved view
   // was already open in this persisted instance. Driven by navSignal so it
   // re-applies on every such action. Mirrors FlowsWorkspace/JobsWorkspace.
   useEffect(() => {

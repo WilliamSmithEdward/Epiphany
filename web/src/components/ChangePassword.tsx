@@ -98,7 +98,7 @@ export default function ChangePassword({
           </Button>
         ) : null}
         <Button variant="primary" type="submit" disabled={busy}>
-          {busy ? 'Updating…' : submitLabel}
+          {busy ? 'Updating...' : submitLabel}
         </Button>
       </div>
     </form>

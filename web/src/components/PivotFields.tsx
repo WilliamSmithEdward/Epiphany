@@ -238,7 +238,7 @@ function AxisChip({
               </DM.CheckboxItem>
             ))}
             <DM.Item className="menu__item" onSelect={() => onNewSet(dim)}>
-              New set…
+              New set...
             </DM.Item>
             <DM.Separator className="menu__sep" />
             <DM.Label className="menu__label">Move to</DM.Label>

@@ -54,7 +54,7 @@ export default function ServerOverview() {
   if (!cubes) {
     return (
       <p className="banner" role="status" aria-live="polite">
-        Loading the overview…
+        Loading the overview...
       </p>
     )
   }

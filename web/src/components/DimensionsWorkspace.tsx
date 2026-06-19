@@ -88,7 +88,7 @@ export default function DimensionsWorkspace({
     if (initialDimId !== undefined) setSelectedId(initialDimId)
   }, [initialDimId, navSignal])
 
-  // Open the register wizard when the tree's "Register shared dimension…" action
+  // Open the register wizard when the tree's "Register shared dimension..." action
   // navigates here.
   useEffect(() => {
     if (autoNew) setShowNew(true)
@@ -108,7 +108,7 @@ export default function DimensionsWorkspace({
   }
 
   if (!list) {
-    return <p className="banner" role="status">Loading dimensions…</p>
+    return <p className="banner" role="status">Loading dimensions...</p>
   }
 
   return (
@@ -349,7 +349,7 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
                   value={parent}
                   onValueChange={setParent}
                   options={parentOptions}
-                  placeholder="Total…"
+                  placeholder="Total..."
                   ariaLabel="Total element"
                 />
                 <span className="muted">includes</span>
@@ -357,7 +357,7 @@ function SharedDimensionEditor({ id, onChanged }: { id: number; onChanged: () =>
                   value={child}
                   onValueChange={setChild}
                   options={elementOptions}
-                  placeholder="Member…"
+                  placeholder="Member..."
                   ariaLabel="Member to roll up"
                 />
                 <Input
@@ -452,7 +452,7 @@ function NewDimensionDialog({
             Cancel
           </Button>
           <Button variant="primary" disabled={busy} onClick={() => void create()}>
-            {busy ? 'Registering…' : 'Register'}
+            {busy ? 'Registering...' : 'Register'}
           </Button>
         </>
       }

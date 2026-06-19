@@ -147,7 +147,7 @@ function crumbs(s: Selection | null, opts: { autoNew?: boolean } = {}): Crumb[] 
     case 'cube-dimension':
       // A named dim is a specific dimension under the cube. An empty dim means
       // either the new-cube wizard (autoNew) or the cube's model editor focused
-      // on its first dimension ("Edit dimensions…").
+      // on its first dimension ("Edit dimensions...").
       return s.dim
         ? [cubesRoot, { label: s.cube, to: { kind: 'cube', cube: s.cube } }, { label: s.dim, to: null }]
         : opts.autoNew
@@ -641,11 +641,11 @@ export default function CubeApp({
     }
     // Create actions, dispatched through the same handler the tree uses.
     if (isAdmin) {
-      list.push({ id: 'new:cube', label: 'New cube…', group: 'Create', run: () => onAction('new-cube', {}) })
+      list.push({ id: 'new:cube', label: 'New cube...', group: 'Create', run: () => onAction('new-cube', {}) })
     }
-    list.push({ id: 'new:dimension', label: 'New dimension…', group: 'Create', run: () => onAction('register-dimension', {}) })
-    list.push({ id: 'new:flow', label: 'New flow…', group: 'Create', run: () => onAction('new-flow', {}) })
-    list.push({ id: 'new:schedule', label: 'New schedule…', group: 'Create', run: () => onAction('new-schedule', {}) })
+    list.push({ id: 'new:dimension', label: 'New dimension...', group: 'Create', run: () => onAction('register-dimension', {}) })
+    list.push({ id: 'new:flow', label: 'New flow...', group: 'Create', run: () => onAction('new-flow', {}) })
+    list.push({ id: 'new:schedule', label: 'New schedule...', group: 'Create', run: () => onAction('new-schedule', {}) })
     if (isAdmin) {
       list.push({ id: 'go:overview', label: 'Go to Server overview', group: 'Admin', run: () => setAdminView('overview') })
       list.push({ id: 'go:security', label: 'Go to Security & audit', group: 'Admin', run: () => setAdminView('security') })
@@ -728,13 +728,13 @@ export default function CubeApp({
               conn === 'live'
                 ? 'Live updates connected'
                 : conn === 'connecting'
-                  ? 'Connecting to live updates…'
+                  ? 'Connecting to live updates...'
                   : 'Offline - reconnecting'
             }
           >
             <span>
               <Badge tone={conn === 'live' ? 'success' : 'neutral'} dot>
-                {conn === 'live' ? 'Live' : conn === 'connecting' ? 'Connecting…' : 'Offline'}
+                {conn === 'live' ? 'Live' : conn === 'connecting' ? 'Connecting...' : 'Offline'}
               </Badge>
             </span>
           </Tooltip>
@@ -910,7 +910,7 @@ export default function CubeApp({
                   onChanged={bumpReload}
                 />
               ) : activeTab.selection.kind === 'cube-dimension' && cube ? (
-                // No specific dimension (the cube's "Edit dimensions…" entry or the
+                // No specific dimension (the cube's "Edit dimensions..." entry or the
                 // new-cube wizard): the model overview, which lists the dimensions
                 // and hosts the new-cube wizard. Its dimension cards open the editor.
                 <ModelWorkspace

@@ -18,7 +18,7 @@ export function Tabs({
   value: string
   onValueChange: (value: string) => void
   items: TabItem[]
-  /** Panels: one <TabPanel value=…> per tab. */
+  /** Panels: one <TabPanel value=...> per tab. */
   children: ReactNode
 }) {
   return (

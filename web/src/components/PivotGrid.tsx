@@ -722,7 +722,7 @@ export default function PivotGrid({
   }
 
   if (!detail) {
-    return <p className="banner" role="status">Loading {cube}…</p>
+    return <p className="banner" role="status">Loading {cube}...</p>
   }
 
   const editorDimDto = subsetEditorDim
@@ -954,7 +954,7 @@ export default function PivotGrid({
           onOpenChange={(open) => {
             if (!open) setDrill(null)
           }}
-          title={`How “${drill.label}” is calculated`}
+          title={`How "${drill.label}" is calculated`}
           description="The value, and the stored inputs, rules, and totals it comes from."
           size="md"
         >
@@ -963,7 +963,7 @@ export default function PivotGrid({
               <TraceView node={drill.trace} />
             </div>
           ) : (
-            <p className="muted">Loading provenance…</p>
+            <p className="muted">Loading provenance...</p>
           )}
         </Dialog>
       ) : null}
@@ -1083,7 +1083,7 @@ export default function PivotGrid({
                 .finally(() => setMdxBusy(false))
             }}
           >
-            {mdxBusy ? 'Running…' : 'Run'}
+            {mdxBusy ? 'Running...' : 'Run'}
           </Button>
           <Button variant="ghost" size="sm" onClick={() => setMdxOpen(false)}>
             Close

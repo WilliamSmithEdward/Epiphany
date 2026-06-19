@@ -11,7 +11,7 @@ export function Select({
   value,
   onValueChange,
   options,
-  placeholder = 'Select…',
+  placeholder = 'Select...',
   ariaLabel,
   disabled,
   className,

@@ -130,7 +130,7 @@ export default function RulesWorkspace({
               e.target.value = ''
             }}
           >
-            <option value="">Insert template…</option>
+            <option value="">Insert template...</option>
             {RULE_TEMPLATES.map((t, i) => (
               <option key={i} value={i} title={t.description}>
                 {t.label}

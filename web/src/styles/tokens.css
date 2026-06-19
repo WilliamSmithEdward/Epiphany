@@ -52,7 +52,7 @@
   --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.14), 0 4px 8px rgba(16, 24, 40, 0.06);
   --z-sticky: 100;
   --z-overlay: 1000; /* dialog overlay + dialog content */
-  --z-dropdown: 1100; /* select/menu/popover poppers — must outrank modals so a dropdown opened inside a dialog is visible */
+  --z-dropdown: 1100; /* select/menu/popover poppers: must outrank modals so a dropdown opened inside a dialog is visible */
   --z-toast: 1200;
   --ease: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-fast: 120ms;
