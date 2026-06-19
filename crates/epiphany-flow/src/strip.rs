@@ -83,6 +83,10 @@ struct Stripper {
     braces: Vec<bool>,
     /// Pending unmatched ternary `?` per current statement (reset at `;`).
     ternary: u32,
+    /// Set when the next top-level colon (ternary == 0, not an object key) closes
+    /// a `case`/`default`/label clause rather than a type annotation. Reset at the
+    /// colon it marks and at any `;`.
+    label_colon: bool,
 }
 
 /// Strip TypeScript type syntax from `src`, returning runnable JavaScript of the
@@ -97,6 +101,7 @@ pub fn strip_types(src: &str) -> Result<String, StripError> {
         prev: Prev::Start,
         braces: Vec::new(),
         ternary: 0,
+        label_colon: false,
     };
     s.run()?;
     Ok(s.out.into_iter().collect())
@@ -131,6 +136,7 @@ impl Stripper {
                 }
                 ';' => {
                     self.ternary = 0;
+                    self.label_colon = false;
                     self.prev = Prev::Start;
                     self.i += 1;
                 }
@@ -353,6 +359,7 @@ impl Stripper {
         let start = self.i;
         let word = self.read_word();
         let after_dot = self.prev_is_dot(start);
+        let at_stmt_start = self.prev == Prev::Start;
 
         if !after_dot {
             match word.as_str() {
@@ -367,7 +374,7 @@ impl Stripper {
                         "import is not supported in flows (the host API is the global 'ctx')",
                     ));
                 }
-                "interface" => {
+                "interface" if self.looks_like_interface_decl() => {
                     self.strip_interface(start);
                     self.prev = Prev::Start;
                     return Ok(());
@@ -395,13 +402,40 @@ impl Stripper {
                     self.maybe_strip_function_generics();
                     return Ok(());
                 }
+                "case" if self.braces.last() != Some(&true) => {
+                    // The next top-level colon ends the `case <expr>:` label, so it
+                    // must not be stripped as a type annotation. Skipped when `case`
+                    // is an object key (`{ case: 1 }`), handled as an ordinary key.
+                    self.prev = Prev::KeywordExpr;
+                    self.label_colon = true;
+                    return Ok(());
+                }
+                "default"
+                    if self.braces.last() != Some(&true)
+                        && self.src.get(self.skip_trivia(self.i)) == Some(&':') =>
+                {
+                    // A `default:` clause in a switch: the following colon is a
+                    // label, not a type annotation. The colon lookahead also keeps
+                    // `export default x` (no colon) out of this arm.
+                    self.prev = Prev::Value;
+                    self.label_colon = true;
+                    return Ok(());
+                }
                 "return" | "typeof" | "instanceof" | "in" | "of" | "new" | "delete" | "void"
-                | "yield" | "await" | "case" | "do" | "else" => {
+                | "yield" | "await" | "do" | "else" => {
                     self.prev = Prev::KeywordExpr;
                     return Ok(());
                 }
                 _ => {}
             }
+        }
+        // A label (`name:`) at statement start: the following colon is a label
+        // colon, not a type annotation, so it must not be stripped.
+        if at_stmt_start
+            && self.braces.last() != Some(&true)
+            && self.src.get(self.skip_trivia(self.i)) == Some(&':')
+        {
+            self.label_colon = true;
         }
         self.prev = Prev::Value;
         Ok(())
@@ -429,6 +463,46 @@ impl Stripper {
             k += 1;
         }
         matches!(self.src.get(k), Some('=') | Some('<'))
+    }
+
+    /// Heuristic: `interface` is a declaration when followed by a name and then
+    /// `{`, `<` (generic params), or `extends` (`interface X {`, `interface X<T> {`,
+    /// `interface X extends Y {`). Otherwise it is an ordinary identifier (e.g. a
+    /// variable named `interface`), mirroring [`looks_like_type_alias`].
+    fn looks_like_interface_decl(&self) -> bool {
+        let mut k = self.i;
+        while k < self.src.len() && self.src[k].is_whitespace() {
+            k += 1;
+        }
+        let id_start = k;
+        while k < self.src.len()
+            && (self.src[k].is_ascii_alphanumeric() || self.src[k] == '_' || self.src[k] == '$')
+        {
+            k += 1;
+        }
+        if k == id_start {
+            return false; // no name: `interface` used as a value
+        }
+        while k < self.src.len() && self.src[k].is_whitespace() {
+            k += 1;
+        }
+        match self.src.get(k) {
+            Some('{') | Some('<') => true,
+            Some(c) if c.is_ascii_alphabetic() => {
+                let w_start = k;
+                let mut j = k;
+                while j < self.src.len()
+                    && (self.src[j].is_ascii_alphanumeric()
+                        || self.src[j] == '_'
+                        || self.src[j] == '$')
+                {
+                    j += 1;
+                }
+                let word: String = self.src[w_start..j].iter().collect();
+                word == "extends"
+            }
+            _ => false,
+        }
     }
 
     fn strip_interface(&mut self, start: usize) {
@@ -562,6 +636,14 @@ impl Stripper {
         // Object-literal key separator: keep.
         if self.braces.last() == Some(&true) {
             self.prev = Prev::Op;
+            self.i += 1;
+            return;
+        }
+        // A `case`/`default`/label clause colon (statement position): emit it and
+        // begin a new statement. Never a type annotation.
+        if self.label_colon {
+            self.label_colon = false;
+            self.prev = Prev::Start;
             self.i += 1;
             return;
         }
@@ -810,6 +892,50 @@ mod tests {
         check(
             "function id<T>(x: T): T { return x; }",
             "function id(x) { return x; }",
+        );
+    }
+
+    #[test]
+    fn keeps_switch_case_and_default_bodies() {
+        // A case/default colon must not be mistaken for a type annotation: the
+        // body after it (break/return/...) must survive, including a bare
+        // identifier followed by a terminator like `break;` (the original bug).
+        check(
+            "switch (x) { case 0: break; case 1: return y; default: doIt(); }",
+            "switch (x) { case 0: break; case 1: return y; default: doIt(); }",
+        );
+        // A case expression with a ternary keeps both colons correct.
+        check(
+            "switch (x) { case a ? 1 : 2: f(); }",
+            "switch (x) { case a ? 1 : 2: f(); }",
+        );
+        // `case`/`default` as object keys stay ordinary keys, not switch labels.
+        check(
+            "let o = { case: 1, default: 2 };",
+            "let o = { case: 1, default: 2 };",
+        );
+    }
+
+    #[test]
+    fn keeps_labeled_statements() {
+        check(
+            "outer: while (x) { break outer; }",
+            "outer: while (x) { break outer; }",
+        );
+    }
+
+    #[test]
+    fn interface_as_value_identifier_is_kept() {
+        // `interface` used as an ordinary identifier (not a declaration) is left
+        // intact, mirroring the `type`-as-identifier guard.
+        check(
+            "let interface = 5; foo(interface);",
+            "let interface = 5; foo(interface);",
+        );
+        // A real interface declaration (including `extends`) is still dropped.
+        check(
+            "interface Row extends Base { a: number }\nlet r = 1;",
+            "let r = 1;",
         );
     }
 
