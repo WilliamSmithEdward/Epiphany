@@ -1,15 +1,20 @@
-//! Recursive-descent parser for the MDX set sublanguage.
+//! Recursive-descent parser for MDX: the set sublanguage, plus a `SELECT` query
+//! layer above it (`parse_query`). A bare set parses standalone for dynamic
+//! subsets; a full query parses for the cube-view MDX endpoint.
 //!
-//! Grammar (set expressions; keywords are case-insensitive and bracket a name
-//! to use a reserved word as a member, e.g. `[Filter]`):
+//! Grammar (keywords are case-insensitive; bracket a name to use a reserved word
+//! as a member, e.g. `[Filter]`):
 //!
 //! ```text
+//! query      := 'SELECT' ( axis ( ',' axis )* )? 'FROM' member
+//!               ( 'WHERE' '(' member ( ',' member )* ')' )?
+//! axis       := set 'ON' ( 'COLUMNS' | 'ROWS' | number )
 //! set        := crossjoin
 //! crossjoin  := primary ( '*' primary )*
 //! primary    := '{' ( set ( ',' set )* )? '}'
-//!             | 'Filter'     '(' set ',' predicate ')'
-//!             | 'Order'      '(' set ',' attr ( ',' dir )? ')'
-//!             | 'Crossjoin'  '(' set ',' set ')'
+//!             | 'Filter'      '(' set ',' predicate ')'
+//!             | 'Order'       '(' set ',' attr ( ',' dir )? ')'
+//!             | 'Crossjoin'   '(' set ( ',' set )* ')'
 //!             | 'Descendants' '(' member ')'
 //!             | member ( '.Members' | '.Children' | '.Descendants' )?
 //! member     := name ( '.' name )*
