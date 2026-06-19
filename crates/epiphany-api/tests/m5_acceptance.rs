@@ -321,3 +321,75 @@ async fn m5_definition_of_done() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A flow test must reference an existing flow and carry non-empty name/flow, so
+/// a dangling test cannot be authored (it would only fail later at run time).
+#[tokio::test]
+async fn flow_test_validation_rejects_dangling_and_empty() {
+    let dir = scratch("flowtest-validation");
+    let app = router_for(&dir);
+    let token = login(&app).await;
+
+    // Referencing a flow that does not exist is rejected with 422.
+    let (status, err) = call(
+        &app,
+        "POST",
+        "/api/v1/flows/tests",
+        &token,
+        Some(json!({ "name": "t1", "flow": "missing", "input": CSV })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["error"]["code"], "UNKNOWN_FLOW");
+
+    // An empty name is rejected.
+    let (status, err) = call(
+        &app,
+        "POST",
+        "/api/v1/flows/tests",
+        &token,
+        Some(json!({ "name": "", "flow": "load" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["error"]["code"], "FLOW_TEST_EMPTY_NAME");
+
+    // An empty flow reference is rejected.
+    let (status, err) = call(
+        &app,
+        "POST",
+        "/api/v1/flows/tests",
+        &token,
+        Some(json!({ "name": "t2", "flow": "" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+    assert_eq!(err["error"]["code"], "FLOW_TEST_EMPTY_FLOW");
+
+    // Nothing was stored.
+    let (status, list) = call(&app, "GET", "/api/v1/flows/tests", &token, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(list["tests"].as_array().unwrap().is_empty());
+
+    // Once the referenced flow exists, the test is accepted.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/flows/load",
+        &token,
+        Some(json!({ "name": "load", "source": LOAD_FLOW, "default_cube": "Sales" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/flows/tests",
+        &token,
+        Some(json!({ "name": "t1", "flow": "load", "input": CSV })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    std::fs::remove_dir_all(&dir).ok();
+}

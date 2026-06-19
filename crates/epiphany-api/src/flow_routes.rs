@@ -818,6 +818,18 @@ pub(crate) async fn put_flow_test(
     Json(body): Json<FlowTestDto>,
 ) -> Result<(StatusCode, Json<FlowTestDto>), ApiError> {
     require_kind_access(&state, &auth, ObjectKind::Flow, None, AccessLevel::Write)?;
+    if body.name.trim().is_empty() {
+        return Err(ApiError::unprocessable(
+            "FLOW_TEST_EMPTY_NAME",
+            "flow test name is empty",
+        ));
+    }
+    if body.flow.trim().is_empty() {
+        return Err(ApiError::unprocessable(
+            "FLOW_TEST_EMPTY_FLOW",
+            "flow test references no flow",
+        ));
+    }
     let test = FlowTest {
         name: body.name.clone(),
         flow: body.flow.clone(),
@@ -828,12 +840,18 @@ pub(crate) async fn put_flow_test(
         assertions: body.assertions.into_iter().map(to_cell).collect(),
     };
     let response = flow_test_dto(&test);
-    state
-        .automation
-        .lock()
-        .expect("automation store mutex")
-        .define_flow_test(test)
-        .map_err(map_persist_error)?;
+    {
+        let mut store = state.automation.lock().expect("automation store mutex");
+        // A test must reference an existing flow; reject a dangling test up front
+        // rather than letting it fail only when run (parity with put_job).
+        if !store.automation().flows.contains_key(&test.flow) {
+            return Err(ApiError::unprocessable(
+                "UNKNOWN_FLOW",
+                format!("flow test references unknown flow '{}'", test.flow),
+            ));
+        }
+        store.define_flow_test(test).map_err(map_persist_error)?;
+    }
     audit(
         &state,
         &auth.principal.username,

@@ -234,6 +234,52 @@ async fn admin_sets_and_lists_per_kind_grants() {
 }
 
 #[tokio::test]
+async fn put_grant_rejects_non_grantable_kinds() {
+    let app = harness("ungrantable");
+    let admin = login(&app, "admin", "pw").await.unwrap();
+
+    // `secret`, `user`, and `group` are admin-managed only; no per-kind grant
+    // honors them, so granting one would store a dead grant. Reject with 422.
+    for kind in ["secret", "user", "group"] {
+        let (status, body) = call(
+            &app,
+            "PUT",
+            "/api/v1/acl/grants",
+            &admin,
+            Some(json!({
+                "subject_kind": "user", "subject": "ann",
+                "scope": "global", "kind": kind, "level": "read"
+            })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "kind {kind}: {body}"
+        );
+        assert_eq!(body["error"]["code"], "UNGRANTABLE_KIND", "kind {kind}");
+    }
+
+    // Nothing was stored.
+    let (_, body) = call(&app, "GET", "/api/v1/acl/grants", &admin, None).await;
+    assert!(body["grants"].as_array().unwrap().is_empty());
+
+    // A grantable kind (flow) still works.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/acl/grants",
+        &admin,
+        Some(json!({
+            "subject_kind": "user", "subject": "ann",
+            "scope": "global", "kind": "flow", "level": "read"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn admin_manages_users_groups_and_membership() {
     let app = harness("users");
     let admin = login(&app, "admin", "pw").await.unwrap();

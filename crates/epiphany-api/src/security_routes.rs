@@ -47,6 +47,26 @@ fn parse_level(s: &str) -> Result<AccessLevel, ApiError> {
     })
 }
 
+/// Whether a per-kind grant on `kind` is honored by authorization. These are the
+/// kinds the security store's `effective()` consults: the cube-scoped object
+/// kinds plus `Cube` and `Connection`. `Secret`, `User`, and `Group` are admin-
+/// managed only (acl.rs) and feed no `effective()` check, so granting them would
+/// store a dead grant; `put_grant` rejects them.
+fn is_grantable(kind: ObjectKind) -> bool {
+    matches!(
+        kind,
+        ObjectKind::Cube
+            | ObjectKind::Connection
+            | ObjectKind::Dimension
+            | ObjectKind::Rule
+            | ObjectKind::Flow
+            | ObjectKind::View
+            | ObjectKind::Subset
+            | ObjectKind::Job
+            | ObjectKind::Sandbox
+    )
+}
+
 // ---- users ----
 
 #[derive(Serialize)]
@@ -401,6 +421,18 @@ pub(crate) async fn put_grant(
     let subject = parse_subject(&body.subject_kind, &body.subject)?;
     let kind = ObjectKind::parse(&body.kind)
         .ok_or_else(|| ApiError::bad_request(format!("unknown object kind '{}'", body.kind)))?;
+    // Reject kinds that no per-kind grant honors. `Secret`/`User`/`Group` are
+    // admin-managed only (acl.rs) and never fed to `effective()`, so a grant on
+    // them would be silently inert; fail loudly instead of storing a dead grant.
+    if !is_grantable(kind) {
+        return Err(ApiError::unprocessable(
+            "UNGRANTABLE_KIND",
+            format!(
+                "object kind '{}' is admin-managed and not per-kind grantable",
+                body.kind
+            ),
+        ));
+    }
     let level = parse_level(&body.level)?;
     let scope = match body.scope.as_str() {
         "global" => Scope::Global,
