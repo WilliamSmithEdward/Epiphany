@@ -17,6 +17,22 @@ matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/release
   `epiphany-mdx` parser gained a `SELECT`-query layer (`parse_query`) above its set
   sublanguage, and a new `POST /api/v1/cubes/{cube}/mdx` endpoint executes it through
   the same `Read` authorization and element-masking path as the ad-hoc cellset query.
+- **Copy to / Move to for dimension members.** The member action menu now offers
+  **Copy to** (add the member to another consolidation as an alternate rollup, keeping
+  its existing parents; a consolidation it already belongs to is greyed as "already
+  contains") and **Move to** (reparent it under exactly one consolidation or the top
+  level, with a confirm when that would drop its other rollups). Self and descendant
+  targets are excluded so a cycle can't be formed.
+- **Separate zero-suppression for rows and columns.** The single "Suppress zeros"
+  option is now two independent toggles, **Suppress zero rows** and **Suppress zero
+  columns**, on the cube viewer's Save dialog and the view editor. Views saved before
+  this map a legacy `suppress_zeros: true` to both flags.
+
+### Changed
+
+- **Views are created from the cube viewer.** The duplicative "Add view..." authoring
+  path was removed; arrange a layout in the cube viewer and use **Save view** to create
+  one. The Views workspace now opens and edits existing views in place.
 
 ### Fixed
 
@@ -62,6 +78,39 @@ matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/release
   drops its layout when the cube loads slowly.
 - **Windows service: a failed startup now reports a non-zero exit to the SCM**
   instead of a clean stop.
+- **Dimension editor: drag-and-drop is a reliable, parent-aware move.** A member can
+  now be dragged into a consolidation, and every drag emits the minimal, duplicate-free
+  edits: dropping onto a consolidation moves the dragged occurrence there while keeping
+  the member's other rollups, and the additive add runs before the detach so an
+  interrupted multi-step move can never orphan a member. Editor and pivot now agree on
+  child order, and the drop-inside target band is larger and recomputed at release.
+- **Login: you stay signed in after reloading the page.** The session is restored from
+  the cookie on load (it was previously held only in memory), including the forced
+  password-change screen, and the duplicate password-manager autofill prompt is gone.
+- **A render error in one pane no longer blanks the whole app.** A new error boundary
+  shows a recoverable fallback for the affected pane and leaves the tab strip and tree
+  usable; switching or closing the tab clears it.
+- **No more silent data loss from background reloads.** Unsaved rule edits survive a
+  WebSocket reload caused by activity in another tab; editing a flow or schedule that
+  was deleted elsewhere now disables Save (so it is not silently re-created) and says so;
+  entering the Administration view honors the unsaved-edit guard; and deleting an open
+  object no longer pops a nonsensical post-delete discard prompt.
+- **Object tree stays correct under concurrent loads and search.** A slower, stale
+  response can no longer overwrite freshly loaded children, and a delete or rename during
+  a search no longer leaves a stale row in the results.
+- **Dimension editor robustness and accessibility.** Adding a member as a child is now
+  all-or-nothing (a declined conversion or a failed step no longer strands an orphan with
+  the form trapped on a duplicate-name error), duplicate names are caught before the
+  round-trip, an empty dimension shows guidance, successful edits and keyboard moves are
+  announced to screen readers, and a pathological cyclic edge set can no longer overflow
+  the tree builder.
+- **Cube viewer: stale numbers are not shown during a refresh.** While re-querying after
+  a layout or filter change the grid dims and announces "Refreshing", so a previous
+  slice's values are never read as the current ones, and an empty row axis shows an
+  explicit "No data" row.
+- **Accessibility: closing the active tab moves keyboard focus to a neighbor** (rather
+  than losing it on the document body), and the Administration sub-nav is now a correct
+  button group instead of a malformed tabs widget.
 
 ### Security
 
