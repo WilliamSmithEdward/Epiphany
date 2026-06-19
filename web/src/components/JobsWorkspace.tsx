@@ -86,12 +86,16 @@ export default function JobsWorkspace({
   const [busy, setBusy] = useState(false)
 
   const load = useCallback(() => {
-    Promise.all([listFlows(), listRuns()])
-      .then(([f, r]) => {
-        setFlows(f)
-        setRuns(r)
-      })
+    // Flows (and schedules) drive the editor and gate on Flow/Job access, so a
+    // non-admin schedule author can load them. listRuns() is admin-only (GET
+    // /runs -> require_admin), so load it separately and tolerate a failure (403)
+    // instead of letting it reject the whole load and break the editor (ADR-0023).
+    listFlows()
+      .then((f) => setFlows(f))
       .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Failed to load schedules'))
+    listRuns()
+      .then((r) => setRuns(r))
+      .catch(() => setRuns([]))
   }, [])
 
   useEffect(() => {

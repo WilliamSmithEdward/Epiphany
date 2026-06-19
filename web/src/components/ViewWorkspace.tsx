@@ -235,18 +235,25 @@ export default function ViewWorkspace({
         setBusy(false)
       }
     },
-    // applyView reads detail via closure; intentionally not a dependency to
-    // avoid re-creating the callback on every config change.
+    // applyView reads detail via closure, so depend on detail: the callback must
+    // re-memoize once the cube load resolves, or applyView would run against a
+    // stale detail===null and drop the saved view's placements (BUG 11). detail
+    // only changes on cube load (config edits are separate state), so this does
+    // not re-create the callback on every config change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cube],
+    [cube, detail],
   )
 
   // Open the saved view the navigator (tree) asked for. Driven by
-  // cube/initialView/navSignal so re-clicking the same view re-opens it.
+  // cube/initialView/navSignal so re-clicking the same view re-opens it. Gated on
+  // `detail` so applyView always runs AFTER the cube-load effect has set the
+  // positional defaults (computeDefaults): opening before getCube resolves would
+  // either run applyView with detail===null (dropping the placements) or let the
+  // later setConfig(computeDefaults) clobber the applied view (BUG 11 race).
   useEffect(() => {
-    if (initialView) void openView(initialView)
+    if (initialView && detail) void openView(initialView)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cube, initialView, navSignal])
+  }, [cube, initialView, navSignal, detail])
 
   function applyView(view: ViewDto) {
     setConfig((current) => {
