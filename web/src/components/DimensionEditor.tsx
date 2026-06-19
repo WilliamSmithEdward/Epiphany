@@ -422,6 +422,10 @@ export default function DimensionEditor({
   // up / Move down and an arrow key on a picked-up member (ADR-0036).
   const moveStep = useCallback(
     (name: string, dir: 'up' | 'down') => {
+      // Gate on `busy` like the drag and dialog paths: a prior edit reloads the
+      // dimension asynchronously, so firing another reorder against the stale
+      // snapshot (held arrow key or rapid menu clicks) races and is non-cumulative.
+      if (busy) return
       setMenuPath(null)
       const order = (dimension?.elements ?? []).map((e) => e.name)
       const at = order.indexOf(name)
@@ -431,7 +435,7 @@ export default function DimensionEditor({
       ;[order[at], order[swap]] = [order[swap], order[at]]
       void runEdit({ op: 'reorder', new_order: order })
     },
-    [dimension, runEdit],
+    [busy, dimension, runEdit],
   )
 
   // ---- keyboard tree navigation + pick-up/drop (WCAG 2.2 SC 2.5.7) ----
@@ -558,6 +562,7 @@ export default function DimensionEditor({
 
   const convert = useCallback(
     async (name: string, kind: ElementKind) => {
+      if (busy) return
       setMenuPath(null)
       const current = kindOf.get(name)
       if (current === kind) return
@@ -582,26 +587,28 @@ export default function DimensionEditor({
       }
       void runEdit({ op: 'set_kind', element: name, kind })
     },
-    [confirm, kindOf, runEdit],
+    [busy, confirm, kindOf, runEdit],
   )
 
   // Detach: remove the member from EVERY parent (it becomes a root), keeping it.
   const detach = useCallback(
     (name: string) => {
+      if (busy) return
       setMenuPath(null)
       void runEdit({ op: 'reparent', child: name, new_parent: null })
     },
-    [runEdit],
+    [busy, runEdit],
   )
 
   // Remove the member from ONE consolidation (the row's current parent), keeping
   // it under any other parents. Distinct from Detach (all parents) and Delete.
   const removeFromConsolidation = useCallback(
     (parent: string | null, name: string) => {
+      if (busy) return
       setMenuPath(null)
       void removeChild(parent, name)
     },
-    [removeChild],
+    [busy, removeChild],
   )
 
   // Add the member to a chosen consolidation from the row menu's submenu (the
@@ -609,10 +616,11 @@ export default function DimensionEditor({
   // its other parents.
   const addToConsolidation = useCallback(
     (parent: string, name: string) => {
+      if (busy) return
       setMenuPath(null)
       void addChild(parent, name)
     },
-    [addChild],
+    [busy, addChild],
   )
 
   // Delete the member from the WHOLE dimension: removes it from every consolidation
@@ -671,7 +679,7 @@ export default function DimensionEditor({
       </Card>
     ) : (
       <p className="banner" role="status">
-        Loading dimension…
+        Loading dimension...
       </p>
     )
   }
@@ -706,7 +714,7 @@ export default function DimensionEditor({
         </p>
         {picked ? (
           <p className="banner" role="status">
-            Picked up “{picked.name}”. Use Arrow Up or Arrow Down to move it one
+            Picked up "{picked.name}". Use Arrow Up or Arrow Down to move it one
             position; Space drops it, Escape cancels.
           </p>
         ) : null}
@@ -913,7 +921,7 @@ export default function DimensionEditor({
             if (!o) setRemoveFrom(null)
           }}
           size="sm"
-          title={removeFrom ? `Remove “${removeFrom.name}” from consolidations` : ''}
+          title={removeFrom ? `Remove "${removeFrom.name}" from consolidations` : ''}
           description="Removing the member from a consolidation keeps the member and all its data; it only stops rolling up into that consolidation. Choose which to remove it from."
           footer={
             <>
@@ -1104,12 +1112,12 @@ function actionItems(M: MenuParts, p: RowActionProps) {
         // from the dimension entirely (destructive). Offer the choice.
         <M.Sub>
           <M.SubTrigger className="menu__item menu__item--sub menu__item--danger">
-            Delete…
+            Delete...
           </M.SubTrigger>
           <M.Portal>
             <M.SubContent className="menu" sideOffset={2} alignOffset={-4}>
               <M.Item className="menu__item" onSelect={p.onRemoveFrom}>
-                Remove from consolidations…
+                Remove from consolidations...
               </M.Item>
               <M.Separator className="menu__sep" />
               <M.Item className="menu__item menu__item--danger" onSelect={p.onDeleteFromDimension}>

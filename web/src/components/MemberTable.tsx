@@ -115,7 +115,11 @@ export default function MemberTable({
   // The attribute cell currently being edited (editor mode), and its draft text.
   const [editing, setEditing] = useState<{ element: string; attr: string } | null>(null)
   const [editText, setEditText] = useState('')
-  const lastClicked = useRef<number | null>(null)
+  // Anchor for shift-range selection: the stable `path` of the last-clicked row,
+  // NOT a positional index. The row list reorders/refilters on sort/search/filter
+  // changes, so a stored index would go stale; a path is resolved against the
+  // CURRENT `rows` at shift-click time so the range matches what the user sees.
+  const lastClicked = useRef<string | null>(null)
   const columnsRef = useRef<HTMLDivElement | null>(null)
 
   // Re-show all attribute columns when the edited dimension changes, so each
@@ -326,11 +330,17 @@ export default function MemberTable({
   }
 
   // Selection (set-builder mode): toggle, Shift-range over the current row order.
-  const onRowSelect = (index: number, name: string, shift: boolean) => {
+  // The anchor is the last-clicked row's stable `path`; the range is resolved
+  // against the CURRENT `rows` so a sort/filter change between the two clicks
+  // does not select an unintended block (the stored index would have gone stale).
+  const onRowSelect = (path: string, name: string, shift: boolean) => {
     if (!selectable || !onSelectedChange) return
     const next = new Set(selected ?? [])
-    if (shift && lastClicked.current !== null) {
-      const [lo, hi] = [lastClicked.current, index].sort((a, b) => a - b)
+    const anchor = lastClicked.current
+    const anchorIndex = anchor !== null ? rows.findIndex((r) => r.path === anchor) : -1
+    const index = rows.findIndex((r) => r.path === path)
+    if (shift && anchorIndex !== -1 && index !== -1) {
+      const [lo, hi] = [anchorIndex, index].sort((a, b) => a - b)
       const turnOn = !next.has(name)
       for (let i = lo; i <= hi; i++) {
         const nm = rows[i]?.name
@@ -342,7 +352,7 @@ export default function MemberTable({
       if (next.has(name)) next.delete(name)
       else next.add(name)
     }
-    lastClicked.current = index
+    lastClicked.current = path
     onSelectedChange(next)
   }
   const allShownSelected =
@@ -608,9 +618,9 @@ export default function MemberTable({
                           type="checkbox"
                           aria-label={`Select ${r.name}`}
                           checked={!!isSel}
-                          onChange={() => onRowSelect(absIndex, r.name, false)}
+                          onChange={() => onRowSelect(r.path, r.name, false)}
                           onClick={(e) => {
-                            if (e.shiftKey) onRowSelect(absIndex, r.name, true)
+                            if (e.shiftKey) onRowSelect(r.path, r.name, true)
                           }}
                         />
                       </span>
