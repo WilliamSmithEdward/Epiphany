@@ -48,12 +48,16 @@ fn service_main(_args: Vec<OsString>) {
     }
 }
 
-fn status(state: ServiceState, accept: ServiceControlAccept) -> ServiceStatus {
+fn status(
+    state: ServiceState,
+    accept: ServiceControlAccept,
+    exit_code: ServiceExitCode,
+) -> ServiceStatus {
     ServiceStatus {
         service_type: ServiceType::OWN_PROCESS,
         current_state: state,
         controls_accepted: accept,
-        exit_code: ServiceExitCode::Win32(0),
+        exit_code,
         checkpoint: 0,
         wait_hint: Duration::default(),
         process_id: None,
@@ -82,6 +86,7 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
     status_handle.set_service_status(status(
         ServiceState::Running,
         ServiceControlAccept::STOP | ServiceControlAccept::SHUTDOWN,
+        ServiceExitCode::Win32(0),
     ))?;
 
     let runtime = tokio::runtime::Runtime::new()?;
@@ -89,8 +94,18 @@ fn run_service() -> Result<(), Box<dyn std::error::Error>> {
         notify.notified().await;
     }));
 
-    status_handle
-        .set_service_status(status(ServiceState::Stopped, ServiceControlAccept::empty()))?;
+    // Report a non-zero exit to the SCM when startup or the run loop failed, so a
+    // failed service is not mistaken for a clean stop (the SCM can then restart or
+    // alert per its recovery policy).
+    let exit_code = match &result {
+        Ok(()) => ServiceExitCode::Win32(0),
+        Err(_) => ServiceExitCode::ServiceSpecific(1),
+    };
+    status_handle.set_service_status(status(
+        ServiceState::Stopped,
+        ServiceControlAccept::empty(),
+        exit_code,
+    ))?;
     result
 }
 

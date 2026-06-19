@@ -299,6 +299,11 @@ where
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     let addr = listener.local_addr()?;
+    if !addr.ip().is_loopback() {
+        tracing::warn!(
+            "serving plain HTTP on the non-loopback address {addr}: the API and login are exposed unencrypted; enable TLS (EPIPHANY_TLS) before exposing this beyond localhost"
+        );
+    }
     tracing::info!("listening on http://{addr}/");
     if config.open_browser {
         tracing::info!("open http://{addr}/ in your browser");

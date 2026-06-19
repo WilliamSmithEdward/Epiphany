@@ -147,7 +147,10 @@ impl Store {
         let mut model = Model::load_from_path(dir.join(SNAPSHOT_FILE))?;
 
         let wal_path = dir.join(WAL_FILE);
-        let wal = if wal_path.exists() {
+        // Replay an existing WAL only when it is at least header-sized. A missing
+        // file, or one truncated below its header by a crash between creating it
+        // and writing the header, is treated as fresh (the snapshot stands alone).
+        let wal = if wal_path.exists() && fs::metadata(&wal_path)?.len() >= wal::WAL_HEADER_LEN {
             let bytes = fs::read(&wal_path)?;
             let replay = wal::replay(&bytes).map_err(|e| PersistError::Corrupt(e.to_string()))?;
             for record in &replay.records {

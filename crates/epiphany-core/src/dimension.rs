@@ -210,6 +210,22 @@ impl Dimension {
                         });
                     }
                 }
+                // Drop this element's previous alias for this attribute, if any, so
+                // reassigning it does not leave the old alias permanently resolvable
+                // (and does not falsely block another element from claiming it).
+                let prev_alias = self
+                    .attr_values
+                    .get(element as usize)
+                    .and_then(|values| values.get(&attr_index))
+                    .and_then(|value| match value {
+                        AttributeValue::Text(text) => Some(text.clone()),
+                        _ => None,
+                    });
+                if let Some(prev) = prev_alias {
+                    if prev != *alias && self.alias_to_element.get(&prev) == Some(&element) {
+                        self.alias_to_element.remove(&prev);
+                    }
+                }
                 self.alias_to_element.insert(alias.clone(), element);
             }
         }
@@ -742,6 +758,26 @@ mod tests {
         assert_eq!(d.resolve("NA"), Some(na));
         assert_eq!(d.resolve("North America"), Some(na));
         assert_eq!(d.resolve("Nowhere"), None);
+    }
+
+    #[test]
+    fn reassigning_an_alias_drops_the_old_one() {
+        let mut d = Dimension::new("Region");
+        let na = d.add_leaf("NA");
+        let eu = d.add_leaf("EU");
+        d.add_attribute("Alias", AttributeKind::Alias);
+        d.set_attribute(na, "Alias", AttributeValue::Text("Foo".into()))
+            .unwrap();
+        assert_eq!(d.resolve("Foo"), Some(na));
+        // Reassigning NA's alias drops the old "Foo" mapping.
+        d.set_attribute(na, "Alias", AttributeValue::Text("Bar".into()))
+            .unwrap();
+        assert_eq!(d.resolve("Bar"), Some(na));
+        assert_eq!(d.resolve("Foo"), None, "the old alias no longer resolves");
+        // The freed alias can now be claimed by a different element.
+        d.set_attribute(eu, "Alias", AttributeValue::Text("Foo".into()))
+            .unwrap();
+        assert_eq!(d.resolve("Foo"), Some(eu));
     }
 
     #[test]
