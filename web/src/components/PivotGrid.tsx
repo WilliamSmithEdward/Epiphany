@@ -147,6 +147,13 @@ export default function PivotGrid({
   const [colDims, setColDims] = useState<string[]>([])
   const [context, setContext] = useState<Record<string, string>>({})
   const [cells, setCells] = useState<Map<string, CellDto>>(new Map())
+  // True while a refresh() is in flight (after the first load too). Drives the
+  // grid's aria-busy + a polite live status and dims the currently-painted cells
+  // so a user never reads a previous-slice number AS the current slice's value:
+  // on a context/filter change the row/col tuple KEYS are unchanged, so the old
+  // numbers would otherwise stay crisply painted under the new slice until the
+  // readCells resolves.
+  const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [drill, setDrill] = useState<{ label: string; trace: TraceDto | null } | null>(null)
   // Bumped to re-run the initial load after an error (the Retry affordance).
@@ -619,7 +626,10 @@ export default function PivotGrid({
   const refresh = useCallback(async () => {
     if (!detail || rowDims.length === 0 || colDims.length === 0) return
     if (rowTuples.length === 0 || colTuples.length === 0) {
+      // Nothing to fetch (an empty axis): clear any prior slice's cells and end any
+      // in-flight busy state so the "No data" empty state is not shown dimmed.
       setCells(new Map())
+      setRefreshing(false)
       return
     }
     const coords: Coord[] = []
@@ -629,6 +639,7 @@ export default function PivotGrid({
       }
     }
     const gen = (refreshGen.current += 1)
+    setRefreshing(true)
     try {
       const fetched = await readCells(cube, coords)
       // Ignore a stale response: a newer refresh started while this one was in
@@ -646,9 +657,11 @@ export default function PivotGrid({
       }
       setCells(next)
       setError(null)
+      setRefreshing(false)
     } catch (err) {
       if (gen !== refreshGen.current) return
       setError(err instanceof Error ? err.message : 'Failed to read cells')
+      setRefreshing(false)
     }
   }, [cube, detail, rowDims, colDims, coordFor, rowTuples, colTuples])
 
@@ -855,7 +868,21 @@ export default function PivotGrid({
           {error}
         </p>
       ) : null}
-      <div className="grid-wrap" ref={gridRef}>
+      {/* Polite live status so a re-query (any refresh past the first load) is
+          announced to assistive tech, not just visually. */}
+      <div className="sr-only" role="status" aria-live="polite">
+        {refreshing ? 'Refreshing values...' : ''}
+      </div>
+      <div
+        className="grid-wrap"
+        ref={gridRef}
+        aria-busy={refreshing || undefined}
+        // Dim the currently-painted cells while a refresh is in flight so a user
+        // never reads a previous-slice number AS the current slice's value (the
+        // tuple keys are unchanged on a context/filter change, so the stale numbers
+        // would otherwise stay crisply painted until readCells resolves).
+        style={refreshing ? { opacity: 0.5, transition: 'opacity 120ms' } : undefined}
+      >
         <table className="pivot">
           <thead>
             {colLevels === 0 ? (
@@ -902,6 +929,16 @@ export default function PivotGrid({
             )}
           </thead>
           <tbody>
+            {rowTuples.length === 0 ? (
+              // An empty row axis (e.g. an applied set resolved to no members)
+              // would otherwise render a bare header-only table; show an explicit
+              // "No data" row so the state reads as intentional, not broken.
+              <tr>
+                <td className="pivot__empty muted" colSpan={cornerCols + Math.max(1, colTuples.length)}>
+                  No data to show. Adjust the filters or member sets on the rows axis.
+                </td>
+              </tr>
+            ) : null}
             {rowTuples.map((rt, ri) => (
               <tr key={tupleKey(rt)}>
                 {rowHeaderAt[ri].map((h, hi) => {

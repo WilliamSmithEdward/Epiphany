@@ -99,6 +99,86 @@ describe('buildElementTree (element-order sorted children)', () => {
     const forest = buildForest(dim)
     expect(forest.childrenOf.get('East')).toEqual(['NY', 'NJ'])
   })
+
+  it('terminates on a cyclic edge set instead of overflowing the stack', () => {
+    // A->B->C->A is a cycle (no element is parent-free, so the recursion would
+    // never bottom out without the ancestry guard). buildElementTree must mirror
+    // flattenForest's per-path ancestry guard and cut the back-edge so it returns.
+    const dim: DimensionDto = {
+      name: 'Cyclic',
+      elements: [
+        { name: 'A', kind: 'consolidated' },
+        { name: 'B', kind: 'consolidated' },
+        { name: 'C', kind: 'consolidated' },
+      ],
+      edges: [
+        { parent: 'A', child: 'B', weight: 1 },
+        { parent: 'B', child: 'C', weight: 1 },
+        { parent: 'C', child: 'A', weight: 1 }, // back-edge closing the cycle
+      ],
+    }
+    // Every element has an incoming edge, so there is no parent-free root; the
+    // tree is empty but the call must still return (not recurse forever).
+    const tree = buildElementTree(dim)
+    expect(tree).toEqual([])
+  })
+
+  it('cuts only the back-edge of a cycle, keeping the reachable prefix when a root exists', () => {
+    // Root -> A -> B -> A : "A" reappears on its own path (a cycle via B). The
+    // ancestry guard cuts B->A (the back-edge) but keeps Root/A/B, so the
+    // non-cyclic prefix still renders.
+    const dim: DimensionDto = {
+      name: 'CyclicWithRoot',
+      elements: [
+        { name: 'Root', kind: 'consolidated' },
+        { name: 'A', kind: 'consolidated' },
+        { name: 'B', kind: 'consolidated' },
+      ],
+      edges: [
+        { parent: 'Root', child: 'A', weight: 1 },
+        { parent: 'A', child: 'B', weight: 1 },
+        { parent: 'B', child: 'A', weight: 1 }, // back-edge: A already on the path
+      ],
+    }
+    const tree = buildElementTree(dim)
+    expect(tree.map((n) => n.name)).toEqual(['Root'])
+    const a = tree[0].children[0]
+    expect(a.name).toBe('A')
+    const b = a.children[0]
+    expect(b.name).toBe('B')
+    // B's edge back to A is the cycle's back-edge and is cut, so B has no children.
+    expect(b.children).toEqual([])
+  })
+
+  it('preserves per-occurrence multiplication of a shared rollup (not a cycle)', () => {
+    // A diamond (Total -> {West, East}, both -> Shared) is NOT a cycle: "Shared"
+    // is reachable by two distinct paths and must still appear once per path. The
+    // ancestry guard (keyed by the path, fresh per branch) must not collapse this.
+    const dim: DimensionDto = {
+      name: 'Diamond',
+      elements: [
+        { name: 'Total', kind: 'consolidated' },
+        { name: 'West', kind: 'consolidated' },
+        { name: 'East', kind: 'consolidated' },
+        { name: 'Shared', kind: 'numeric' },
+      ],
+      edges: [
+        { parent: 'Total', child: 'West', weight: 1 },
+        { parent: 'Total', child: 'East', weight: 1 },
+        { parent: 'West', child: 'Shared', weight: 1 },
+        { parent: 'East', child: 'Shared', weight: 1 },
+      ],
+    }
+    const tree = buildElementTree(dim)
+    const total = tree[0]
+    const west = total.children.find((n) => n.name === 'West') as TreeNode
+    const east = total.children.find((n) => n.name === 'East') as TreeNode
+    // "Shared" appears once under each parent (distinct paths), unchanged.
+    expect(west.children.map((n) => n.name)).toEqual(['Shared'])
+    expect(east.children.map((n) => n.name)).toEqual(['Shared'])
+    expect(west.children[0].path).toBe('Total/West/Shared')
+    expect(east.children[0].path).toBe('Total/East/Shared')
+  })
 })
 
 describe('computeHeaderSpans (path-key grouping)', () => {

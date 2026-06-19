@@ -21,7 +21,7 @@ import {
   type InsertPosition,
 } from '../api/client'
 import { buildElementTree, type TreeNode } from '../model/tree'
-import { Card, Dialog, Input, Select, useConfirm } from '../ui'
+import { Card, Dialog, EmptyState, Input, Select, useConfirm } from '../ui'
 
 // The target dimension: either a cube-embedded dimension (edited through the
 // cube route) or a registry (global) dimension (edited by id, fanning out to
@@ -49,6 +49,11 @@ const KIND_ICON: Record<ElementKind, string> = {
   string: '"',
   consolidated: '◇',
 }
+
+/** A shared, frozen empty set used as the per-row descendants fallback so a row
+ * with no descendants always gets the SAME reference (stable props), instead of
+ * a fresh `new Set()` per render. */
+const EMPTY_SET: ReadonlySet<string> = new Set<string>()
 
 /** Where, relative to a target row, a drop lands: place the dragged member
  * before it, after it, or as a child of it (which turns the target into a
@@ -256,13 +261,20 @@ export default function DimensionEditor({
     return out
   }, [drag, childrenByParent])
 
-  // The transitive descendants of any member (its whole reachable subtree), computed
-  // the same way `dragDescendants` does but for an arbitrary member. Used by the row
-  // menu's Copy to / Move to submenus to exclude targets that would form a cycle
-  // (adding the member under its own descendant). UX guard only - the backend rejects
-  // an actual cycle regardless.
-  const descendantsOf = useCallback(
-    (name: string): Set<string> => {
+  // The transitive descendants of EVERY member (each one's whole reachable subtree),
+  // computed once per dimension the same way `dragDescendants` does, then indexed per
+  // row. Used by the row menu's Copy to / Move to submenus to exclude targets that
+  // would form a cycle (adding the member under its own descendant). UX guard only -
+  // the backend rejects an actual cycle regardless.
+  //
+  // Precomputed as a Map rather than a per-row `descendantsOf(r.name)` call because
+  // that was evaluated eagerly for every visible row on EVERY render (each drag-over
+  // setOver tick, every focus/notice/busy toggle), allocating a fresh BFS + Set each
+  // time. The map computes each member's set once; rows index it with a stable
+  // EMPTY_SET fallback so a row's `excludeTargets` ref stays stable across renders.
+  const descendantsByName = useMemo(() => {
+    const m = new Map<string, ReadonlySet<string>>()
+    for (const name of childrenByParent.keys()) {
       const out = new Set<string>()
       const stack = [name]
       while (stack.length) {
@@ -274,10 +286,10 @@ export default function DimensionEditor({
           }
         }
       }
-      return out
-    },
-    [childrenByParent],
-  )
+      m.set(name, out)
+    }
+    return m
+  }, [childrenByParent])
 
   // The consolidations a member could be added to by keyboard (every member of
   // kind consolidated), for the "Copy to" / "Move to" pickers.
@@ -340,19 +352,26 @@ export default function DimensionEditor({
   }, [focusPath, rows])
 
   // Run one structural edit, then reload and surface the result. A registry
-  // dimension reports which referencing cubes were also updated.
+  // dimension reports which referencing cubes were also updated; `successNote` is
+  // a concise confirmation announced via the role=status live region for EVERY
+  // target (cube or registry), so a successful edit is announced to assistive tech
+  // and not just silently applied (WCAG 4.1.3). The registry fan-out note, when
+  // present, supersedes it (it carries the same "updated" meaning plus the cubes).
   const runEdit = useCallback(
-    async (edit: DimensionEdit) => {
+    async (edit: DimensionEdit, successNote?: string) => {
       setBusy(true)
       setError(null)
       setNotice(null)
       try {
         if (target.kind === 'cube') {
           await editCubeDimension(target.cube, target.dim, edit)
+          if (successNote) setNotice(successNote)
         } else {
           const result = await editDimensionById(target.id, edit)
           if (result.fanned_out_to.length > 0) {
             setNotice(`Updated, and applied to ${result.fanned_out_to.join(', ')}.`)
+          } else if (successNote) {
+            setNotice(successNote)
           }
         }
         load()
@@ -375,7 +394,7 @@ export default function DimensionEditor({
   // at the first failure, surface its error, and still reload so the UI reflects
   // whatever did commit. Empty / single-op lists are handled by the callers.
   const runEdits = useCallback(
-    async (edits: DimensionEdit[]): Promise<boolean> => {
+    async (edits: DimensionEdit[], successNote?: string): Promise<boolean> => {
       if (edits.length === 0) return true
       setBusy(true)
       setError(null)
@@ -409,6 +428,9 @@ export default function DimensionEditor({
       } finally {
         if (ok && fannedOut.size > 0) {
           setNotice(`Updated, and applied to ${[...fannedOut].join(', ')}.`)
+        } else if (ok && successNote) {
+          // Announce the successful move for a cube target too (no fan-out note).
+          setNotice(successNote)
         }
         load()
         onChanged?.()
@@ -462,7 +484,7 @@ export default function DimensionEditor({
     async (parent: string, child: string): Promise<boolean> => {
       if (parent === child) return false
       if (!(await confirmConsolidationConversion(parent, child))) return false
-      return runEdit({ op: 'add_child', parent, child })
+      return runEdit({ op: 'add_child', parent, child }, `Added "${child}" to "${parent}"`)
     },
     [confirmConsolidationConversion, runEdit],
   )
@@ -472,7 +494,7 @@ export default function DimensionEditor({
   const removeChild = useCallback(
     (parent: string | null, child: string): Promise<boolean> => {
       if (!parent) return Promise.resolve(false)
-      return runEdit({ op: 'remove_child', parent, child })
+      return runEdit({ op: 'remove_child', parent, child }, `Removed "${child}" from "${parent}"`)
     },
     [runEdit],
   )
@@ -512,7 +534,7 @@ export default function DimensionEditor({
         // failure leaves the member double-parented (recoverable), not orphaned.
         const edits: DimensionEdit[] = [{ op: 'add_child', parent: targetName, child: moved }]
         if (fromParent) edits.push({ op: 'remove_child', parent: fromParent, child: moved })
-        await runEdits(edits)
+        await runEdits(edits, `Moved "${moved}" into "${targetName}"`)
         return
       }
 
@@ -520,7 +542,7 @@ export default function DimensionEditor({
       const newOrder = orderMoving(moved, targetName, zone)
       if (toParent === fromParent) {
         // Same parent (or both root): a pure reorder within the element list.
-        await runEdits([{ op: 'reorder', new_order: newOrder }])
+        await runEdits([{ op: 'reorder', new_order: newOrder }], `Moved "${moved}"`)
         return
       }
       // Different parent: positional MOVE into the target's parent. Add to the new
@@ -531,7 +553,10 @@ export default function DimensionEditor({
       if (toParent) edits.push({ op: 'add_child', parent: toParent, child: moved })
       if (fromParent) edits.push({ op: 'remove_child', parent: fromParent, child: moved })
       edits.push({ op: 'reorder', new_order: newOrder })
-      await runEdits(edits)
+      await runEdits(
+        edits,
+        toParent ? `Moved "${moved}" into "${toParent}"` : `Moved "${moved}" to the top level`,
+      )
     },
     [confirmConsolidationConversion, orderMoving, runEdits],
   )
@@ -610,7 +635,12 @@ export default function DimensionEditor({
       const swap = dir === 'up' ? at - 1 : at + 1
       if (swap < 0 || swap >= order.length) return
       ;[order[at], order[swap]] = [order[swap], order[at]]
-      void runEdit({ op: 'reorder', new_order: order })
+      // Announce the member's new 1-based position so a keyboard pick-up move (and
+      // the row menu's Move up/down) confirms the result, not just silently applies.
+      void runEdit(
+        { op: 'reorder', new_order: order },
+        `Moved "${name}" to position ${swap + 1} of ${order.length}`,
+      )
     },
     [busy, dimension, runEdit],
   )
@@ -709,6 +739,15 @@ export default function DimensionEditor({
     setAddKind('numeric')
   }
 
+  // Open the inline add form for a new member at the end of the list (no ref row).
+  // Shared by the toolbar "+ Add member" button and the empty-state action.
+  const startAddAtEnd = () => {
+    setMenuPath(null)
+    setAdding({ at: 'after', ref: null })
+    setAddName('')
+    setAddKind('numeric')
+  }
+
   const commitAdd = useCallback(async () => {
     // Gate on busy like the button already is: the Enter-key path is otherwise
     // ungated and a double Enter would POST a duplicate insert (and a spurious error).
@@ -719,26 +758,39 @@ export default function DimensionEditor({
       setError('Give the new member a name.')
       return
     }
+    // Validate the duplicate locally: the kindOf map already knows every existing
+    // member name, so catch a clash here with a friendly message instead of a wasted
+    // round-trip that surfaces a raw internal-vocabulary API error.
+    if (kindOf.has(name)) {
+      setError(`A member named "${name}" already exists.`)
+      return
+    }
     let ok: boolean
     if (adding.at === 'as-child' && adding.ref) {
-      // Insert at the end, then add it as a child of the chosen member
-      // additively (which keeps any other members the parent already holds and
-      // converts a leaf/string parent to a consolidation). Two committed edits.
-      const inserted = await runEdit({
-        op: 'insert',
-        name,
-        kind: addKind,
-        position: { at: 'end' },
-      })
-      ok = inserted ? await addChild(adding.ref, name) : false
+      // Insert at the end, then add it as a child of the chosen member additively
+      // (which keeps any other members the parent already holds and converts a
+      // leaf/string parent to a consolidation). Two ops, NOT atomic. Confirm the
+      // leaf->consolidation conversion FIRST (before inserting), so a declined
+      // confirm leaves nothing stranded; then run BOTH ops through runEdits so its
+      // partial-failure messaging applies and a mid-sequence add_child failure does
+      // not strand the inserted member as a silent top-level orphan with the form
+      // still open (re-submitting the same name would then hit a duplicate error).
+      if (!(await confirmConsolidationConversion(adding.ref, name))) return
+      ok = await runEdits(
+        [
+          { op: 'insert', name, kind: addKind, position: { at: 'end' } },
+          { op: 'add_child', parent: adding.ref, child: name },
+        ],
+        `Added "${name}" to "${adding.ref}"`,
+      )
     } else {
       const position: InsertPosition = adding.ref
         ? { at: adding.at as 'before' | 'after', ref: adding.ref }
         : { at: 'end' }
-      ok = await runEdit({ op: 'insert', name, kind: addKind, position })
+      ok = await runEdit({ op: 'insert', name, kind: addKind, position }, `Added "${name}"`)
     }
     if (ok) setAdding(null)
-  }, [busy, adding, addName, addKind, runEdit, addChild])
+  }, [busy, adding, addName, addKind, kindOf, confirmConsolidationConversion, runEdit, runEdits])
 
   const convert = useCallback(
     async (name: string, kind: ElementKind) => {
@@ -765,7 +817,10 @@ export default function DimensionEditor({
         })
         if (!ok) return
       }
-      void runEdit({ op: 'set_kind', element: name, kind })
+      void runEdit(
+        { op: 'set_kind', element: name, kind },
+        `Converted "${name}" to ${KIND_LABEL[kind]}`,
+      )
     },
     [busy, confirm, kindOf, runEdit],
   )
@@ -816,7 +871,10 @@ export default function DimensionEditor({
         })
         if (!ok) return
       }
-      void runEdit({ op: 'reparent', child: name, new_parent: target })
+      void runEdit(
+        { op: 'reparent', child: name, new_parent: target },
+        target === null ? `Moved "${name}" to the top level` : `Moved "${name}" into "${target}"`,
+      )
     },
     [busy, confirm, parentsOf, runEdit],
   )
@@ -842,7 +900,7 @@ export default function DimensionEditor({
         danger: true,
       })
       if (!ok) return
-      void runEdit({ op: 'delete', element: name })
+      void runEdit({ op: 'delete', element: name }, `Deleted "${name}"`)
     },
     [confirm, childCountOf, runEdit],
   )
@@ -862,7 +920,12 @@ export default function DimensionEditor({
     if (!removeFrom) return
     const { name, checked } = removeFrom
     for (const parent of checked) {
-      const ok = await runEdit({ op: 'remove_child', parent, child: name })
+      // Announce each unlink (the last success note survives the reload); naming
+      // the parent keeps it specific for a single-edge case.
+      const ok = await runEdit(
+        { op: 'remove_child', parent, child: name },
+        `Removed "${name}" from "${parent}"`,
+      )
       if (!ok) return
     }
     setRemoveFrom(null)
@@ -925,11 +988,7 @@ export default function DimensionEditor({
             type="button"
             className="dimedit__addroot"
             disabled={busy}
-            onClick={() => {
-              setAdding({ at: 'after', ref: null })
-              setAddName('')
-              setAddKind('numeric')
-            }}
+            onClick={startAddAtEnd}
           >
             + Add member
           </button>
@@ -1040,7 +1099,7 @@ export default function DimensionEditor({
                   currentParent={r.parent}
                   consolidations={consolidations}
                   memberParents={parentsOf.get(r.name) ?? []}
-                  excludeTargets={descendantsOf(r.name)}
+                  excludeTargets={descendantsByName.get(r.name) ?? EMPTY_SET}
                   open={menuPath === r.path}
                   onOpenChange={(o) => setMenuPath(o ? r.path : null)}
                   onMoveUp={() => moveStep(r.name, 'up')}
@@ -1085,8 +1144,24 @@ export default function DimensionEditor({
             )
           })}
           {rows.length === 0 ? (
-            <li role="none" className="dimedit__empty muted">
-              No members yet. Use Add member to start.
+            <li role="none" className="dimedit__empty">
+              <EmptyState
+                icon="◇"
+                title="No members yet"
+                action={
+                  <button
+                    type="button"
+                    className="dimedit__btn dimedit__btn--primary"
+                    disabled={busy}
+                    onClick={startAddAtEnd}
+                  >
+                    + Add member
+                  </button>
+                }
+              >
+                A dimension is a list of members - the rows and columns a cube is
+                sliced by. Add the first member to start building this dimension.
+              </EmptyState>
             </li>
           ) : null}
         </ul>
@@ -1239,7 +1314,7 @@ interface RowActionProps {
   memberParents: string[]
   /** The member's transitive descendants: excluded from Copy to / Move to because an
    * add there would form a cycle (the backend rejects it regardless). */
-  excludeTargets: Set<string>
+  excludeTargets: ReadonlySet<string>
   onMoveUp: () => void
   onMoveDown: () => void
   onAddBefore: () => void

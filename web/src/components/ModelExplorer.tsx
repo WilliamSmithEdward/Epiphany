@@ -62,6 +62,13 @@ export default function ModelExplorer({
   // Type-ahead buffer (printable chars) with a ~500ms expiry, held in a ref so
   // it survives renders without retriggering the key handler's useCallback.
   const typeahead = useRef<{ keys: string; t: number }>({ keys: '', t: 0 })
+  // Per-node load generation: every load() dispatch for a node id bumps its
+  // counter and captures the value; the .then/.catch only commits if its capture
+  // is still the latest. This makes concurrent dispatches for the same id (a
+  // reload + a Retry, a double reload bump per delete, mount-vs-reload, or a
+  // collapse mid-load) last-DISPATCH-wins rather than last-RESPONSE-wins, so an
+  // older-but-faster response cannot clobber a newer one's children.
+  const loadGen = useRef<Map<string, number>>(new Map())
 
   const runAction = useCallback(
     (action: NodeAction, ctx: ActionContext) => {
@@ -80,6 +87,10 @@ export default function ModelExplorer({
 
   const load = useCallback((node: Node) => {
     if (!node.loader) return
+    // Bump this node id's generation and capture it; a later dispatch for the same
+    // id supersedes this one, and the guards below discard this response if so.
+    const g = (loadGen.current.get(node.id) ?? 0) + 1
+    loadGen.current.set(node.id, g)
     setLoading((s) => new Set(s).add(node.id))
     setErrors((m) => {
       if (!(node.id in m)) return m
@@ -91,17 +102,24 @@ export default function ModelExplorer({
     node
       .loader()
       .then((kids) => {
+        if (loadGen.current.get(node.id) !== g) return // superseded by a newer load
         setChildren((m) => ({ ...m, [node.id]: kids }))
         setLiveMsg(`${node.label} loaded`)
       })
       .catch((err) => {
+        if (loadGen.current.get(node.id) !== g) return // superseded by a newer load
         // Keep the failure out of childrenById so `toggle`'s re-expand guard
         // (`node.loader && !childrenById[node.id]`) re-fetches on collapse+expand.
         const msg = err instanceof Error ? err.message : String(err)
         setErrors((m) => ({ ...m, [node.id]: msg }))
         setLiveMsg(`Failed to load ${node.label}: ${msg}`)
       })
-      .finally(() => setLoading((s) => { const n = new Set(s); n.delete(node.id); return n }))
+      .finally(() => {
+        // Only the latest dispatch clears the spinner; a superseded one leaving it
+        // off would hide the in-flight newer load.
+        if (loadGen.current.get(node.id) !== g) return
+        setLoading((s) => { const n = new Set(s); n.delete(node.id); return n })
+      })
   }, [])
 
   // Defer the heavy filter work off the keystroke so typing stays responsive: the
@@ -157,11 +175,21 @@ export default function ModelExplorer({
     return { keepIds: keep, searchExpand: expand }
   }, [searching, q, roots, childrenById])
 
-  // Reload the children of any currently-expanded node when the model changes
-  // (a write bumps reloadSignal), so the tree stays in sync after create/delete.
+  // Reload the children of the relevant nodes when the model changes (a write
+  // bumps reloadSignal), so the tree stays in sync after create/delete.
+  //
+  // Outside search, that is the nodes the user has manually expanded. DURING a
+  // search, though, subtrees are opened via `searchExpand` and populated by the
+  // eager-load effect, NOT by the manual `expanded` set - so they would be missed
+  // here, leaving a gone/renamed object visible until the search box is cleared.
+  // While searching, reload every actually-loaded node (the childrenById keys) so
+  // the search result set re-derives over fresh children.
   useEffect(() => {
     if (reloadSignal === 0) return
-    const reloadable = collectLoaders(roots, childrenById).filter((n) => expanded.has(n.id))
+    const inScope = searching
+      ? (n: Node) => n.id in childrenById
+      : (n: Node) => expanded.has(n.id)
+    const reloadable = collectLoaders(roots, childrenById).filter(inScope)
     for (const n of reloadable) load(n)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadSignal])
