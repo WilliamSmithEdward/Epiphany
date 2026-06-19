@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
-use crate::{Cube, Dimension, Fixed, ModelError};
+use crate::{Cube, Dimension, ElementKind, Fixed, ModelError, Position};
 
 /// Whether a saved object is shared with everyone or kept to its owner.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1251,6 +1251,28 @@ impl Sandbox {
     }
 }
 
+/// Remap a coordinate-keyed override map for a structural edit to dimension `d`:
+/// each key's `d`-th component is moved via `to_new` (an old-index to new-index
+/// table), and an entry whose component maps to `u32::MAX` (a removed member) is
+/// dropped. Keeps per-user sandbox overrides aligned after a reorder, insert, or
+/// delete, since their coordinates are element indices like the cube's own cells.
+fn remap_coord_map<V>(
+    old: BTreeMap<Vec<u32>, V>,
+    d: usize,
+    to_new: &[u32],
+) -> BTreeMap<Vec<u32>, V> {
+    let mut out = BTreeMap::new();
+    for (mut coord, value) in old {
+        let mapped = to_new.get(coord[d] as usize).copied().unwrap_or(u32::MAX);
+        if mapped == u32::MAX {
+            continue;
+        }
+        coord[d] = mapped;
+        out.insert(coord, value);
+    }
+    out
+}
+
 /// A complete durable model: a cube plus its named subsets, views, rules, rule
 /// tests, and per-user sandboxes.
 ///
@@ -1291,6 +1313,109 @@ impl Model {
     /// Look up a sandbox by name.
     pub fn sandbox(&self, name: &str) -> Option<&Sandbox> {
         self.sandboxes.get(name)
+    }
+
+    // ---- structural dimension edits that also keep sandboxes aligned ----
+    //
+    // Sandbox overrides are keyed by element index (like the cube's own cells), so
+    // a reorder/insert/delete that shifts indices must remap them too. The cube
+    // op only remaps the cube's cells; these wrappers run the same op on the cube
+    // and then remap every sandbox by reconstructing the index permutation from
+    // member names (members are uniquely named, and the edits preserve name order
+    // apart from the change). Index-stable edits (reparent/add-child/set-kind) need
+    // no remap, so they stay on `cube` directly.
+
+    /// Reorder a dimension's members (see [`Cube::reorder_elements`]) and remap
+    /// every sandbox override so each what-if value follows its member.
+    pub fn reorder_elements(
+        &mut self,
+        dimension: &str,
+        new_order: &[String],
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension);
+        let old_names = d.map(|d| self.member_names(d));
+        self.cube.reorder_elements(dimension, new_order)?;
+        if let (Some(d), Some(old_names)) = (d, old_names) {
+            let to_new = self.permutation_by_name(d, &old_names);
+            self.remap_sandboxes_for_dimension(d, &to_new);
+        }
+        Ok(())
+    }
+
+    /// Delete a member (see [`Cube::delete_element`]) and drop or remap sandbox
+    /// overrides: overrides on the deleted member are discarded, the rest follow
+    /// their member to its new index.
+    pub fn delete_element(&mut self, dimension: &str, element: &str) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension);
+        let old_names = d.map(|d| self.member_names(d));
+        self.cube.delete_element(dimension, element)?;
+        if let (Some(d), Some(old_names)) = (d, old_names) {
+            let to_new = self.permutation_by_name(d, &old_names);
+            self.remap_sandboxes_for_dimension(d, &to_new);
+        }
+        Ok(())
+    }
+
+    /// Insert a member at a position (see [`Cube::insert_element_at`]) and remap
+    /// sandbox overrides so existing members' what-if values follow their shifted
+    /// indices.
+    pub fn insert_element_at(
+        &mut self,
+        dimension: &str,
+        name: &str,
+        kind: ElementKind,
+        position: Position,
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension);
+        let old_names = d.map(|d| self.member_names(d));
+        self.cube
+            .insert_element_at(dimension, name, kind, position)?;
+        if let (Some(d), Some(old_names)) = (d, old_names) {
+            let to_new = self.permutation_by_name(d, &old_names);
+            self.remap_sandboxes_for_dimension(d, &to_new);
+        }
+        Ok(())
+    }
+
+    /// The index of a dimension by name, or `None` if there is no such dimension.
+    fn dimension_index(&self, dimension: &str) -> Option<usize> {
+        self.cube
+            .dimensions()
+            .iter()
+            .position(|dim| dim.name() == dimension)
+    }
+
+    /// The member names of dimension `d` in index order, used to reconstruct the
+    /// index permutation an edit applied.
+    fn member_names(&self, d: usize) -> Vec<String> {
+        let dim = self.cube.dimension(d);
+        (0..dim.len())
+            .map(|i| {
+                dim.element(i)
+                    .expect("index below len resolves")
+                    .name
+                    .clone()
+            })
+            .collect()
+    }
+
+    /// Map each old element index of dimension `d` to its new index after an edit
+    /// (matching members by name), or `u32::MAX` for a member the edit removed.
+    fn permutation_by_name(&self, d: usize, old_names: &[String]) -> Vec<u32> {
+        let dim = self.cube.dimension(d);
+        old_names
+            .iter()
+            .map(|name| dim.index_of(name).unwrap_or(u32::MAX))
+            .collect()
+    }
+
+    /// Remap every sandbox's overrides for a structural edit to dimension `d`.
+    fn remap_sandboxes_for_dimension(&mut self, d: usize, to_new: &[u32]) {
+        for sandbox in self.sandboxes.values_mut() {
+            sandbox.cells = remap_coord_map(std::mem::take(&mut sandbox.cells), d, to_new);
+            sandbox.string_cells =
+                remap_coord_map(std::mem::take(&mut sandbox.string_cells), d, to_new);
+        }
     }
 
     /// Look up a subset by dimension and name.

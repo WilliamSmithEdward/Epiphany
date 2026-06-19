@@ -576,7 +576,7 @@ impl Store {
         // Reindexing op: checkpoint first so the WAL holds no old-index writes
         // when the post-edit snapshot is written (see the block comment above).
         self.checkpoint()?;
-        self.model.cube.reorder_elements(dimension, new_order)?;
+        self.model.reorder_elements(dimension, new_order)?;
         self.checkpoint()
     }
 
@@ -639,7 +639,7 @@ impl Store {
     pub fn delete_element(&mut self, dimension: &str, element: &str) -> Result<(), PersistError> {
         // Reindexing op: checkpoint first (see reorder_elements).
         self.checkpoint()?;
-        self.model.cube.delete_element(dimension, element)?;
+        self.model.delete_element(dimension, element)?;
         self.checkpoint()
     }
 
@@ -654,7 +654,6 @@ impl Store {
         // Reindexing op: checkpoint first (see reorder_elements).
         self.checkpoint()?;
         self.model
-            .cube
             .insert_element_at(dimension, name, kind, position)?;
         self.checkpoint()
     }
@@ -1297,6 +1296,65 @@ mod tests {
         assert_eq!(sb.created, 1);
         assert_eq!(sb.updated, 2);
         assert_eq!(sb.cell(&[r[0], p[0]]), Some(Fixed::from(500)));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sandbox_overrides_follow_structural_edits() {
+        // Sandbox overrides are keyed by element index. A reindexing edit must
+        // remap them so a what-if value follows its member (and is dropped when
+        // the member is deleted), and must not leave a stale index that would make
+        // the checkpoint serialize the wrong member or panic.
+        let dir = scratch("sandbox-remap");
+        let f = fixture();
+        let (r, p) = (f.r.clone(), f.p.clone());
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        store.define_sandbox(Sandbox::new("w", "ann", 1)).unwrap();
+        // What-if override on R1/P0 -> 500.
+        store
+            .sandbox_set_cells(
+                "w",
+                &[CellWrite::Leaf {
+                    coord: vec![r[1], p[0]],
+                    value: Fixed::from(500),
+                }],
+                2,
+            )
+            .unwrap();
+
+        // Reorder Region so R1 moves to the front; the override must follow it.
+        store
+            .reorder_elements(
+                "Region",
+                &["R1".into(), "R0".into(), "R2".into(), "Total".into()],
+            )
+            .unwrap();
+        let region = store
+            .cube()
+            .dimensions()
+            .iter()
+            .find(|d| d.name() == "Region")
+            .unwrap();
+        let r1_new = region.index_of("R1").unwrap();
+        let sb = store.model().sandbox("w").unwrap();
+        assert_eq!(
+            sb.cell(&[r1_new, p[0]]),
+            Some(Fixed::from(500)),
+            "the override followed R1 to its new index"
+        );
+        assert_eq!(sb.len(), 1, "still exactly one override");
+
+        // Deleting R1 drops its override (and the checkpoint must not panic).
+        store.delete_element("Region", "R1").unwrap();
+        assert!(
+            store.model().sandbox("w").unwrap().is_empty(),
+            "deleting the member dropped its override"
+        );
+
+        // The remapped sandbox survives a reopen.
+        drop(store);
+        let store = Store::open(&dir).unwrap();
+        assert!(store.model().sandbox("w").unwrap().is_empty());
         fs::remove_dir_all(&dir).ok();
     }
 
