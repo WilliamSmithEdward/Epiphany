@@ -1,8 +1,11 @@
 //! WebSocket change notifications. One authenticated stream per client; each
 //! committed write or batch broadcasts exactly one event (a batch is one event).
-//! Consolidations are not pushed: clients refetch the views they display. The
-//! version is the engine's monotonic commit version, so the stream is ordered
-//! and gap-detectable.
+//! Consolidations are not pushed: clients refetch the views they display. Each
+//! `CellsChanged`/`ObjectsChanged` event carries the originating cube's commit
+//! version, which is monotonic per cube; there is no single global version, so
+//! the opening `Hello` frame sends a placeholder `version: 0` rather than a
+//! gap-detection baseline. Clients refetch on any event, so they do not rely on
+//! the version for gap detection.
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;

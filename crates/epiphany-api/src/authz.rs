@@ -288,11 +288,11 @@ pub(crate) fn denied_registry_elements(
     denied
 }
 
-/// Gate a write on element-level access (ADR-0015): a write to a coordinate whose
-/// every component the caller may not write is rejected with 403. A write targets
-/// a leaf, so each component is checked directly (no rollup). On denial emits an
-/// `AccessDenied` audit record. An admin (or any cube with no element ACLs)
-/// passes.
+/// Gate a write on element-level access (ADR-0015): a write to a coordinate is
+/// rejected with 403 if ANY component dimension element is not writable by the
+/// caller (fail-closed). A write targets a leaf, so each component is checked
+/// directly (no rollup). On denial emits an `AccessDenied` audit record. An admin
+/// (or any cube with no element ACLs) passes.
 pub(crate) fn require_element_write(
     state: &AppState,
     auth: &AuthPrincipal,

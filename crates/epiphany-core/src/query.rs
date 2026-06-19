@@ -1196,10 +1196,12 @@ pub struct Connection {
 }
 
 /// A named, per-user what-if overlay over one cube (ADR-0014): a sparse set of
-/// stored-leaf value overrides (numeric and string). Rules and consolidations
-/// recompute over the overrides without touching base data. Coordinates are
-/// stored as element indices, like the cube's own cells, and serialize as
-/// element names so they survive structural change and round-trip canonically.
+/// stored-leaf value overrides. Rules and consolidations recompute over the
+/// overrides without touching base data. Coordinates are stored as element
+/// indices, like the cube's own cells, and serialize as element names so they
+/// survive structural change and round-trip canonically. Only numeric overrides
+/// are writable today: the supported write path (the persist store) rejects
+/// string what-if values, so `string_cells` is reserved and never populated.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Sandbox {
     /// The sandbox name (unique within the cube).
@@ -1213,7 +1215,9 @@ pub struct Sandbox {
     pub updated: u64,
     /// Numeric leaf overrides, keyed by coordinate (element indices).
     pub cells: BTreeMap<Vec<u32>, Fixed>,
-    /// String leaf overrides, keyed by coordinate (element indices).
+    /// String leaf overrides, keyed by coordinate (element indices). Reserved:
+    /// the supported write path rejects string what-if values, so this stays
+    /// empty today (kept for forward-compatible serialization).
     pub string_cells: BTreeMap<Vec<u32>, String>,
 }
 

@@ -239,7 +239,7 @@ impl ReadSnapshot {
 }
 
 /// Per-cube writer state, guarded by a mutex so commits are serialized (one
-/// linearization point, which makes versions and notifications deterministic).
+/// linearization point, which makes version assignment deterministic).
 #[derive(Debug)]
 struct Writer {
     store: Store,
