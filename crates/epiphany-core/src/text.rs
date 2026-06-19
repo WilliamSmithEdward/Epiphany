@@ -418,7 +418,9 @@ fn build_view(doc: &ViewDoc) -> View {
     // Back-compat: a pre-split document carries the single `suppress_zeros` flag
     // and neither new field. When present, it sets BOTH new flags (true -> both
     // true, false -> both false). A new document omits it, so the two split
-    // fields stand on their own.
+    // fields stand on their own. A present legacy flag takes precedence over any
+    // split fields in the same document; only a hand-edited or transitional file
+    // would carry both, and real legacy data has no split fields.
     let (suppress_zero_rows, suppress_zero_columns) = match doc.suppress_zeros {
         Some(legacy) => (legacy, legacy),
         None => (doc.suppress_zero_rows, doc.suppress_zero_columns),
@@ -1772,6 +1774,20 @@ mod tests {
         assert!(
             !v.suppress_zero_rows && !v.suppress_zero_columns,
             "absent -> both false"
+        );
+
+        // A document that carries BOTH the legacy flag and a split field (only a
+        // hand-edited or transitional file would) resolves legacy-wins: the present
+        // legacy flag overrides the split fields. Genuine legacy data never carries
+        // split fields, so this only pins the documented precedence against a refactor.
+        let mixed: ViewDoc = toml::from_str(
+            "name = \"V\"\ncube = \"Sales\"\nvisibility = \"public\"\nsuppress_zeros = false\nsuppress_zero_rows = true\n",
+        )
+        .unwrap();
+        let v = build_view(&mixed);
+        assert!(
+            !v.suppress_zero_rows && !v.suppress_zero_columns,
+            "legacy flag wins over split fields when both are present"
         );
 
         // New data with the two split fields round-trips independently.

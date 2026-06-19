@@ -313,7 +313,9 @@ pub struct ViewBody {
 impl ViewBody {
     /// The resolved `(suppress_zero_rows, suppress_zero_columns)` flags. A legacy
     /// `suppress_zeros` in the request drives BOTH (true -> both true, false ->
-    /// both false); otherwise the two split fields stand on their own.
+    /// both false); otherwise the two split fields stand on their own. If a
+    /// (buggy or transitional) payload sends both the legacy flag and split fields,
+    /// the legacy flag takes precedence; genuine legacy clients never send split fields.
     pub fn suppression(&self) -> (bool, bool) {
         match self.suppress_zeros {
             Some(legacy) => (legacy, legacy),
