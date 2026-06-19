@@ -22,7 +22,15 @@ import {
   type ViewDef,
   type Visibility,
 } from '../api/client'
-import { computeHeaderSpans, subsetVisibleMembers } from '../model/tree'
+import {
+  allExpandableKeys,
+  buildForest,
+  computeHeaderSpans,
+  flattenForest,
+  subsetVisibleMembers,
+  type Forest,
+  type VisibleMember,
+} from '../model/tree'
 import { Button, Dialog, Select } from '../ui'
 import CellsetGrid from './CellsetGrid'
 import PivotFields, { type AxisRole, type AxisSet } from './PivotFields'
@@ -62,8 +70,8 @@ type Tuple = TupleMember[]
 const TUPLE_SEP = ''
 
 /** A stable, UNIQUE string key for a tuple, joining each member's drill-path key
- * (not its bare name) so an alternate-rollup member — reachable under two parents,
- * e.g. a region rolling up to both Total and Coastal — yields a DISTINCT key per
+ * (not its bare name) so an alternate-rollup member, reachable under two parents
+ * (e.g. a region rolling up to both Total and Coastal), yields a DISTINCT key per
  * occurrence. Bare names collide there, giving sibling rows/cells the same React
  * key and breaking reconciliation (rows duplicate and cells linger on toggle). */
 function tupleKey(tuple: Tuple): string {
@@ -85,75 +93,6 @@ function cartesian(perDim: { dim: string; members: VisibleMember[] }[]): Tuple[]
     acc = next
   }
   return acc
-}
-
-/** One visible member of a single dimension: its name, nesting depth, and
- * whether it can be drilled into. */
-interface VisibleMember {
-  name: string
-  /** Unique within the dimension's visible list: the member's drill path (so an
-   * alternate-rollup member appears once per parent, each with its own key). */
-  key: string
-  depth: number
-  expandable: boolean
-}
-
-/** Build the consolidation forest for a dimension: an ordered child list per
- * parent, and the set of roots (members that are no one's child). Children keep
- * the dimension's own element order so the grid is deterministic. */
-function buildForest(dim: DimensionDto | undefined): {
-  roots: string[]
-  childrenOf: Map<string, string[]>
-} {
-  const childrenOf = new Map<string, string[]>()
-  const childSet = new Set<string>()
-  if (dim) {
-    const order = new Map(dim.elements.map((el, i) => [el.name, i] as const))
-    for (const e of dim.edges) {
-      const arr = childrenOf.get(e.parent)
-      if (arr) arr.push(e.child)
-      else childrenOf.set(e.parent, [e.child])
-      childSet.add(e.child)
-    }
-    for (const arr of childrenOf.values()) {
-      arr.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0))
-    }
-  }
-  const roots = dim ? dim.elements.filter((el) => !childSet.has(el.name)).map((el) => el.name) : []
-  return { roots, childrenOf }
-}
-
-/** Flatten the forest into the members that are currently visible, honoring the
- * expanded set. A member with children gets a twisty; expanding it inserts its
- * children one level deeper. An `ancestry` guard makes alternate-rollup DAGs
- * (a member reachable from two parents) safe against cycles. */
-function flattenForest(
-  roots: string[],
-  childrenOf: Map<string, string[]>,
-  expanded: Set<string>,
-): VisibleMember[] {
-  const out: VisibleMember[] = []
-  // `path` (ancestor keys joined with U+0002, distinct from the U+0001 tuple
-  // separator) makes each occurrence unique even under alternate rollups: a member
-  // reachable from two parents appears once per parent, each with its own key.
-  const visit = (name: string, depth: number, ancestry: Set<string>, path: string) => {
-    const kids = childrenOf.get(name)
-    const expandable = !!kids && kids.length > 0
-    const key = path ? `${path}${name}` : name
-    out.push({ name, key, depth, expandable })
-    if (expandable && expanded.has(name) && !ancestry.has(name)) {
-      const next = new Set(ancestry).add(name)
-      for (const child of kids) visit(child, depth + 1, next, key)
-    }
-  }
-  for (const r of roots) visit(r, 0, new Set(), '')
-  return out
-}
-
-/** A dimension's consolidation forest, indexed for fast lookup. */
-interface Forest {
-  roots: string[]
-  childrenOf: Map<string, string[]>
 }
 
 /** Build the MDX query the current layout represents: the visible column tuples
@@ -215,9 +154,11 @@ export default function PivotGrid({
   // 'off' is the disabled sentinel; a Radix Select.Item value may never be the
   // empty string, so the "off" option carries a real value.
   const [spreadMode, setSpreadMode] = useState<'off' | SpreadMethod>('off')
-  // Drill-down expansion per dimension: the consolidation members expanded
-  // within that dimension's hierarchy. Keyed by dimension name so a dimension
-  // drills the same way whether it stands alone or nests with others.
+  // Drill-down expansion per dimension: the expanded occurrences within that
+  // dimension's hierarchy, each held by its DRILL-PATH KEY (not its bare name)
+  // so an alternate-rollup member reachable under two parents can be expanded or
+  // collapsed independently per parent. The outer map is keyed by dimension name
+  // so a dimension drills the same way whether it stands alone or nests.
   const [expanded, setExpanded] = useState<Record<string, Set<string>>>({})
   // Dimensions parked in the "Unused" zone (still pinned to a member via context,
   // just kept out of the active Filters list). Purely an organizational split.
@@ -243,6 +184,10 @@ export default function PivotGrid({
   const [mdxError, setMdxError] = useState<string | null>(null)
   const [mdxBusy, setMdxBusy] = useState(false)
   const gridRef = useRef<HTMLDivElement>(null)
+  // Monotonic refresh generation: each refresh() bumps it and only applies its
+  // own response if it is still the latest, so a slow readCells that resolves
+  // after a newer refresh cannot overwrite the current cellset (request race).
+  const refreshGen = useRef(0)
 
   // Load (or reload) the saved subsets for every dimension, so each axis chip's
   // "select a set" menu is current (used on first load and after a new set saves).
@@ -344,13 +289,13 @@ export default function PivotGrid({
     [detail, context, rowDims, colDims],
   )
 
-  // Toggle a dimension member's drill-down expansion.
-  const toggleExpanded = useCallback((dim: string, name: string) => {
+  // Toggle one occurrence's drill-down expansion, by its drill-path key.
+  const toggleExpanded = useCallback((dim: string, key: string) => {
     setExpanded((cur) => {
       const set = cur[dim] ?? new Set<string>()
       const n = new Set(set)
-      if (n.has(name)) n.delete(name)
-      else n.add(name)
+      if (n.has(key)) n.delete(key)
+      else n.add(key)
       return { ...cur, [dim]: n }
     })
   }, [])
@@ -377,7 +322,9 @@ export default function PivotGrid({
         const next = { ...cur }
         for (const dim of dims) {
           if (!isHierarchical(dim)) continue
-          next[dim] = new Set(forests.get(dim)?.childrenOf.keys() ?? [])
+          const forest = forests.get(dim)
+          if (!forest) continue
+          next[dim] = allExpandableKeys(forest.roots, forest.childrenOf)
         }
         return next
       })
@@ -408,7 +355,7 @@ export default function PivotGrid({
           if (!forest) continue
           const set = new Set(cur[dim] ?? new Set<string>())
           for (const m of flattenForest(forest.roots, forest.childrenOf, set)) {
-            if (m.expandable && !set.has(m.name)) set.add(m.name)
+            if (m.expandable && !set.has(m.key)) set.add(m.key)
           }
           next[dim] = set
         }
@@ -431,9 +378,9 @@ export default function PivotGrid({
           const set = new Set(cur[dim] ?? new Set<string>())
           const visible = flattenForest(forest.roots, forest.childrenOf, set)
           let maxDepth = -1
-          for (const m of visible) if (set.has(m.name)) maxDepth = Math.max(maxDepth, m.depth)
+          for (const m of visible) if (set.has(m.key)) maxDepth = Math.max(maxDepth, m.depth)
           if (maxDepth < 0) continue
-          for (const m of visible) if (m.depth === maxDepth && set.has(m.name)) set.delete(m.name)
+          for (const m of visible) if (m.depth === maxDepth && set.has(m.key)) set.delete(m.key)
           next[dim] = set
         }
         return next
@@ -526,6 +473,15 @@ export default function PivotGrid({
 
       // 'filters' or 'unused': off-axis, member-pinned roles.
       if (inRows || inCols) {
+        // Leaving an axis for an off-axis role: drop any member set applied to it,
+        // so returning it to an axis starts from "all members" rather than silently
+        // re-applying the old set (which the off-axis chip never showed).
+        setAxisSet((s) => {
+          if (!(dim in s)) return s
+          const n = { ...s }
+          delete n[dim]
+          return n
+        })
         // Leaving an axis. If it is the last dimension on that axis, promote an
         // off-axis dimension onto the vacated axis so it stays non-empty.
         const fromRows = inRows
@@ -573,10 +529,19 @@ export default function PivotGrid({
       if ((!members || members.length === 0) && subset.mdx) {
         try {
           members = (await previewMdx(cube, dim, subset.mdx)).map((m) => m.name)
-        } catch {
-          members = []
+        } catch (err) {
+          // Surface the failure instead of applying an empty set, which would
+          // silently blank the axis (indistinguishable from a genuinely empty
+          // set). Leave the current set in place so the grid stays readable.
+          setError(
+            err instanceof Error
+              ? `Could not resolve the set "${subset.name}": ${err.message}`
+              : `Could not resolve the set "${subset.name}".`,
+          )
+          return
         }
       }
+      setError(null)
       setAxisSet((s) => ({ ...s, [dim]: { name: subset.name, members } }))
     },
     [cube],
@@ -624,6 +589,28 @@ export default function PivotGrid({
     }
   }, [cube, buildViewDef, saveName, saveVis, onModelChange])
 
+  // Build the MDX the current layout represents. Computed lazily (only when the
+  // "Show MDX" dialog opens) rather than on every render, since visibleMembersOf
+  // runs per axis dimension and the string is rarely viewed.
+  const buildMdx = useCallback((): string => {
+    const onAxis = new Set([...rowDims, ...colDims])
+    const slicers = (detail?.dimensions ?? [])
+      .filter((d) => !onAxis.has(d.name))
+      .map((d) => ({ dim: d.name, member: context[d.name] ?? d.elements[0]?.name ?? '' }))
+    const rowMembersByDim: Record<string, string[]> = {}
+    for (const dim of rowDims) rowMembersByDim[dim] = visibleMembersOf(dim).map((m) => m.name)
+    const colMembersByDim: Record<string, string[]> = {}
+    for (const dim of colDims) colMembersByDim[dim] = visibleMembersOf(dim).map((m) => m.name)
+    return buildMdxQuery({
+      cube,
+      rowDims,
+      colDims,
+      rowMembers: rowMembersByDim,
+      colMembers: colMembersByDim,
+      slicers,
+    })
+  }, [cube, detail, rowDims, colDims, context, visibleMembersOf])
+
   const refresh = useCallback(async () => {
     if (!detail || rowDims.length === 0 || colDims.length === 0) return
     if (rowTuples.length === 0 || colTuples.length === 0) {
@@ -636,8 +623,13 @@ export default function PivotGrid({
         coords.push(coordFor(rt, ct))
       }
     }
+    const gen = (refreshGen.current += 1)
     try {
       const fetched = await readCells(cube, coords)
+      // Ignore a stale response: a newer refresh started while this one was in
+      // flight, so applying these cells would paint older data over the current
+      // layout (the row/col keys can still match, e.g. on a context change).
+      if (gen !== refreshGen.current) return
       const next = new Map<string, CellDto>()
       let i = 0
       for (const rt of rowTuples) {
@@ -650,6 +642,7 @@ export default function PivotGrid({
       setCells(next)
       setError(null)
     } catch (err) {
+      if (gen !== refreshGen.current) return
       setError(err instanceof Error ? err.message : 'Failed to read cells')
     }
   }, [cube, detail, rowDims, colDims, coordFor, rowTuples, colTuples])
@@ -736,21 +729,21 @@ export default function PivotGrid({
     ? (detail.dimensions.find((d) => d.name === subsetEditorDim) ?? null)
     : null
 
+  // computeHeaderSpans reads only {dimension, name, key}; map each tuple to that
+  // shape once, for both axes.
+  const headerTuples = (tuples: Tuple[]) =>
+    tuples.map((t) => t.map((m) => ({ dimension: m.dim, name: m.name, key: m.key })))
   // Nested column headers: one row per column-axis level, run-length merged.
-  const colHeader = computeHeaderSpans(
-    colTuples.map((t) => t.map((m) => ({ dimension: m.dim, name: m.name, key: m.key, kind: 'numeric' as const }))),
-  )
+  const colHeader = computeHeaderSpans(headerTuples(colTuples))
   // For each body row, the row-header cells that start a run at that row, per
   // row-axis level (mirrors the CellsetGrid rowSpan technique).
-  const rowSpans = computeHeaderSpans(
-    rowTuples.map((t) => t.map((m) => ({ dimension: m.dim, name: m.name, key: m.key, kind: 'numeric' as const }))),
-  )
-  const rowHeaderAt: { dim: string; name: string; rowSpan: number; startIndex: number }[][] =
+  const rowSpans = computeHeaderSpans(headerTuples(rowTuples))
+  const rowHeaderAt: { dim: string; name: string; key?: string; rowSpan: number; startIndex: number }[][] =
     rowTuples.map(() => [])
   for (let level = 0; level < rowDims.length; level++) {
     let r = 0
     for (const run of rowSpans[level] ?? []) {
-      rowHeaderAt[r].push({ dim: run.dimension, name: run.name, rowSpan: run.span, startIndex: r })
+      rowHeaderAt[r].push({ dim: run.dimension, name: run.name, key: run.key, rowSpan: run.span, startIndex: r })
       r += run.span
     }
   }
@@ -758,23 +751,6 @@ export default function PivotGrid({
   // Whether a header run's member can be drilled into within its dimension.
   const runExpandable = (dim: string, name: string) =>
     isHierarchical(dim) && (forests.get(dim)?.childrenOf.has(name) ?? false)
-
-  const onAxis = new Set([...rowDims, ...colDims])
-  const slicers = detail.dimensions
-    .filter((d) => !onAxis.has(d.name))
-    .map((d) => ({ dim: d.name, member: context[d.name] ?? d.elements[0]?.name ?? '' }))
-  const rowMembersByDim: Record<string, string[]> = {}
-  for (const dim of rowDims) rowMembersByDim[dim] = visibleMembersOf(dim).map((m) => m.name)
-  const colMembersByDim: Record<string, string[]> = {}
-  for (const dim of colDims) colMembersByDim[dim] = visibleMembersOf(dim).map((m) => m.name)
-  const mdxQuery = buildMdxQuery({
-    cube,
-    rowDims,
-    colDims,
-    rowMembers: rowMembersByDim,
-    colMembers: colMembersByDim,
-    slicers,
-  })
 
   const cornerCols = Math.max(1, rowDims.length)
   const colLevels = colDims.length
@@ -841,7 +817,7 @@ export default function PivotGrid({
           size="sm"
           icon="∑"
           onClick={() => {
-            setMdxText(mdxQuery)
+            setMdxText(buildMdx())
             setMdxResult(null)
             setMdxError(null)
             setMdxOpen(true)
@@ -883,9 +859,12 @@ export default function PivotGrid({
                   ) : null}
                   {runs.map((run, i) => {
                     const expandable = runExpandable(run.dimension, run.name)
-                    const isOpen = expanded[run.dimension]?.has(run.name) ?? false
+                    // Address expansion by the occurrence's drill-path key (not its
+                    // bare name) so a member under two parents toggles per occurrence.
+                    const runKey = run.key ?? run.name
+                    const isOpen = expanded[run.dimension]?.has(runKey) ?? false
                     return (
-                      <th key={`${run.name}#${i}`} scope="col" colSpan={run.span}>
+                      <th key={`${run.key ?? run.name}#${i}`} scope="col" colSpan={run.span}>
                         <span className="pivot__colhead">
                           {expandable ? (
                             <button
@@ -893,7 +872,7 @@ export default function PivotGrid({
                               className="pivot__twisty"
                               aria-expanded={isOpen}
                               aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${run.name}`}
-                              onClick={() => toggleExpanded(run.dimension, run.name)}
+                              onClick={() => toggleExpanded(run.dimension, runKey)}
                             >
                               {isOpen ? '▾' : '▸'}
                             </button>
@@ -913,7 +892,10 @@ export default function PivotGrid({
                 {rowHeaderAt[ri].map((h, hi) => {
                   const member = rt.find((m) => m.dim === h.dim)
                   const expandable = runExpandable(h.dim, h.name)
-                  const isOpen = expanded[h.dim]?.has(h.name) ?? false
+                  // Address expansion by the occurrence's drill-path key (not its
+                  // bare name) so a member under two parents toggles per occurrence.
+                  const hKey = h.key ?? h.name
+                  const isOpen = expanded[h.dim]?.has(hKey) ?? false
                   return (
                     <th
                       key={`${h.dim}#${hi}`}
@@ -931,7 +913,7 @@ export default function PivotGrid({
                             className="pivot__twisty"
                             aria-expanded={isOpen}
                             aria-label={`${isOpen ? 'Collapse' : 'Expand'} ${h.name}`}
-                            onClick={() => toggleExpanded(h.dim, h.name)}
+                            onClick={() => toggleExpanded(h.dim, hKey)}
                           >
                             {isOpen ? '▾' : '▸'}
                           </button>
