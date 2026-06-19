@@ -51,6 +51,7 @@ fn harness(commands: bool) -> Harness {
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
         command_connectors_enabled: commands,
+        secure_cookies: false,
         audit: audit.clone(),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),

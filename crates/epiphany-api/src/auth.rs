@@ -187,7 +187,11 @@ pub async fn login(
             must_change_password,
         },
     };
-    let cookie = format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/");
+    let mut cookie = format!("{SESSION_COOKIE}={token}; HttpOnly; SameSite=Strict; Path=/");
+    if state.secure_cookies {
+        // Over HTTPS, keep the session cookie off any plain-HTTP request (RG-12).
+        cookie.push_str("; Secure");
+    }
     let mut response = Json(body).into_response();
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);

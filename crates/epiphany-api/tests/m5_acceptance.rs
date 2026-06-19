@@ -65,6 +65,7 @@ fn router_for(dir: &Path) -> Router {
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(epiphany_engine::StoredCellsFactory),
         command_connectors_enabled: false,
+        secure_cookies: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(epiphany_api::RunLedger::in_memory())),
         view_cache: Default::default(),

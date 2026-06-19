@@ -239,6 +239,7 @@ where
         mdx: Arc::new(epiphany_mdx::MdxEvaluator::new()),
         cells,
         command_connectors_enabled,
+        secure_cookies: config.wants_tls(),
         audit: Arc::new(Mutex::new(audit)),
         runs: Arc::new(Mutex::new(runs)),
         view_cache: Arc::new(epiphany_api::ViewCache::new(config.view_cache_entries)),

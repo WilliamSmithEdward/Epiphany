@@ -62,7 +62,11 @@ fn document() -> Value {
             "/api/v1/auth/password": { "post": {
                 "summary": "Change the current user's password", "security": bearer(),
                 "requestBody": json_body("#/components/schemas/ChangePasswordRequest"),
-                "responses": { "204": { "description": "Password changed" } }
+                "responses": {
+                    "204": { "description": "Password changed" },
+                    "400": { "description": "The new password fails the strength policy", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+                    "401": { "description": "The current password is incorrect", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+                }
             }},
             "/api/v1/cubes": {
                 "get": {

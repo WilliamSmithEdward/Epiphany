@@ -100,6 +100,7 @@ fn state(
         mdx: Arc::new(MdxEvaluator::new()),
         cells: Arc::new(CalcFactory::new(engine)),
         command_connectors_enabled: false,
+        secure_cookies: false,
         audit: Arc::new(Mutex::new(AuditLog::in_memory())),
         runs: Arc::new(Mutex::new(runs)),
         view_cache: Default::default(),
