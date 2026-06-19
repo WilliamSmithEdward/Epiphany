@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createView,
+  executeMdx,
   explainCell,
   getCube,
   listSubsets,
@@ -10,6 +11,7 @@ import {
   writeCell,
   type AxisSpecDef,
   type CellDto,
+  type CellsetDto,
   type ContextEntry,
   type Coord,
   type CubeDetail,
@@ -22,6 +24,7 @@ import {
 } from '../api/client'
 import { computeHeaderSpans, subsetVisibleMembers } from '../model/tree'
 import { Button, Dialog, Select } from '../ui'
+import CellsetGrid from './CellsetGrid'
 import PivotFields, { type AxisRole, type AxisSet } from './PivotFields'
 import SubsetEditor from './SubsetEditor'
 import { TraceView } from './TraceView'
@@ -234,6 +237,11 @@ export default function PivotGrid({
   const [saveError, setSaveError] = useState<string | null>(null)
   // "Show MDX" dialog: previews the query the current layout generates.
   const [mdxOpen, setMdxOpen] = useState(false)
+  // The MDX dialog's editable query text, executed result, error, and run state.
+  const [mdxText, setMdxText] = useState('')
+  const [mdxResult, setMdxResult] = useState<CellsetDto | null>(null)
+  const [mdxError, setMdxError] = useState<string | null>(null)
+  const [mdxBusy, setMdxBusy] = useState(false)
   const gridRef = useRef<HTMLDivElement>(null)
 
   // Load (or reload) the saved subsets for every dimension, so each axis chip's
@@ -828,7 +836,17 @@ export default function PivotGrid({
         <Button variant="ghost" size="sm" icon="◫" onClick={() => { setSaveError(null); setSaveOpen(true) }}>
           Save view
         </Button>
-        <Button variant="ghost" size="sm" icon="∑" onClick={() => setMdxOpen(true)}>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="∑"
+          onClick={() => {
+            setMdxText(mdxQuery)
+            setMdxResult(null)
+            setMdxError(null)
+            setMdxOpen(true)
+          }}
+        >
           Show MDX
         </Button>
         <Button variant="ghost" size="sm" icon="↻" onClick={() => void refresh()}>
@@ -1041,22 +1059,65 @@ export default function PivotGrid({
         open={mdxOpen}
         onOpenChange={setMdxOpen}
         title="MDX for this view"
-        description="The query the current rows, columns, filters, and sets generate."
-        size="md"
+        description="The query the current layout generates. Edit it and Run to execute against this cube."
+        size="lg"
       >
-        <pre className="mdx-preview">{mdxQuery}</pre>
+        <textarea
+          className="mdx-preview"
+          style={{ width: '100%', resize: 'vertical' }}
+          value={mdxText}
+          onChange={(e) => setMdxText(e.target.value)}
+          spellCheck={false}
+          aria-label="MDX query"
+          rows={8}
+        />
+        {mdxError ? (
+          <p className="error" role="alert">
+            {mdxError}
+          </p>
+        ) : null}
         <div className="pw-form__actions">
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => void navigator.clipboard?.writeText(mdxQuery)}
+            onClick={() => void navigator.clipboard?.writeText(mdxText)}
           >
             Copy
           </Button>
-          <Button size="sm" onClick={() => setMdxOpen(false)}>
+          <Button
+            size="sm"
+            disabled={mdxBusy}
+            onClick={() => {
+              setMdxBusy(true)
+              executeMdx(cube, mdxText)
+                .then((cs) => {
+                  setMdxResult(cs)
+                  setMdxError(null)
+                })
+                .catch((e) => {
+                  setMdxResult(null)
+                  setMdxError(e instanceof Error ? e.message : 'Could not run the query')
+                })
+                .finally(() => setMdxBusy(false))
+            }}
+          >
+            {mdxBusy ? 'Running…' : 'Run'}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setMdxOpen(false)}>
             Close
           </Button>
         </div>
+        {mdxResult ? (
+          <CellsetGrid
+            cube={cube}
+            cellset={mdxResult}
+            onChanged={() => {
+              executeMdx(cube, mdxText)
+                .then((cs) => setMdxResult(cs))
+                .catch(() => {})
+            }}
+          />
+        ) : null}
       </Dialog>
     </div>
   )

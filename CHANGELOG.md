@@ -8,6 +8,29 @@ matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/release
 
 ## [Unreleased]
 
+### Added
+
+- **Editable MDX queries in the cube view.** The "MDX for this view" dialog is now
+  an editable textarea with a **Run** button that executes a full
+  `SELECT … ON COLUMNS / ON ROWS FROM [cube] [WHERE ( … )]` query against the cube
+  and renders the resulting cellset, surfacing parse/validation errors inline. The
+  `epiphany-mdx` parser gained a `SELECT`-query layer (`parse_query`) above its set
+  sublanguage, and a new `POST /api/v1/cubes/{cube}/mdx` endpoint executes it through
+  the same `Read` authorization and element-masking path as the ad-hoc cellset query.
+
+### Fixed
+
+- **Cube view: pivot rows/cells no longer duplicate or strand cells** under an
+  alternate rollup (a member reachable from two consolidation parents). Rows, cells,
+  and header spans are keyed by each member's drill path instead of its bare name,
+  and saved-subset member lists are de-duplicated.
+- **Cube view: the "Who can see it" dropdown** in the Save-view dialog now paints
+  above the dialog instead of behind it (the dropdown layer ranked below the modal
+  overlay in the z-index scale).
+- **Dimension editor: right-clicking a member opens the action menu at the cursor**
+  (it previously anchored to the row's ⋯ button).
+- **Cube tab strip: removed the spurious vertical scroll arrows.**
+
 ## [m8.8] - 2026-06-18
 
 The modeling release: native SQL sources, global multi-cube automation, and full

@@ -13,12 +13,12 @@ mod evaluator;
 mod lexer;
 mod parser;
 
-pub use ast::{CmpOp, MemberRef, Operand, OrderDir, Predicate, SetExpr};
+pub use ast::{AxisName, CmpOp, MemberRef, Operand, OrderDir, Predicate, Query, SetExpr};
 pub use error::{MdxParseError, ParseErrorKind};
 pub use eval::{evaluate, MdxEvalError};
 pub use evaluator::MdxEvaluator;
 pub use lexer::Span;
-pub use parser::parse;
+pub use parser::{parse, parse_query};
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-mdx";

@@ -21,8 +21,8 @@ use crate::auth::AuthPrincipal;
 use crate::authz::{audit, element_mask, require_cube_access};
 use crate::dto::{
     AxisMemberDto, AxisSpecBody, AxisSpecDto, CellsetCellDto, CellsetDto, ContextEntryDto,
-    MdxPreviewRequest, MemberDto, MembersResponse, SubsetBody, SubsetDto, SubsetListResponse,
-    SuppressedDto, ViewBody, ViewDto, ViewListResponse,
+    MdxPreviewRequest, MdxQueryRequest, MemberDto, MembersResponse, SubsetBody, SubsetDto,
+    SubsetListResponse, SuppressedDto, ViewBody, ViewDto, ViewListResponse,
 };
 use crate::resolve::kind_str;
 use crate::routes::{map_batch_error, snapshot};
@@ -696,6 +696,209 @@ pub(crate) async fn execute_adhoc(
     )))
 }
 
+/// `POST /cubes/{cube}/mdx` -> parse and execute a full MDX `SELECT` query to a
+/// cellset. Mirrors [`execute_adhoc`] exactly (same `Read` gate, sandbox overlay,
+/// element mask, and ad-hoc cache pool); only the request shape differs: the MDX
+/// text is parsed and lowered to a [`View`] before execution.
+pub(crate) async fn execute_mdx(
+    auth: AuthPrincipal,
+    State(state): State<AppState>,
+    Path(cube): Path<String>,
+    selector: SandboxSelector,
+    Json(body): Json<MdxQueryRequest>,
+) -> Result<Json<CellsetDto>, ApiError> {
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    let snap = snapshot(&state, &cube)?;
+    let query = epiphany_mdx::parse_query(&body.mdx)
+        .map_err(|e| ApiError::unprocessable("MDX_PARSE_ERROR", e.to_string()))?;
+    let view = view_from_mdx(snap.cube(), &cube, &query)?;
+    let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
+    let sandbox = sandbox_name
+        .as_deref()
+        .and_then(|n| snap.model().sandbox(n));
+    let mask = element_mask(&state, &auth, &snap);
+    // Read-through the view cache (ADR-0028), ad-hoc pool. The resolver is built
+    // lazily inside the closure so a cache hit skips rule compilation.
+    let cellset = state.view_cache.get_or_compute(
+        crate::view_cache::ViewRead {
+            cube: &cube,
+            version: snap.version(),
+            view: &view,
+            sandbox,
+            mask: mask.as_ref(),
+            is_adhoc: true,
+        },
+        || {
+            let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
+            execute_view(
+                snap.cube(),
+                &view,
+                &*resolver,
+                &|d, n| snap.subset(d, n),
+                state.evaluator(),
+                mask.as_ref(),
+            )
+        },
+    )?;
+    Ok(Json(cellset_dto(
+        snap.cube(),
+        &cellset,
+        snap.version(),
+        sandbox,
+    )))
+}
+
+/// Lower a parsed MDX [`Query`](epiphany_mdx::Query) onto `cube` into a core
+/// [`View`]. Each axis's set is flattened into its per-dimension component sets,
+/// each component is evaluated to element indices over its dimension, and those
+/// are mapped to member names for an [`AxisSpec::Members`](epiphany_core::AxisSpec).
+/// Crossjoin component order is preserved (first = outermost), matching the
+/// engine's first-slowest tuple convention.
+///
+/// Only `COLUMNS` and `ROWS` axes are supported. Missing dimensions are not
+/// auto-filled into the context: `execute_view`'s coverage check surfaces a 422
+/// if the MDX omits one (as for an ad-hoc view).
+fn view_from_mdx(
+    cube: &Cube,
+    cube_name: &str,
+    query: &epiphany_mdx::Query,
+) -> Result<View, ApiError> {
+    if query.cube != cube_name {
+        return Err(ApiError::unprocessable(
+            "MDX_CUBE_MISMATCH",
+            format!(
+                "the query targets cube '{}' but the request is for cube '{cube_name}'",
+                query.cube
+            ),
+        ));
+    }
+
+    let mut rows: epiphany_core::Axis = Vec::new();
+    let mut columns: epiphany_core::Axis = Vec::new();
+    for (axis, set) in &query.axes {
+        let target = match axis {
+            epiphany_mdx::AxisName::Columns => &mut columns,
+            epiphany_mdx::AxisName::Rows => &mut rows,
+            epiphany_mdx::AxisName::Ordinal(_) => {
+                return Err(ApiError::unprocessable(
+                    "MDX_UNSUPPORTED_AXIS",
+                    "only COLUMNS and ROWS axes are supported",
+                ));
+            }
+        };
+        // The parser rejects a repeated COLUMNS/ROWS axis, but guard anyway so a
+        // duplicate never silently overwrites the first.
+        if !target.is_empty() {
+            return Err(ApiError::unprocessable(
+                "MDX_UNSUPPORTED_AXIS",
+                "only COLUMNS and ROWS axes are supported",
+            ));
+        }
+        for component in flatten_crossjoin(set) {
+            let name = axis_dimension(component).ok_or_else(|| {
+                ApiError::unprocessable(
+                    "MDX_EVAL_ERROR",
+                    "cannot determine the dimension for an axis set; qualify members as [Dim].[Member]",
+                )
+            })?;
+            let dim = cube
+                .dimensions()
+                .iter()
+                .find(|d| d.name() == name)
+                .ok_or_else(|| {
+                    ApiError::unprocessable(
+                        "UNKNOWN_DIMENSION",
+                        format!("unknown dimension '{name}' in cube '{}'", cube.name()),
+                    )
+                })?;
+            let indices = epiphany_mdx::evaluate(component, dim)
+                .map_err(|e| ApiError::unprocessable("MDX_EVAL_ERROR", e.to_string()))?;
+            let members = indices
+                .iter()
+                .map(|&i| {
+                    dim.element(i)
+                        .map(|el| el.name.clone())
+                        .map_err(|e| ApiError::unprocessable("MDX_EVAL_ERROR", e.to_string()))
+                })
+                .collect::<Result<Vec<String>, ApiError>>()?;
+            target.push(epiphany_core::AxisSpec::Members {
+                dimension: name.to_string(),
+                members,
+            });
+        }
+    }
+
+    let context = query
+        .slicer
+        .iter()
+        .map(|m| {
+            if m.path.len() >= 2 {
+                Ok((m.path[0].clone(), m.name().to_string()))
+            } else {
+                Err(ApiError::unprocessable(
+                    "MDX_EVAL_ERROR",
+                    "WHERE members must be qualified as [Dim].[Member]",
+                ))
+            }
+        })
+        .collect::<Result<Vec<(String, String)>, ApiError>>()?;
+
+    Ok(View {
+        name: "mdx".to_string(),
+        cube: cube_name.to_string(),
+        owner: None,
+        visibility: Visibility::Public,
+        rows,
+        columns,
+        context,
+        suppress_zeros: false,
+    })
+}
+
+/// Flatten an axis [`SetExpr`](epiphany_mdx::SetExpr) into its per-dimension
+/// component sets: a `Crossjoin(l, r)` becomes `flatten(l) ++ flatten(r)` (the
+/// parser left-folds N-ary crossjoins into nested binaries, so this recovers the
+/// original component order, first = outermost), anything else is a single
+/// component. Each component is a single-dimension set the evaluator accepts.
+fn flatten_crossjoin(expr: &epiphany_mdx::SetExpr) -> Vec<&epiphany_mdx::SetExpr> {
+    match expr {
+        epiphany_mdx::SetExpr::Crossjoin(l, r) => {
+            let mut out = flatten_crossjoin(l);
+            out.extend(flatten_crossjoin(r));
+            out
+        }
+        other => vec![other],
+    }
+}
+
+/// Determine the dimension a single-dimension axis set selects from, by walking to
+/// the first member reference and reading its dimension qualifier. For
+/// `Member`/`Children`/`Descendants` the qualifier is `path[0]` (the pivot UI
+/// always emits `[Dim].[Member]`); for `Members` the reference *is* the dimension,
+/// so its name is used. `Set`/`Filter`/`Order` recurse into their first inner set.
+/// `None` when no qualifier can be found (an unqualified member, or an empty set).
+fn axis_dimension(expr: &epiphany_mdx::SetExpr) -> Option<&str> {
+    match expr {
+        epiphany_mdx::SetExpr::Members(r) => Some(r.name()),
+        epiphany_mdx::SetExpr::Member(r)
+        | epiphany_mdx::SetExpr::Children(r)
+        | epiphany_mdx::SetExpr::Descendants(r) => {
+            if r.path.len() >= 2 {
+                Some(r.path[0].as_str())
+            } else {
+                None
+            }
+        }
+        epiphany_mdx::SetExpr::Set(items) => items.iter().find_map(axis_dimension),
+        epiphany_mdx::SetExpr::Filter(inner, _) | epiphany_mdx::SetExpr::Order(inner, _, _) => {
+            axis_dimension(inner)
+        }
+        // A Crossjoin spans dimensions; callers flatten before asking, so this is
+        // only reached for a malformed nested set. Take the left component's dim.
+        epiphany_mdx::SetExpr::Crossjoin(l, _) => axis_dimension(l),
+    }
+}
+
 fn visible_view<'a>(
     snap: &'a ReadSnapshot,
     principal: &Principal,
@@ -855,5 +1058,108 @@ fn cellset_dto(cube: &Cube, cs: &Cellset, version: u64, sandbox: Option<&Sandbox
             row_tuples: cs.suppressed_row_tuples.len(),
             column_tuples: cs.suppressed_column_tuples.len(),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use epiphany_core::{AxisSpec, Cube, Dimension};
+
+    /// A 3-dimension cube (`Region`, `Product`, `Measure`) for lowering tests.
+    fn cube() -> Cube {
+        let mut region = Dimension::new("Region");
+        region.add_leaf("North");
+        region.add_leaf("South");
+        let mut product = Dimension::new("Product");
+        product.add_leaf("Widgets");
+        product.add_leaf("Gadgets");
+        let mut measure = Dimension::new("Measure");
+        measure.add_leaf("Sales");
+        Cube::new("Sales", vec![region, product, measure]).unwrap()
+    }
+
+    fn members(spec: &AxisSpec) -> (&str, &[String]) {
+        match spec {
+            AxisSpec::Members { dimension, members } => (dimension.as_str(), members.as_slice()),
+            other => panic!("expected Members, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lowers_single_dimension_axes_and_slicer() {
+        let q = epiphany_mdx::parse_query(
+            "SELECT { [Region].[North], [Region].[South] } ON COLUMNS, \
+             { [Product].[Widgets] } ON ROWS FROM [Sales] WHERE ( [Measure].[Sales] )",
+        )
+        .unwrap();
+        let view = view_from_mdx(&cube(), "Sales", &q).unwrap();
+
+        assert_eq!(view.columns.len(), 1);
+        let (dim, ms) = members(&view.columns[0]);
+        assert_eq!(dim, "Region");
+        assert_eq!(ms, &["North".to_string(), "South".to_string()]);
+
+        let (dim, ms) = members(&view.rows[0]);
+        assert_eq!(dim, "Product");
+        assert_eq!(ms, &["Widgets".to_string()]);
+
+        assert_eq!(view.context, vec![("Measure".to_string(), "Sales".to_string())]);
+    }
+
+    #[test]
+    fn flattens_crossjoin_preserving_component_order() {
+        let q = epiphany_mdx::parse_query(
+            "SELECT CrossJoin({ [Region].[North] }, { [Product].[Widgets], [Product].[Gadgets] }) \
+             ON COLUMNS, { [Measure].[Sales] } ON ROWS FROM [Sales]",
+        )
+        .unwrap();
+        let view = view_from_mdx(&cube(), "Sales", &q).unwrap();
+
+        // Two components on the column axis, outermost (Region) first.
+        assert_eq!(view.columns.len(), 2);
+        assert_eq!(members(&view.columns[0]).0, "Region");
+        assert_eq!(members(&view.columns[1]).0, "Product");
+        assert_eq!(
+            members(&view.columns[1]).1,
+            &["Widgets".to_string(), "Gadgets".to_string()]
+        );
+    }
+
+    #[test]
+    fn rejects_cube_mismatch() {
+        let q = epiphany_mdx::parse_query(
+            "SELECT { [Region].[North] } ON COLUMNS, { [Measure].[Sales] } ON ROWS FROM [Other]",
+        )
+        .unwrap();
+        let err = view_from_mdx(&cube(), "Sales", &q).unwrap_err();
+        assert_eq!(err.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn rejects_unknown_dimension() {
+        let q = epiphany_mdx::parse_query(
+            "SELECT { [Nope].[X] } ON COLUMNS, { [Measure].[Sales] } ON ROWS FROM [Sales]",
+        )
+        .unwrap();
+        let err = view_from_mdx(&cube(), "Sales", &q).unwrap_err();
+        assert_eq!(err.status_code(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[test]
+    fn axis_dimension_reads_the_qualifier() {
+        use epiphany_mdx::{MemberRef, SetExpr};
+        let member = SetExpr::Member(MemberRef::new(vec!["Region".into(), "North".into()]));
+        assert_eq!(axis_dimension(&member), Some("Region"));
+
+        let set = SetExpr::Set(vec![member.clone()]);
+        assert_eq!(axis_dimension(&set), Some("Region"));
+
+        let members = SetExpr::Members(MemberRef::new(vec!["Region".into()]));
+        assert_eq!(axis_dimension(&members), Some("Region"));
+
+        // Unqualified bare member: no dimension can be determined.
+        let bare = SetExpr::Member(MemberRef::new(vec!["North".into()]));
+        assert_eq!(axis_dimension(&bare), None);
     }
 }

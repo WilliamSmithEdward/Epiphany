@@ -48,6 +48,16 @@ pub enum ParseErrorKind {
     /// The expression nests deeper than the parser allows (a stack-exhaustion
     /// guard, not a real limit on any hand-authored query).
     TooDeep,
+    /// `ON <axis>` named something that is not `COLUMNS`, `ROWS`, or a number.
+    UnknownAxis {
+        /// The axis label that was found.
+        found: String,
+    },
+    /// The same axis was bound by more than one axis clause in a `SELECT`.
+    DuplicateAxis {
+        /// The repeated axis (e.g. `COLUMNS`).
+        axis: String,
+    },
 }
 
 impl fmt::Display for MdxParseError {
@@ -64,6 +74,12 @@ impl fmt::Display for MdxParseError {
             ParseErrorKind::UnexpectedChar(c) => write!(f, "unexpected character `{c}`"),
             ParseErrorKind::TrailingInput => write!(f, "unexpected trailing input"),
             ParseErrorKind::TooDeep => write!(f, "expression nests too deeply"),
+            ParseErrorKind::UnknownAxis { found } => {
+                write!(f, "unexpected axis `{found}`, expected COLUMNS, ROWS, or a number")
+            }
+            ParseErrorKind::DuplicateAxis { axis } => {
+                write!(f, "axis {axis} is specified more than once")
+            }
         }
     }
 }

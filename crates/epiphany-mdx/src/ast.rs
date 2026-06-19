@@ -194,3 +194,56 @@ impl fmt::Display for SetExpr {
         }
     }
 }
+
+/// Which axis a set is bound to in a `SELECT`. The pivot UI emits `COLUMNS`/`ROWS`;
+/// `ON <n>` (0 = columns, 1 = rows, ...) is the general ordinal form, canonicalized
+/// so `ON 0`/`ON COLUMNS` and `ON 1`/`ON ROWS` compare equal (used for duplicate
+/// detection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisName {
+    /// `ON COLUMNS` (axis 0).
+    Columns,
+    /// `ON ROWS` (axis 1).
+    Rows,
+    /// `ON <n>` for n >= 2.
+    Ordinal(u32),
+}
+
+/// A parsed full MDX `SELECT` query: per-axis sets, the cube from `FROM`, and the
+/// optional `WHERE ( ... )` slicer. The set on each axis may be a `Crossjoin` of
+/// per-dimension sets (the view layer expands those into tuples).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Query {
+    /// Each axis in source order: the axis it is bound to and its set expression.
+    pub axes: Vec<(AxisName, SetExpr)>,
+    /// The cube named in `FROM` (unbracketed).
+    pub cube: String,
+    /// The `WHERE ( m, ... )` slicer members; empty when there is no `WHERE`.
+    pub slicer: Vec<MemberRef>,
+}
+
+impl fmt::Display for AxisName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AxisName::Columns => f.write_str("COLUMNS"),
+            AxisName::Rows => f.write_str("ROWS"),
+            AxisName::Ordinal(n) => write!(f, "{n}"),
+        }
+    }
+}
+
+impl fmt::Display for Query {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let axes: Vec<String> = self
+            .axes
+            .iter()
+            .map(|(axis, set)| format!("  {set} ON {axis}"))
+            .collect();
+        write!(f, "SELECT\n{}\nFROM {}", axes.join(",\n"), bracket(&self.cube))?;
+        if !self.slicer.is_empty() {
+            let members: Vec<String> = self.slicer.iter().map(|m| m.to_string()).collect();
+            write!(f, "\nWHERE ( {} )", members.join(", "))?;
+        }
+        Ok(())
+    }
+}

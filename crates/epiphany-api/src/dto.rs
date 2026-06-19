@@ -256,6 +256,12 @@ pub struct MdxPreviewRequest {
     pub mdx: String,
 }
 
+/// Request body for executing a full MDX `SELECT` query to a cellset.
+#[derive(Debug, Deserialize)]
+pub struct MdxQueryRequest {
+    pub mdx: String,
+}
+
 // ---- views and cellsets ----
 
 /// One axis placement in a view request.

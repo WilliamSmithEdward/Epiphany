@@ -21,7 +21,7 @@
 //! operand    := string | number | <path> '.Properties' '(' string ')'
 //! ```
 
-use crate::ast::{CmpOp, MemberRef, Operand, OrderDir, Predicate, SetExpr};
+use crate::ast::{AxisName, CmpOp, MemberRef, Operand, OrderDir, Predicate, Query, SetExpr};
 use crate::error::{MdxParseError, ParseErrorKind};
 use crate::lexer::{lex, Span, Tok, Token};
 
@@ -45,6 +45,30 @@ pub fn parse(src: &str) -> Result<SetExpr, MdxParseError> {
         ));
     }
     Ok(expr)
+}
+
+/// Parse a full MDX `SELECT` query from source text.
+///
+/// Accepts `SELECT <set> ON COLUMNS, <set> ON ROWS FROM [cube] [WHERE ( ... )]` —
+/// the shape the pivot view emits, plus the general ordinal `ON <n>` form. Returns
+/// the [`Query`] AST, or an [`MdxParseError`] carrying the byte span of the first
+/// failure. The set-only [`parse`] entry is unchanged.
+pub fn parse_query(src: &str) -> Result<Query, MdxParseError> {
+    let toks = lex(src)?;
+    let mut parser = Parser {
+        toks,
+        pos: 0,
+        end: src.len(),
+        depth: 0,
+    };
+    let query = parser.parse_query()?;
+    if parser.pos < parser.toks.len() {
+        return Err(MdxParseError::new(
+            ParseErrorKind::TrailingInput,
+            parser.toks[parser.pos].span,
+        ));
+    }
+    Ok(query)
 }
 
 /// Maximum nesting depth for set and predicate expressions. A stack-exhaustion
@@ -120,6 +144,108 @@ impl Parser {
                 Ok(text)
             }
             _ => Err(self.unexpected(expected)),
+        }
+    }
+
+    // --- full SELECT queries ---
+
+    fn parse_query(&mut self) -> Result<Query, MdxParseError> {
+        self.expect_keyword("select", "`SELECT`")?;
+        let mut axes: Vec<(AxisName, SetExpr)> = Vec::new();
+        loop {
+            let set = self.parse_set()?;
+            self.expect_keyword("on", "`ON`")?;
+            let span = self.here_span();
+            let axis = self.parse_axis_name()?;
+            if axes.iter().any(|(a, _)| *a == axis) {
+                return Err(MdxParseError::new(
+                    ParseErrorKind::DuplicateAxis {
+                        axis: axis.to_string(),
+                    },
+                    span,
+                ));
+            }
+            axes.push((axis, set));
+            if self.peek() == Some(&Tok::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.expect_keyword("from", "`FROM`")?;
+        let cube = self.expect_name("a cube name")?;
+        let slicer = if self.peek_keyword("where") {
+            self.bump();
+            self.parse_slicer()?
+        } else {
+            Vec::new()
+        };
+        Ok(Query { axes, cube, slicer })
+    }
+
+    /// Parse the axis label after `ON`: `COLUMNS`, `ROWS`, or an ordinal `<n>`
+    /// (0 and 1 canonicalize to `COLUMNS`/`ROWS`).
+    fn parse_axis_name(&mut self) -> Result<AxisName, MdxParseError> {
+        // Inspect an owned copy so the &mut self bumps below don't borrow-conflict.
+        match self.peek().cloned() {
+            Some(Tok::Number(n)) => match n.parse::<u32>() {
+                Ok(0) => {
+                    self.bump();
+                    Ok(AxisName::Columns)
+                }
+                Ok(1) => {
+                    self.bump();
+                    Ok(AxisName::Rows)
+                }
+                Ok(k) => {
+                    self.bump();
+                    Ok(AxisName::Ordinal(k))
+                }
+                Err(_) => Err(self.unexpected("an axis number")),
+            },
+            Some(Tok::Name {
+                text,
+                bracketed: false,
+            }) => match text.to_ascii_lowercase().as_str() {
+                "columns" | "column" => {
+                    self.bump();
+                    Ok(AxisName::Columns)
+                }
+                "rows" | "row" => {
+                    self.bump();
+                    Ok(AxisName::Rows)
+                }
+                _ => {
+                    let span = self.here_span();
+                    Err(MdxParseError::new(
+                        ParseErrorKind::UnknownAxis { found: text },
+                        span,
+                    ))
+                }
+            },
+            _ => Err(self.unexpected("COLUMNS, ROWS, or an axis number")),
+        }
+    }
+
+    /// Parse a `WHERE` slicer tuple `( member ( , member )* )` — members only.
+    fn parse_slicer(&mut self) -> Result<Vec<MemberRef>, MdxParseError> {
+        self.expect(&Tok::LParen, "`(`")?;
+        let mut out = vec![self.parse_member_ref()?];
+        while self.peek() == Some(&Tok::Comma) {
+            self.bump();
+            out.push(self.parse_member_ref()?);
+        }
+        self.expect(&Tok::RParen, "`)` or `,`")?;
+        Ok(out)
+    }
+
+    /// Consume a bare (case-insensitive) keyword, or error with `expected`.
+    fn expect_keyword(&mut self, kw: &str, expected: &'static str) -> Result<(), MdxParseError> {
+        if self.peek_keyword(kw) {
+            self.bump();
+            Ok(())
+        } else {
+            Err(self.unexpected(expected))
         }
     }
 
@@ -216,11 +342,22 @@ impl Parser {
                 Ok(SetExpr::Order(Box::new(set), attr, dir))
             }
             "crossjoin" => {
-                let a = self.parse_set()?;
+                // N-ary: `Crossjoin(a, b, c, ...)` left-folds into nested binary
+                // crossjoins (the pivot view emits a flat N-arg CrossJoin for 3+
+                // nested dimensions), matching the left-associative infix `a * b * c`.
+                let mut acc = self.parse_set()?;
                 self.expect(&Tok::Comma, "`,`")?;
-                let b = self.parse_set()?;
-                self.expect(&Tok::RParen, "`)`")?;
-                Ok(SetExpr::Crossjoin(Box::new(a), Box::new(b)))
+                loop {
+                    let next = self.parse_set()?;
+                    acc = SetExpr::Crossjoin(Box::new(acc), Box::new(next));
+                    if self.peek() == Some(&Tok::Comma) {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                self.expect(&Tok::RParen, "`)` or `,`")?;
+                Ok(acc)
             }
             "descendants" => {
                 let member = self.parse_member_ref()?;
@@ -649,6 +786,86 @@ mod tests {
     fn parse_is_deterministic() {
         let src = "Filter(Crossjoin([A].Members, [B].[T].Children), Properties(\"x\") <= 3)";
         assert_eq!(parse(src).unwrap(), parse(src).unwrap());
+    }
+
+    #[test]
+    fn parses_a_full_select_query() {
+        let q = parse_query(
+            "SELECT\n  { [Period].[Q1] } ON COLUMNS,\n  { [Region].[Total], [Region].[North] } ON ROWS\nFROM [Sales]\nWHERE ( [Measure].[Actual] )",
+        )
+        .unwrap();
+        assert_eq!(q.cube, "Sales");
+        assert_eq!(q.axes.len(), 2);
+        assert_eq!(q.axes[0].0, AxisName::Columns);
+        assert_eq!(q.axes[1].0, AxisName::Rows);
+        assert_eq!(q.axes[0].1, SetExpr::Set(vec![SetExpr::Member(m(&["Period", "Q1"]))]));
+        assert_eq!(q.slicer, vec![m(&["Measure", "Actual"])]);
+    }
+
+    #[test]
+    fn select_accepts_nary_crossjoin_axis_and_empty_axis() {
+        let q = parse_query(
+            "SELECT CrossJoin({ [A].[x] }, { [B].[y] }, { [C].[z] }) ON COLUMNS, { } ON ROWS FROM [Cube]",
+        )
+        .unwrap();
+        // The 3-arg CrossJoin left-folds into nested binary crossjoins.
+        assert!(matches!(q.axes[0].1, SetExpr::Crossjoin(_, _)));
+        assert_eq!(q.axes[1].0, AxisName::Rows);
+        assert_eq!(q.axes[1].1, SetExpr::Set(Vec::new()));
+        assert!(q.slicer.is_empty());
+    }
+
+    #[test]
+    fn select_is_case_insensitive_and_supports_ordinal_axes() {
+        let q = parse_query("select { [P].[Q1] } on 0, { [R].[T] } on 1 from [C]").unwrap();
+        assert_eq!(q.axes[0].0, AxisName::Columns);
+        assert_eq!(q.axes[1].0, AxisName::Rows);
+        assert_eq!(q.cube, "C");
+    }
+
+    #[test]
+    fn select_round_trips_through_pretty_print() {
+        let corpus = [
+            "SELECT { [P].[Q1] } ON COLUMNS, { [R].[Total], [R].[North] } ON ROWS FROM [Sales]",
+            "SELECT { [P].[Q1] } ON COLUMNS, { [R].[Total] } ON ROWS FROM [Sales] WHERE ( [M].[Actual] )",
+            "SELECT Crossjoin({ [A].[x] }, { [B].[y] }) ON COLUMNS, {} ON ROWS FROM [C]",
+            "SELECT { [M].[V] } ON 2 FROM [C]",
+        ];
+        for src in corpus {
+            let first = parse_query(src).unwrap();
+            let printed = first.to_string();
+            let second = parse_query(&printed)
+                .unwrap_or_else(|e| panic!("re-parse of `{printed}` failed: {e}"));
+            assert_eq!(first, second, "round-trip changed AST for `{src}` -> `{printed}`");
+        }
+    }
+
+    #[test]
+    fn select_error_cases() {
+        // Missing FROM after the axes.
+        assert!(matches!(
+            parse_query("SELECT { [A].[x] } ON COLUMNS").unwrap_err().kind,
+            ParseErrorKind::UnexpectedEof { .. } | ParseErrorKind::UnexpectedToken { .. }
+        ));
+        // Unknown axis label.
+        assert!(matches!(
+            parse_query("SELECT { [A].[x] } ON PAGES FROM [C]").unwrap_err().kind,
+            ParseErrorKind::UnknownAxis { .. }
+        ));
+        // The same axis twice (COLUMNS and ordinal 0 are the same axis).
+        assert!(matches!(
+            parse_query("SELECT { [A].[x] } ON COLUMNS, { [B].[y] } ON 0 FROM [C]")
+                .unwrap_err()
+                .kind,
+            ParseErrorKind::DuplicateAxis { .. }
+        ));
+        // Trailing input after a complete query.
+        assert_eq!(
+            parse_query("SELECT { [A].[x] } ON COLUMNS FROM [C] garbage")
+                .unwrap_err()
+                .kind,
+            ParseErrorKind::TrailingInput
+        );
     }
 
     #[test]

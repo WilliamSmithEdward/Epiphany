@@ -424,6 +424,13 @@ export async function executeAdhoc(cube: string, def: ViewDef): Promise<CellsetD
   return request<CellsetDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/cellset`, def)
 }
 
+/** Execute a full MDX `SELECT` query (`SELECT <axis> ON COLUMNS, <axis> ON ROWS
+ * FROM [cube] [WHERE (...)]`) and return the resulting cellset. A parse or
+ * validation failure surfaces as an `ApiError` carrying the server's message. */
+export async function executeMdx(cube: string, mdx: string): Promise<CellsetDto> {
+  return request<CellsetDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/mdx`, { mdx })
+}
+
 // ---- rules, explain, feeders, and rule tests (Phase 4) ----
 
 /** A cube's rule source. */

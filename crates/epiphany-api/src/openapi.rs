@@ -310,6 +310,12 @@ fn document() -> Value {
                 "requestBody": json_body("#/components/schemas/ViewBody"),
                 "responses": ok("The cellset")
             }},
+            "/api/v1/cubes/{cube}/mdx": { "post": {
+                "summary": "Execute a full MDX SELECT query to a cellset", "security": bearer(),
+                "parameters": [cube_param()],
+                "requestBody": json_body("#/components/schemas/MdxQueryRequest"),
+                "responses": ok("The cellset")
+            }},
             "/api/v1/cubes/{cube}/rules": {
                 "get": {
                     "summary": "The cube's rule source", "security": bearer(),
@@ -770,6 +776,9 @@ fn document() -> Value {
                     "required": ["kind"] },
                 "MdxPreviewRequest": { "type": "object", "properties": {
                     "mdx": { "type": "string" } }, "required": ["mdx"] },
+                "MdxQueryRequest": { "type": "object", "properties": {
+                    "mdx": { "type": "string", "description": "A full MDX SELECT query" } },
+                    "required": ["mdx"] },
                 "AxisSpec": { "type": "object", "properties": {
                     "dimension": { "type": "string" },
                     "type": { "type": "string", "enum": ["subset", "members"] },
@@ -974,6 +983,7 @@ mod tests {
         "/api/v1/cubes/{cube}/views/{name}",
         "/api/v1/cubes/{cube}/views/{name}/execute",
         "/api/v1/cubes/{cube}/cellset",
+        "/api/v1/cubes/{cube}/mdx",
         "/api/v1/cubes/{cube}/rules",
         "/api/v1/cubes/{cube}/rules/preview",
         "/api/v1/cubes/{cube}/cells/explain",
