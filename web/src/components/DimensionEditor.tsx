@@ -108,9 +108,11 @@ function parentOfPath(path: string): string | null {
  * in, ArrowLeft collapses or steps to the parent. Space picks the focused member
  * up; with a member picked up, ArrowUp/Down drop it before/after the focused row,
  * and Escape cancels. Every drag gesture also has a row-menu equivalent: Move up
- * / Move down (reorder one step), Add to a consolidation (additive add_child via
- * an inline picker), Remove from this consolidation, Detach to top level, Convert,
- * and Delete. Delete on a child member offers a choice: "Remove from
+ * / Move down (reorder one step), Copy to a consolidation (additive add_child, the
+ * member keeps its other parents), Move to a consolidation or the top level (a
+ * reparent, the member loses its other parents, confirmed when it has several),
+ * Remove from this consolidation (a single edge), Convert, and Delete. Delete on a
+ * child member offers a choice: "Remove from
  * consolidations" (a popup of its parents with checkboxes, removing only the
  * checked edges and keeping the member and its data) or the destructive "Delete
  * from dimension" (removes the member, every membership, and all its data, behind
@@ -254,8 +256,31 @@ export default function DimensionEditor({
     return out
   }, [drag, childrenByParent])
 
+  // The transitive descendants of any member (its whole reachable subtree), computed
+  // the same way `dragDescendants` does but for an arbitrary member. Used by the row
+  // menu's Copy to / Move to submenus to exclude targets that would form a cycle
+  // (adding the member under its own descendant). UX guard only - the backend rejects
+  // an actual cycle regardless.
+  const descendantsOf = useCallback(
+    (name: string): Set<string> => {
+      const out = new Set<string>()
+      const stack = [name]
+      while (stack.length) {
+        const cur = stack.pop() as string
+        for (const child of childrenByParent.get(cur) ?? []) {
+          if (!out.has(child)) {
+            out.add(child)
+            stack.push(child)
+          }
+        }
+      }
+      return out
+    },
+    [childrenByParent],
+  )
+
   // The consolidations a member could be added to by keyboard (every member of
-  // kind consolidated), for the "Add to consolidation" picker.
+  // kind consolidated), for the "Copy to" / "Move to" pickers.
   const consolidations = useMemo(
     () => (dimension?.elements ?? []).filter((e) => e.kind === 'consolidated').map((e) => e.name),
     [dimension],
@@ -356,6 +381,10 @@ export default function DimensionEditor({
       setError(null)
       setNotice(null)
       let ok = true
+      // How many ops have already committed; on a mid-sequence failure this tells
+      // the user the move is in a partial state (the API is one-op-per-call, so the
+      // earlier ops are NOT rolled back).
+      let committed = 0
       const fannedOut = new Set<string>()
       try {
         for (const edit of edits) {
@@ -365,10 +394,18 @@ export default function DimensionEditor({
             const result = await editDimensionById(target.id, edit)
             for (const c of result.fanned_out_to) fannedOut.add(c)
           }
+          committed += 1
         }
       } catch (e) {
         ok = false
-        setError(e instanceof Error ? e.message : 'Could not apply the change')
+        const detail = e instanceof Error ? e.message : 'Could not apply the change'
+        // Be honest that this multi-step move is non-atomic: earlier ops already
+        // committed and were not rolled back, so the model is in a partial state.
+        const partial =
+          committed > 0 && edits.length > 1
+            ? ` ${committed} of ${edits.length} steps of this move already applied and were not undone, so the member may be in a partial state.`
+            : ''
+        setError(`${detail}${partial}`)
       } finally {
         if (ok && fannedOut.size > 0) {
           setNotice(`Updated, and applied to ${[...fannedOut].join(', ')}.`)
@@ -406,7 +443,7 @@ export default function DimensionEditor({
       if (parentKind && parentKind !== 'consolidated') {
         return confirm({
           title: `Add "${child}" as a child of "${parent}"`,
-          body: `"${parent}" becomes a Consolidation, which is calculated from its children, so any value stored directly on "${parent}" will be cleared. Continue?`,
+          description: `"${parent}" becomes a Consolidation, which is calculated from its children, so any value stored directly on "${parent}" will be cleared. Continue?`,
           confirmLabel: 'Add as child',
           danger: true,
         })
@@ -417,10 +454,10 @@ export default function DimensionEditor({
   )
 
   // Add `child` to consolidation `parent` ADDITIVELY: the child keeps its existing
-  // parents (a member may roll up to several consolidations), unlike Detach +
-  // reparent which moves it. Backs the "Add to consolidation" menu action and the
-  // "add member as child" inline form; the drag as-child gesture is a MOVE and goes
-  // through moveMember instead.
+  // parents (a member may roll up to several consolidations), unlike a reparent
+  // (Move to) which moves it. Backs the "Copy to" menu action and the "add member as
+  // child" inline form; the drag as-child gesture is a MOVE and goes through
+  // moveMember instead.
   const addChild = useCallback(
     async (parent: string, child: string): Promise<boolean> => {
       if (parent === child) return false
@@ -448,12 +485,16 @@ export default function DimensionEditor({
   // atomic (one op per API call); runEdits stops at the first failure and reloads once.
   //
   // - as-child onto `target` (MOVE): if fromParent is null -> add_child(target). If
-  //   fromParent != target -> remove_child(fromParent) then add_child(target). If
+  //   fromParent != target -> add_child(target) then remove_child(fromParent). If
   //   fromParent == target -> no-op. A leaf/string target is converted (confirmed).
   // - before/after a sibling under the SAME parent (toParent === fromParent, both may
   //   be null=root): a pure within-list reorder.
-  // - before/after a row under a DIFFERENT parent: remove_child(fromParent) [skip if
-  //   root] + add_child(toParent) [skip if toParent null=root] + reorder to position.
+  // - before/after a row under a DIFFERENT parent: add_child(toParent) [skip if
+  //   toParent null=root] + remove_child(fromParent) [skip if root] + reorder to position.
+  //
+  // The ADDITIVE op (add_child) is always emitted BEFORE the destructive remove_child:
+  // a multi-op move is not atomic, so on a mid-sequence failure the member is left
+  // double-parented (recoverable) rather than orphaned (lost from every parent).
   const moveMember = useCallback(
     async (
       moved: string,
@@ -467,9 +508,10 @@ export default function DimensionEditor({
       if (zone === 'as-child') {
         if (fromParent === targetName) return // already a child here: no-op
         if (!(await confirmConsolidationConversion(targetName, moved))) return
-        const edits: DimensionEdit[] = []
+        // Add to the target FIRST, then remove from the source: a mid-sequence
+        // failure leaves the member double-parented (recoverable), not orphaned.
+        const edits: DimensionEdit[] = [{ op: 'add_child', parent: targetName, child: moved }]
         if (fromParent) edits.push({ op: 'remove_child', parent: fromParent, child: moved })
-        edits.push({ op: 'add_child', parent: targetName, child: moved })
         await runEdits(edits)
         return
       }
@@ -481,11 +523,13 @@ export default function DimensionEditor({
         await runEdits([{ op: 'reorder', new_order: newOrder }])
         return
       }
-      // Different parent: positional MOVE into the target's parent.
+      // Different parent: positional MOVE into the target's parent. Add to the new
+      // parent FIRST, then remove from the old one, then reorder: a mid-sequence
+      // failure leaves the member double-parented (recoverable), not orphaned.
       if (toParent && !(await confirmConsolidationConversion(toParent, moved))) return
       const edits: DimensionEdit[] = []
-      if (fromParent) edits.push({ op: 'remove_child', parent: fromParent, child: moved })
       if (toParent) edits.push({ op: 'add_child', parent: toParent, child: moved })
+      if (fromParent) edits.push({ op: 'remove_child', parent: fromParent, child: moved })
       edits.push({ op: 'reorder', new_order: newOrder })
       await runEdits(edits)
     },
@@ -666,6 +710,9 @@ export default function DimensionEditor({
   }
 
   const commitAdd = useCallback(async () => {
+    // Gate on busy like the button already is: the Enter-key path is otherwise
+    // ungated and a double Enter would POST a duplicate insert (and a spurious error).
+    if (busy) return
     if (!adding) return
     const name = addName.trim()
     if (name === '') {
@@ -691,7 +738,7 @@ export default function DimensionEditor({
       ok = await runEdit({ op: 'insert', name, kind: addKind, position })
     }
     if (ok) setAdding(null)
-  }, [adding, addName, addKind, runEdit, addChild])
+  }, [busy, adding, addName, addKind, runEdit, addChild])
 
   const convert = useCallback(
     async (name: string, kind: ElementKind) => {
@@ -709,7 +756,7 @@ export default function DimensionEditor({
       if (dropsValues) {
         const ok = await confirm({
           title: `Convert "${name}" to ${KIND_LABEL[kind]}`,
-          body:
+          description:
             kind === 'consolidated'
               ? `A Consolidation is calculated from its children, so any value stored directly on "${name}" will be cleared. Continue?`
               : `Changing the kind of "${name}" clears any stored value that does not fit the new kind. Continue?`,
@@ -723,16 +770,6 @@ export default function DimensionEditor({
     [busy, confirm, kindOf, runEdit],
   )
 
-  // Detach: remove the member from EVERY parent (it becomes a root), keeping it.
-  const detach = useCallback(
-    (name: string) => {
-      if (busy) return
-      setMenuPath(null)
-      void runEdit({ op: 'reparent', child: name, new_parent: null })
-    },
-    [busy, runEdit],
-  )
-
   // Remove the member from ONE consolidation (the row's current parent), keeping
   // it under any other parents. Distinct from Detach (all parents) and Delete.
   const removeFromConsolidation = useCallback(
@@ -744,16 +781,44 @@ export default function DimensionEditor({
     [busy, removeChild],
   )
 
-  // Add the member to a chosen consolidation from the row menu's submenu (the
-  // no-drag equivalent of dropping into the middle zone), additive so it keeps
-  // its other parents.
-  const addToConsolidation = useCallback(
+  // "Copy to": add the member to a chosen consolidation from the row menu's submenu
+  // (the no-drag equivalent of dropping into the middle zone), ADDITIVE so it keeps
+  // all its other parents (a copy, not a move).
+  const copyTo = useCallback(
     (parent: string, name: string) => {
       if (busy) return
       setMenuPath(null)
       void addChild(parent, name)
     },
     [busy, addChild],
+  )
+
+  // "Move to": reparent the member so it ends up under exactly `target` (a
+  // consolidation name) or at the top level (`target === null`), losing all its
+  // current parents. Because reparent drops EVERY current parent, if the member
+  // currently has more than one parent we confirm first (naming the parents it would
+  // be removed from), so a destructive collapse of alternate rollups is explicit; a
+  // 0- or 1-parent move is the expected, unsurprising case and needs no confirm.
+  const moveTo = useCallback(
+    async (name: string, target: string | null) => {
+      if (busy) return
+      setMenuPath(null)
+      const parents = parentsOf.get(name) ?? []
+      if (parents.length > 1) {
+        const dest = target === null ? 'the top level' : `"${target}"`
+        const ok = await confirm({
+          title: target === null ? `Move "${name}" to the top level` : `Move "${name}" to "${target}"`,
+          description: `"${name}" currently rolls up into ${parents.length} consolidations (${parents.join(
+            ', ',
+          )}). Moving it removes it from all of them so it ends up under only ${dest}. Continue?`,
+          confirmLabel: target === null ? 'Move to top level' : 'Move here',
+          danger: true,
+        })
+        if (!ok) return
+      }
+      void runEdit({ op: 'reparent', child: name, new_parent: target })
+    },
+    [busy, confirm, parentsOf, runEdit],
   )
 
   // Delete the member from the WHOLE dimension: removes it from every consolidation
@@ -842,8 +907,8 @@ export default function DimensionEditor({
         <p id="dimedit-dnd-help" className="sr-only">
           Press Space to pick this member up, then Arrow Up or Arrow Down to move it
           one position; press Space again or Escape to drop it. Use the actions menu
-          to add it to a consolidation, remove it from one, detach, convert, or
-          delete it.
+          to copy it to a consolidation, move it to a consolidation or the top level,
+          remove it from one, convert, or delete it.
         </p>
         {picked ? (
           <p className="banner" role="status">
@@ -974,6 +1039,8 @@ export default function DimensionEditor({
                   isRoot={r.parent === null}
                   currentParent={r.parent}
                   consolidations={consolidations}
+                  memberParents={parentsOf.get(r.name) ?? []}
+                  excludeTargets={descendantsOf(r.name)}
                   open={menuPath === r.path}
                   onOpenChange={(o) => setMenuPath(o ? r.path : null)}
                   onMoveUp={() => moveStep(r.name, 'up')}
@@ -981,10 +1048,10 @@ export default function DimensionEditor({
                   onAddBefore={() => startAdd('before', r.name)}
                   onAddAfter={() => startAdd('after', r.name)}
                   onAddChild={() => startAdd('as-child', r.name)}
-                  onAddToConsolidation={(parent) => addToConsolidation(parent, r.name)}
+                  onCopyTo={(parent) => copyTo(parent, r.name)}
+                  onMoveTo={(target) => void moveTo(r.name, target)}
                   onConvert={(k) => void convert(r.name, k)}
                   onRemoveFromConsolidation={() => removeFromConsolidation(r.parent, r.name)}
-                  onDetach={() => detach(r.name)}
                   onRemoveFrom={() => openRemoveFrom(r.name)}
                   onDeleteFromDimension={() => void deleteFromDimension(r.name)}
                 >
@@ -1167,15 +1234,24 @@ interface RowActionProps {
   isRoot: boolean
   currentParent: string | null
   consolidations: string[]
+  /** The consolidations this member is currently a direct child of (its parents).
+   * Drives the Copy to "(already contains)" disable and the Move to no-op disables. */
+  memberParents: string[]
+  /** The member's transitive descendants: excluded from Copy to / Move to because an
+   * add there would form a cycle (the backend rejects it regardless). */
+  excludeTargets: Set<string>
   onMoveUp: () => void
   onMoveDown: () => void
   onAddBefore: () => void
   onAddAfter: () => void
   onAddChild: () => void
-  onAddToConsolidation: (parent: string) => void
+  /** Copy to a consolidation: additive add_child, the member keeps its other parents. */
+  onCopyTo: (parent: string) => void
+  /** Move to a consolidation (target = name) or to the top level (target = null):
+   * reparent, the member loses its other parents. */
+  onMoveTo: (target: string | null) => void
   onConvert: (kind: ElementKind) => void
   onRemoveFromConsolidation: () => void
-  onDetach: () => void
   onRemoveFrom: () => void
   onDeleteFromDimension: () => void
 }
@@ -1188,9 +1264,11 @@ type MenuParts = Pick<typeof DM, 'Item' | 'Sub' | 'SubTrigger' | 'SubContent' | 
 const CM_PARTS = CM as unknown as MenuParts
 
 function actionItems(M: MenuParts, p: RowActionProps) {
-  // Consolidations this member could be added to (every consolidation except itself
-  // and the one it already sits under on this row).
-  const targets = p.consolidations.filter((c) => c !== p.name && c !== p.currentParent)
+  // Consolidations this member could be copied/moved into: every consolidation except
+  // the member itself and its transitive descendants (an add there would form a cycle).
+  const targets = p.consolidations.filter((c) => c !== p.name && !p.excludeTargets.has(c))
+  // The member's current direct parents, for the no-op disable logic below.
+  const parentSet = new Set(p.memberParents)
   return (
     <>
       <M.Item className="menu__item" onSelect={p.onMoveUp}>
@@ -1210,23 +1288,57 @@ function actionItems(M: MenuParts, p: RowActionProps) {
         Add member as child
       </M.Item>
       {targets.length > 0 ? (
+        // Copy to: additive add_child, the member KEEPS its existing parents. A target
+        // it already sits under is disabled (a duplicate edge is a no-op).
         <M.Sub>
-          <M.SubTrigger className="menu__item menu__item--sub">Add to consolidation</M.SubTrigger>
+          <M.SubTrigger className="menu__item menu__item--sub">Copy to</M.SubTrigger>
           <M.Portal>
             <M.SubContent className="menu" sideOffset={2} alignOffset={-4}>
-              {targets.map((parent) => (
-                <M.Item
-                  key={parent}
-                  className="menu__item"
-                  onSelect={() => p.onAddToConsolidation(parent)}
-                >
-                  {parent}
-                </M.Item>
-              ))}
+              {targets.map((parent) => {
+                const already = parentSet.has(parent)
+                return (
+                  <M.Item
+                    key={parent}
+                    className="menu__item"
+                    disabled={already}
+                    onSelect={() => p.onCopyTo(parent)}
+                  >
+                    {already ? `${parent} (already contains)` : parent}
+                  </M.Item>
+                )
+              })}
             </M.SubContent>
           </M.Portal>
         </M.Sub>
       ) : null}
+      <M.Sub>
+        {/* Move to: reparent, the member ends up under EXACTLY the chosen target and
+            loses its other parents. A target that is already its ONLY parent is a
+            no-op; "Top level" is a no-op when the member is already a root. */}
+        <M.SubTrigger className="menu__item menu__item--sub">Move to</M.SubTrigger>
+        <M.Portal>
+          <M.SubContent className="menu" sideOffset={2} alignOffset={-4}>
+            {targets.map((parent) => {
+              // No-op only when this target is the member's sole current parent.
+              const onlyHere = p.memberParents.length === 1 && parentSet.has(parent)
+              return (
+                <M.Item
+                  key={parent}
+                  className="menu__item"
+                  disabled={onlyHere}
+                  onSelect={() => p.onMoveTo(parent)}
+                >
+                  {onlyHere ? `${parent} (already there)` : parent}
+                </M.Item>
+              )
+            })}
+            <M.Separator className="menu__sep" />
+            <M.Item className="menu__item" disabled={p.isRoot} onSelect={() => p.onMoveTo(null)}>
+              {p.isRoot ? 'Top level (already at top level)' : 'Top level'}
+            </M.Item>
+          </M.SubContent>
+        </M.Portal>
+      </M.Sub>
       <M.Separator className="menu__sep" />
       <M.Item
         className="menu__item"
@@ -1252,9 +1364,6 @@ function actionItems(M: MenuParts, p: RowActionProps) {
       <M.Separator className="menu__sep" />
       <M.Item className="menu__item" disabled={p.isRoot} onSelect={p.onRemoveFromConsolidation}>
         {p.isRoot ? 'Remove from this consolidation' : `Remove from "${p.currentParent}"`}
-      </M.Item>
-      <M.Item className="menu__item" onSelect={p.onDetach}>
-        Detach to top level
       </M.Item>
       <M.Separator className="menu__sep" />
       {p.isRoot ? (
