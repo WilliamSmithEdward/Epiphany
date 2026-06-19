@@ -103,20 +103,31 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** The standard request headers: bearer auth (when signed in), the active
+ * sandbox, and a JSON content-type when a body is sent. Shared so every request
+ * path attaches auth the same way. */
+function authHeaders(hasBody: boolean): Record<string, string> {
   const headers: Record<string, string> = {}
   if (token) headers['authorization'] = `Bearer ${token}`
   if (activeSandbox) headers['x-epiphany-sandbox'] = activeSandbox
-  if (body !== undefined) headers['content-type'] = 'application/json'
+  if (hasBody) headers['content-type'] = 'application/json'
+  return headers
+}
+
+/** Clear the in-memory token and throw the uniform expired-session error. Called
+ * on any 401 so every request path reports session expiry identically. */
+function throwSessionExpired(): never {
+  setToken(null)
+  throw new ApiError('Your session has expired. Please sign in again.', 401)
+}
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(path, {
     method,
-    headers,
+    headers: authHeaders(body !== undefined),
     body: body === undefined ? undefined : JSON.stringify(body),
   })
-  if (response.status === 401) {
-    setToken(null)
-    throw new ApiError('Your session has expired. Please sign in again.', 401)
-  }
+  if (response.status === 401) throwSessionExpired()
   if (!response.ok) {
     let message = `Request failed (${response.status})`
     try {
@@ -450,21 +461,17 @@ export type RulePreview = SourcePreview
  * POST `{ source }` to `path` and convert a parse/compile failure into a
  * structured `{ ok: false }` value (with the message and, when located, the
  * 1-based line/column) instead of throwing, so an editor can mark the error
- * inline. A 401 still clears the token and throws (the session expired).
+ * inline. A 401 still clears the token and throws an ApiError(401) (the session
+ * expired), uniform with request() so callers can branch on status/instanceof.
  */
 async function previewSource(path: string, source: string): Promise<SourcePreview> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
-  if (token) headers['authorization'] = `Bearer ${token}`
   const response = await fetch(path, {
     method: 'POST',
-    headers,
+    headers: authHeaders(true),
     body: JSON.stringify({ source }),
   })
   if (response.ok) return { ok: true }
-  if (response.status === 401) {
-    setToken(null)
-    throw new Error('Your session has expired. Please sign in again.')
-  }
+  if (response.status === 401) throwSessionExpired()
   try {
     const parsed = (await response.json()) as {
       error?: { message?: string; details?: { line?: number; column?: number } }
@@ -722,7 +729,7 @@ export interface ConnectionDto {
   /** HTTP credential, referencing a secret by name (kind === 'http'). */
   auth?: ConnectionAuthDto | null
   // ---- sql fields (kind === 'sql', ADR-0034) ----
-  /** Database engine ('postgres'). */
+  /** Database engine: 'postgres' or 'mysql' (MySQL/MariaDB). */
   engine?: string
   /** Database host. */
   host?: string
