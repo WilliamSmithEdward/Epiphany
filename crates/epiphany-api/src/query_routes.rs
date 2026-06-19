@@ -411,6 +411,9 @@ fn view_from_body(
     owner: Option<String>,
     body: &ViewBody,
 ) -> Result<View, ApiError> {
+    // Resolve the split zero-suppression flags, honoring a legacy `suppress_zeros`
+    // in the request body for input back-compat (ADR-0003).
+    let (suppress_zero_rows, suppress_zero_columns) = body.suppression();
     Ok(View {
         name,
         cube,
@@ -423,7 +426,8 @@ fn view_from_body(
             .iter()
             .map(|c| (c.dimension.clone(), c.member.clone()))
             .collect(),
-        suppress_zeros: body.suppress_zeros,
+        suppress_zero_rows,
+        suppress_zero_columns,
     })
 }
 
@@ -450,7 +454,8 @@ fn view_dto(v: &View) -> ViewDto {
         cube: v.cube.clone(),
         owner: v.owner.clone(),
         visibility: vis_str(v.visibility),
-        suppress_zeros: v.suppress_zeros,
+        suppress_zero_rows: v.suppress_zero_rows,
+        suppress_zero_columns: v.suppress_zero_columns,
         rows: v.rows.iter().map(axis_spec_dto).collect(),
         columns: v.columns.iter().map(axis_spec_dto).collect(),
         context: v
@@ -833,7 +838,8 @@ fn view_from_mdx(
         rows,
         columns,
         context,
-        suppress_zeros: false,
+        suppress_zero_rows: false,
+        suppress_zero_columns: false,
     })
 }
 

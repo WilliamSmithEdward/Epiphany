@@ -282,8 +282,18 @@ struct ViewDoc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     owner: Option<String>,
     visibility: VisibilityDoc,
+    /// Drop result rows whose values are all zero across the shown columns.
     #[serde(default)]
-    suppress_zeros: bool,
+    suppress_zero_rows: bool,
+    /// Drop result columns whose values are all zero across the shown rows.
+    #[serde(default)]
+    suppress_zero_columns: bool,
+    /// Legacy single zero-suppression flag (pre-split). Read for back-compat
+    /// only: an old document with `suppress_zeros: true` normalizes to BOTH new
+    /// flags true (see [`build_view`]); it is never written back (new documents
+    /// emit only the two split fields).
+    #[serde(default, skip_serializing)]
+    suppress_zeros: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     rows: Vec<AxisSpecDoc>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -394,7 +404,10 @@ fn view_doc(view: &View) -> ViewDoc {
         cube: view.cube.clone(),
         owner: view.owner.clone(),
         visibility: view.visibility.into(),
-        suppress_zeros: view.suppress_zeros,
+        suppress_zero_rows: view.suppress_zero_rows,
+        suppress_zero_columns: view.suppress_zero_columns,
+        // Never written back; only read for back-compat on load.
+        suppress_zeros: None,
         rows: axis_doc(&view.rows),
         columns: axis_doc(&view.columns),
         context,
@@ -402,6 +415,14 @@ fn view_doc(view: &View) -> ViewDoc {
 }
 
 fn build_view(doc: &ViewDoc) -> View {
+    // Back-compat: a pre-split document carries the single `suppress_zeros` flag
+    // and neither new field. When present, it sets BOTH new flags (true -> both
+    // true, false -> both false). A new document omits it, so the two split
+    // fields stand on their own.
+    let (suppress_zero_rows, suppress_zero_columns) = match doc.suppress_zeros {
+        Some(legacy) => (legacy, legacy),
+        None => (doc.suppress_zero_rows, doc.suppress_zero_columns),
+    };
     View {
         name: doc.name.clone(),
         cube: doc.cube.clone(),
@@ -414,7 +435,8 @@ fn build_view(doc: &ViewDoc) -> View {
             .iter()
             .map(|c| (c.dimension.clone(), c.member.clone()))
             .collect(),
-        suppress_zeros: doc.suppress_zeros,
+        suppress_zero_rows,
+        suppress_zero_columns,
     }
 }
 
@@ -1693,7 +1715,8 @@ mod tests {
                     members: vec!["Actual".into(), "Budget".into()],
                 }],
                 context: Vec::new(),
-                suppress_zeros: true,
+                suppress_zero_rows: true,
+                suppress_zero_columns: false,
             },
         );
 
@@ -1716,7 +1739,59 @@ mod tests {
                 mdx: "[Region].[Total].Children".into()
             }
         );
-        assert!(model2.view("Grid").unwrap().suppress_zeros);
+        let grid = model2.view("Grid").unwrap();
+        assert!(grid.suppress_zero_rows);
+        assert!(!grid.suppress_zero_columns);
+    }
+
+    #[test]
+    fn view_suppress_zeros_back_compat() {
+        // Old data: the single `suppress_zeros = true` flag must set BOTH split
+        // flags on load.
+        let old_true: ViewDoc = toml::from_str(
+            "name = \"V\"\ncube = \"Sales\"\nvisibility = \"public\"\nsuppress_zeros = true\n",
+        )
+        .unwrap();
+        let v = build_view(&old_true);
+        assert!(v.suppress_zero_rows, "old true -> rows true");
+        assert!(v.suppress_zero_columns, "old true -> columns true");
+
+        // Old data: `suppress_zeros = false` -> both false. (Absent is the same:
+        // serde defaults the legacy field to None, so neither split flag is set.)
+        let old_false: ViewDoc = toml::from_str(
+            "name = \"V\"\ncube = \"Sales\"\nvisibility = \"public\"\nsuppress_zeros = false\n",
+        )
+        .unwrap();
+        let v = build_view(&old_false);
+        assert!(!v.suppress_zero_rows, "old false -> rows false");
+        assert!(!v.suppress_zero_columns, "old false -> columns false");
+
+        let absent: ViewDoc =
+            toml::from_str("name = \"V\"\ncube = \"Sales\"\nvisibility = \"public\"\n").unwrap();
+        let v = build_view(&absent);
+        assert!(
+            !v.suppress_zero_rows && !v.suppress_zero_columns,
+            "absent -> both false"
+        );
+
+        // New data with the two split fields round-trips independently.
+        let new = View {
+            name: "V".into(),
+            cube: "Sales".into(),
+            owner: None,
+            visibility: Visibility::Public,
+            rows: Vec::new(),
+            columns: Vec::new(),
+            context: Vec::new(),
+            suppress_zero_rows: true,
+            suppress_zero_columns: false,
+        };
+        let doc = view_doc(&new);
+        // The legacy field is never written back; only the split fields persist.
+        assert!(doc.suppress_zeros.is_none());
+        let back = build_view(&doc);
+        assert!(back.suppress_zero_rows, "new rows:true round-trips");
+        assert!(!back.suppress_zero_columns, "new cols:false round-trips");
     }
 
     #[test]

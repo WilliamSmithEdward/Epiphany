@@ -291,14 +291,35 @@ pub struct ViewBody {
     pub name: Option<String>,
     #[serde(default)]
     pub visibility: Option<String>,
+    /// Drop result rows whose values are all zero across the shown columns.
     #[serde(default)]
-    pub suppress_zeros: bool,
+    pub suppress_zero_rows: bool,
+    /// Drop result columns whose values are all zero across the shown rows.
+    #[serde(default)]
+    pub suppress_zero_columns: bool,
+    /// Legacy single zero-suppression flag (pre-split). Accepted for input
+    /// back-compat only: when present it sets BOTH split flags (see
+    /// [`ViewBody::suppression`]); new clients send the two split fields instead.
+    #[serde(default)]
+    pub suppress_zeros: Option<bool>,
     #[serde(default)]
     pub rows: Vec<AxisSpecBody>,
     #[serde(default)]
     pub columns: Vec<AxisSpecBody>,
     #[serde(default)]
     pub context: Vec<ContextEntryDto>,
+}
+
+impl ViewBody {
+    /// The resolved `(suppress_zero_rows, suppress_zero_columns)` flags. A legacy
+    /// `suppress_zeros` in the request drives BOTH (true -> both true, false ->
+    /// both false); otherwise the two split fields stand on their own.
+    pub fn suppression(&self) -> (bool, bool) {
+        match self.suppress_zeros {
+            Some(legacy) => (legacy, legacy),
+            None => (self.suppress_zero_rows, self.suppress_zero_columns),
+        }
+    }
 }
 
 /// One axis placement as returned to clients.
@@ -320,7 +341,8 @@ pub struct ViewDto {
     pub cube: String,
     pub owner: Option<String>,
     pub visibility: &'static str,
-    pub suppress_zeros: bool,
+    pub suppress_zero_rows: bool,
+    pub suppress_zero_columns: bool,
     pub rows: Vec<AxisSpecDto>,
     pub columns: Vec<AxisSpecDto>,
     pub context: Vec<ContextEntryDto>,

@@ -45,7 +45,6 @@ export type Selection =
 export type NodeAction =
   | 'new-cube'
   | 'open-model'
-  | 'add-view'
   | 'open-view'
   | 'delete-view'
   | 'add-member'
@@ -206,7 +205,6 @@ export async function cubeChildren(cube: string): Promise<Node[]> {
     label: 'Views',
     icon: '◫',
     selection: { kind: 'cube-views', cube },
-    menu: [{ action: 'add-view', label: 'Add view...' }],
     actionCtx: { cube },
     loader: async () => {
       const vs = await listViews(cube)
@@ -242,10 +240,7 @@ export function cubeNode(name: string): Node {
     selection: { kind: 'cube', cube: name },
     // A superset of the actions its child nodes expose, so the cube row offers
     // a direct path to its structure (consistency / recognition over recall).
-    menu: [
-      { action: 'open-model', label: 'Edit dimensions...' },
-      { action: 'add-view', label: 'Add view...' },
-    ],
+    menu: [{ action: 'open-model', label: 'Edit dimensions...' }],
     actionCtx: { cube: name },
     loader: () => cubeChildren(name),
   }

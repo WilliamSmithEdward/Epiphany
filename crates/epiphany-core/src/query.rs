@@ -360,9 +360,9 @@ pub struct CellTrace {
     pub inputs: Vec<CellTrace>,
 }
 
-/// A saved query: rows, columns, a context (slicer), and a zero-suppression
-/// flag, over one cube. Every cube dimension must appear on exactly one of
-/// rows / columns / context.
+/// A saved query: rows, columns, a context (slicer), and independent
+/// zero-suppression flags, over one cube. Every cube dimension must appear on
+/// exactly one of rows / columns / context.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct View {
     /// The view name.
@@ -379,8 +379,10 @@ pub struct View {
     pub columns: Axis,
     /// The context (slicer): a fixed member per remaining dimension.
     pub context: Vec<(String, String)>,
-    /// Drop all-zero row and column tuples when executing.
-    pub suppress_zeros: bool,
+    /// Drop result ROWS whose values are all zero across the shown columns.
+    pub suppress_zero_rows: bool,
+    /// Drop result COLUMNS whose values are all zero across the shown rows.
+    pub suppress_zero_columns: bool,
 }
 
 /// The result of executing a view: a dense, row-major value matrix over the
@@ -494,8 +496,8 @@ pub fn execute_view<'a>(
 /// name)` resolves a saved subset referenced by an axis; `eval` resolves dynamic
 /// (MDX) subsets. The function validates exact one-axis-per-dimension coverage,
 /// resolves each axis to crossjoined member tuples, reads consolidation-aware
-/// values via `cells`, then applies zero-suppression (rows first, then columns)
-/// preserving order. An axis or suppression that yields zero tuples is a valid
+/// values via `cells`, then applies zero-suppression (rows first, then columns,
+/// each axis gated by its own flag) preserving order. An axis or suppression that yields zero tuples is a valid
 /// empty result, not an error. `cells` is `Sync` because the value grid may be
 /// filled from several threads (`par`); the resolver is only ever read, never
 /// mutated, across them.
@@ -606,15 +608,18 @@ pub fn execute_view_with<'a>(
     };
     let at = |r: usize, c: usize| grid[r * ncols + c];
 
-    // Zero-suppression: rows first, then columns over the surviving rows. Only
-    // meaningful when both axes are non-empty (otherwise there are no cells).
-    let suppress = view.suppress_zeros && nrows > 0 && ncols > 0;
-    let (keep_rows, supp_rows): (Vec<usize>, Vec<usize>) = if suppress {
+    // Zero-suppression, each axis independent (the two flags compose): drop
+    // all-zero rows first (judged across every column), then drop all-zero
+    // columns judged across the SURVIVING rows. Only meaningful when both axes
+    // are non-empty (otherwise there are no cells).
+    let have_cells = nrows > 0 && ncols > 0;
+    let suppress_rows = view.suppress_zero_rows && have_cells;
+    let (keep_rows, supp_rows): (Vec<usize>, Vec<usize>) = if suppress_rows {
         (0..nrows).partition(|&r| (0..ncols).any(|c| !at(r, c).is_zero()))
     } else {
         ((0..nrows).collect(), Vec::new())
     };
-    let suppress_cols = suppress && !keep_rows.is_empty();
+    let suppress_cols = view.suppress_zero_columns && have_cells && !keep_rows.is_empty();
     let (keep_cols, supp_cols): (Vec<usize>, Vec<usize>) = if suppress_cols {
         (0..ncols).partition(|&c| keep_rows.iter().any(|&r| !at(r, c).is_zero()))
     } else {
@@ -1662,6 +1667,18 @@ mod tests {
     }
 
     fn view(rows: Axis, columns: Axis, context: &[(&str, &str)], suppress: bool) -> View {
+        // The legacy single-flag helper: `suppress` drives BOTH axes, matching the
+        // pre-split "suppress zeros" behavior the existing tests assert.
+        view_supp(rows, columns, context, suppress, suppress)
+    }
+
+    fn view_supp(
+        rows: Axis,
+        columns: Axis,
+        context: &[(&str, &str)],
+        suppress_rows: bool,
+        suppress_cols: bool,
+    ) -> View {
         View {
             name: "V".into(),
             cube: "Sales".into(),
@@ -1673,7 +1690,8 @@ mod tests {
                 .iter()
                 .map(|(d, m)| (d.to_string(), m.to_string()))
                 .collect(),
-            suppress_zeros: suppress,
+            suppress_zero_rows: suppress_rows,
+            suppress_zero_columns: suppress_cols,
         }
     }
 
@@ -1880,6 +1898,81 @@ mod tests {
         assert_eq!(cs.column_tuples, vec![vec!["Widget"]]);
         assert_eq!(cs.suppressed_column_tuples, vec![vec!["Gadget"]]);
         assert_eq!(cs.cells, fixed(&[100]));
+    }
+
+    #[test]
+    fn suppress_row_and_column_flags_are_independent() {
+        let cube = sales_cube();
+        // North on rows x {Widget, Gadget} on columns, sliced to Sales:
+        //   North/Widget = 100, North/Gadget = 0.
+        // So the single North row is partially zero (NOT all-zero) and the Gadget
+        // column IS all-zero. Suppress-rows must keep the row; suppress-columns
+        // must drop the Gadget column.
+        let rows = || vec![members("Region", &["North"])];
+        let cols = || vec![members("Product", &["Widget", "Gadget"])];
+        let run = |v: &View| {
+            execute_view(
+                &cube,
+                v,
+                &StoredCells(&cube),
+                &no_subsets,
+                &NoSetEvaluator,
+                None,
+            )
+            .unwrap()
+        };
+
+        // Neither flag: nothing dropped.
+        let none = run(&view_supp(
+            rows(),
+            cols(),
+            &[("Measure", "Sales")],
+            false,
+            false,
+        ));
+        assert_eq!(none.column_tuples, vec![vec!["Widget"], vec!["Gadget"]]);
+        assert!(none.suppressed_column_tuples.is_empty());
+        assert!(none.suppressed_row_tuples.is_empty());
+
+        // Rows-only: the all-zero COLUMN is not a row, and the one row is partial,
+        // so nothing is dropped (proves the row flag does not touch columns).
+        let rows_only = run(&view_supp(
+            rows(),
+            cols(),
+            &[("Measure", "Sales")],
+            true,
+            false,
+        ));
+        assert_eq!(
+            rows_only.column_tuples,
+            vec![vec!["Widget"], vec!["Gadget"]]
+        );
+        assert!(rows_only.suppressed_column_tuples.is_empty());
+        assert!(rows_only.suppressed_row_tuples.is_empty());
+
+        // Columns-only: the all-zero Gadget column drops; the row stays.
+        let cols_only = run(&view_supp(
+            rows(),
+            cols(),
+            &[("Measure", "Sales")],
+            false,
+            true,
+        ));
+        assert_eq!(cols_only.column_tuples, vec![vec!["Widget"]]);
+        assert_eq!(cols_only.suppressed_column_tuples, vec![vec!["Gadget"]]);
+        assert_eq!(cols_only.row_tuples, vec![vec!["North"]]);
+        assert!(cols_only.suppressed_row_tuples.is_empty());
+
+        // Both: same as columns-only here (the row is partial, so it survives).
+        let both = run(&view_supp(
+            rows(),
+            cols(),
+            &[("Measure", "Sales")],
+            true,
+            true,
+        ));
+        assert_eq!(both.column_tuples, vec![vec!["Widget"]]);
+        assert_eq!(both.row_tuples, vec![vec!["North"]]);
     }
 
     #[test]

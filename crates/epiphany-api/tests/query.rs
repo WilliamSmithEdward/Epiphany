@@ -337,12 +337,14 @@ async fn execute_nested_view_to_cellset() {
 }
 
 #[tokio::test]
-async fn ad_hoc_cellset_with_zero_suppression() {
+async fn ad_hoc_cellset_with_zero_row_suppression() {
     let app = router("suppress");
     let t = login(&app, "admin").await;
 
+    // suppress_zero_rows only: the all-zero North/Gadget row drops; columns are
+    // untouched (no column is all-zero across the kept rows here anyway).
     let spec = json!({
-        "suppress_zeros": true,
+        "suppress_zero_rows": true,
         "rows": [
             { "dimension": "Region", "type": "members", "members": ["North", "South"] },
             { "dimension": "Product", "type": "members", "members": ["Widget", "Gadget"] }
@@ -375,6 +377,69 @@ async fn ad_hoc_cellset_with_zero_suppression() {
             vec!["South", "Gadget"],
         ]
     );
+    assert_eq!(cs["suppressed"]["row_tuples"], 1);
+    assert_eq!(cs["suppressed"]["column_tuples"], 0);
+}
+
+#[tokio::test]
+async fn ad_hoc_cellset_with_zero_column_suppression() {
+    let app = router("suppress-cols");
+    let t = login(&app, "admin").await;
+
+    // North on rows x {Widget, Gadget} on columns, sliced to Sales: North/Widget
+    // = 100, North/Gadget = 0. The Gadget COLUMN is all-zero. suppress_zero_columns
+    // drops it; the row stays (it is partially zero, not all-zero) and would not
+    // be touched by the column flag in any case.
+    let spec = json!({
+        "suppress_zero_columns": true,
+        "rows": [
+            { "dimension": "Region", "type": "members", "members": ["North"] }
+        ],
+        "columns": [
+            { "dimension": "Product", "type": "members", "members": ["Widget", "Gadget"] }
+        ],
+        "context": [ { "dimension": "Measure", "member": "Sales" } ]
+    });
+    let (status, cs) = call(&app, "POST", "/api/v1/cubes/Sales/cellset", &t, Some(spec)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let cols: Vec<Vec<&str>> = cs["column_tuples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| {
+            t.as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["name"].as_str().unwrap())
+                .collect()
+        })
+        .collect();
+    assert_eq!(cols, vec![vec!["Widget"]]);
+    assert_eq!(cs["suppressed"]["column_tuples"], 1);
+    assert_eq!(cs["suppressed"]["row_tuples"], 0);
+}
+
+#[tokio::test]
+async fn ad_hoc_cellset_legacy_suppress_zeros_still_accepted() {
+    let app = router("suppress-legacy");
+    let t = login(&app, "admin").await;
+
+    // Input back-compat: the legacy single `suppress_zeros: true` flag must drive
+    // BOTH axes, reproducing the pre-split row-suppression behavior.
+    let spec = json!({
+        "suppress_zeros": true,
+        "rows": [
+            { "dimension": "Region", "type": "members", "members": ["North", "South"] },
+            { "dimension": "Product", "type": "members", "members": ["Widget", "Gadget"] }
+        ],
+        "columns": [
+            { "dimension": "Measure", "type": "members", "members": ["Sales", "Cost", "Margin"] }
+        ]
+    });
+    let (status, cs) = call(&app, "POST", "/api/v1/cubes/Sales/cellset", &t, Some(spec)).await;
+    assert_eq!(status, StatusCode::OK);
+    // North/Gadget is the only all-zero row; it drops as before.
     assert_eq!(cs["suppressed"]["row_tuples"], 1);
 }
 

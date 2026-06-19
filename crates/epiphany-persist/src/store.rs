@@ -1134,14 +1134,22 @@ mod tests {
                         members: vec!["P0".into()],
                     }],
                     context: Vec::new(),
-                    suppress_zeros: false,
+                    suppress_zero_rows: true,
+                    suppress_zero_columns: false,
                 })
                 .unwrap();
             // Drop WITHOUT a further checkpoint: define already checkpointed.
         }
         let store = Store::open(&dir).unwrap();
         assert!(store.model().subset("Region", "Core").is_some());
-        assert!(store.model().view("Grid").is_some());
+        let grid = store
+            .model()
+            .view("Grid")
+            .expect("the view survives the snapshot");
+        // The split zero-suppression flags round-trip independently through the
+        // snapshot save/load (each persisted on its own, no legacy collapsing).
+        assert!(grid.suppress_zero_rows);
+        assert!(!grid.suppress_zero_columns);
         // The earlier cell write survived too (the define's checkpoint folded it
         // into the snapshot).
         assert_eq!(

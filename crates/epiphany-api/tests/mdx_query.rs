@@ -331,8 +331,9 @@ async fn where_slicer_sets_the_context_and_filters_values() {
 // ------------------------------------------------------------------
 // (d) Zero-suppression: verify whether the endpoint can express it.
 //
-// `view_from_mdx` hard-codes `suppress_zeros: false` and the MDX grammar has no
-// NON EMPTY / suppression syntax, so this endpoint CANNOT request suppression.
+// `view_from_mdx` hard-codes both suppress_zero_rows/columns to false and the MDX
+// grammar has no NON EMPTY / suppression syntax, so this endpoint CANNOT request
+// suppression.
 // We assert the documented behavior: a zero row is RETURNED (value "0"), never
 // dropped, and `suppressed.row_tuples` is 0.
 // ------------------------------------------------------------------

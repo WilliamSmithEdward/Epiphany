@@ -160,11 +160,11 @@ async fn call(
 }
 
 /// The view spec used throughout: two dimensions on rows (Region outer, Product
-/// via the dynamic subset), Measure on columns, zero-suppression on.
+/// via the dynamic subset), Measure on columns, row zero-suppression on.
 fn plan_spec() -> Value {
     json!({
         "name": "Plan",
-        "suppress_zeros": true,
+        "suppress_zero_rows": true,
         "rows": [
             { "dimension": "Region", "type": "members", "members": ["North", "South"] },
             { "dimension": "Product", "type": "subset", "subset": "Items" }

@@ -328,7 +328,10 @@ export interface ContextEntry {
 export interface ViewDef {
   name?: string
   visibility?: Visibility
-  suppress_zeros?: boolean
+  /** Drop result rows whose values are all zero across the shown columns. */
+  suppress_zero_rows?: boolean
+  /** Drop result columns whose values are all zero across the shown rows. */
+  suppress_zero_columns?: boolean
   rows: AxisSpecDef[]
   columns: AxisSpecDef[]
   context?: ContextEntry[]
@@ -346,7 +349,8 @@ export interface ViewDto {
   cube: string
   owner: string | null
   visibility: Visibility
-  suppress_zeros: boolean
+  suppress_zero_rows: boolean
+  suppress_zero_columns: boolean
   rows: AxisSpecDto[]
   columns: AxisSpecDto[]
   context: ContextEntry[]

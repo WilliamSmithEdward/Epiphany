@@ -87,7 +87,8 @@ fn grid_view(dims: usize, leaves: u32) -> View {
         rows,
         columns,
         context,
-        suppress_zeros: false,
+        suppress_zero_rows: false,
+        suppress_zero_columns: false,
     }
 }
 

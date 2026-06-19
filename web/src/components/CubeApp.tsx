@@ -528,9 +528,6 @@ export default function CubeApp({
           })()
           return
         }
-        case 'add-view':
-          if (ctx.cube) navigate({ kind: 'cube-views', cube: ctx.cube }, { autoNew: true })
-          return
         case 'open-view':
           if (ctx.cube && ctx.view) navigate({ kind: 'view', cube: ctx.cube, view: ctx.view }, { view: ctx.view })
           return
@@ -929,7 +926,6 @@ export default function CubeApp({
                   cube={cube}
                   reloadSignal={reload}
                   initialView={activeTab.selection.kind === 'view' ? activeTab.selection.view : activeTab.nav.view}
-                  autoNew={activeTab.nav.autoNew}
                   navSignal={activeTab.nav.signal}
                   onDirtyChange={setPaneDirty}
                 />

@@ -922,7 +922,9 @@ fn view_schemas() -> Value {
         "ViewBody": { "type": "object", "properties": {
             "name": { "type": "string" },
             "visibility": { "type": "string", "enum": ["public", "private"] },
-            "suppress_zeros": { "type": "boolean" },
+            "suppress_zero_rows": { "type": "boolean", "description": "Drop result rows all-zero across the shown columns" },
+            "suppress_zero_columns": { "type": "boolean", "description": "Drop result columns all-zero across the shown rows" },
+            "suppress_zeros": { "type": "boolean", "deprecated": true, "description": "Legacy single flag; if sent, sets BOTH suppress_zero_rows and suppress_zero_columns. Prefer the two split fields." },
             "rows": { "type": "array", "items": { "$ref": "#/components/schemas/AxisSpec" } },
             "columns": { "type": "array", "items": { "$ref": "#/components/schemas/AxisSpec" } },
             "context": { "type": "array", "items": { "type": "object", "properties": {

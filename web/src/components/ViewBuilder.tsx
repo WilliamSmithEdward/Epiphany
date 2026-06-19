@@ -21,8 +21,10 @@ export default function ViewBuilder({
   subsetsByDim,
   config,
   onConfigChange,
-  suppress,
-  onSuppressChange,
+  suppressRows,
+  onSuppressRowsChange,
+  suppressCols,
+  onSuppressColsChange,
   name,
   onNameChange,
   visibility,
@@ -36,8 +38,10 @@ export default function ViewBuilder({
   subsetsByDim: Record<string, SubsetDto[]>
   config: Record<string, DimConfig>
   onConfigChange: (dim: string, partial: Partial<DimConfig>) => void
-  suppress: boolean
-  onSuppressChange: (value: boolean) => void
+  suppressRows: boolean
+  onSuppressRowsChange: (value: boolean) => void
+  suppressCols: boolean
+  onSuppressColsChange: (value: boolean) => void
   name: string
   onNameChange: (value: string) => void
   visibility: Visibility
@@ -120,11 +124,21 @@ export default function ViewBuilder({
         <label className="check">
           <input
             type="checkbox"
-            checked={suppress}
-            onChange={(e) => onSuppressChange(e.target.checked)}
+            checked={suppressRows}
+            onChange={(e) => onSuppressRowsChange(e.target.checked)}
           />
-          <Tooltip content="Hide rows and columns that are entirely blank or zero, so only meaningful numbers show.">
-            <span>Suppress zeros</span>
+          <Tooltip content="Hide rows that are entirely blank or zero across the shown columns.">
+            <span>Suppress zero rows</span>
+          </Tooltip>
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={suppressCols}
+            onChange={(e) => onSuppressColsChange(e.target.checked)}
+          />
+          <Tooltip content="Hide columns that are entirely blank or zero across the shown rows.">
+            <span>Suppress zero columns</span>
           </Tooltip>
         </label>
         <label>

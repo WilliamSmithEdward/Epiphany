@@ -49,7 +49,8 @@ struct ViewShape {
     rows: Vec<AxisSpec>,
     columns: Vec<AxisSpec>,
     context: Vec<(String, String)>,
-    suppress_zeros: bool,
+    suppress_zero_rows: bool,
+    suppress_zero_columns: bool,
 }
 
 /// The element-security dimension of a key: an unmasked read (shared by all
@@ -97,7 +98,8 @@ fn build_key(read: &ViewRead) -> ViewCacheKey {
         rows: read.view.rows.clone(),
         columns: read.view.columns.clone(),
         context: read.view.context.clone(),
-        suppress_zeros: read.view.suppress_zeros,
+        suppress_zero_rows: read.view.suppress_zero_rows,
+        suppress_zero_columns: read.view.suppress_zero_columns,
     };
     // Same scope id the calc memo uses (ADR-0014), so two distinct sandboxes
     // never alias and a base read keys as None.
@@ -288,7 +290,8 @@ mod tests {
                 members: vec!["Sales".to_string()],
             }],
             context: Vec::new(),
-            suppress_zeros: false,
+            suppress_zero_rows: false,
+            suppress_zero_columns: false,
         }
     }
 

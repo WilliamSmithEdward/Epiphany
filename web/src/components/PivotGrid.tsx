@@ -174,6 +174,10 @@ export default function PivotGrid({
   const [saveOpen, setSaveOpen] = useState(false)
   const [saveName, setSaveName] = useState('')
   const [saveVis, setSaveVis] = useState<Visibility>('private')
+  // Independent zero-suppression: drop all-zero rows / all-zero columns. Captured
+  // into the saved view def (see buildViewDef); off by default.
+  const [saveSuppressRows, setSaveSuppressRows] = useState(false)
+  const [saveSuppressCols, setSaveSuppressCols] = useState(false)
   const [saveBusy, setSaveBusy] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   // "Show MDX" dialog: previews the query the current layout generates.
@@ -566,9 +570,10 @@ export default function PivotGrid({
       rows: rowDims.map(axisSpec),
       columns: colDims.map(axisSpec),
       context: ctx,
-      suppress_zeros: false,
+      suppress_zero_rows: saveSuppressRows,
+      suppress_zero_columns: saveSuppressCols,
     }
-  }, [detail, rowDims, colDims, context, axisSet])
+  }, [detail, rowDims, colDims, context, axisSet, saveSuppressRows, saveSuppressCols])
 
   const saveView = useCallback(async () => {
     if (saveName.trim() === '') {
@@ -809,7 +814,17 @@ export default function PivotGrid({
         {rowHierarchical ? levelControls(rowDims, 'Rows') : null}
         {colHierarchical ? levelControls(colDims, 'Columns') : null}
         <span className="grid-toolbar__spacer" />
-        <Button variant="ghost" size="sm" icon="◫" onClick={() => { setSaveError(null); setSaveOpen(true) }}>
+        <Button
+          variant="ghost"
+          size="sm"
+          icon="◫"
+          onClick={() => {
+            setSaveError(null)
+            setSaveSuppressRows(false)
+            setSaveSuppressCols(false)
+            setSaveOpen(true)
+          }}
+        >
           Save view
         </Button>
         <Button
@@ -1020,6 +1035,22 @@ export default function PivotGrid({
               ]}
               ariaLabel="View visibility"
             />
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={saveSuppressRows}
+              onChange={(e) => setSaveSuppressRows(e.target.checked)}
+            />
+            <span>Suppress zero rows</span>
+          </label>
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={saveSuppressCols}
+              onChange={(e) => setSaveSuppressCols(e.target.checked)}
+            />
+            <span>Suppress zero columns</span>
           </label>
           {saveError ? (
             <p className="error" role="alert">
