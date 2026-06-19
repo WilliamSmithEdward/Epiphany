@@ -206,8 +206,13 @@ export default function ModelExplorer({
 
   const activate = useCallback(
     (node: Node) => {
+      // Opening a tab is decoupled from expanding: a row that opens a tab just
+      // opens it and does NOT also toggle its children (expand with the twisty,
+      // or the Right/Left arrow keys). A pure container row (no tab of its own,
+      // e.g. the "Cubes"/"Flows" groups) still expands on click, since that is
+      // its only action.
       if (node.selection) onSelect(node.selection)
-      if (node.loader) toggle(node)
+      else if (node.loader) toggle(node)
     },
     [onSelect, toggle],
   )
