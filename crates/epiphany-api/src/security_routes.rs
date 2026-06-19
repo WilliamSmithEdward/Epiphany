@@ -25,6 +25,8 @@ fn map_security_err(e: SecurityError) -> ApiError {
         SecurityError::UserNotFound(_) => ApiError::not_found(e.to_string()),
         // The strength-policy reason is client-safe (no password material).
         SecurityError::WeakPassword(_) => ApiError::bad_request(e.to_string()),
+        // Refusing to remove the last admin is a client-correctable conflict.
+        SecurityError::LastAdmin => ApiError::conflict(e.to_string()),
         _ => ApiError::internal(),
     }
 }
@@ -153,6 +155,14 @@ pub(crate) async fn patch_user(
                 .map_err(map_security_err)?;
         }
     }
+    // An admin-set password invalidates the target user's existing sessions.
+    if body.password.is_some() {
+        state
+            .sessions
+            .lock()
+            .expect("session mutex")
+            .revoke_user(&username);
+    }
     audit(
         &state,
         &auth.principal.username,
@@ -187,6 +197,12 @@ pub(crate) async fn reset_user_password(
         .expect("security mutex")
         .reset_password_to_temp(&username)
         .map_err(map_security_err)?;
+    // Force re-login: an admin password reset invalidates the user's sessions.
+    state
+        .sessions
+        .lock()
+        .expect("session mutex")
+        .revoke_user(&username);
     audit(
         &state,
         &auth.principal.username,
@@ -216,6 +232,12 @@ pub(crate) async fn delete_user(
     if !removed {
         return Err(ApiError::not_found(format!("no user '{username}'")));
     }
+    // Invalidate the deleted user's sessions so a lingering token stops working.
+    state
+        .sessions
+        .lock()
+        .expect("session mutex")
+        .revoke_user(&username);
     audit(
         &state,
         &auth.principal.username,

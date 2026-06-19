@@ -62,6 +62,9 @@ pub enum SecurityError {
     /// A new password did not meet the strength policy (ADR-0017). The string is
     /// a client-safe reason (never echoes the password).
     WeakPassword(String),
+    /// The operation would remove or demote the last administrator, which would
+    /// lock everyone out of the admin control plane (RG-12).
+    LastAdmin,
 }
 
 impl std::fmt::Display for SecurityError {
@@ -74,6 +77,9 @@ impl std::fmt::Display for SecurityError {
             SecurityError::Io(e) => write!(f, "security artifact I/O error: {e}"),
             SecurityError::Format(m) => write!(f, "invalid security artifact: {m}"),
             SecurityError::WeakPassword(why) => write!(f, "{why}"),
+            SecurityError::LastAdmin => {
+                write!(f, "cannot remove or demote the last administrator")
+            }
         }
     }
 }
@@ -330,8 +336,18 @@ impl SecurityStore {
         self.save()
     }
 
-    /// Delete a user. Returns whether one was removed; persists on change.
+    /// The number of users with the admin flag, used to refuse removing the last
+    /// administrator (which would lock everyone out of the admin control plane).
+    fn admin_count(&self) -> usize {
+        self.users.values().filter(|u| u.is_admin).count()
+    }
+
+    /// Delete a user. Returns whether one was removed; persists on change. Refuses
+    /// to remove the last administrator (RG-12).
     pub fn delete_user(&mut self, username: &str) -> Result<bool, SecurityError> {
+        if self.users.get(username).is_some_and(|u| u.is_admin) && self.admin_count() == 1 {
+            return Err(SecurityError::LastAdmin);
+        }
         let removed = self.users.remove(username).is_some();
         if removed {
             self.save()?;
@@ -339,12 +355,23 @@ impl SecurityStore {
         Ok(removed)
     }
 
-    /// Set a user's admin flag, persisting.
+    /// Set a user's admin flag, persisting. Refuses to demote the last
+    /// administrator (RG-12).
     pub fn set_user_admin(&mut self, username: &str, is_admin: bool) -> Result<(), SecurityError> {
+        let demoting_last_admin = {
+            let user = self
+                .users
+                .get(username)
+                .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
+            !is_admin && user.is_admin && self.admin_count() == 1
+        };
+        if demoting_last_admin {
+            return Err(SecurityError::LastAdmin);
+        }
         let user = self
             .users
             .get_mut(username)
-            .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
+            .expect("user presence checked above");
         user.is_admin = is_admin;
         self.save()
     }
@@ -913,6 +940,30 @@ mod tests {
         assert!(principal.is_admin);
         assert!(store.authenticate("alice", "nope").is_none());
         assert!(store.authenticate("bob", "s3cret").is_none());
+    }
+
+    #[test]
+    fn cannot_remove_or_demote_the_last_admin() {
+        let mut store = SecurityStore::with_admin("root", "pw", true);
+        // The only admin cannot be deleted or demoted (would lock everyone out).
+        assert!(matches!(
+            store.delete_user("root"),
+            Err(SecurityError::LastAdmin)
+        ));
+        assert!(matches!(
+            store.set_user_admin("root", false),
+            Err(SecurityError::LastAdmin)
+        ));
+        // With a second admin present, either admin may be removed or demoted.
+        store
+            .create_user_with_groups("root2", "pw2", true, &[])
+            .unwrap();
+        assert!(store.delete_user("root").unwrap());
+        // root2 is now the last admin and is protected again.
+        assert!(matches!(
+            store.set_user_admin("root2", false),
+            Err(SecurityError::LastAdmin)
+        ));
     }
 
     #[test]

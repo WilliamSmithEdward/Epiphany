@@ -14,10 +14,10 @@ use serde::{Deserialize, Serialize};
 
 use epiphany_core::Sandbox;
 use epiphany_engine::ReadSnapshot;
-use epiphany_security::Principal;
+use epiphany_security::{AccessLevel, Principal};
 
 use crate::auth::AuthPrincipal;
-use crate::authz::require_element_write_indices;
+use crate::authz::{require_cube_access, require_element_write_indices};
 use crate::routes::{map_batch_error, snapshot};
 use crate::{ApiError, AppState};
 
@@ -110,6 +110,7 @@ pub(crate) async fn list_sandboxes(
     Path(cube): Path<String>,
 ) -> Result<Json<SandboxList>, ApiError> {
     let snap = snapshot(&state, &cube)?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let p = &auth.principal;
     let sandboxes = snap
         .model()
@@ -134,6 +135,7 @@ pub(crate) async fn create_sandbox(
     Json(body): Json<CreateSandboxBody>,
 ) -> Result<(StatusCode, Json<SandboxDto>), ApiError> {
     let snap = snapshot(&state, &cube)?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let name = body.name.trim();
     if name.is_empty() {
         return Err(ApiError::bad_request("sandbox name is required"));
@@ -159,6 +161,7 @@ pub(crate) async fn get_sandbox(
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<Json<SandboxDto>, ApiError> {
     let snap = snapshot(&state, &cube)?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     let sb = authorize_sandbox(&snap, &auth.principal, &name)?;
     Ok(Json(dto(sb)))
 }
@@ -170,6 +173,7 @@ pub(crate) async fn delete_sandbox(
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let snap = snapshot(&state, &cube)?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
     authorize_sandbox(&snap, &auth.principal, &name)?;
     state
         .engine
@@ -203,6 +207,7 @@ pub(crate) async fn commit_sandbox(
     body: Option<Json<CommitBody>>,
 ) -> Result<Json<CommitResponse>, ApiError> {
     let snap = snapshot(&state, &cube)?;
+    require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
     let sandbox = authorize_sandbox(&snap, &auth.principal, &name)?;
     let committed = sandbox.len();
     // Re-validate element-level write access against the live store (ADR-0015): a
