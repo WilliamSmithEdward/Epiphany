@@ -66,6 +66,15 @@ export interface LoginResult {
   user: { username: string; is_admin: boolean; must_change_password: boolean }
 }
 
+/** The current principal, as returned by GET /api/v1/auth/me. Used to restore
+ * an in-tab session on reload via the HttpOnly session cookie (the in-memory
+ * bearer token is gone after a reload, so the cookie authenticates this call). */
+export interface MeResponse {
+  username: string
+  is_admin: boolean
+  must_change_password: boolean
+}
+
 export interface BatchResult {
   applied: number
   version: number
@@ -125,6 +134,11 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   const response = await fetch(path, {
     method,
     headers: authHeaders(body !== undefined),
+    // Send the same-origin HttpOnly session cookie. This is the browser default
+    // for same-origin requests; setting it explicitly keeps cookie-based auth
+    // working (e.g. restoring a session on reload, when the in-memory bearer
+    // token is gone) and documents that we never want 'omit'.
+    credentials: 'same-origin',
     body: body === undefined ? undefined : JSON.stringify(body),
   })
   if (response.status === 401) throwSessionExpired()
@@ -149,6 +163,16 @@ export async function login(username: string, password: string): Promise<LoginRe
   const result = await request<LoginResult>('POST', '/api/v1/auth/login', { username, password })
   setToken(result.token)
   return result
+}
+
+/**
+ * Fetch the current principal. After an in-tab reload the in-memory bearer
+ * token is null, so this is authenticated by the HttpOnly session cookie; it is
+ * allowed even during a pending forced password change (it is in the server's
+ * MUST_CHANGE_ALLOWED set), so the forced-rotation screen can be restored too.
+ */
+export async function getMe(): Promise<MeResponse> {
+  return request<MeResponse>('GET', '/api/v1/auth/me')
 }
 
 export async function logout(): Promise<void> {

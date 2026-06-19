@@ -48,6 +48,7 @@ export default function Login({
             <Input
               id={id}
               {...a11y}
+              name="username"
               value={username}
               autoComplete="username"
               autoFocus
@@ -62,6 +63,7 @@ export default function Login({
             <Input
               id={id}
               {...a11y}
+              name="current-password"
               type="password"
               value={password}
               autoComplete="current-password"

@@ -221,14 +221,25 @@ pub(crate) struct MeResponse {
     username: String,
     is_admin: bool,
     groups: Vec<String>,
+    /// Whether a forced password change is still pending (ADR-0017). The web
+    /// layer needs this to restore the forced-rotation screen on a page reload;
+    /// `/auth/me` is in MUST_CHANGE_ALLOWED, so it resolves during a pending
+    /// change. Computed from the live security store, as `login` does.
+    must_change_password: bool,
 }
 
 /// `GET /api/v1/auth/me` -> the current principal.
-pub async fn me(auth: AuthPrincipal) -> Json<MeResponse> {
+pub async fn me(State(state): State<AppState>, auth: AuthPrincipal) -> Json<MeResponse> {
+    let must_change_password = state
+        .security
+        .lock()
+        .expect("security mutex")
+        .must_change_password(&auth.principal.username);
     Json(MeResponse {
         username: auth.principal.username,
         is_admin: auth.principal.is_admin,
         groups: auth.principal.groups,
+        must_change_password,
     })
 }
 
