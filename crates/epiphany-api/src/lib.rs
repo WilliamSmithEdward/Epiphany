@@ -318,10 +318,7 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/cubes/{cube}/cellset",
             post(query_routes::execute_adhoc),
         )
-        .route(
-            "/api/v1/cubes/{cube}/mdx",
-            post(query_routes::execute_mdx),
-        )
+        .route("/api/v1/cubes/{cube}/mdx", post(query_routes::execute_mdx))
         // Rules (cube-scoped) and the calc affordances.
         .route(
             "/api/v1/cubes/{cube}/rules",

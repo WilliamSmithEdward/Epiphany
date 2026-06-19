@@ -1104,7 +1104,10 @@ mod tests {
         assert_eq!(dim, "Product");
         assert_eq!(ms, &["Widgets".to_string()]);
 
-        assert_eq!(view.context, vec![("Measure".to_string(), "Sales".to_string())]);
+        assert_eq!(
+            view.context,
+            vec![("Measure".to_string(), "Sales".to_string())]
+        );
     }
 
     #[test]

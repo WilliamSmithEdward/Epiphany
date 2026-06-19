@@ -798,7 +798,10 @@ mod tests {
         assert_eq!(q.axes.len(), 2);
         assert_eq!(q.axes[0].0, AxisName::Columns);
         assert_eq!(q.axes[1].0, AxisName::Rows);
-        assert_eq!(q.axes[0].1, SetExpr::Set(vec![SetExpr::Member(m(&["Period", "Q1"]))]));
+        assert_eq!(
+            q.axes[0].1,
+            SetExpr::Set(vec![SetExpr::Member(m(&["Period", "Q1"]))])
+        );
         assert_eq!(q.slicer, vec![m(&["Measure", "Actual"])]);
     }
 
@@ -836,7 +839,10 @@ mod tests {
             let printed = first.to_string();
             let second = parse_query(&printed)
                 .unwrap_or_else(|e| panic!("re-parse of `{printed}` failed: {e}"));
-            assert_eq!(first, second, "round-trip changed AST for `{src}` -> `{printed}`");
+            assert_eq!(
+                first, second,
+                "round-trip changed AST for `{src}` -> `{printed}`"
+            );
         }
     }
 
@@ -844,12 +850,16 @@ mod tests {
     fn select_error_cases() {
         // Missing FROM after the axes.
         assert!(matches!(
-            parse_query("SELECT { [A].[x] } ON COLUMNS").unwrap_err().kind,
+            parse_query("SELECT { [A].[x] } ON COLUMNS")
+                .unwrap_err()
+                .kind,
             ParseErrorKind::UnexpectedEof { .. } | ParseErrorKind::UnexpectedToken { .. }
         ));
         // Unknown axis label.
         assert!(matches!(
-            parse_query("SELECT { [A].[x] } ON PAGES FROM [C]").unwrap_err().kind,
+            parse_query("SELECT { [A].[x] } ON PAGES FROM [C]")
+                .unwrap_err()
+                .kind,
             ParseErrorKind::UnknownAxis { .. }
         ));
         // The same axis twice (COLUMNS and ordinal 0 are the same axis).

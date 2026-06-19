@@ -75,7 +75,10 @@ impl fmt::Display for MdxParseError {
             ParseErrorKind::TrailingInput => write!(f, "unexpected trailing input"),
             ParseErrorKind::TooDeep => write!(f, "expression nests too deeply"),
             ParseErrorKind::UnknownAxis { found } => {
-                write!(f, "unexpected axis `{found}`, expected COLUMNS, ROWS, or a number")
+                write!(
+                    f,
+                    "unexpected axis `{found}`, expected COLUMNS, ROWS, or a number"
+                )
             }
             ParseErrorKind::DuplicateAxis { axis } => {
                 write!(f, "axis {axis} is specified more than once")

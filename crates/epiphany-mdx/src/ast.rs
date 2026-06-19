@@ -239,7 +239,12 @@ impl fmt::Display for Query {
             .iter()
             .map(|(axis, set)| format!("  {set} ON {axis}"))
             .collect();
-        write!(f, "SELECT\n{}\nFROM {}", axes.join(",\n"), bracket(&self.cube))?;
+        write!(
+            f,
+            "SELECT\n{}\nFROM {}",
+            axes.join(",\n"),
+            bracket(&self.cube)
+        )?;
         if !self.slicer.is_empty() {
             let members: Vec<String> = self.slicer.iter().map(|m| m.to_string()).collect();
             write!(f, "\nWHERE ( {} )", members.join(", "))?;
