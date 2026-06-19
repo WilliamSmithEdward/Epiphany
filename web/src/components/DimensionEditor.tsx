@@ -1,4 +1,6 @@
+import * as CM from '@radix-ui/react-context-menu'
 import * as DM from '@radix-ui/react-dropdown-menu'
+import type { CSSProperties, ReactNode } from 'react'
 import {
   useCallback,
   useEffect,
@@ -800,14 +802,27 @@ export default function DimensionEditor({
                   if (drag && over) doDrop(drag.name, r.name, over.zone)
                   endDrag()
                 }}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  setMenuPath(r.path)
-                }}
               >
-                <div
-                  className="dimedit__rowinner"
+                <RowActions
                   style={{ paddingInlineStart: `${r.depth * 1.2 + 0.25}rem` }}
+                  name={r.name}
+                  kind={r.kind}
+                  isRoot={r.parent === null}
+                  currentParent={r.parent}
+                  consolidations={consolidations}
+                  open={menuPath === r.path}
+                  onOpenChange={(o) => setMenuPath(o ? r.path : null)}
+                  onMoveUp={() => moveStep(r.name, 'up')}
+                  onMoveDown={() => moveStep(r.name, 'down')}
+                  onAddBefore={() => startAdd('before', r.name)}
+                  onAddAfter={() => startAdd('after', r.name)}
+                  onAddChild={() => startAdd('as-child', r.name)}
+                  onAddToConsolidation={(parent) => addToConsolidation(parent, r.name)}
+                  onConvert={(k) => void convert(r.name, k)}
+                  onRemoveFromConsolidation={() => removeFromConsolidation(r.parent, r.name)}
+                  onDetach={() => detach(r.name)}
+                  onRemoveFrom={() => openRemoveFrom(r.name)}
+                  onDeleteFromDimension={() => void deleteFromDimension(r.name)}
                 >
                   {r.hasChildren ? (
                     <button
@@ -834,27 +849,7 @@ export default function DimensionEditor({
                   </span>
                   <span className="dimedit__name">{r.name}</span>
                   <span className="dimedit__kind">{KIND_LABEL[r.kind]}</span>
-                  <RowMenu
-                    name={r.name}
-                    kind={r.kind}
-                    isRoot={r.parent === null}
-                    currentParent={r.parent}
-                    consolidations={consolidations}
-                    open={menuPath === r.path}
-                    onOpenChange={(o) => setMenuPath(o ? r.path : null)}
-                    onMoveUp={() => moveStep(r.name, 'up')}
-                    onMoveDown={() => moveStep(r.name, 'down')}
-                    onAddBefore={() => startAdd('before', r.name)}
-                    onAddAfter={() => startAdd('after', r.name)}
-                    onAddChild={() => startAdd('as-child', r.name)}
-                    onAddToConsolidation={(parent) => addToConsolidation(parent, r.name)}
-                    onConvert={(k) => void convert(r.name, k)}
-                    onRemoveFromConsolidation={() => removeFromConsolidation(r.parent, r.name)}
-                    onDetach={() => detach(r.name)}
-                    onRemoveFrom={() => openRemoveFrom(r.name)}
-                    onDeleteFromDimension={() => void deleteFromDimension(r.name)}
-                  />
-                </div>
+                </RowActions>
               </li>
             )
           })}
@@ -1002,33 +997,12 @@ function cssEscapePath(path: string): string {
  * current kind so the menu reads as a clear state toggle; "Remove from this
  * consolidation" is disabled for a top-level root (it has no parent edge).
  */
-function RowMenu({
-  name,
-  kind,
-  isRoot,
-  currentParent,
-  consolidations,
-  open,
-  onOpenChange,
-  onMoveUp,
-  onMoveDown,
-  onAddBefore,
-  onAddAfter,
-  onAddChild,
-  onAddToConsolidation,
-  onConvert,
-  onRemoveFromConsolidation,
-  onDetach,
-  onRemoveFrom,
-  onDeleteFromDimension,
-}: {
+interface RowActionProps {
   name: string
   kind: ElementKind
   isRoot: boolean
   currentParent: string | null
   consolidations: string[]
-  open: boolean
-  onOpenChange: (open: boolean) => void
   onMoveUp: () => void
   onMoveDown: () => void
   onAddBefore: () => void
@@ -1040,130 +1014,160 @@ function RowMenu({
   onDetach: () => void
   onRemoveFrom: () => void
   onDeleteFromDimension: () => void
-}) {
-  // Consolidations this member could be added to (every consolidation except
-  // itself and the one it already sits under on this row).
-  const targets = consolidations.filter((c) => c !== name && c !== currentParent)
+}
+
+// Radix dropdown-menu and context-menu expose the same Item/Sub/Separator API, so
+// the action list is authored once (`actionItems`) and rendered with whichever set
+// of primitives the trigger needs: the ⋯ button uses dropdown-menu, right-click uses
+// context-menu (which anchors at the cursor). CM is cast to the shared shape.
+type MenuParts = Pick<typeof DM, 'Item' | 'Sub' | 'SubTrigger' | 'SubContent' | 'Portal' | 'Separator'>
+const CM_PARTS = CM as unknown as MenuParts
+
+function actionItems(M: MenuParts, p: RowActionProps) {
+  // Consolidations this member could be added to (every consolidation except itself
+  // and the one it already sits under on this row).
+  const targets = p.consolidations.filter((c) => c !== p.name && c !== p.currentParent)
   return (
-    <DM.Root open={open} onOpenChange={onOpenChange}>
-      <DM.Trigger asChild>
-        <button
-          type="button"
-          className="dimedit__actions"
-          aria-label={`Actions for ${name}`}
-          tabIndex={-1}
-          onClick={(e) => e.stopPropagation()}
-          onKeyDown={(e) => e.stopPropagation()}
-        >
-          ⋯
-        </button>
-      </DM.Trigger>
-      <DM.Portal>
-        <DM.Content className="menu" align="end" sideOffset={4}>
-          <DM.Item className="menu__item" onSelect={onMoveUp}>
-            Move up
-          </DM.Item>
-          <DM.Item className="menu__item" onSelect={onMoveDown}>
-            Move down
-          </DM.Item>
-          <DM.Separator className="menu__sep" />
-          <DM.Item className="menu__item" onSelect={onAddBefore}>
-            Add member before
-          </DM.Item>
-          <DM.Item className="menu__item" onSelect={onAddAfter}>
-            Add member after
-          </DM.Item>
-          <DM.Item className="menu__item" onSelect={onAddChild}>
-            Add member as child
-          </DM.Item>
-          {targets.length > 0 ? (
-            <DM.Sub>
-              <DM.SubTrigger className="menu__item menu__item--sub">
-                Add to consolidation
-              </DM.SubTrigger>
-              <DM.Portal>
-                <DM.SubContent className="menu" sideOffset={2} alignOffset={-4}>
-                  {targets.map((parent) => (
-                    <DM.Item
-                      key={parent}
-                      className="menu__item"
-                      onSelect={() => onAddToConsolidation(parent)}
-                    >
-                      {parent}
-                    </DM.Item>
-                  ))}
-                </DM.SubContent>
-              </DM.Portal>
-            </DM.Sub>
-          ) : null}
-          <DM.Separator className="menu__sep" />
-          <DM.Item
-            className="menu__item"
-            disabled={kind === 'numeric'}
-            onSelect={() => onConvert('numeric')}
-          >
-            Convert to Numeric
-          </DM.Item>
-          <DM.Item
-            className="menu__item"
-            disabled={kind === 'string'}
-            onSelect={() => onConvert('string')}
-          >
-            Convert to String
-          </DM.Item>
-          <DM.Item
-            className="menu__item"
-            disabled={kind === 'consolidated'}
-            onSelect={() => onConvert('consolidated')}
-          >
-            Convert to Consolidation
-          </DM.Item>
-          <DM.Separator className="menu__sep" />
-          <DM.Item
-            className="menu__item"
-            disabled={isRoot}
-            onSelect={onRemoveFromConsolidation}
-          >
-            {isRoot ? 'Remove from this consolidation' : `Remove from "${currentParent}"`}
-          </DM.Item>
-          <DM.Item className="menu__item" onSelect={onDetach}>
-            Detach to top level
-          </DM.Item>
-          <DM.Separator className="menu__sep" />
-          {isRoot ? (
-            // A root has no parents to choose between, so Delete goes straight to
-            // the destructive "from the whole dimension" path (user direction).
-            <DM.Item
-              className="menu__item menu__item--danger"
-              onSelect={onDeleteFromDimension}
-            >
-              Delete from dimension
-            </DM.Item>
-          ) : (
-            // A child can be removed from a consolidation (kept, with its data) or
-            // deleted from the dimension entirely (destructive). Offer the choice.
-            <DM.Sub>
-              <DM.SubTrigger className="menu__item menu__item--sub menu__item--danger">
-                Delete…
-              </DM.SubTrigger>
-              <DM.Portal>
-                <DM.SubContent className="menu" sideOffset={2} alignOffset={-4}>
-                  <DM.Item className="menu__item" onSelect={onRemoveFrom}>
-                    Remove from consolidations…
-                  </DM.Item>
-                  <DM.Separator className="menu__sep" />
-                  <DM.Item
-                    className="menu__item menu__item--danger"
-                    onSelect={onDeleteFromDimension}
-                  >
-                    Delete from dimension
-                  </DM.Item>
-                </DM.SubContent>
-              </DM.Portal>
-            </DM.Sub>
-          )}
-        </DM.Content>
-      </DM.Portal>
-    </DM.Root>
+    <>
+      <M.Item className="menu__item" onSelect={p.onMoveUp}>
+        Move up
+      </M.Item>
+      <M.Item className="menu__item" onSelect={p.onMoveDown}>
+        Move down
+      </M.Item>
+      <M.Separator className="menu__sep" />
+      <M.Item className="menu__item" onSelect={p.onAddBefore}>
+        Add member before
+      </M.Item>
+      <M.Item className="menu__item" onSelect={p.onAddAfter}>
+        Add member after
+      </M.Item>
+      <M.Item className="menu__item" onSelect={p.onAddChild}>
+        Add member as child
+      </M.Item>
+      {targets.length > 0 ? (
+        <M.Sub>
+          <M.SubTrigger className="menu__item menu__item--sub">Add to consolidation</M.SubTrigger>
+          <M.Portal>
+            <M.SubContent className="menu" sideOffset={2} alignOffset={-4}>
+              {targets.map((parent) => (
+                <M.Item
+                  key={parent}
+                  className="menu__item"
+                  onSelect={() => p.onAddToConsolidation(parent)}
+                >
+                  {parent}
+                </M.Item>
+              ))}
+            </M.SubContent>
+          </M.Portal>
+        </M.Sub>
+      ) : null}
+      <M.Separator className="menu__sep" />
+      <M.Item
+        className="menu__item"
+        disabled={p.kind === 'numeric'}
+        onSelect={() => p.onConvert('numeric')}
+      >
+        Convert to Numeric
+      </M.Item>
+      <M.Item
+        className="menu__item"
+        disabled={p.kind === 'string'}
+        onSelect={() => p.onConvert('string')}
+      >
+        Convert to String
+      </M.Item>
+      <M.Item
+        className="menu__item"
+        disabled={p.kind === 'consolidated'}
+        onSelect={() => p.onConvert('consolidated')}
+      >
+        Convert to Consolidation
+      </M.Item>
+      <M.Separator className="menu__sep" />
+      <M.Item className="menu__item" disabled={p.isRoot} onSelect={p.onRemoveFromConsolidation}>
+        {p.isRoot ? 'Remove from this consolidation' : `Remove from "${p.currentParent}"`}
+      </M.Item>
+      <M.Item className="menu__item" onSelect={p.onDetach}>
+        Detach to top level
+      </M.Item>
+      <M.Separator className="menu__sep" />
+      {p.isRoot ? (
+        // A root has no parents to choose between, so Delete goes straight to the
+        // destructive "from the whole dimension" path (user direction).
+        <M.Item className="menu__item menu__item--danger" onSelect={p.onDeleteFromDimension}>
+          Delete from dimension
+        </M.Item>
+      ) : (
+        // A child can be removed from a consolidation (kept, with its data) or deleted
+        // from the dimension entirely (destructive). Offer the choice.
+        <M.Sub>
+          <M.SubTrigger className="menu__item menu__item--sub menu__item--danger">
+            Delete…
+          </M.SubTrigger>
+          <M.Portal>
+            <M.SubContent className="menu" sideOffset={2} alignOffset={-4}>
+              <M.Item className="menu__item" onSelect={p.onRemoveFrom}>
+                Remove from consolidations…
+              </M.Item>
+              <M.Separator className="menu__sep" />
+              <M.Item className="menu__item menu__item--danger" onSelect={p.onDeleteFromDimension}>
+                Delete from dimension
+              </M.Item>
+            </M.SubContent>
+          </M.Portal>
+        </M.Sub>
+      )}
+    </>
+  )
+}
+
+/** A dimension-editor row's visual content, wrapped so a RIGHT-CLICK opens the action
+ * menu at the cursor (context-menu), plus the always-visible ⋯ button that opens the
+ * same items anchored to itself (dropdown-menu, controlled by `open` so the keyboard
+ * ContextMenu/F10 path can open it too). */
+function RowActions({
+  style,
+  children,
+  open,
+  onOpenChange,
+  ...p
+}: RowActionProps & {
+  style?: CSSProperties
+  children: ReactNode
+  open: boolean
+  onOpenChange: (open: boolean) => void
+}) {
+  return (
+    <CM.Root>
+      <CM.Trigger asChild>
+        <div className="dimedit__rowinner" style={style}>
+          {children}
+          <DM.Root open={open} onOpenChange={onOpenChange}>
+            <DM.Trigger asChild>
+              <button
+                type="button"
+                className="dimedit__actions"
+                aria-label={`Actions for ${p.name}`}
+                tabIndex={-1}
+                onClick={(e) => e.stopPropagation()}
+                onKeyDown={(e) => e.stopPropagation()}
+              >
+                ⋯
+              </button>
+            </DM.Trigger>
+            <DM.Portal>
+              <DM.Content className="menu" align="end" sideOffset={4}>
+                {actionItems(DM, p)}
+              </DM.Content>
+            </DM.Portal>
+          </DM.Root>
+        </div>
+      </CM.Trigger>
+      <CM.Portal>
+        <CM.Content className="menu">{actionItems(CM_PARTS, p)}</CM.Content>
+      </CM.Portal>
+    </CM.Root>
   )
 }

@@ -20,7 +20,7 @@ import {
   type ViewDef,
   type Visibility,
 } from '../api/client'
-import { computeHeaderSpans } from '../model/tree'
+import { computeHeaderSpans, subsetVisibleMembers } from '../model/tree'
 import { Button, Dialog, Select } from '../ui'
 import PivotFields, { type AxisRole, type AxisSet } from './PivotFields'
 import SubsetEditor from './SubsetEditor'
@@ -44,6 +44,9 @@ function mdxId(name: string): string {
 interface TupleMember {
   dim: string
   name: string
+  /** Unique within this dimension's visible list: the member's drill path, so an
+   * alternate-rollup member (reachable under two parents) is distinct per parent. */
+  key: string
   depth: number
   expandable: boolean
 }
@@ -55,9 +58,13 @@ type Tuple = TupleMember[]
  * join to a stable, collision-free key. */
 const TUPLE_SEP = ''
 
-/** A stable string key for a tuple (its member names joined). */
+/** A stable, UNIQUE string key for a tuple, joining each member's drill-path key
+ * (not its bare name) so an alternate-rollup member — reachable under two parents,
+ * e.g. a region rolling up to both Total and Coastal — yields a DISTINCT key per
+ * occurrence. Bare names collide there, giving sibling rows/cells the same React
+ * key and breaking reconciliation (rows duplicate and cells linger on toggle). */
 function tupleKey(tuple: Tuple): string {
-  return tuple.map((m) => m.name).join(TUPLE_SEP)
+  return tuple.map((m) => m.key).join(TUPLE_SEP)
 }
 
 /** The cartesian product of each dimension's visible-member list, in dim order
@@ -69,7 +76,7 @@ function cartesian(perDim: { dim: string; members: VisibleMember[] }[]): Tuple[]
     const next: Tuple[] = []
     for (const prefix of acc) {
       for (const m of members) {
-        next.push([...prefix, { dim, name: m.name, depth: m.depth, expandable: m.expandable }])
+        next.push([...prefix, { dim, name: m.name, key: m.key, depth: m.depth, expandable: m.expandable }])
       }
     }
     acc = next
@@ -81,6 +88,9 @@ function cartesian(perDim: { dim: string; members: VisibleMember[] }[]): Tuple[]
  * whether it can be drilled into. */
 interface VisibleMember {
   name: string
+  /** Unique within the dimension's visible list: the member's drill path (so an
+   * alternate-rollup member appears once per parent, each with its own key). */
+  key: string
   depth: number
   expandable: boolean
 }
@@ -120,16 +130,20 @@ function flattenForest(
   expanded: Set<string>,
 ): VisibleMember[] {
   const out: VisibleMember[] = []
-  const visit = (name: string, depth: number, ancestry: Set<string>) => {
+  // `path` (ancestor keys joined with U+0002, distinct from the U+0001 tuple
+  // separator) makes each occurrence unique even under alternate rollups: a member
+  // reachable from two parents appears once per parent, each with its own key.
+  const visit = (name: string, depth: number, ancestry: Set<string>, path: string) => {
     const kids = childrenOf.get(name)
     const expandable = !!kids && kids.length > 0
-    out.push({ name, depth, expandable })
+    const key = path ? `${path}${name}` : name
+    out.push({ name, key, depth, expandable })
     if (expandable && expanded.has(name) && !ancestry.has(name)) {
       const next = new Set(ancestry).add(name)
-      for (const child of kids) visit(child, depth + 1, next)
+      for (const child of kids) visit(child, depth + 1, next, key)
     }
   }
-  for (const r of roots) visit(r, 0, new Set())
+  for (const r of roots) visit(r, 0, new Set(), '')
   return out
 }
 
@@ -287,7 +301,7 @@ export default function PivotGrid({
   const visibleMembersOf = useCallback(
     (dim: string): VisibleMember[] => {
       const set = axisSet[dim]
-      if (set) return set.members.map((name) => ({ name, depth: 0, expandable: false }))
+      if (set) return subsetVisibleMembers(set.members)
       const forest = forests.get(dim)
       if (!forest) return []
       return flattenForest(forest.roots, forest.childrenOf, expanded[dim] ?? new Set())
@@ -716,12 +730,12 @@ export default function PivotGrid({
 
   // Nested column headers: one row per column-axis level, run-length merged.
   const colHeader = computeHeaderSpans(
-    colTuples.map((t) => t.map((m) => ({ dimension: m.dim, name: m.name, kind: 'numeric' as const }))),
+    colTuples.map((t) => t.map((m) => ({ dimension: m.dim, name: m.name, key: m.key, kind: 'numeric' as const }))),
   )
   // For each body row, the row-header cells that start a run at that row, per
   // row-axis level (mirrors the CellsetGrid rowSpan technique).
   const rowSpans = computeHeaderSpans(
-    rowTuples.map((t) => t.map((m) => ({ dimension: m.dim, name: m.name, kind: 'numeric' as const }))),
+    rowTuples.map((t) => t.map((m) => ({ dimension: m.dim, name: m.name, key: m.key, kind: 'numeric' as const }))),
   )
   const rowHeaderAt: { dim: string; name: string; rowSpan: number; startIndex: number }[][] =
     rowTuples.map(() => [])

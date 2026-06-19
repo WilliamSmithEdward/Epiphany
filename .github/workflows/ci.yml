@@ -78,7 +78,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
 
   web:
-    name: Web (lint, typecheck, build)
+    name: Web (lint, typecheck, test, build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -93,6 +93,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
+      - run: npm run test
       - run: npm run build
 
   release:

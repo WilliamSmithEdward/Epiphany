@@ -717,6 +717,7 @@
   align-items: stretch;
   margin-bottom: var(--space-4);
   overflow-x: auto;
+  overflow-y: hidden; /* horizontal-only: stop the auto-promoted vertical scrollbar/arrows */
   border-bottom: 1px solid var(--color-border);
 }
 .objtab {
