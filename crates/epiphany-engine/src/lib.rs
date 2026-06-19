@@ -1166,15 +1166,30 @@ impl Engine {
 
         let value = match op(&mut writer.store) {
             Ok(value) => value,
-            Err(PersistError::BatchRejected { index, source }) => {
-                return Err(BatchError::Rejected { index, source })
+            Err(e) => {
+                // The op may have mutated the store's in-memory model before
+                // failing (e.g. a structural edit applied, then the checkpoint's
+                // I/O failed). Restore it from the last published model so the
+                // orphaned mutation cannot ride out on the next successful commit:
+                // `published` is updated only on success, so it is the last good
+                // state, and on a clean validation error nothing was mutated, so
+                // the restore is a harmless no-op.
+                writer
+                    .store
+                    .restore_model(state.published.load().model.clone());
+                return Err(match e {
+                    PersistError::BatchRejected { index, source } => {
+                        BatchError::Rejected { index, source }
+                    }
+                    PersistError::Query(e) => BatchError::Invalid(e),
+                    // A bare model rejection from a definition op (e.g. unknown
+                    // dimension, kind conflict, alias collision) is a client-
+                    // correctable error, not a durability failure, so it surfaces
+                    // as Invalid (422), not Persist.
+                    PersistError::Model(e) => BatchError::Invalid(QueryError::Model(e)),
+                    e => BatchError::Persist(e),
+                });
             }
-            Err(PersistError::Query(e)) => return Err(BatchError::Invalid(e)),
-            // A bare model rejection from a definition op (e.g. unknown dimension,
-            // kind conflict, alias collision) is a client-correctable error, not a
-            // durability failure, so it surfaces as Invalid (422), not Persist.
-            Err(PersistError::Model(e)) => return Err(BatchError::Invalid(QueryError::Model(e))),
-            Err(e) => return Err(BatchError::Persist(e)),
         };
 
         let version = self.ids.next_id();
@@ -1342,6 +1357,45 @@ mod tests {
             coord,
             value: Fixed::from(value),
         }
+    }
+
+    #[test]
+    fn failed_definition_does_not_leak_into_next_commit() {
+        // A definition op that mutates the in-memory model and then fails (modeling
+        // a checkpoint I/O failure after the model was already changed) must be
+        // rolled back, so its mutation cannot ride out on the next successful
+        // commit. Before the fix, the orphaned member surfaced in the next publish.
+        let f = fixture("failed-define-rollback");
+        let res = f.engine.define_with("Sales", None, |store| {
+            // Append a member (mutates the in-memory cube), then fail.
+            store.extend_schema(
+                &[ElementSpec {
+                    dimension: "R".into(),
+                    name: "Ghost".into(),
+                    kind: ElementKind::Leaf,
+                }],
+                &[EdgeSpec {
+                    dimension: "R".into(),
+                    parent: "Total".into(),
+                    child: "Ghost".into(),
+                    weight: 1,
+                }],
+            )?;
+            Err::<usize, PersistError>(PersistError::Io(std::io::Error::other(
+                "simulated checkpoint failure",
+            )))
+        });
+        assert!(res.is_err());
+
+        // A later successful commit must publish a cube WITHOUT the failed member.
+        f.engine
+            .define_rules("Sales", None, "['R':'R0'] = 1;".to_string())
+            .unwrap();
+        let snap = f.engine.snapshot("Sales").unwrap();
+        assert!(
+            snap.cube().dimension(0).resolve("Ghost").is_none(),
+            "the failed op's appended member must not leak into the next commit"
+        );
     }
 
     #[test]

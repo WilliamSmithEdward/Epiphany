@@ -15,8 +15,10 @@
 //! Single-process: one process owns a cube's data directory at a time. Within a
 //! process the engine serializes writers with a per-cube lock; the store does
 //! not take an OS file lock, so concurrent processes over the same directory are
-//! unsupported (the snapshot rename is atomic on every platform, but the WAL is
-//! not coordinated across processes).
+//! unsupported. A checkpoint makes the snapshot durable (fsync the temp file,
+//! atomic rename over the live snapshot, then fsync the directory on Unix) BEFORE
+//! it clears the WAL, so a crash can never leave a cleared WAL beside a snapshot
+//! whose contents had not yet reached disk.
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
@@ -204,6 +206,16 @@ impl Store {
         &self.model
     }
 
+    /// Replace the in-memory model, reverting an orphaned partial mutation after a
+    /// failed definition op. The engine calls this on the error path with the last
+    /// published model, so a structural edit that mutated the cube and then failed
+    /// to checkpoint cannot leak into the next successful commit. The on-disk
+    /// snapshot and WAL are not touched here; the next successful checkpoint
+    /// rewrites the snapshot from this restored model.
+    pub fn restore_model(&mut self, model: Model) {
+        self.model = model;
+    }
+
     /// Write a leaf cell: apply it to the in-memory cube and append it to the
     /// WAL. The model validates the coordinate first, so a rejected write is
     /// never logged.
@@ -281,7 +293,9 @@ impl Store {
     /// Full-persist: rewrite the snapshot from the current in-memory model and
     /// clear the WAL. After this, recovery needs only the snapshot. Because the
     /// snapshot is written from the in-memory cube (which already reflects every
-    /// outstanding WAL write), a checkpoint also folds those writes in safely.
+    /// outstanding WAL write), a checkpoint also folds those writes in safely. The
+    /// snapshot is made durable (fsync + atomic rename) before the WAL is cleared,
+    /// so the WAL is never truncated while the new snapshot is not yet on disk.
     pub fn checkpoint(&mut self) -> Result<(), PersistError> {
         write_snapshot(&self.dir, &self.model)?;
         self.wal.set_len(0)?;
@@ -544,6 +558,14 @@ impl Store {
     // would be stale against the new order; we checkpoint immediately, rewriting
     // the snapshot from the remapped in-memory cube and clearing the WAL, so the
     // edit is durable and recovery never replays a pre-edit coordinate.
+    //
+    // The three reindexing ops (reorder, delete, insert) shift existing indices, so
+    // they ALSO checkpoint BEFORE the edit: that folds any outstanding cell writes
+    // into the snapshot and empties the WAL, so when the post-edit snapshot is
+    // written the WAL holds no old-index records. Recovery therefore cannot replay
+    // a stale coordinate onto the new layout even if a crash lands between writing
+    // the new snapshot and clearing the WAL. (reparent / add-child / remove-child /
+    // set-kind keep indices stable, so their single post-edit checkpoint suffices.)
 
     /// Reorder a dimension's members, remapping every stored cell, then checkpoint.
     pub fn reorder_elements(
@@ -551,6 +573,9 @@ impl Store {
         dimension: &str,
         new_order: &[String],
     ) -> Result<(), PersistError> {
+        // Reindexing op: checkpoint first so the WAL holds no old-index writes
+        // when the post-edit snapshot is written (see the block comment above).
+        self.checkpoint()?;
         self.model.cube.reorder_elements(dimension, new_order)?;
         self.checkpoint()
     }
@@ -612,6 +637,8 @@ impl Store {
     /// Delete a member, its edges, and its cells, reindexing the rest, then
     /// checkpoint.
     pub fn delete_element(&mut self, dimension: &str, element: &str) -> Result<(), PersistError> {
+        // Reindexing op: checkpoint first (see reorder_elements).
+        self.checkpoint()?;
         self.model.cube.delete_element(dimension, element)?;
         self.checkpoint()
     }
@@ -624,6 +651,8 @@ impl Store {
         kind: ElementKind,
         position: Position,
     ) -> Result<(), PersistError> {
+        // Reindexing op: checkpoint first (see reorder_elements).
+        self.checkpoint()?;
         self.model
             .cube
             .insert_element_at(dimension, name, kind, position)?;
@@ -709,13 +738,41 @@ impl Store {
     }
 }
 
-/// Write the snapshot atomically: serialize to a temp file, then rename over the
-/// live snapshot (rename replaces the destination on all supported platforms).
+/// Write the snapshot durably: serialize to a temp file and fsync its contents,
+/// rename over the live snapshot (rename replaces the destination on all supported
+/// platforms), then fsync the directory so the rename itself is durable. Flushing
+/// the temp file before the rename is what lets [`Store::checkpoint`] clear the WAL
+/// safely: the new snapshot's bytes are on disk before the WAL is truncated.
 fn write_snapshot(dir: &Path, model: &Model) -> Result<(), PersistError> {
     let tmp = dir.join(SNAPSHOT_TMP);
     let text = model.to_model_text()?;
-    fs::write(&tmp, text)?;
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+    }
     fs::rename(&tmp, dir.join(SNAPSHOT_FILE))?;
+    sync_dir(dir)?;
+    Ok(())
+}
+
+/// fsync a directory so a contained rename or create is durable. Unix supports
+/// opening a directory as a file and fsync-ing it; Windows does not (a directory
+/// handle cannot be flushed, and NTFS records the rename in its own metadata
+/// journal), so this is a no-op there.
+fn sync_dir(dir: &Path) -> Result<(), PersistError> {
+    #[cfg(unix)]
+    {
+        File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
     Ok(())
 }
 
@@ -846,6 +903,49 @@ mod tests {
         assert_eq!(
             store.cube().get(&[region_total, period_total]).unwrap(),
             Fixed::from(55)
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reindexing_edit_folds_outstanding_writes_and_clears_wal() {
+        // A reindexing edit (reorder) shifts element indices. Any outstanding,
+        // un-checkpointed cell writes name OLD indices, so the store checkpoints
+        // BEFORE the edit: the writes are folded into the snapshot and the WAL is
+        // emptied, so the post-edit snapshot is backed by a WAL with no stale
+        // records (recovery can never replay an old coordinate onto the new order).
+        let dir = scratch("reindex-folds");
+        let f = fixture();
+        let (r, p, region_total, period_total) =
+            (f.r.clone(), f.p.clone(), f.region_total, f.period_total);
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            // Writes that are NOT checkpointed: they live only in the WAL.
+            store.set_leaf(&[r[0], p[0]], Fixed::from(10)).unwrap();
+            store.set_leaf(&[r[1], p[0]], Fixed::from(20)).unwrap();
+            assert!(
+                fs::metadata(dir.join(WAL_FILE)).unwrap().len() > wal::WAL_HEADER_LEN,
+                "outstanding writes are in the WAL before the edit"
+            );
+            // Reorder Region (swap R0 and R1); Total stays last.
+            store
+                .reorder_elements(
+                    "Region",
+                    &["R1".into(), "R0".into(), "R2".into(), "Total".into()],
+                )
+                .unwrap();
+            // The WAL is back to its header: no old-index records linger.
+            assert_eq!(
+                fs::metadata(dir.join(WAL_FILE)).unwrap().len(),
+                wal::WAL_HEADER_LEN,
+                "the reindexing edit emptied the WAL"
+            );
+        }
+        // Reopen with no extra checkpoint: the folded writes survived the reindex.
+        let store = Store::open(&dir).unwrap();
+        assert_eq!(
+            store.cube().get(&[region_total, period_total]).unwrap(),
+            Fixed::from(30)
         );
         fs::remove_dir_all(&dir).ok();
     }
@@ -985,6 +1085,25 @@ mod tests {
                 members: members.iter().map(|s| s.to_string()).collect(),
             },
         }
+    }
+
+    #[test]
+    fn restore_model_reverts_in_memory_changes() {
+        // restore_model swaps the in-memory model back to a prior snapshot: the
+        // primitive the engine uses to roll back a definition op that mutated the
+        // model and then failed to persist.
+        let dir = scratch("restore-model");
+        let f = fixture();
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        let good = store.model().clone();
+        store.define_subset(static_subset("Temp", &["R0"])).unwrap();
+        assert!(store.model().subset("Region", "Temp").is_some());
+        store.restore_model(good);
+        assert!(
+            store.model().subset("Region", "Temp").is_none(),
+            "restore reverted the in-memory definition"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
