@@ -6,7 +6,14 @@ of the form `mN[.M]`, where the integer part tracks the roadmap phase and the
 point part is a follow-on release; binaries for each release are attached to the
 matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/releases).
 
-## [Unreleased]
+## [m8.9] - 2026-06-20
+
+The dimension-editor and hardening release: editable MDX queries; Copy/Move/Pin and
+explicit top-level membership in the structural dimension editor; de-duplicated
+consolidation rollups and a lowercase, display-name-decoupled on-disk layout; the
+suppress-zeros split and a consolidated view-save flow; plus a wide adversarial
+hardening pass (an app-wide error boundary, WebSocket-reload data-loss guards,
+accessibility, and performance) and the security fixes below.
 
 ### Added
 
@@ -27,12 +34,35 @@ matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/release
   option is now two independent toggles, **Suppress zero rows** and **Suppress zero
   columns**, on the cube viewer's Save dialog and the view editor. Views saved before
   this map a legacy `suppress_zeros: true` to both flags.
+- **Explicit top-level membership (ADR-0038).** A member can be pinned to the top level
+  so it shows as a display root while still rolling up under its consolidations - it
+  appears both at the top and under each parent (the latter carry a "(pinned)" badge).
+  Pin via the row menu's **Copy to -> Top level** or a discoverable drag-to-top-level
+  drop zone; copying a top-level member into a consolidation auto-pins it so it stays at
+  the top; **Move to -> Top level** is the exclusive variant (reparent to a standalone
+  root). A display-only marker: no edge, weight, or value changes. Full stack - a
+  per-element flag (core), a name-addressed WAL record (persist), a `pinned_to_top` DTO
+  field + pin/unpin edit ops (api), and the editor + pivot rendering.
+- **Expand all / Collapse all in the dimension editor** toolbar, matching the cube
+  viewer and the model tree.
 
 ### Changed
 
 - **Views are created from the cube viewer.** The duplicative "Add view..." authoring
   path was removed; arrange a layout in the cube viewer and use **Save view** to create
   one. The Views workspace now opens and edits existing views in place.
+- **Consolidation rollups de-duplicate (ADR-0039).** A member reachable via more than
+  one path to a consolidation - e.g. a direct child of a total that is also a child of
+  one of that total's sub-consolidations - is now counted ONCE in that total, at its
+  most-direct (fewest-hops) path weight, instead of summed per path. It flows through
+  every consolidated read, spreading, and element-security masking, and makes the
+  multi-parent / pinning structures safe from accidental double-counting.
+- **On-disk cube folders are lowercase, filesystem-safe slugs decoupled from the
+  display name (ADR-0037).** A cube "Sales" persists under `cubes/sales/` while still
+  presenting as "Sales" (the engine reads the name from the snapshot, not the folder).
+  Existing folders migrate by rename on first start (resilient: never deletes; a real
+  slug collision is left intact and logged), and cube names are now unique
+  case-insensitively. For cross-platform (Linux, case-sensitive filesystem) consistency.
 
 ### Fixed
 
@@ -87,6 +117,16 @@ matching [GitHub release](https://github.com/WilliamSmithEdward/Epiphany/release
 - **Login: you stay signed in after reloading the page.** The session is restored from
   the cookie on load (it was previously held only in memory), including the forced
   password-change screen, and the duplicate password-manager autofill prompt is gone.
+- **Login: Enter signs you in, and autofilled credentials work.** The form submits on
+  Enter even when a password manager swallows the browser's implicit submission, and the
+  submit reads the live field values, so a manager that fills the fields without firing
+  the usual events no longer sends blank credentials.
+- **The what-if sandbox bar no longer shows in the structural dimension editor**
+  (what-if overlays cell values; editing members and edges has no cells to override).
+- **Dimension editor: a row's label click expands but never collapses** (only the caret
+  collapses), and dragging a multi-parent member to the top level reports honestly
+  ("Removed X from Y" when it still rolls up elsewhere) rather than a misleading "moved
+  to the top level".
 - **A render error in one pane no longer blanks the whole app.** A new error boundary
   shows a recoverable fallback for the affected pane and leaves the tab strip and tree
   usable; switching or closing the tab clears it.
