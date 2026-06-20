@@ -127,6 +127,10 @@ fn attr_value_str(value: &AttributeValue) -> String {
 struct ElementDto {
     name: String,
     kind: &'static str,
+    /// Pinned to the top level (ADR-0038): the member is shown as a display root
+    /// EVEN IF it also rolls up under one or more consolidations. A display marker
+    /// only; rollup edges and values are unchanged.
+    pinned_to_top: bool,
 }
 
 #[derive(Serialize)]
@@ -305,9 +309,20 @@ pub(crate) async fn get_dimension(
             .elements
             .into_iter()
             .filter(|(name, _)| !denied.contains(name))
-            .map(|(name, kind)| ElementDto {
-                name,
-                kind: kind_str(kind),
+            .map(|(name, kind)| {
+                // The pinned-to-top flag (ADR-0038) is not carried by
+                // `DimensionDef`, so read it from the live registry dimension by
+                // name. An unknown name cannot occur (the def came from it).
+                let pinned_to_top = shared
+                    .dimension
+                    .index_of(&name)
+                    .and_then(|idx| shared.dimension.is_pinned_to_top(idx).ok())
+                    .unwrap_or(false);
+                ElementDto {
+                    name,
+                    kind: kind_str(kind),
+                    pinned_to_top,
+                }
             })
             .collect(),
         edges: def

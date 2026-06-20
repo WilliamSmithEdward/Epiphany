@@ -17,6 +17,10 @@ pub struct ElementDto {
     pub name: String,
     /// `numeric`, `string`, or `consolidated`.
     pub kind: &'static str,
+    /// Pinned to the top level (ADR-0038): the member is shown as a display root
+    /// EVEN IF it also rolls up under one or more consolidations. A display marker
+    /// only; rollup edges and values are unchanged.
+    pub pinned_to_top: bool,
 }
 
 /// View-cache counters for the admin server overview (ADR-0028).

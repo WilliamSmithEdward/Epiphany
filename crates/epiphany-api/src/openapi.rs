@@ -180,7 +180,7 @@ fn cube_paths() -> Value {
             }
         }},
         "/api/v1/cubes/{cube}/dimensions/{dim}/edit": { "post": {
-            "summary": "Apply one structural edit (reorder/reparent/add_child/remove_child/set_kind/delete/insert) to a cube's dimension, remapping stored cells (ADR-0036)",
+            "summary": "Apply one structural edit (reorder/reparent/add_child/remove_child/set_kind/delete/insert/pin_to_top/unpin_from_top) to a cube's dimension, remapping stored cells (ADR-0036, ADR-0038)",
             "security": bearer(),
             "parameters": [cube_param(), dim_param()],
             "requestBody": json_body("#/components/schemas/DimensionEditRequest"),
@@ -371,7 +371,7 @@ fn dimension_paths() -> Value {
             }
         }},
         "/api/v1/dimensions/{id}/edit": { "post": {
-            "summary": "Apply one structural edit (reorder/reparent/add_child/remove_child/set_kind/delete/insert) to a registry dimension; fans out to every referencing cube remapping cells (ADR-0036)",
+            "summary": "Apply one structural edit (reorder/reparent/add_child/remove_child/set_kind/delete/insert/pin_to_top/unpin_from_top) to a registry dimension; fans out to every referencing cube remapping cells (ADR-0036, ADR-0038)",
             "security": bearer(),
             "parameters": [dim_id_param()],
             "requestBody": json_body("#/components/schemas/DimensionEditRequest"),
@@ -863,14 +863,14 @@ fn structural_schemas() -> Value {
                 "parent": { "type": "string" }, "child": { "type": "string" },
                 "weight": { "type": "integer", "format": "int64" } },
                 "required": ["parent", "child"] } } } },
-        "DimensionEditRequest": { "type": "object", "description": "One structural edit (ADR-0036), tagged by `op`. reorder: a permutation of the current member names. reparent: move `child` under `new_parent` (omit/null to detach to a root), detaching it from every other parent first. add_child: add `child` to the consolidation `parent` additively, keeping the child's existing parents (a member may roll up to multiple consolidations); idempotent when the edge exists, and a leaf/string parent is converted to a consolidation. remove_child: remove just the single `parent` -> `child` consolidation edge, keeping the member, its data, and its other parents (idempotent when the edge is absent); distinct from a reparent-to-root (which detaches every parent) and from delete (which removes the member). set_kind: convert `element` to numeric/string/consolidated. delete: remove `element` (rejected if it still has children). insert: add `name` of `kind` at `position` ({ at: end|before|after, ref: name }).", "properties": {
-            "op": { "type": "string", "enum": ["reorder", "reparent", "add_child", "remove_child", "set_kind", "delete", "insert"] },
+        "DimensionEditRequest": { "type": "object", "description": "One structural edit (ADR-0036), tagged by `op`. reorder: a permutation of the current member names. reparent: move `child` under `new_parent` (omit/null to detach to a root), detaching it from every other parent first. add_child: add `child` to the consolidation `parent` additively, keeping the child's existing parents (a member may roll up to multiple consolidations); idempotent when the edge exists, and a leaf/string parent is converted to a consolidation. remove_child: remove just the single `parent` -> `child` consolidation edge, keeping the member, its data, and its other parents (idempotent when the edge is absent); distinct from a reparent-to-root (which detaches every parent) and from delete (which removes the member). set_kind: convert `element` to numeric/string/consolidated. delete: remove `element` (rejected if it still has children). insert: add `name` of `kind` at `position` ({ at: end|before|after, ref: name }). pin_to_top: mark `element` a display root even though it still rolls up under its consolidation(s) (ADR-0038; display-only, touches no edge or value; idempotent). unpin_from_top: clear that flag (ADR-0038; idempotent).", "properties": {
+            "op": { "type": "string", "enum": ["reorder", "reparent", "add_child", "remove_child", "set_kind", "delete", "insert", "pin_to_top", "unpin_from_top"] },
             "new_order": { "type": "array", "items": { "type": "string" }, "description": "reorder: the full permutation of member names" },
             "parent": { "type": "string", "description": "add_child/remove_child: the consolidation to add the child to or remove it from" },
             "child": { "type": "string", "description": "reparent: the member to move; add_child/remove_child: the member to add or unlink" },
             "new_parent": { "type": "string", "description": "reparent: the new consolidated parent, or null to detach to a root" },
             "weight": { "type": "integer", "format": "int64", "description": "reparent/add_child: the consolidation weight (default 1)" },
-            "element": { "type": "string", "description": "set_kind/delete: the target member" },
+            "element": { "type": "string", "description": "set_kind/delete/pin_to_top/unpin_from_top: the target member" },
             "kind": { "type": "string", "enum": ["numeric", "string", "consolidated"], "description": "set_kind/insert: the element kind" },
             "name": { "type": "string", "description": "insert: the new member name" },
             "position": { "type": "object", "description": "insert: where to place the new member", "properties": {

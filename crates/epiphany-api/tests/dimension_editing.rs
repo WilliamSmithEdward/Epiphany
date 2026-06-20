@@ -213,6 +213,36 @@ fn member_names(dim: &Value) -> Vec<String> {
         .collect()
 }
 
+/// The `pinned_to_top` flag (ADR-0038) on a named member of a dimension DTO.
+fn pinned_to_top(dim: &Value, member: &str) -> bool {
+    dim["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["name"] == member)
+        .unwrap_or_else(|| panic!("member {member} present"))["pinned_to_top"]
+        .as_bool()
+        .expect("pinned_to_top is a boolean on every element")
+}
+
+/// The weighted parent->child edges of a dimension DTO, sorted for comparison.
+fn edges(dim: &Value) -> Vec<(String, String, i64)> {
+    let mut out: Vec<(String, String, i64)> = dim["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["parent"].as_str().unwrap().to_string(),
+                e["child"].as_str().unwrap().to_string(),
+                e["weight"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
 /// Write a leaf cell at (region, Amount) = value.
 async fn write(app: &Router, cube: &str, token: &str, region: &str, value: &str) {
     let (status, _) = call(
@@ -347,6 +377,175 @@ async fn edit_a_cube_embedded_dimension_over_rest() {
     assert!(!member_names(cube_dimension(&detail, "Region")).contains(&"South".to_string()));
     // North kept its numeric value through every index-changing edit.
     assert_eq!(read(&app, "Sales", &admin, "North").await, "10");
+}
+
+#[tokio::test]
+async fn pin_and_unpin_a_member_to_the_top_level() {
+    // ADR-0038: pin_to_top marks a member a display root EVEN THOUGH it still rolls
+    // up under its consolidation; the parent edge is unchanged and the flag reads
+    // back on the GET. unpin_from_top reverts it.
+    let dir = data_dir("pin");
+    let app = build_app(&dir);
+    let admin = login(&app, "admin").await;
+    let writer = login(&app, "writer").await;
+
+    let edit = "/api/v1/cubes/Sales/dimensions/Region/edit";
+
+    // East rolls up under Total. Before pinning it is not a display root.
+    let (_, detail) = call(&app, "GET", "/api/v1/cubes/Sales", &admin, None).await;
+    let region = cube_dimension(&detail, "Region");
+    assert!(!pinned_to_top(region, "East"), "East starts unpinned");
+    let edges_before = edges(region);
+    assert!(
+        edges_before.contains(&("Total".into(), "East".into(), 1)),
+        "East -> Total edge present before pin: {edges_before:?}"
+    );
+
+    // Pin East to the top.
+    let (status, _) = call(
+        &app,
+        "POST",
+        edit,
+        &writer,
+        Some(json!({ "op": "pin_to_top", "element": "East" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "pin_to_top");
+
+    // It now reads back as pinned, and its parent edge is unchanged (still under
+    // Total): pinning is display-only.
+    let (_, detail) = call(&app, "GET", "/api/v1/cubes/Sales", &admin, None).await;
+    let region = cube_dimension(&detail, "Region");
+    assert!(
+        pinned_to_top(region, "East"),
+        "East is pinned after pin_to_top"
+    );
+    assert_eq!(
+        edges(region),
+        edges_before,
+        "pinning changes no consolidation edge"
+    );
+    // Other members are not pinned.
+    assert!(!pinned_to_top(region, "North"));
+    assert!(!pinned_to_top(region, "South"));
+
+    // Unpin reverts it; the edge is still intact.
+    let (status, _) = call(
+        &app,
+        "POST",
+        edit,
+        &writer,
+        Some(json!({ "op": "unpin_from_top", "element": "East" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "unpin_from_top");
+    let (_, detail) = call(&app, "GET", "/api/v1/cubes/Sales", &admin, None).await;
+    let region = cube_dimension(&detail, "Region");
+    assert!(
+        !pinned_to_top(region, "East"),
+        "East reverts to unpinned after unpin_from_top"
+    );
+    assert_eq!(edges(region), edges_before, "unpinning changes no edge");
+}
+
+#[tokio::test]
+async fn registry_pin_fans_out_to_every_referencing_cube() {
+    // ADR-0038: pinning a member of a registry dimension by id fans the flag out to
+    // every referencing cube's materialized copy, just like the structural edits.
+    let dir = data_dir("pin-fanout");
+    let app = build_app(&dir);
+    let admin = login(&app, "admin").await;
+    let writer = login(&app, "writer").await;
+
+    // Register a reusable Product dimension (Widget, Gadget under AllProducts).
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/dimensions",
+        &writer,
+        Some(json!({
+            "name": "Product",
+            "elements": [
+                { "name": "Widget", "kind": "numeric" },
+                { "name": "Gadget", "kind": "numeric" },
+                { "name": "AllProducts", "kind": "consolidated" }
+            ],
+            "edges": [
+                { "parent": "AllProducts", "child": "Widget", "weight": 1 },
+                { "parent": "AllProducts", "child": "Gadget", "weight": 1 }
+            ]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let product_id = body["id"].as_u64().unwrap();
+
+    // Two cubes reference it.
+    for cube in ["CubeA", "CubeB"] {
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/api/v1/cubes",
+            &writer,
+            Some(json!({
+                "name": cube,
+                "dimensions": [
+                    { "ref": product_id },
+                    { "name": "Measure", "elements": [{ "name": "Amount", "kind": "numeric" }] }
+                ]
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create {cube}");
+    }
+
+    // Pin Widget (a child of AllProducts) to the top by registry id.
+    let (status, resp) = call(
+        &app,
+        "POST",
+        &format!("/api/v1/dimensions/{product_id}/edit"),
+        &writer,
+        Some(json!({ "op": "pin_to_top", "element": "Widget" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "registry pin_to_top");
+    let mut fanned: Vec<&str> = resp["fanned_out_to"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c.as_str().unwrap())
+        .collect();
+    fanned.sort_unstable();
+    assert_eq!(fanned, vec!["CubeA", "CubeB"]);
+
+    // The pin shows in both cubes' copies, the AllProducts->Widget edge is intact,
+    // and the registry GET also reflects the pin.
+    for cube in ["CubeA", "CubeB"] {
+        let (_, detail) = call(&app, "GET", &format!("/api/v1/cubes/{cube}"), &admin, None).await;
+        let product = cube_dimension(&detail, "Product");
+        assert!(pinned_to_top(product, "Widget"), "{cube}: Widget pinned");
+        assert!(
+            !pinned_to_top(product, "Gadget"),
+            "{cube}: Gadget not pinned"
+        );
+        assert!(
+            edges(product).contains(&("AllProducts".into(), "Widget".into(), 1)),
+            "{cube}: Widget still rolls up under AllProducts"
+        );
+    }
+    let (_, reg) = call(
+        &app,
+        "GET",
+        &format!("/api/v1/dimensions/{product_id}"),
+        &admin,
+        None,
+    )
+    .await;
+    assert!(
+        pinned_to_top(&reg, "Widget"),
+        "registry GET reflects the pin: {reg}"
+    );
+    assert!(!pinned_to_top(&reg, "Gadget"));
 }
 
 #[tokio::test]

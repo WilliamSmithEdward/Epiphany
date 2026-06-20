@@ -97,6 +97,7 @@ fn cube_detail(
                     .map(|(_, el)| ElementDto {
                         name: el.name.clone(),
                         kind: kind_str(el.kind),
+                        pinned_to_top: el.pinned_to_top,
                     })
                     .collect(),
                 edges: dim

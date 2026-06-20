@@ -113,6 +113,8 @@ struct AttributeValueDto {
 /// - `{ "op": "set_kind", "element": "..", "kind": "numeric"|"string"|"consolidated" }`
 /// - `{ "op": "delete", "element": ".." }`
 /// - `{ "op": "insert", "name": "..", "kind": "..", "position": { "at": "end"|"before"|"after", "ref": ".." } }`
+/// - `{ "op": "pin_to_top", "element": ".." }`
+/// - `{ "op": "unpin_from_top", "element": ".." }`
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub(crate) enum DimensionEditBody {
@@ -149,6 +151,12 @@ pub(crate) enum DimensionEditBody {
         kind: String,
         #[serde(default)]
         position: PositionDto,
+    },
+    PinToTop {
+        element: String,
+    },
+    UnpinFromTop {
+        element: String,
     },
 }
 
@@ -220,6 +228,8 @@ impl DimensionEditBody {
                     },
                 }
             }
+            DimensionEditBody::PinToTop { element } => DimensionEdit::PinToTop { element },
+            DimensionEditBody::UnpinFromTop { element } => DimensionEdit::UnpinFromTop { element },
         })
     }
 
@@ -230,7 +240,9 @@ impl DimensionEditBody {
     /// element-restricted caller is denied (fail-closed): they must not delete,
     /// convert, or consolidate a member whose values they cannot see. A
     /// reorder/reparent/remove_child only moves or unlinks members and never
-    /// destroys a stored value, so they are gated by `Dimension:Write` alone.
+    /// destroys a stored value, so they are gated by `Dimension:Write` alone. A
+    /// pin_to_top/unpin_from_top toggles a display-only flag (ADR-0038) and touches
+    /// no edge or value, so it is likewise gated by `Dimension:Write` alone.
     pub(crate) fn touches_element_data(&self) -> bool {
         matches!(
             self,
