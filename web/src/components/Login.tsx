@@ -14,12 +14,22 @@ export default function Login({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  async function submit(event: FormEvent) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    // Read the field values straight from the form on submit, not only from React
+    // state: a browser or password-manager autofill can populate the inputs without
+    // firing React's onChange, leaving the controlled state empty even though the
+    // fields visibly hold credentials. Reading the DOM (the inputs are name-addressed
+    // for this and for autofill) means a submit - whether by Enter or the Sign in
+    // button - sends what the user sees, not blanks.
+    const form = event.currentTarget
+    const u = (form.elements.namedItem('username') as HTMLInputElement | null)?.value ?? username
+    const p =
+      (form.elements.namedItem('current-password') as HTMLInputElement | null)?.value ?? password
     setBusy(true)
     setError(null)
     try {
-      const result = await login(username, password)
+      const result = await login(u, p)
       // If embedded in the Excel add-in's WebView2, hand it the token (ADR-0022).
       notifyExcelHost(result.token)
       onLoggedIn(result.user.username, result.user.is_admin, result.user.must_change_password)
