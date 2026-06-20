@@ -328,6 +328,23 @@ export default function DimensionEditor({
       return n
     })
 
+  // Every expandable node's path (a consolidation with children), for the toolbar's
+  // Expand all / Collapse all. Computed from the editor's own '/'-joined node.path;
+  // the pivot's allExpandableKeys uses a different separator and is not reusable here.
+  const expandablePaths = useMemo(() => {
+    const out: string[] = []
+    const walk = (nodes: TreeNode[]) => {
+      for (const n of nodes) {
+        if (n.children.length > 0) {
+          out.push(n.path)
+          walk(n.children)
+        }
+      }
+    }
+    walk(tree)
+    return out
+  }, [tree])
+
   // Self-healing roving tabindex: keep exactly one focusable row. If the focused
   // row leaves the visible set (a collapse, a reload, a structural edit), re-home
   // focus to the first row so the tree always has one tab stop (WCAG 2.4.3).
@@ -545,20 +562,39 @@ export default function DimensionEditor({
         await runEdits([{ op: 'reorder', new_order: newOrder }], `Moved "${moved}"`)
         return
       }
-      // Different parent: positional MOVE into the target's parent. Add to the new
-      // parent FIRST, then remove from the old one, then reorder: a mid-sequence
-      // failure leaves the member double-parented (recoverable), not orphaned.
-      if (toParent && !(await confirmConsolidationConversion(toParent, moved))) return
-      const edits: DimensionEdit[] = []
-      if (toParent) edits.push({ op: 'add_child', parent: toParent, child: moved })
+      // Dropped at a top-level position. A member becomes a standalone root only
+      // when fromParent was its LAST parent; if it still rolls up under other
+      // consolidations it cannot be both rooted and a child (the model has no
+      // separate "top-level" flag), so this just detaches the dragged occurrence -
+      // it stays under its other parents, with an honest notice and no reorder
+      // (which would only re-sort it under those other parents, not root it).
+      if (!toParent) {
+        const others = (parentsOf.get(moved) ?? []).filter((p) => p !== fromParent)
+        if (fromParent && others.length > 0) {
+          await runEdits(
+            [{ op: 'remove_child', parent: fromParent, child: moved }],
+            `Removed "${moved}" from "${fromParent}" (still rolls up under ${others.join(
+              ', ',
+            )}, so it is not a top-level member)`,
+          )
+          return
+        }
+        const rootEdits: DimensionEdit[] = []
+        if (fromParent) rootEdits.push({ op: 'remove_child', parent: fromParent, child: moved })
+        rootEdits.push({ op: 'reorder', new_order: newOrder })
+        await runEdits(rootEdits, `Moved "${moved}" to the top level`)
+        return
+      }
+      // Into a target consolidation. Add to the new parent FIRST, then remove from
+      // the old one, then reorder: a mid-sequence failure leaves the member double-
+      // parented (recoverable), not orphaned.
+      if (!(await confirmConsolidationConversion(toParent, moved))) return
+      const edits: DimensionEdit[] = [{ op: 'add_child', parent: toParent, child: moved }]
       if (fromParent) edits.push({ op: 'remove_child', parent: fromParent, child: moved })
       edits.push({ op: 'reorder', new_order: newOrder })
-      await runEdits(
-        edits,
-        toParent ? `Moved "${moved}" into "${toParent}"` : `Moved "${moved}" to the top level`,
-      )
+      await runEdits(edits, `Moved "${moved}" into "${toParent}"`)
     },
-    [confirmConsolidationConversion, orderMoving, runEdits],
+    [confirmConsolidationConversion, orderMoving, runEdits, parentsOf],
   )
 
   // Resolve a drop against the target row actually under the pointer: dispatch to
@@ -984,14 +1020,36 @@ export default function DimensionEditor({
           <span className="muted">
             {count} {count === 1 ? 'member' : 'members'}
           </span>
-          <button
-            type="button"
-            className="dimedit__addroot"
-            disabled={busy}
-            onClick={startAddAtEnd}
-          >
-            + Add member
-          </button>
+          <div className="dimedit__toolbar-actions">
+            {expandablePaths.length > 0 ? (
+              <>
+                <button
+                  type="button"
+                  className="dimedit__addroot"
+                  disabled={busy}
+                  onClick={() => setExpanded(new Set(expandablePaths))}
+                >
+                  Expand all
+                </button>
+                <button
+                  type="button"
+                  className="dimedit__addroot"
+                  disabled={busy}
+                  onClick={() => setExpanded(new Set())}
+                >
+                  Collapse all
+                </button>
+              </>
+            ) : null}
+            <button
+              type="button"
+              className="dimedit__addroot"
+              disabled={busy}
+              onClick={startAddAtEnd}
+            >
+              + Add member
+            </button>
+          </div>
         </div>
 
         <ul
