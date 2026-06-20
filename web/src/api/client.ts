@@ -9,10 +9,10 @@ export type ElementKind = 'numeric' | 'string' | 'consolidated'
 export interface ElementDto {
   name: string
   kind: ElementKind
-  /** True when this member is explicitly pinned to the top level (ADR-0038), so
-   * it is shown as a display root in addition to wherever it rolls up. A member
-   * is a display root when it has no parent OR it is pinned_to_top; pinning
-   * changes no rollup edge or value. Absent on older servers. */
+  /** Legacy top-level pin flag (ADR-0038) still sent by some servers. The web
+   * client no longer honors it: pinning was removed from the UI, so a member is a
+   * display root iff it has no parent. Retained on the type only to document the
+   * wire. Absent on older servers. */
   pinned_to_top?: boolean
 }
 

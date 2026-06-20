@@ -104,9 +104,11 @@ function parentOfPath(path: string): string | null {
  * `add_child`, additive: the member keeps its existing parents and the backend
  * turns a leaf/string target into a consolidation). Hovering a collapsed
  * consolidation expands it after a short delay so its children become drop
- * targets. Dropping onto the empty area below the list removes the member from
- * the consolidation it was dragged out of (a `remove_child`), leaving it under
- * its other parents; a member dragged from the root area is a no-op.
+ * targets. Dropping onto the Top level zone below the list (or the empty list
+ * area) removes the member from the consolidation it was dragged out of (a
+ * `remove_child`), moving it to the top level when that was its last parent and
+ * otherwise leaving it under its other parents; a member dragged from the root
+ * area is a no-op.
  *
  * Keyboard parity (WCAG 2.2 SC 2.5.7, mandatory): the tree is a single tab stop
  * with a roving tabindex; ArrowUp/Down move focus, ArrowRight expands or steps
@@ -143,8 +145,8 @@ export default function DimensionEditor({
   const [drag, setDrag] = useState<MoveSource | null>(null)
   const [over, setOver] = useState<{ path: string; zone: DropZone } | null>(null)
   const [rootOver, setRootOver] = useState(false)
-  // Whether the pointer is over the always-present drag-to-top-level drop zone
-  // (ADR-0038), so it highlights while a member is dragged onto it.
+  // Whether the pointer is over the always-present "move to top level" drop zone,
+  // so it highlights while a member is dragged onto it.
   const [topOver, setTopOver] = useState(false)
   // Keyboard roving tabindex + pick-up state. `focusPath` is the single tab stop;
   // `picked` is the member picked up by Space (keyboard drag) awaiting a drop.
@@ -229,15 +231,6 @@ export default function DimensionEditor({
     }
     return m
   }, [dimension])
-
-  // member name -> whether it is explicitly pinned to the top level (ADR-0038).
-  // Drives the row menu's pin/unpin toggle, the "(pinned)" badge on a pinned member
-  // that also has a parent, and copyTo's auto-pin (keep a no-parent display root at
-  // the top when copying it into a consolidation).
-  const pinnedOf = useMemo(
-    () => new Set((dimension?.elements ?? []).filter((e) => e.pinned_to_top).map((e) => e.name)),
-    [dimension],
-  )
 
   // parent name -> its direct children, for computing the reachable descendants of
   // the dragged member (to suppress the as-child indicator on a cycle-forming
@@ -885,59 +878,34 @@ export default function DimensionEditor({
     [busy, removeChild],
   )
 
-  // Pin a member to the top level (ADR-0038): it is shown as a display root in
-  // addition to wherever it rolls up. Changes no rollup edge or stored value.
-  const pinToTop = useCallback(
-    (name: string) => {
-      if (busy) return
-      setMenuPath(null)
-      void runEdit({ op: 'pin_to_top', element: name }, `Pinned "${name}" to the top level`)
+  // Drop on the "top level" zone (or the empty list area): detach the dragged
+  // occurrence from the one consolidation it was dragged out of. It becomes a
+  // top-level root when that was its last parent; otherwise it stays under its
+  // other consolidations (an honest message says so). A member dragged from the
+  // root area has no parent edge to remove, so this is a no-op.
+  const dropToTopLevel = useCallback(
+    (src: MoveSource) => {
+      if (!src.parent) return
+      const others = (parentsOf.get(src.name) ?? []).filter((p) => p !== src.parent)
+      const message =
+        others.length > 0
+          ? `Removed "${src.name}" from "${src.parent}" (it still rolls up under ${others.join(', ')})`
+          : `Moved "${src.name}" to the top level`
+      void runEdit({ op: 'remove_child', parent: src.parent, child: src.name }, message)
     },
-    [busy, runEdit],
-  )
-
-  // Remove a member's top-level pin (ADR-0038). It drops off the top level unless it
-  // also has no parent (a natural root). Changes no rollup edge or stored value.
-  const unpinFromTop = useCallback(
-    (name: string) => {
-      if (busy) return
-      setMenuPath(null)
-      void runEdit(
-        { op: 'unpin_from_top', element: name },
-        `Unpinned "${name}" from the top level`,
-      )
-    },
-    [busy, runEdit],
+    [parentsOf, runEdit],
   )
 
   // "Copy to": add the member to a chosen consolidation from the row menu's submenu
   // (the no-drag equivalent of dropping into the middle zone), ADDITIVE so it keeps
-  // all its other parents (a copy, not a move). If the member is currently a display
-  // root SOLELY because it has no parent (no parents AND not already pinned), also
-  // pin it so the copy KEEPS it at the top level: a user copying a top-level member
-  // into a consolidation expects it to stay at the top, but add_child alone would
-  // give it a parent and drop it off the top (ADR-0038). A member that already has
-  // parents or is already pinned stays a plain add_child.
+  // all its other parents (a copy, not a move).
   const copyTo = useCallback(
-    async (parent: string, name: string) => {
+    (parent: string, name: string) => {
       if (busy) return
       setMenuPath(null)
-      if (parent === name) return
-      const hasNoParents = (parentsOf.get(name) ?? []).length === 0
-      if (hasNoParents && !pinnedOf.has(name)) {
-        if (!(await confirmConsolidationConversion(parent, name))) return
-        await runEdits(
-          [
-            { op: 'add_child', parent, child: name },
-            { op: 'pin_to_top', element: name },
-          ],
-          `Copied "${name}" to "${parent}" (kept at the top level)`,
-        )
-        return
-      }
       void addChild(parent, name)
     },
-    [busy, parentsOf, pinnedOf, confirmConsolidationConversion, runEdits, addChild],
+    [busy, addChild],
   )
 
   // "Move to": reparent the member so it ends up under exactly `target` (a
@@ -1044,7 +1012,7 @@ export default function DimensionEditor({
   return (
     <Card
       title={dimension.name}
-      subtitle="Drag a member onto another to place it before, after, or inside; drag it out to remove it from that consolidation. Or focus a member and press Space to pick it up, then use the arrow keys. Right-click a member for more actions."
+      subtitle="Drag a member onto another to place it before, after, or inside it; drag it to the Top level zone at the bottom (or the empty area below the list) to move it out of its consolidation. Or focus a member and press Space to pick it up, then use the arrow keys. Right-click a member for more actions."
     >
       <div className="dimedit">
         {error ? (
@@ -1131,8 +1099,9 @@ export default function DimensionEditor({
           onDrop={(e) => {
             if (drag && e.target === e.currentTarget) {
               e.preventDefault()
-              // Remove from the one consolidation it was dragged out of.
-              removeFromConsolidation(drag.parent, drag.name)
+              // Detach from the consolidation it was dragged out of (moves it to
+              // the top level if that was its last parent).
+              dropToTopLevel(drag)
             }
             endDrag()
           }}
@@ -1210,7 +1179,6 @@ export default function DimensionEditor({
                   name={r.name}
                   kind={r.kind}
                   isRoot={r.parent === null}
-                  pinned={pinnedOf.has(r.name)}
                   currentParent={r.parent}
                   consolidations={consolidations}
                   memberParents={parentsOf.get(r.name) ?? []}
@@ -1224,8 +1192,6 @@ export default function DimensionEditor({
                   onAddChild={() => startAdd('as-child', r.name)}
                   onCopyTo={(parent) => void copyTo(parent, r.name)}
                   onMoveTo={(target) => void moveTo(r.name, target)}
-                  onPinToTop={() => pinToTop(r.name)}
-                  onUnpinFromTop={() => unpinFromTop(r.name)}
                   onConvert={(k) => void convert(r.name, k)}
                   onRemoveFromConsolidation={() => removeFromConsolidation(r.parent, r.name)}
                   onRemoveFrom={() => openRemoveFrom(r.name)}
@@ -1255,20 +1221,6 @@ export default function DimensionEditor({
                     {KIND_ICON[r.kind]}
                   </span>
                   <span className="dimedit__name">{r.name}</span>
-                  {/* A pinned member that ALSO has a parent gets a subtle marker so it
-                      reads as distinct from a natural no-parent root: this occurrence is
-                      shown at the top level by an explicit pin, not because it is
-                      parentless (ADR-0038). A pinned no-parent member needs no marker -
-                      it would be a root regardless. */}
-                  {pinnedOf.has(r.name) && r.parent !== null ? (
-                    <span
-                      className="dimedit__pinbadge"
-                      title="Pinned to the top level"
-                      aria-label="Pinned to the top level"
-                    >
-                      (pinned)
-                    </span>
-                  ) : null}
                   <span className="dimedit__kind">{KIND_LABEL[r.kind]}</span>
                 </RowActions>
               </li>
@@ -1297,26 +1249,26 @@ export default function DimensionEditor({
           ) : null}
         </ul>
 
-        {/* Drag-to-top-level drop zone (ADR-0038, discoverable target). Always
-            present below the list (the bare <ul> area is hard to hit when the list
-            is full); idle it shows a hint, while dragging a member it lights up and
-            invites a drop. Dropping PINS the member to the top level (it stays under
-            its consolidations and keeps its rollups) - the new "to the top level"
-            semantics via the explicit zone, distinct from the right-click "Remove
-            from <parent>" / "Move to -> Top level" detach/reparent actions. */}
+        {/* Move-to-top-level drop zone (discoverable target). Always present below
+            the list (the bare <ul> area is hard to hit when the list is full); idle
+            it shows a hint, while dragging a member it lights up and invites a drop.
+            Dropping detaches the member from the consolidation it was dragged out of,
+            moving it to the top level when that was its last parent (otherwise it
+            stays under its other consolidations) - the same per-edge detach as the
+            empty list area, made discoverable. */}
         <div
           className={`dimedit__topzone${drag ? ' is-dragging' : ''}${topOver ? ' is-over' : ''}`}
           role="button"
           aria-label={
             drag
-              ? `Drop here to show "${drag.name}" at the top level`
-              : 'Drag a member here to also show it at the top level'
+              ? `Drop here to move "${drag.name}" to the top level`
+              : 'Drag a member here to move it to the top level'
           }
           onDragOver={(e) => {
             if (!drag) return
             e.preventDefault()
             e.stopPropagation()
-            e.dataTransfer.dropEffect = 'copy'
+            e.dataTransfer.dropEffect = 'move'
             setRootOver(false)
             setOver(null)
             clearHoverExpand()
@@ -1329,17 +1281,14 @@ export default function DimensionEditor({
             if (drag) {
               e.preventDefault()
               e.stopPropagation()
-              void runEdit(
-                { op: 'pin_to_top', element: drag.name },
-                `Pinned "${drag.name}" to the top level`,
-              )
+              dropToTopLevel(drag)
             }
             endDrag()
           }}
         >
           {drag
-            ? `Drop here to show "${drag.name}" at the top level`
-            : 'Drag a member here to also show it at the top level'}
+            ? `Drop here to move "${drag.name}" to the top level`
+            : 'Drag a member here to move it to the top level'}
         </div>
 
         {adding ? (
@@ -1483,9 +1432,6 @@ interface RowActionProps {
   name: string
   kind: ElementKind
   isRoot: boolean
-  /** Whether this member is explicitly pinned to the top level (ADR-0038), so the
-   * menu shows the matching pin/unpin toggle. */
-  pinned: boolean
   currentParent: string | null
   consolidations: string[]
   /** The consolidations this member is currently a direct child of (its parents).
@@ -1504,11 +1450,6 @@ interface RowActionProps {
   /** Move to a consolidation (target = name) or to the top level (target = null):
    * reparent, the member loses its other parents. */
   onMoveTo: (target: string | null) => void
-  /** Pin the member to the top level (ADR-0038): shown as a display root in
-   * addition to its rollups; no edge or value changes. */
-  onPinToTop: () => void
-  /** Remove the member's top-level pin (ADR-0038). */
-  onUnpinFromTop: () => void
   onConvert: (kind: ElementKind) => void
   onRemoveFromConsolidation: () => void
   onRemoveFrom: () => void
@@ -1546,13 +1487,11 @@ function actionItems(M: MenuParts, p: RowActionProps) {
       <M.Item className="menu__item" onSelect={p.onAddChild}>
         Add member as child
       </M.Item>
-      {targets.length > 0 || !(p.pinned || p.isRoot) ? (
-        // Copy to: ADDITIVE - the member ALSO rolls up under / shows at the chosen
-        // destination while KEEPING its existing parents. A consolidation it already
-        // sits under is a no-op (disabled). "Top level" pins it as a display root
-        // (ADR-0038) without touching its rollups, and is a no-op when it is already a
-        // display root (pinned, or parent-free). Symmetric with "Move to -> Top level"
-        // below, which is the EXCLUSIVE version (a reparent that drops its rollups).
+      {targets.length > 0 ? (
+        // Copy to: ADDITIVE - the member ALSO rolls up under the chosen consolidation
+        // while KEEPING its existing parents. A consolidation it already sits under is
+        // a no-op (disabled). Symmetric with "Move to" below, the EXCLUSIVE version (a
+        // reparent that drops its other parents).
         <M.Sub>
           <M.SubTrigger className="menu__item menu__item--sub">Copy to</M.SubTrigger>
           <M.Portal>
@@ -1570,14 +1509,6 @@ function actionItems(M: MenuParts, p: RowActionProps) {
                   </M.Item>
                 )
               })}
-              {targets.length > 0 ? <M.Separator className="menu__sep" /> : null}
-              <M.Item
-                className="menu__item"
-                disabled={p.pinned || p.isRoot}
-                onSelect={p.onPinToTop}
-              >
-                {p.pinned || p.isRoot ? 'Top level (already at top level)' : 'Top level'}
-              </M.Item>
             </M.SubContent>
           </M.Portal>
         </M.Sub>
@@ -1610,14 +1541,6 @@ function actionItems(M: MenuParts, p: RowActionProps) {
           </M.SubContent>
         </M.Portal>
       </M.Sub>
-      {/* Top-level pinning (ADR-0038) is offered as "Copy to -> Top level" above (add
-          the member as a display root while keeping its rollups). Here we surface only
-          the inverse - Unpin - and only when the member is currently pinned. */}
-      {p.pinned ? (
-        <M.Item className="menu__item" onSelect={p.onUnpinFromTop}>
-          Unpin from top level
-        </M.Item>
-      ) : null}
       <M.Separator className="menu__sep" />
       <M.Item
         className="menu__item"

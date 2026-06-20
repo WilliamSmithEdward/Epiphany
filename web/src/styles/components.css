@@ -2003,14 +2003,6 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
   font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
-/* A subtle marker on a member that is pinned to the top level AND also has a
-   parent (ADR-0038), so it reads as distinct from a natural no-parent root. */
-.dimedit__pinbadge {
-  flex: none;
-  font-size: var(--text-xs);
-  color: var(--color-text-subtle);
-  font-style: italic;
-}
 .dimedit__actions {
   flex: none;
   width: 1.6rem;

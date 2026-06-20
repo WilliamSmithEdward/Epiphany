@@ -150,11 +150,10 @@ describe('buildElementTree (element-order sorted children)', () => {
     expect(b.children).toEqual([])
   })
 
-  it('shows a pinned member BOTH as a root AND under its parent, preserving order (ADR-0038)', () => {
-    // "East" rolls up under "Total" and is ALSO pinned to the top level, so it is a
-    // display root in addition to appearing under "Total" (distinct paths). The
-    // unpinned no-parent "Other" stays a root. Root order follows element order:
-    // Total, East (pinned), Other.
+  it('ignores pinned_to_top: a member with a parent is not a root (pinning removed)', () => {
+    // "East" rolls up under "Total" and carries a now-ignored pinned_to_top flag, so
+    // it is NOT a display root - it appears only under "Total". The no-parent "Other"
+    // is a root. Root order follows element order: Total, Other.
     const dim: DimensionDto = {
       name: 'Region',
       elements: [
@@ -169,22 +168,17 @@ describe('buildElementTree (element-order sorted children)', () => {
       ],
     }
     const tree = buildElementTree(dim)
-    // East is a root (pinned) even though it has a parent; Other is a root (no
-    // parent); West is NOT a root. Element order is preserved among the roots.
-    expect(tree.map((n) => n.name)).toEqual(['Total', 'East', 'Other'])
-    // East as a root has the bare path; under Total it keeps the rollup path. Both
-    // occurrences are present (distinct paths).
-    const eastRoot = tree.find((n) => n.name === 'East') as TreeNode
-    expect(eastRoot.path).toBe('East')
+    // East and West have parents, so neither is a root; only Total and Other are.
+    expect(tree.map((n) => n.name)).toEqual(['Total', 'Other'])
     const total = tree.find((n) => n.name === 'Total') as TreeNode
     expect(total.children.map((n) => n.name)).toEqual(['East', 'West'])
     const eastUnderTotal = total.children.find((n) => n.name === 'East') as TreeNode
     expect(eastUnderTotal.path).toBe('Total/East')
   })
 
-  it('does not duplicate a pinned NO-parent member (it is a root exactly once)', () => {
-    // A member with no parent that is also pinned is still a single root: the
-    // union (no-parent OR pinned) must not list it twice.
+  it('treats a no-parent member as a root regardless of the ignored pinned_to_top flag', () => {
+    // With pinning removed, a member is a root iff it has no parent; the flag is
+    // ignored and there is no duplication.
     const dim: DimensionDto = {
       name: 'Region',
       elements: [
@@ -256,11 +250,11 @@ describe('computeHeaderSpans (path-key grouping)', () => {
   })
 })
 
-describe('buildForest (pinned display roots, ADR-0038)', () => {
-  it('treats a pinned member as a root in addition to its parent, in element order', () => {
-    // "East" rolls up under "Total" and is pinned, so the pivot lists it as a root
-    // too (it also still appears under Total via childrenOf). The unpinned no-parent
-    // "Other" is a root; "West" (childed, unpinned) is not. Roots keep element order.
+describe('buildForest (display roots = no-parent members; pinning removed)', () => {
+  it('ignores pinned_to_top: a member with a parent is not a root, in element order', () => {
+    // "East" rolls up under "Total" and carries a now-ignored pinned_to_top flag, so
+    // the pivot does NOT list it as a root - only "Total" and the no-parent "Other"
+    // are roots; "West" (childed) is not. Roots keep element order.
     const dim: DimensionDto = {
       name: 'Region',
       elements: [
@@ -275,13 +269,12 @@ describe('buildForest (pinned display roots, ADR-0038)', () => {
       ],
     }
     const { roots, childrenOf } = buildForest(dim)
-    expect(roots).toEqual(['Total', 'East', 'Other'])
-    // East is still a child of Total (pinning adds a top-level occurrence, it does
-    // not remove the rollup edge), with children kept in element order.
+    expect(roots).toEqual(['Total', 'Other'])
+    // East is still a child of Total (the rollup edge is untouched), in element order.
     expect(childrenOf.get('Total')).toEqual(['East', 'West'])
   })
 
-  it('keeps a no-parent unpinned member a root and does not duplicate a pinned no-parent member', () => {
+  it('treats no-parent members as roots regardless of the ignored pinned_to_top flag', () => {
     const dim: DimensionDto = {
       name: 'Region',
       elements: [
