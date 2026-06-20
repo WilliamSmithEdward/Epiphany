@@ -234,15 +234,16 @@ export default function ModelExplorer({
 
   const activate = useCallback(
     (node: Node) => {
-      // Opening a tab is decoupled from expanding: a row that opens a tab just
-      // opens it and does NOT also toggle its children (expand with the twisty,
-      // or the Right/Left arrow keys). A pure container row (no tab of its own,
-      // e.g. the "Cubes"/"Flows" groups) still expands on click, since that is
-      // its only action.
+      // A label/row click OPENS the node's tab (if it has one) and EXPANDS it,
+      // but never COLLAPSES: drilling in or re-opening a row should not fold its
+      // subtree shut. Collapsing is the caret's job alone (the twisty toggles).
+      // toggle() only ever flips a collapsed node open here because we guard on it
+      // not already being expanded. (During a search, expansion is search-driven,
+      // so we skip the manual expand and just open.)
       if (node.selection) onSelect(node.selection)
-      else if (node.loader) toggle(node)
+      if (node.loader && !searching && !expanded.has(node.id)) toggle(node)
     },
-    [onSelect, toggle],
+    [onSelect, toggle, searching, expanded],
   )
 
   // The flat list of currently-visible, navigable nodes (for roving-tabindex
