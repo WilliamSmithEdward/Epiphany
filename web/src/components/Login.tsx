@@ -45,7 +45,28 @@ export default function Login({
       <div className="login__corner">
         <ThemeToggle />
       </div>
-      <form className="login__card" onSubmit={(event) => void submit(event)}>
+      <form
+        className="login__card"
+        onSubmit={(event) => void submit(event)}
+        onKeyDown={(event) => {
+          // Submit on Enter explicitly. The form already has a type=submit button,
+          // so a trusted Enter normally submits implicitly - but some password
+          // managers / browsers swallow that implicit submission once a field has
+          // been autofilled, leaving Enter doing nothing. requestSubmit() fires the
+          // same submit handler + native validation as clicking Sign in. Guarded to
+          // a field (not the button, which keeps its own Enter behavior) and not
+          // during IME composition; preventDefault avoids a double submit when the
+          // implicit one does fire.
+          if (
+            event.key === 'Enter' &&
+            !event.nativeEvent.isComposing &&
+            event.target instanceof HTMLInputElement
+          ) {
+            event.preventDefault()
+            event.currentTarget.requestSubmit()
+          }
+        }}
+      >
         <div className="login__brand">
           <div className="login__logo" aria-hidden="true">
             ◆
