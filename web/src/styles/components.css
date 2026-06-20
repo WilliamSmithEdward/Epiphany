@@ -1986,6 +1986,14 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
   font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
+/* A subtle marker on a member that is pinned to the top level AND also has a
+   parent (ADR-0038), so it reads as distinct from a natural no-parent root. */
+.dimedit__pinbadge {
+  flex: none;
+  font-size: var(--text-xs);
+  color: var(--color-text-subtle);
+  font-style: italic;
+}
 .dimedit__actions {
   flex: none;
   width: 1.6rem;
@@ -2019,6 +2027,28 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
 .dimedit__add .input {
   flex: 1 1 12rem;
   min-width: 8rem;
+}
+/* Drag-to-top-level drop zone (ADR-0038): an always-present, easy-to-hit footer
+   target below the member list. Idle it is a muted dashed hint; while a member is
+   being dragged it stands out, and .is-over highlights it as the drop lands. */
+.dimedit__topzone {
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  text-align: center;
+}
+.dimedit__topzone.is-dragging {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+.dimedit__topzone.is-over {
+  border-style: solid;
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-text);
 }
 .dimedit__btn {
   font: inherit;

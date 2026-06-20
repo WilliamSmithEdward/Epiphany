@@ -9,6 +9,11 @@ export type ElementKind = 'numeric' | 'string' | 'consolidated'
 export interface ElementDto {
   name: string
   kind: ElementKind
+  /** True when this member is explicitly pinned to the top level (ADR-0038), so
+   * it is shown as a display root in addition to wherever it rolls up. A member
+   * is a display root when it has no parent OR it is pinned_to_top; pinning
+   * changes no rollup edge or value. Absent on older servers. */
+  pinned_to_top?: boolean
 }
 
 export interface EdgeDto {
@@ -1115,6 +1120,11 @@ export type DimensionEdit =
   | { op: 'set_kind'; element: string; kind: ElementKind }
   | { op: 'delete'; element: string }
   | { op: 'insert'; name: string; kind: ElementKind; position: InsertPosition }
+  // Explicit top-level membership (ADR-0038): pin a member so it is shown as a
+  // display root in addition to wherever it rolls up; unpin removes that pin.
+  // Neither changes any rollup edge or stored value.
+  | { op: 'pin_to_top'; element: string }
+  | { op: 'unpin_from_top'; element: string }
 
 /** Apply one structural edit to a cube-embedded dimension (ADR-0036). Resolves
  * with the new committed version. A 422 carries the rejection reason (e.g. a

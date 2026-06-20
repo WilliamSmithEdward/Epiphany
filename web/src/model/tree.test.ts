@@ -150,6 +150,53 @@ describe('buildElementTree (element-order sorted children)', () => {
     expect(b.children).toEqual([])
   })
 
+  it('shows a pinned member BOTH as a root AND under its parent, preserving order (ADR-0038)', () => {
+    // "East" rolls up under "Total" and is ALSO pinned to the top level, so it is a
+    // display root in addition to appearing under "Total" (distinct paths). The
+    // unpinned no-parent "Other" stays a root. Root order follows element order:
+    // Total, East (pinned), Other.
+    const dim: DimensionDto = {
+      name: 'Region',
+      elements: [
+        { name: 'Total', kind: 'consolidated' },
+        { name: 'East', kind: 'numeric', pinned_to_top: true },
+        { name: 'West', kind: 'numeric' },
+        { name: 'Other', kind: 'numeric' },
+      ],
+      edges: [
+        { parent: 'Total', child: 'East', weight: 1 },
+        { parent: 'Total', child: 'West', weight: 1 },
+      ],
+    }
+    const tree = buildElementTree(dim)
+    // East is a root (pinned) even though it has a parent; Other is a root (no
+    // parent); West is NOT a root. Element order is preserved among the roots.
+    expect(tree.map((n) => n.name)).toEqual(['Total', 'East', 'Other'])
+    // East as a root has the bare path; under Total it keeps the rollup path. Both
+    // occurrences are present (distinct paths).
+    const eastRoot = tree.find((n) => n.name === 'East') as TreeNode
+    expect(eastRoot.path).toBe('East')
+    const total = tree.find((n) => n.name === 'Total') as TreeNode
+    expect(total.children.map((n) => n.name)).toEqual(['East', 'West'])
+    const eastUnderTotal = total.children.find((n) => n.name === 'East') as TreeNode
+    expect(eastUnderTotal.path).toBe('Total/East')
+  })
+
+  it('does not duplicate a pinned NO-parent member (it is a root exactly once)', () => {
+    // A member with no parent that is also pinned is still a single root: the
+    // union (no-parent OR pinned) must not list it twice.
+    const dim: DimensionDto = {
+      name: 'Region',
+      elements: [
+        { name: 'Solo', kind: 'numeric', pinned_to_top: true },
+        { name: 'Plain', kind: 'numeric' },
+      ],
+      edges: [],
+    }
+    const tree = buildElementTree(dim)
+    expect(tree.map((n) => n.name)).toEqual(['Solo', 'Plain'])
+  })
+
   it('preserves per-occurrence multiplication of a shared rollup (not a cycle)', () => {
     // A diamond (Total -> {West, East}, both -> Shared) is NOT a cycle: "Shared"
     // is reachable by two distinct paths and must still appear once per path. The
@@ -206,6 +253,44 @@ describe('computeHeaderSpans (path-key grouping)', () => {
       [{ dimension: 'P', name: 'Q1' }],
     ])
     expect(header[0][0].span).toBe(2)
+  })
+})
+
+describe('buildForest (pinned display roots, ADR-0038)', () => {
+  it('treats a pinned member as a root in addition to its parent, in element order', () => {
+    // "East" rolls up under "Total" and is pinned, so the pivot lists it as a root
+    // too (it also still appears under Total via childrenOf). The unpinned no-parent
+    // "Other" is a root; "West" (childed, unpinned) is not. Roots keep element order.
+    const dim: DimensionDto = {
+      name: 'Region',
+      elements: [
+        { name: 'Total', kind: 'consolidated' },
+        { name: 'East', kind: 'numeric', pinned_to_top: true },
+        { name: 'West', kind: 'numeric' },
+        { name: 'Other', kind: 'numeric' },
+      ],
+      edges: [
+        { parent: 'Total', child: 'East', weight: 1 },
+        { parent: 'Total', child: 'West', weight: 1 },
+      ],
+    }
+    const { roots, childrenOf } = buildForest(dim)
+    expect(roots).toEqual(['Total', 'East', 'Other'])
+    // East is still a child of Total (pinning adds a top-level occurrence, it does
+    // not remove the rollup edge), with children kept in element order.
+    expect(childrenOf.get('Total')).toEqual(['East', 'West'])
+  })
+
+  it('keeps a no-parent unpinned member a root and does not duplicate a pinned no-parent member', () => {
+    const dim: DimensionDto = {
+      name: 'Region',
+      elements: [
+        { name: 'Solo', kind: 'numeric', pinned_to_top: true },
+        { name: 'Plain', kind: 'numeric' },
+      ],
+      edges: [],
+    }
+    expect(buildForest(dim).roots).toEqual(['Solo', 'Plain'])
   })
 })
 
