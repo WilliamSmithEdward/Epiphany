@@ -1,6 +1,6 @@
 //! Dimensions, elements, and the consolidation hierarchy.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{Fixed, ModelError};
 
@@ -70,9 +70,11 @@ struct Edge {
 
 /// A dimension: an ordered list of elements and their consolidation edges.
 ///
-/// Supports alternate rollups: a child may roll up into more than one parent,
-/// and a query element's leaf contributions accumulate (with weights) across
-/// every path that reaches a given leaf.
+/// Supports alternate rollups: a child may roll up into more than one parent.
+/// A descendant leaf reachable from a query element by several paths (a
+/// multi-parent "diamond") is counted ONCE in that element's rollup, with the
+/// weight of its most-direct (fewest-hops) path (ADR-0039), not summed across
+/// every path.
 #[derive(Clone, Debug)]
 pub struct Dimension {
     name: String,
@@ -356,34 +358,53 @@ impl Dimension {
         false
     }
 
-    /// Expand an element into its leaf descendants with accumulated weights.
+    /// Expand an element into its distinct leaf descendants, each counted ONCE
+    /// with the weight of its most-direct path (ADR-0039).
     ///
-    /// A leaf expands to itself with weight 1. The result is sorted by leaf
-    /// index (deterministic) and excludes leaves whose net weight is zero.
+    /// A leaf expands to itself with weight 1. A leaf reachable from `element`
+    /// by several consolidation paths (a multi-parent "diamond") is counted
+    /// exactly ONCE, with the net weight of the path that reaches it in the
+    /// fewest hops -- NOT summed across every path. A breadth-first traversal
+    /// from `element` sees the shortest path first; ties (same depth via
+    /// different edges) are broken deterministically by edge-declaration order;
+    /// a node already reached is not re-counted. For plain weight-1 edges this
+    /// always yields weight 1.
+    ///
+    /// The result is sorted by leaf index (deterministic) and excludes leaves
+    /// whose recorded weight is zero. The visited set also makes the traversal
+    /// cycle-safe regardless of edge structure (the backend rejects cycles, but
+    /// termination does not rely on that).
     pub fn leaf_weights(&self, element: u32) -> Result<Vec<(u32, i64)>, ModelError> {
         self.element(element)?;
         let mut acc: HashMap<u32, i64> = HashMap::new();
-        self.accumulate_leaves(element, 1, &mut acc);
-        let mut out: Vec<(u32, i64)> = acc.into_iter().filter(|&(_, w)| w != 0).collect();
-        out.sort_by_key(|&(leaf, _)| leaf);
-        Ok(out)
-    }
-
-    fn accumulate_leaves(&self, element: u32, weight: i64, acc: &mut HashMap<u32, i64>) {
-        match self.elements[element as usize].kind {
-            ElementKind::Leaf => {
-                *acc.entry(element).or_insert(0) += weight;
+        let mut visited: HashSet<u32> = HashSet::new();
+        let mut queue: VecDeque<(u32, i64)> = VecDeque::new();
+        queue.push_back((element, 1));
+        while let Some((node, weight)) = queue.pop_front() {
+            // A node first dequeued via the shortest path; any later (longer)
+            // path to it is ignored, so each leaf is recorded once at its
+            // most-direct weight.
+            if !visited.insert(node) {
+                continue;
             }
-            // String leaves hold text, not numbers, so they never contribute to
-            // a numeric rollup.
-            ElementKind::String => {}
-            ElementKind::Consolidated => {
-                for edge in &self.children[element as usize] {
-                    let path_weight = weight.saturating_mul(edge.weight);
-                    self.accumulate_leaves(edge.child, path_weight, acc);
+            match self.elements[node as usize].kind {
+                ElementKind::Leaf => {
+                    acc.insert(node, weight);
+                }
+                // String leaves hold text, not numbers, so they never
+                // contribute to a numeric rollup.
+                ElementKind::String => {}
+                ElementKind::Consolidated => {
+                    for edge in &self.children[node as usize] {
+                        let path_weight = weight.saturating_mul(edge.weight);
+                        queue.push_back((edge.child, path_weight));
+                    }
                 }
             }
         }
+        let mut out: Vec<(u32, i64)> = acc.into_iter().filter(|&(_, w)| w != 0).collect();
+        out.sort_by_key(|&(leaf, _)| leaf);
+        Ok(out)
     }
 
     // ---- structural editing (ADR-0036) ----
@@ -734,18 +755,53 @@ mod tests {
     }
 
     #[test]
-    fn alternate_paths_accumulate_weight() {
-        // Total = A + B ; Big = Total + A  ->  A contributes weight 2.
-        let mut d = Dimension::new("D");
-        let a = d.add_leaf("A");
-        let b = d.add_leaf("B");
+    fn diamond_counts_a_leaf_once() {
+        // Total = East + South + North ; Coastal = East ; Total also -> Coastal.
+        // East reaches Total by two paths (Total->East and Total->Coastal->East)
+        // but is counted ONCE (ADR-0039), not summed to weight 2.
+        let mut d = Dimension::new("Region");
+        let east = d.add_leaf("East");
+        let south = d.add_leaf("South");
+        let north = d.add_leaf("North");
         let total = d.add_consolidated("Total");
-        let big = d.add_consolidated("Big");
-        d.add_child(total, a, 1).unwrap();
-        d.add_child(total, b, 1).unwrap();
-        d.add_child(big, total, 1).unwrap();
-        d.add_child(big, a, 1).unwrap();
-        assert_eq!(d.leaf_weights(big).unwrap(), vec![(a, 2), (b, 1)]);
+        let coastal = d.add_consolidated("Coastal");
+        d.add_child(total, east, 1).unwrap();
+        d.add_child(total, south, 1).unwrap();
+        d.add_child(total, north, 1).unwrap();
+        d.add_child(total, coastal, 1).unwrap();
+        d.add_child(coastal, east, 1).unwrap();
+        // Sorted by leaf index: East, South, North were added in that order.
+        assert_eq!(
+            d.leaf_weights(total).unwrap(),
+            vec![(east, 1), (south, 1), (north, 1)]
+        );
+    }
+
+    #[test]
+    fn diamond_uses_most_direct_path_weight() {
+        // East is BOTH a direct child of Total with weight 2 AND reached via
+        // Coastal (Total->Coastal w1, Coastal->East w1, i.e. net weight 1).
+        // BFS dequeues the 1-hop direct edge before the 2-hop indirect one, so
+        // East is counted ONCE with the most-direct weight = 2 (the direct
+        // edge), NOT 2 + 1 and NOT the indirect path's weight 1.
+        let mut d = Dimension::new("Region");
+        let east = d.add_leaf("East");
+        let total = d.add_consolidated("Total");
+        let coastal = d.add_consolidated("Coastal");
+        d.add_child(total, east, 2).unwrap();
+        d.add_child(total, coastal, 1).unwrap();
+        d.add_child(coastal, east, 1).unwrap();
+        assert_eq!(d.leaf_weights(total).unwrap(), vec![(east, 2)]);
+    }
+
+    #[test]
+    fn single_weighted_edge_is_unchanged() {
+        // No diamond: East under Total with weight 3 stays weight 3.
+        let mut d = Dimension::new("Region");
+        let east = d.add_leaf("East");
+        let total = d.add_consolidated("Total");
+        d.add_child(total, east, 3).unwrap();
+        assert_eq!(d.leaf_weights(total).unwrap(), vec![(east, 3)]);
     }
 
     #[test]

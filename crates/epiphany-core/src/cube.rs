@@ -1707,6 +1707,30 @@ mod tests {
     }
 
     #[test]
+    fn diamond_rollup_counts_a_leaf_once() {
+        // Total rolls up East, South, North directly AND East again via Coastal
+        // (Total -> Coastal -> East). East reaches Total by two paths but must be
+        // counted ONCE (ADR-0039), so Total = 10 + 5 + 3 = 18, NOT 28.
+        let mut d = Dimension::new("Region");
+        let east = d.add_leaf("East");
+        let south = d.add_leaf("South");
+        let north = d.add_leaf("North");
+        let total = d.add_consolidated("Total");
+        let coastal = d.add_consolidated("Coastal");
+        d.add_child(total, east, 1).unwrap();
+        d.add_child(total, south, 1).unwrap();
+        d.add_child(total, north, 1).unwrap();
+        d.add_child(total, coastal, 1).unwrap();
+        d.add_child(coastal, east, 1).unwrap();
+
+        let mut cube = Cube::new("Sales", vec![d]).unwrap();
+        cube.set_leaf(&[east], fix(10)).unwrap();
+        cube.set_leaf(&[south], fix(5)).unwrap();
+        cube.set_leaf(&[north], fix(3)).unwrap();
+        assert_eq!(cube.get(&[total]).unwrap(), fix(18));
+    }
+
+    #[test]
     fn write_to_consolidated_is_rejected() {
         let (region, region_total, _r) = sum_dim("Region", 2);
         let mut cube = Cube::new("Sales", vec![region]).unwrap();
