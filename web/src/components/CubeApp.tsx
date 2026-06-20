@@ -736,11 +736,14 @@ export default function CubeApp({
 
   const segs = crumbs(selection, { autoNew: activeTab?.nav.autoNew })
   const cube = cubeOf(selection)
+  // The what-if sandbox overlays CELL values (ADR-0014), so it only belongs on the
+  // cell-data panes: the cube viewer, a saved view, and the views list (which runs a
+  // cellset). NOT the dimension editor - that edits structure (members/edges), which
+  // has no cells to override, so a sandbox bar there is meaningless and confusing.
   const showSandbox =
     selection?.kind === 'cube' ||
     selection?.kind === 'cube-views' ||
     selection?.kind === 'view' ||
-    selection?.kind === 'cube-dimension' ||
     selection?.kind === 'cube-rules'
 
   return (
