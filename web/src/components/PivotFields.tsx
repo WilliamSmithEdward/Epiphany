@@ -10,12 +10,12 @@ interface DropHandlers {
   onDrop: (e: DragEvent) => void
 }
 
-// Where a dimension sits in the pivot layout. The editable grid nests one or
-// more dimensions on rows and one or more on columns; every other dimension is
-// pinned to a single member (the cube is always fully covered) and shown either
-// as an active Filter or parked under Unused. Unused and Filters behave
-// identically for the query; the split is organizational, so a parked dimension
-// is out of the way.
+// Where a dimension sits in the pivot layout. The editable grid nests zero or
+// more dimensions on rows and zero or more on columns (an empty axis shows a
+// placeholder); every off-axis dimension is pinned to a single member and shown
+// either as an active Filter (a user-chosen member that slices the data) or
+// parked under Unused (pinned to its default/aggregate member, read-only, so it
+// does not narrow the slice).
 export type AxisRole = 'rows' | 'columns' | 'filters' | 'unused'
 
 /** The set applied to a row/column axis: a named saved subset resolved to its
@@ -87,32 +87,40 @@ export default function PivotFields({
   return (
     <div className="pivot-fields">
       <Zone role="rows" label="Rows" over={over === 'rows'} dropProps={dropProps('rows')}>
-        {rowDims.map((dim) => (
-          <AxisChip
-            key={dim}
-            dim={dim}
-            role="rows"
-            set={axisSet[dim] ?? null}
-            subsets={subsetsByDim[dim] ?? []}
-            onPlace={onPlace}
-            onPickSet={onPickSet}
-            onNewSet={onNewSet}
-          />
-        ))}
+        {rowDims.length === 0 ? (
+          <span className="pivot-zone__empty">Drag a dimension here</span>
+        ) : (
+          rowDims.map((dim) => (
+            <AxisChip
+              key={dim}
+              dim={dim}
+              role="rows"
+              set={axisSet[dim] ?? null}
+              subsets={subsetsByDim[dim] ?? []}
+              onPlace={onPlace}
+              onPickSet={onPickSet}
+              onNewSet={onNewSet}
+            />
+          ))
+        )}
       </Zone>
       <Zone role="columns" label="Columns" over={over === 'columns'} dropProps={dropProps('columns')}>
-        {colDims.map((dim) => (
-          <AxisChip
-            key={dim}
-            dim={dim}
-            role="columns"
-            set={axisSet[dim] ?? null}
-            subsets={subsetsByDim[dim] ?? []}
-            onPlace={onPlace}
-            onPickSet={onPickSet}
-            onNewSet={onNewSet}
-          />
-        ))}
+        {colDims.length === 0 ? (
+          <span className="pivot-zone__empty">Drag a dimension here</span>
+        ) : (
+          colDims.map((dim) => (
+            <AxisChip
+              key={dim}
+              dim={dim}
+              role="columns"
+              set={axisSet[dim] ?? null}
+              subsets={subsetsByDim[dim] ?? []}
+              onPlace={onPlace}
+              onPickSet={onPickSet}
+              onNewSet={onNewSet}
+            />
+          ))
+        )}
       </Zone>
       <Zone role="filters" label="Filters" over={over === 'filters'} dropProps={dropProps('filters')}>
         {filterDims.length === 0 ? (
@@ -279,12 +287,24 @@ function FilterChip({
         ⠿
       </span>
       <span className="pivot-chip__name">{dim.name}</span>
-      <Select
-        value={member}
-        onValueChange={(v) => onContextMember(dim.name, v)}
-        options={dim.elements.map((el) => ({ value: el.name, label: el.name }))}
-        ariaLabel={`${dim.name} member`}
-      />
+      {zone === 'filters' ? (
+        <Select
+          value={member}
+          onValueChange={(v) => onContextMember(dim.name, v)}
+          options={dim.elements.map((el) => ({ value: el.name, label: el.name }))}
+          ariaLabel={`${dim.name} member`}
+        />
+      ) : (
+        // Unused is not a filter: the dimension is set aside and its cells resolve
+        // at the default (aggregate) member. Show that member read-only so it is
+        // clear what is used, without offering a slice control.
+        <span
+          className="pivot-chip__set"
+          title="Unused dimensions are not filtered; cells use this default (aggregate) member."
+        >
+          {member || 'default'}
+        </span>
+      )}
       <DM.Root>
         <DM.Trigger asChild>
           <button type="button" className="pivot-chip__menu" aria-label={`Move ${dim.name}`}>

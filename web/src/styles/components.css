@@ -1504,6 +1504,13 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
 .grid-wrap table.pivot th.corner {
   z-index: 3;
 }
+/* Empty-state cell: a single merged cell shown when an axis has no dimension (or
+   a member set resolved to nothing). Centered so it reads as an intentional
+   message, not a stray value. */
+.grid-wrap table.pivot td.pivot__empty {
+  padding: var(--space-6) var(--space-4);
+  text-align: center;
+}
 
 /* Hierarchical row headers (drill-down): a consolidation member expands in
    place to show its children, indented one level deeper. */

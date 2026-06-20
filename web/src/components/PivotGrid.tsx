@@ -141,8 +141,9 @@ export default function PivotGrid({
   onModelChange?: () => void
 }) {
   const [detail, setDetail] = useState<CubeDetail | null>(null)
-  // The dimensions nested on each axis, outer to inner. Each axis always holds
-  // at least one dimension.
+  // The dimensions nested on each axis, outer to inner. An axis may be empty (the
+  // grid then shows a placeholder) - moving a chip never auto-promotes another
+  // dimension to keep an axis filled.
   const [rowDims, setRowDims] = useState<string[]>([])
   const [colDims, setColDims] = useState<string[]>([])
   const [context, setContext] = useState<Record<string, string>>({})
@@ -403,18 +404,34 @@ export default function PivotGrid({
   const rowHierarchical = axisHierarchical(rowDims)
   const colHierarchical = axisHierarchical(colDims)
 
-  // Default filter member for a dimension (its first element).
+  // The member an off-axis dimension resolves to by default: its top
+  // consolidation (the aggregate "all" member) when it has one, else its first
+  // root, else its first element. An Unused dimension pins to this so it does NOT
+  // narrow the slice (see placeDimension); a Filters dimension starts here and is
+  // then user-editable.
   const defaultMember = useCallback(
-    (dimName: string) => detail?.dimensions.find((d) => d.name === dimName)?.elements[0]?.name ?? '',
+    (dimName: string): string => {
+      const d = detail?.dimensions.find((x) => x.name === dimName)
+      if (!d) return ''
+      const isChild = new Set(d.edges.map((e) => e.child))
+      const isParent = new Set(d.edges.map((e) => e.parent))
+      // A top consolidation: a root (never a child) that aggregates (is a parent).
+      const topConsol = d.elements.find((e) => !isChild.has(e.name) && isParent.has(e.name))
+      if (topConsol) return topConsol.name
+      const firstRoot = d.elements.find((e) => !isChild.has(e.name))
+      return (firstRoot ?? d.elements[0])?.name ?? ''
+    },
     [detail],
   )
 
-  // Re-pivot: move a dimension onto Rows, Columns, Filters, or Unused. Dropping
-  // on Rows or Columns appends the dimension to that axis (nesting); the
-  // dimension is first removed from wherever it currently is. Moving the last
-  // dimension off an axis promotes an off-axis dimension so each axis keeps at
-  // least one. Filters and Unused are both off-axis (member-pinned); the only
-  // difference is whether the dimension is parked in the Unused set.
+  // Re-pivot: move a dimension onto Rows, Columns, Filters, or Unused. The move
+  // affects ONLY the dragged dimension - an axis is allowed to become empty
+  // rather than auto-promoting or swapping another dimension to keep it filled
+  // (an empty axis renders a friendly placeholder instead). Dropping on
+  // Rows/Columns appends the dimension as the innermost nesting level. Filters
+  // and Unused are both off-axis: Filters pins to a user-chosen member (an active
+  // slice); Unused pins to the dimension's default/aggregate member and is NOT a
+  // filter (so setting a dimension aside removes its filtering effect).
   const placeDimension = useCallback(
     (dim: string, role: AxisRole) => {
       if (!detail) return
@@ -426,49 +443,11 @@ export default function PivotGrid({
         // Re-dropping onto the axis it already sits on is a no-op (reordering is
         // not handled this pass).
         if (target ? inRows : inCols) return
-        // Moving the sole dimension off one axis straight onto the other would
-        // empty the source axis; with no off-axis dimension free to promote (a
-        // fully-on-axis cube, e.g. a plain 2-D cube), swap the two axes instead.
-        const sourceIsRows = inRows
-        const sourceAxis = sourceIsRows ? rowDims : inCols ? colDims : null
-        const onAxisNames = new Set([...rowDims, ...colDims])
-        const freeDim = detail.dimensions.map((d) => d.name).find((n) => !onAxisNames.has(n))
-        if (sourceAxis && sourceAxis.length === 1 && freeDim === undefined) {
-          // Pure swap: the lone source dimension trades places with the target
-          // axis (whose dimensions move to the source axis).
-          const newSource = target ? colDims : rowDims
-          if (target) {
-            setColDims(rowDims.filter((d) => d !== dim))
-            setRowDims([...newSource, dim])
-          } else {
-            setRowDims(colDims.filter((d) => d !== dim))
-            setColDims([...newSource, dim])
-          }
-          setUnused((u) => deleteFrom(u, dim))
-          return
-        }
-        // Otherwise: remove it from its current home, then append to the target.
+        // Remove it from its current home; the source axis may end up empty.
+        if (inRows) setRowDims((a) => a.filter((d) => d !== dim))
+        if (inCols) setColDims((a) => a.filter((d) => d !== dim))
         setUnused((u) => deleteFrom(u, dim))
-        const removeFromAxis = (axis: string[], setAxis: (a: string[]) => void) => {
-          if (!axis.includes(dim)) return
-          if (axis.length > 1) {
-            setAxis(axis.filter((d) => d !== dim))
-            return
-          }
-          // It is the only dimension on its axis: promote a free off-axis
-          // dimension so the source axis stays non-empty.
-          if (freeDim === undefined) return // unreachable here (swap handled above)
-          setAxis([freeDim])
-          setUnused((u) => deleteFrom(u, freeDim))
-          setContext((c) => {
-            const n = { ...c }
-            delete n[freeDim]
-            return n
-          })
-        }
-        if (inRows) removeFromAxis(rowDims, setRowDims)
-        if (inCols) removeFromAxis(colDims, setColDims)
-        // It was off-axis: it is leaving the filters, so drop its pinned member.
+        // Coming from an off-axis role: drop its pinned slicer member.
         if (!inRows && !inCols) {
           setContext((c) => {
             const n = { ...c }
@@ -493,36 +472,16 @@ export default function PivotGrid({
           delete n[dim]
           return n
         })
-        // Leaving an axis. If it is the last dimension on that axis, promote an
-        // off-axis dimension onto the vacated axis so it stays non-empty.
-        const fromRows = inRows
-        const axis = fromRows ? rowDims : colDims
-        if (axis.length === 1) {
-          const onAxis = new Set([...rowDims, ...colDims])
-          const promote = detail.dimensions.map((d) => d.name).find((n) => !onAxis.has(n))
-          if (promote === undefined) return // a fully-on-axis cube needs every axis filled
-          if (fromRows) setRowDims([promote])
-          else setColDims([promote])
-          setContext((c) => {
-            const n = { ...c }
-            delete n[promote]
-            n[dim] = defaultMember(dim)
-            return n
-          })
-          setUnused((u) => {
-            const n = deleteFrom(u, promote)
-            return role === 'unused' ? new Set(n).add(dim) : deleteFrom(n, dim)
-          })
-          return
-        }
-        // More than one dimension on the axis: just remove this one.
-        if (fromRows) setRowDims((a) => a.filter((d) => d !== dim))
-        else setColDims((a) => a.filter((d) => d !== dim))
-        setContext((c) => ({ ...c, [dim]: defaultMember(dim) }))
-        setUnused((u) => (role === 'unused' ? new Set(u).add(dim) : deleteFrom(u, dim)))
-        return
+        // Remove it from its axis; the vacated axis may end up empty.
+        if (inRows) setRowDims((a) => a.filter((d) => d !== dim))
+        if (inCols) setColDims((a) => a.filter((d) => d !== dim))
       }
-      // dim is already off-axis: just park or un-park it.
+      // Unused pins to the default/aggregate member (not a filter); Filters keeps
+      // its current member if it already had one, else starts at the default.
+      setContext((c) => ({
+        ...c,
+        [dim]: role === 'unused' ? defaultMember(dim) : (c[dim] ?? defaultMember(dim)),
+      }))
       setUnused((u) => (role === 'unused' ? new Set(u).add(dim) : deleteFrom(u, dim)))
     },
     [detail, rowDims, colDims, defaultMember],
@@ -624,7 +583,15 @@ export default function PivotGrid({
   }, [cube, detail, rowDims, colDims, context, visibleMembersOf])
 
   const refresh = useCallback(async () => {
-    if (!detail || rowDims.length === 0 || colDims.length === 0) return
+    if (!detail) return
+    if (rowDims.length === 0 || colDims.length === 0) {
+      // No dimension on an axis: nothing to fetch. Clear any prior slice's cells
+      // and end any in-flight busy state so the empty placeholder is not dimmed
+      // and assistive tech does not keep announcing "Refreshing".
+      setCells(new Map())
+      setRefreshing(false)
+      return
+    }
     if (rowTuples.length === 0 || colTuples.length === 0) {
       // Nothing to fetch (an empty axis): clear any prior slice's cells and end any
       // in-flight busy state so the "No data" empty state is not shown dimmed.
@@ -773,6 +740,9 @@ export default function PivotGrid({
   const cornerCols = Math.max(1, rowDims.length)
   const colLevels = colDims.length
   const cornerLabel = `${rowDims.join(' / ')} / ${colDims.join(' / ')}`
+  // An axis with no dimension cannot address cells: the grid shows a placeholder
+  // instead of a table, and a layout missing an axis is not a saveable view.
+  const axisEmpty = rowDims.length === 0 || colDims.length === 0
 
   // Level-control button groups for an axis (rendered for rows and columns).
   const levelControls = (dims: string[], label: string) => (
@@ -831,6 +801,8 @@ export default function PivotGrid({
           variant="ghost"
           size="sm"
           icon="◫"
+          disabled={axisEmpty}
+          title={axisEmpty ? 'Add a dimension to both Rows and Columns before saving a view.' : undefined}
           onClick={() => {
             setSaveError(null)
             setSaveSuppressRows(false)
@@ -873,6 +845,22 @@ export default function PivotGrid({
       <div className="sr-only" role="status" aria-live="polite">
         {refreshing ? 'Refreshing values...' : ''}
       </div>
+      {axisEmpty ? (
+        // An axis with no dimension cannot address cells, so render a single
+        // merged cell explaining what to do instead of a broken header-only grid.
+        <div className="grid-wrap">
+          <table className="pivot">
+            <tbody>
+              <tr>
+                <td className="pivot__empty muted">
+                  No data can be shown without a dimension on both Rows and Columns.
+                  Drag a dimension onto each axis to build the grid.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      ) : (
       <div
         className="grid-wrap"
         ref={gridRef}
@@ -1000,6 +988,7 @@ export default function PivotGrid({
           </tbody>
         </table>
       </div>
+      )}
       {drill ? (
         <Dialog
           open
