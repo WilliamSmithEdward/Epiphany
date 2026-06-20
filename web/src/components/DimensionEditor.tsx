@@ -1546,9 +1546,13 @@ function actionItems(M: MenuParts, p: RowActionProps) {
       <M.Item className="menu__item" onSelect={p.onAddChild}>
         Add member as child
       </M.Item>
-      {targets.length > 0 ? (
-        // Copy to: additive add_child, the member KEEPS its existing parents. A target
-        // it already sits under is disabled (a duplicate edge is a no-op).
+      {targets.length > 0 || !(p.pinned || p.isRoot) ? (
+        // Copy to: ADDITIVE - the member ALSO rolls up under / shows at the chosen
+        // destination while KEEPING its existing parents. A consolidation it already
+        // sits under is a no-op (disabled). "Top level" pins it as a display root
+        // (ADR-0038) without touching its rollups, and is a no-op when it is already a
+        // display root (pinned, or parent-free). Symmetric with "Move to -> Top level"
+        // below, which is the EXCLUSIVE version (a reparent that drops its rollups).
         <M.Sub>
           <M.SubTrigger className="menu__item menu__item--sub">Copy to</M.SubTrigger>
           <M.Portal>
@@ -1566,6 +1570,14 @@ function actionItems(M: MenuParts, p: RowActionProps) {
                   </M.Item>
                 )
               })}
+              {targets.length > 0 ? <M.Separator className="menu__sep" /> : null}
+              <M.Item
+                className="menu__item"
+                disabled={p.pinned || p.isRoot}
+                onSelect={p.onPinToTop}
+              >
+                {p.pinned || p.isRoot ? 'Top level (already at top level)' : 'Top level'}
+              </M.Item>
             </M.SubContent>
           </M.Portal>
         </M.Sub>
@@ -1598,18 +1610,14 @@ function actionItems(M: MenuParts, p: RowActionProps) {
           </M.SubContent>
         </M.Portal>
       </M.Sub>
-      {/* Pin/unpin to the top level (ADR-0038): show the member as a display root in
-          addition to its rollups, without changing any edge or value. A toggle that
-          reads the member's current pinned state. */}
+      {/* Top-level pinning (ADR-0038) is offered as "Copy to -> Top level" above (add
+          the member as a display root while keeping its rollups). Here we surface only
+          the inverse - Unpin - and only when the member is currently pinned. */}
       {p.pinned ? (
         <M.Item className="menu__item" onSelect={p.onUnpinFromTop}>
           Unpin from top level
         </M.Item>
-      ) : (
-        <M.Item className="menu__item" onSelect={p.onPinToTop}>
-          Pin to top level
-        </M.Item>
-      )}
+      ) : null}
       <M.Separator className="menu__sep" />
       <M.Item
         className="menu__item"
