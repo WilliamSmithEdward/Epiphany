@@ -182,10 +182,12 @@ export default function PivotGrid({
   const [saveOpen, setSaveOpen] = useState(false)
   const [saveName, setSaveName] = useState('')
   const [saveVis, setSaveVis] = useState<Visibility>('private')
-  // Independent zero-suppression: drop all-zero rows / all-zero columns. Captured
-  // into the saved view def (see buildViewDef); off by default.
-  const [saveSuppressRows, setSaveSuppressRows] = useState(false)
-  const [saveSuppressCols, setSaveSuppressCols] = useState(false)
+  // Independent zero-suppression: hide all-zero rows / all-zero columns. These are
+  // LIVE toolbar toggles - they filter the displayed grid immediately (see
+  // displayRowTuples/displayColTuples) - and are also captured into a saved view
+  // (see buildViewDef). Off by default.
+  const [suppressRows, setSuppressRows] = useState(false)
+  const [suppressCols, setSuppressCols] = useState(false)
   const [saveBusy, setSaveBusy] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
   // "Show MDX" dialog: previews the query the current layout generates.
@@ -284,6 +286,54 @@ export default function PivotGrid({
     () => cartesian(colDims.map((dim) => ({ dim, members: visibleMembersOf(dim) }))),
     [colDims, visibleMembersOf],
   )
+
+  // A displayed cell counts as non-zero when it is a NUMERIC cell holding a value
+  // that is neither blank nor numeric zero. String cells carry no numeric value
+  // and the engine treats them as zero for suppression (Cube::get returns zero for
+  // a string element), so they are zero here too - matching what a saved
+  // suppressed view of the same layout would show.
+  const cellIsNonZero = useCallback(
+    (rowTuple: Tuple, colTuple: Tuple): boolean => {
+      const cell = cells.get(`${tupleKey(rowTuple)}||${tupleKey(colTuple)}`)
+      if (!cell || cell.kind === 'string') return false
+      const v = cell.value
+      return v != null && v !== '' && Number(v) !== 0
+    },
+    [cells],
+  )
+
+  // Live zero-suppression: the row/column tuples actually rendered. Mirrors the
+  // core (execute_view_with) - drop all-zero rows first (judged across every
+  // column), then all-zero columns judged across the SURVIVING rows; each axis is
+  // gated by its own toggle. readCells still fetches the FULL grid, so toggling is
+  // instant and reversible with no re-query - this only filters what is shown.
+  //
+  // Two guards keep a refresh from briefly hiding everything: while a refresh is in
+  // flight the cells map is stale relative to the (possibly new) tuples, so we
+  // don't suppress at all; and a tuple whose cells have not been fetched yet (just
+  // revealed by a drill-down) is kept rather than judged zero on missing data.
+  const displayRowTuples = useMemo(() => {
+    if (!suppressRows || refreshing || colTuples.length === 0) return rowTuples
+    return rowTuples.filter((rt) => {
+      let sawCell = false
+      for (const ct of colTuples) {
+        if (cellIsNonZero(rt, ct)) return true
+        if (cells.has(`${tupleKey(rt)}||${tupleKey(ct)}`)) sawCell = true
+      }
+      return !sawCell
+    })
+  }, [suppressRows, refreshing, rowTuples, colTuples, cellIsNonZero, cells])
+  const displayColTuples = useMemo(() => {
+    if (!suppressCols || refreshing || displayRowTuples.length === 0) return colTuples
+    return colTuples.filter((ct) => {
+      let sawCell = false
+      for (const rt of displayRowTuples) {
+        if (cellIsNonZero(rt, ct)) return true
+        if (cells.has(`${tupleKey(rt)}||${tupleKey(ct)}`)) sawCell = true
+      }
+      return !sawCell
+    })
+  }, [suppressCols, refreshing, displayRowTuples, colTuples, cellIsNonZero, cells])
 
   // The coordinate for a (row tuple, column tuple) cell: off-axis filters first,
   // then the row tuple's members, then the column tuple's members.
@@ -536,10 +586,10 @@ export default function PivotGrid({
       rows: rowDims.map(axisSpec),
       columns: colDims.map(axisSpec),
       context: ctx,
-      suppress_zero_rows: saveSuppressRows,
-      suppress_zero_columns: saveSuppressCols,
+      suppress_zero_rows: suppressRows,
+      suppress_zero_columns: suppressCols,
     }
-  }, [detail, rowDims, colDims, context, axisSet, saveSuppressRows, saveSuppressCols])
+  }, [detail, rowDims, colDims, context, axisSet, suppressRows, suppressCols])
 
   const saveView = useCallback(async () => {
     if (saveName.trim() === '') {
@@ -718,13 +768,14 @@ export default function PivotGrid({
   // shape once, for both axes.
   const headerTuples = (tuples: Tuple[]) =>
     tuples.map((t) => t.map((m) => ({ dimension: m.dim, name: m.name, key: m.key })))
-  // Nested column headers: one row per column-axis level, run-length merged.
-  const colHeader = computeHeaderSpans(headerTuples(colTuples))
+  // Nested column headers: one row per column-axis level, run-length merged. Built
+  // from the DISPLAYED tuples so zero-suppression collapses header spans too.
+  const colHeader = computeHeaderSpans(headerTuples(displayColTuples))
   // For each body row, the row-header cells that start a run at that row, per
   // row-axis level (mirrors the CellsetGrid rowSpan technique).
-  const rowSpans = computeHeaderSpans(headerTuples(rowTuples))
+  const rowSpans = computeHeaderSpans(headerTuples(displayRowTuples))
   const rowHeaderAt: { dim: string; name: string; key?: string; rowSpan: number; startIndex: number }[][] =
-    rowTuples.map(() => [])
+    displayRowTuples.map(() => [])
   for (let level = 0; level < rowDims.length; level++) {
     let r = 0
     for (const run of rowSpans[level] ?? []) {
@@ -796,6 +847,30 @@ export default function PivotGrid({
         </label>
         {rowHierarchical ? levelControls(rowDims, 'Rows') : null}
         {colHierarchical ? levelControls(colDims, 'Columns') : null}
+        {!axisEmpty ? (
+          <div className="grid-suppress" role="group" aria-label="Zero suppression">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="grid-toggle"
+              aria-pressed={suppressRows}
+              onClick={() => setSuppressRows((v) => !v)}
+              title="Hide rows whose every cell is zero or blank"
+            >
+              Suppress zero rows
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="grid-toggle"
+              aria-pressed={suppressCols}
+              onClick={() => setSuppressCols((v) => !v)}
+              title="Hide columns whose every cell is zero or blank"
+            >
+              Suppress zero columns
+            </Button>
+          </div>
+        ) : null}
         <span className="grid-toolbar__spacer" />
         <Button
           variant="ghost"
@@ -805,8 +880,6 @@ export default function PivotGrid({
           title={axisEmpty ? 'Add a dimension to both Rows and Columns before saving a view.' : undefined}
           onClick={() => {
             setSaveError(null)
-            setSaveSuppressRows(false)
-            setSaveSuppressCols(false)
             setSaveOpen(true)
           }}
         >
@@ -873,7 +946,9 @@ export default function PivotGrid({
       >
         <table className="pivot">
           <thead>
-            {colLevels === 0 ? (
+            {colLevels === 0 || colHeader.length === 0 ? (
+              // No column levels, or every column was suppressed away: keep just
+              // the corner label so the header is not blank above the empty-state.
               <tr>
                 <th className="corner" colSpan={cornerCols}>
                   {cornerLabel}
@@ -917,17 +992,24 @@ export default function PivotGrid({
             )}
           </thead>
           <tbody>
-            {rowTuples.length === 0 ? (
-              // An empty row axis (e.g. an applied set resolved to no members)
-              // would otherwise render a bare header-only table; show an explicit
-              // "No data" row so the state reads as intentional, not broken.
+            {displayRowTuples.length === 0 || displayColTuples.length === 0 ? (
+              // Nothing to show: either a member set resolved to no members, or
+              // zero-suppression hid every row/column. Show an explicit row so the
+              // state reads as intentional, not a broken header-only table.
               <tr>
-                <td className="pivot__empty muted" colSpan={cornerCols + Math.max(1, colTuples.length)}>
-                  No data to show. Adjust the filters or member sets on the rows axis.
+                <td
+                  className="pivot__empty muted"
+                  colSpan={cornerCols + Math.max(1, displayColTuples.length)}
+                >
+                  {(suppressRows || suppressCols) && rowTuples.length > 0 && colTuples.length > 0
+                    ? 'Everything in view was hidden by zero-suppression. Turn off the Suppress zero toggles to show the hidden rows or columns.'
+                    : 'No data to show. Adjust the filters or member sets on the rows axis.'}
                 </td>
               </tr>
             ) : null}
-            {rowTuples.map((rt, ri) => (
+            {displayRowTuples.length > 0 &&
+              displayColTuples.length > 0 &&
+              displayRowTuples.map((rt, ri) => (
               <tr key={tupleKey(rt)}>
                 {rowHeaderAt[ri].map((h, hi) => {
                   const member = rt.find((m) => m.dim === h.dim)
@@ -965,7 +1047,7 @@ export default function PivotGrid({
                     </th>
                   )
                 })}
-                {colTuples.map((ct, ci) => {
+                {displayColTuples.map((ct, ci) => {
                   const cell = cells.get(`${tupleKey(rt)}||${tupleKey(ct)}`)
                   return (
                     <CellView
@@ -1062,22 +1144,19 @@ export default function PivotGrid({
               ariaLabel="View visibility"
             />
           </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={saveSuppressRows}
-              onChange={(e) => setSaveSuppressRows(e.target.checked)}
-            />
-            <span>Suppress zero rows</span>
-          </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={saveSuppressCols}
-              onChange={(e) => setSaveSuppressCols(e.target.checked)}
-            />
-            <span>Suppress zero columns</span>
-          </label>
+          {suppressRows || suppressCols ? (
+            // Zero-suppression is set from the grid toolbar (a live toggle); the
+            // saved view simply captures whatever is active now.
+            <p className="muted" role="note">
+              This view will be saved with zero-suppression on for{' '}
+              {suppressRows && suppressCols
+                ? 'rows and columns'
+                : suppressRows
+                  ? 'rows'
+                  : 'columns'}
+              .
+            </p>
+          ) : null}
           {saveError ? (
             <p className="error" role="alert">
               {saveError}

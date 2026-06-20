@@ -1242,6 +1242,16 @@ li[role='treeitem']:focus-visible > .tree__row .tree__actions,
 .grid-toolbar__spacer {
   flex: 1;
 }
+/* Live zero-suppression toggles in the pivot toolbar. */
+.grid-suppress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+.btn.grid-toggle[aria-pressed='true'] {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
 /* Row drill-down level controls in the pivot toolbar. */
 .grid-levels {
   display: flex;
