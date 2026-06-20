@@ -204,6 +204,13 @@ impl Store {
         &self.model.cube
     }
 
+    /// The cube's true display name, read from the loaded model (ADR-0037). The
+    /// engine keys a cube by this, NOT by its on-disk folder name, so a cube
+    /// loads with its real name regardless of the folder's casing or slugging.
+    pub fn cube_name(&self) -> &str {
+        self.model.cube.name()
+    }
+
     /// The whole durable model (cube plus named subsets and views), for reads.
     pub fn model(&self) -> &Model {
         &self.model

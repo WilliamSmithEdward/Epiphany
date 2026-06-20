@@ -11,16 +11,28 @@ use std::sync::Arc;
 use epiphany_core::{extract_legacy_automation, Automation};
 use epiphany_determinism::IdGen;
 use epiphany_engine::Engine;
-use epiphany_persist::{write_automation, AutomationStore, Store};
+use epiphany_persist::{slug, write_automation, AutomationStore, Store};
 
 use crate::demo;
 
-/// Open every cube under `<data_dir>/cubes/<name>/`, or materialize the demo
+/// Open every cube under `<data_dir>/cubes/<slug>/`, or materialize the demo
 /// model if there are none, and build the engine. Cube order is deterministic
-/// (sorted), so versions and listings are reproducible.
+/// (sorted by display name), so versions and listings are reproducible.
+///
+/// On-disk identity is decoupled from the display name (ADR-0037): a cube is
+/// keyed in the engine by its loaded model's name (`Store::cube_name`), NOT by
+/// its folder name, so it loads with its real name regardless of folder casing.
+/// New cube folders are `slug(name)` (lowercase, filesystem-safe), and any
+/// existing folder whose name differs from `slug(its real name)` is migrated by
+/// rename on boot (see [`migrate_cube_dirs`]).
 pub fn load_or_init(data_dir: &Path) -> Result<Engine, Box<dyn std::error::Error>> {
     let cubes_dir = data_dir.join("cubes");
     std::fs::create_dir_all(&cubes_dir)?;
+
+    // Migrate legacy/display-name folders to lowercase slugs first (resilient:
+    // never deletes or overwrites; logs and skips on any ambiguity), so the open
+    // pass below reads from the canonical slug layout.
+    migrate_cube_dirs(&cubes_dir);
 
     let mut dirs: Vec<_> = std::fs::read_dir(&cubes_dir)?
         .filter_map(Result::ok)
@@ -29,16 +41,18 @@ pub fn load_or_init(data_dir: &Path) -> Result<Engine, Box<dyn std::error::Error
         .collect();
     dirs.sort();
 
+    // Key each cube by its TRUE name from the loaded snapshot, not the folder
+    // name. A folder named "sales" whose snapshot names the cube "Sales" loads as
+    // "Sales".
     let mut stores = BTreeMap::new();
     for path in dirs {
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            stores.insert(name.to_string(), Store::open(&path)?);
-        }
+        let store = Store::open(&path)?;
+        stores.insert(store.cube_name().to_string(), store);
     }
 
     if stores.is_empty() {
         for (name, cube) in demo::demo_cubes() {
-            let store = Store::create(cubes_dir.join(&name), cube)?;
+            let store = Store::create(cubes_dir.join(slug(&name)), cube)?;
             stores.insert(name, store);
         }
         tracing::info!("materialized the bundled demo model");
@@ -51,6 +65,129 @@ pub fn load_or_init(data_dir: &Path) -> Result<Engine, Box<dyn std::error::Error
     Ok(Engine::from_stores(stores, Arc::new(IdGen::default()))
         .with_cubes_dir(cubes_dir)
         .with_dimensions_dir(data_dir.join("dimensions")))
+}
+
+/// Migrate each existing cube folder to `slug(its real name)` (ADR-0037).
+///
+/// For every directory under `cubes_dir` that holds a `snapshot.model`, the
+/// cube's TRUE name is read from the snapshot and slugged. If the folder name
+/// already equals that slug, nothing happens. Otherwise the folder is renamed to
+/// the slug so the on-disk layout is lowercase and filesystem-safe.
+///
+/// DATA SAFETY (paramount): this never deletes, merges, or overwrites a user's
+/// data. On ANY ambiguity or error it logs a warning and leaves the existing
+/// folder exactly as-is, then continues:
+/// - if the target slug folder already exists AND is a DIFFERENT directory from
+///   the source (a real slug/case collision between two distinct cubes, or a
+///   half-finished prior migration), it skips the rename so it can never clobber
+///   another cube's directory;
+/// - if the snapshot cannot be read or the rename fails (permissions, a Windows
+///   sharing violation, etc.), it logs and skips;
+/// - it never panics, so a single bad folder can never block boot.
+///
+/// Case-only renames on a case-insensitive filesystem (Windows/macOS): a folder
+/// `Sales` whose slug is `sales` resolves to the SAME directory, so a naive
+/// "target exists -> skip" check would never migrate it. We detect the
+/// same-directory case via canonicalization and perform the rename through a
+/// temporary name (a two-step rename), which is safe on every platform and on a
+/// case-sensitive FS too.
+///
+/// Mirrors the resilient style of [`load_automation`]'s migration: best-effort,
+/// loss-proof, boot always proceeds.
+fn migrate_cube_dirs(cubes_dir: &Path) {
+    let entries = match std::fs::read_dir(cubes_dir) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not scan cubes dir for slug migration; skipping");
+            return;
+        }
+    };
+
+    // Collect first so the rename does not perturb the directory iterator.
+    let dirs: Vec<std::path::PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.join("snapshot.model").is_file())
+        .collect();
+
+    for path in dirs {
+        let folder = match path.file_name().and_then(|n| n.to_str()) {
+            Some(f) => f,
+            None => {
+                tracing::warn!(path = %path.display(), "cube folder name is not valid UTF-8; leaving as-is");
+                continue;
+            }
+        };
+
+        // Read the cube's true name from its snapshot (no WAL replay needed: the
+        // name lives in the snapshot text). Resilient: an unreadable snapshot
+        // just means we cannot compute the target, so leave the folder alone.
+        let store = match Store::open(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(folder = %folder, error = %e, "could not open a cube to compute its slug; leaving the folder as-is");
+                continue;
+            }
+        };
+        let target = slug(store.cube_name());
+        drop(store);
+
+        if folder == target {
+            continue; // already at its canonical slug
+        }
+
+        let target_path = path.with_file_name(&target);
+        if target_path.exists() {
+            // The target name exists. Distinguish a REAL collision (a different
+            // cube's directory) from a case-fold self-match (e.g. `Sales` and
+            // `sales` are the same dir on a case-insensitive FS). Compare the
+            // canonical paths: if they resolve to the same place it is a case-only
+            // rename of THIS folder, which is a legitimate migration.
+            let same_dir = match (path.canonicalize(), target_path.canonicalize()) {
+                (Ok(a), Ok(b)) => a == b,
+                // If we cannot canonicalize, treat it as a distinct dir and skip,
+                // erring on the side of never clobbering.
+                _ => false,
+            };
+            if !same_dir {
+                tracing::warn!(
+                    from = %folder,
+                    to = %target,
+                    "target slug folder already exists as a different cube; leaving the folder as-is to avoid data loss (resolve the name collision manually)"
+                );
+                continue;
+            }
+            // Case-only rename on a case-insensitive FS: go through a temp name so
+            // the casing actually changes on disk (a direct same-dir rename can be
+            // a no-op there).
+            let tmp = path.with_file_name(format!(".migrating-{target}"));
+            if tmp.exists() {
+                tracing::warn!(from = %folder, to = %target, "a stale migration temp dir is in the way; leaving the folder as-is");
+                continue;
+            }
+            match std::fs::rename(&path, &tmp).and_then(|()| std::fs::rename(&tmp, &target_path)) {
+                Ok(()) => {
+                    tracing::info!(from = %folder, to = %target, "migrated a cube folder to its lowercase slug (case-only rename, ADR-0037)")
+                }
+                Err(e) => {
+                    // If the first rename succeeded but the second failed, the data
+                    // is safe under the temp name; log loudly so the operator can
+                    // recover it. We never delete.
+                    tracing::warn!(from = %folder, to = %target, error = %e, "could not complete a case-only slug rename; data is intact (possibly under a '.migrating-*' temp folder)");
+                }
+            }
+            continue;
+        }
+
+        match std::fs::rename(&path, &target_path) {
+            Ok(()) => {
+                tracing::info!(from = %folder, to = %target, "migrated a cube folder to its lowercase slug (ADR-0037)")
+            }
+            Err(e) => {
+                tracing::warn!(from = %folder, to = %target, error = %e, "could not rename a cube folder to its slug; leaving it as-is")
+            }
+        }
+    }
 }
 
 /// Open the server-global automation store (ADR-0035) at `<data_dir>/automation`,
@@ -85,7 +222,8 @@ pub fn load_automation(
     let mut merged = Automation::new();
     let mut migrated_cubes: Vec<String> = Vec::new();
     for cube in engine.cube_names() {
-        let snapshot_path = cubes_dir.join(&cube).join("snapshot.model");
+        // The folder is the slug of the display name (ADR-0037), not the name.
+        let snapshot_path = cubes_dir.join(slug(&cube)).join("snapshot.model");
         let text = match std::fs::read_to_string(&snapshot_path) {
             Ok(t) => t,
             Err(_) => continue,
@@ -210,19 +348,158 @@ fn unique_key<V>(map: &BTreeMap<String, V>, name: &str, cube: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A unique scratch data dir for one boot test (cleaned up by the test).
+    fn boot_scratch(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("epiphany-server-boot-{}-{tag}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        dir
+    }
+
+    /// The exact, case-preserving names of the immediate sub-directories of
+    /// `dir`. Needed because `Path::exists` is case-INSENSITIVE on Windows/macOS,
+    /// so it cannot tell `Sales` from `sales`; the real entry name can.
+    fn child_dir_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .filter(|e| e.path().is_dir())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+
     #[test]
     fn materializes_demo_then_reopens_without_rebuilding() {
-        let dir = std::env::temp_dir().join(format!("epiphany-server-boot-{}", std::process::id()));
-        std::fs::remove_dir_all(&dir).ok();
+        let dir = boot_scratch("materialize");
 
         let first = load_or_init(&dir).unwrap();
         assert!(first.has_cube("Sales"));
         let names = first.cube_names();
         drop(first);
 
-        // Reopening finds the persisted cube and does not re-materialize.
+        // The demo cube "Sales" persists under the lowercase slug "sales"
+        // (ADR-0037), not under the display name. Check the real entry name
+        // (case-preserving), since `exists()` is case-insensitive on Windows.
+        let cubes_dir = dir.join("cubes");
+        assert!(
+            cubes_dir.join("sales").join("snapshot.model").is_file(),
+            "demo cube persists under its slug 'sales'"
+        );
+        assert_eq!(
+            child_dir_names(&cubes_dir),
+            vec!["sales".to_string()],
+            "the on-disk folder is lowercase 'sales', not 'Sales'"
+        );
+
+        // Reopening finds the persisted cube and does not re-materialize, still
+        // keyed by the real display name.
         let second = load_or_init(&dir).unwrap();
         assert_eq!(second.cube_names(), names);
+        assert!(second.has_cube("Sales"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn create_persists_under_slug_and_reloads_with_display_name() {
+        // A cube named "Sales" lives in folder "sales" yet loads as "Sales".
+        let dir = boot_scratch("slug-roundtrip");
+        let cubes_dir = dir.join("cubes");
+        std::fs::create_dir_all(&cubes_dir).unwrap();
+
+        let region = {
+            let mut d = epiphany_core::Dimension::new("Region");
+            d.add_leaf("R0");
+            d
+        };
+        let cube = epiphany_core::Cube::new("Sales", vec![region]).unwrap();
+        Store::create(cubes_dir.join(slug("Sales")), cube).unwrap();
+        assert!(cubes_dir.join("sales").join("snapshot.model").is_file());
+
+        let engine = load_or_init(&dir).unwrap();
+        assert!(engine.has_cube("Sales"), "loads with its real display name");
+        assert!(!engine.has_cube("sales"), "not keyed by the folder slug");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn boot_migrates_a_display_name_folder_to_its_slug_preserving_the_name() {
+        // Simulate a pre-ADR-0037 data dir: the folder is the display name
+        // "Sales" and the snapshot names the cube "Sales".
+        let dir = boot_scratch("migrate");
+        let cubes_dir = dir.join("cubes");
+        std::fs::create_dir_all(&cubes_dir).unwrap();
+
+        let region = {
+            let mut d = epiphany_core::Dimension::new("Region");
+            d.add_leaf("R0");
+            d
+        };
+        let cube = epiphany_core::Cube::new("Sales", vec![region]).unwrap();
+        Store::create(cubes_dir.join("Sales"), cube).unwrap();
+        assert!(cubes_dir.join("Sales").join("snapshot.model").is_file());
+
+        // Boot migrates the folder to the slug; no data is lost and the cube
+        // still loads as "Sales".
+        let engine = load_or_init(&dir).unwrap();
+        assert!(engine.has_cube("Sales"));
+        assert!(
+            cubes_dir.join("sales").join("snapshot.model").is_file(),
+            "folder was renamed to the slug 'sales'"
+        );
+        // The real (case-preserving) entry is now exactly "sales": the old
+        // "Sales" folder was renamed, not copied, and no data was lost.
+        assert_eq!(
+            child_dir_names(&cubes_dir),
+            vec!["sales".to_string()],
+            "the display-name folder was migrated to its lowercase slug"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn boot_migration_skips_a_slug_collision_without_data_loss() {
+        // Two DISTINCT folders that slug to the same name: "my-cube" (already
+        // canonical) and "My Cube!" (a leftover display-name folder that also
+        // slugs to "my-cube"). These are genuinely different directories on every
+        // platform (the names differ beyond case), so both can hold their own
+        // snapshot. The migration must NOT rename "My Cube!" onto "my-cube" (that
+        // would overwrite/lose data); it leaves both folders intact and logs.
+        let dir = boot_scratch("collision");
+        let cubes_dir = dir.join("cubes");
+        std::fs::create_dir_all(&cubes_dir).unwrap();
+
+        let make_cube = |name: &str| {
+            let mut d = epiphany_core::Dimension::new("Region");
+            d.add_leaf("R0");
+            epiphany_core::Cube::new(name, vec![d]).unwrap()
+        };
+        // Canonical slug folder, cube named "My Cube".
+        Store::create(cubes_dir.join("my-cube"), make_cube("My Cube")).unwrap();
+        // A distinct folder "My Cube!" whose cube also slugs to "my-cube".
+        Store::create(cubes_dir.join("My Cube!"), make_cube("My Cube")).unwrap();
+        assert_ne!(slug("My Cube"), "My Cube!");
+        assert_eq!(slug("My Cube"), "my-cube");
+
+        // Migration runs during load and must be loss-proof.
+        let _engine = load_or_init(&dir).unwrap();
+
+        // BOTH folders still exist with their snapshots intact: nothing deleted,
+        // nothing overwritten.
+        assert!(
+            cubes_dir.join("my-cube").join("snapshot.model").is_file(),
+            "the canonical folder is untouched"
+        );
+        assert!(
+            cubes_dir.join("My Cube!").join("snapshot.model").is_file(),
+            "the colliding folder is left as-is (not renamed onto 'my-cube'), so no data is lost"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

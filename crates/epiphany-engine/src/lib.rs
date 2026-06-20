@@ -26,7 +26,7 @@ use epiphany_core::{
     Subset, View,
 };
 use epiphany_determinism::IdGen;
-use epiphany_persist::{load_registry, save_registry, PersistError, RegistryEntry, Store};
+use epiphany_persist::{load_registry, save_registry, slug, PersistError, RegistryEntry, Store};
 
 pub use epiphany_persist::CellWrite;
 
@@ -1090,7 +1090,10 @@ impl Engine {
     /// returns [`BatchError::Unsupported`]. A duplicate name returns
     /// [`BatchError::AlreadyExists`]; an invalid structure returns
     /// [`BatchError::Invalid`]. On success the new cube is durable and visible to
-    /// readers, and existing cubes are untouched.
+    /// readers, and existing cubes are untouched. A name that collides
+    /// case-insensitively with an existing cube is also rejected with
+    /// [`BatchError::AlreadyExists`] (ADR-0037): such names would slug to the
+    /// same on-disk folder, so they cannot coexist.
     pub fn create_cube(
         &self,
         name: &str,
@@ -1106,12 +1109,21 @@ impl Engine {
 
         // Serialize registration so two concurrent creates cannot lose a cube.
         let _topo = self.topology.lock().expect("topology mutex poisoned");
-        if self.cubes.load().contains_key(name) {
-            return Err(BatchError::AlreadyExists(name.to_string()));
+        // Reject an exact duplicate AND a name that collides case-insensitively
+        // with an existing cube (ADR-0037): two names that differ only by case
+        // would slug to the same on-disk folder, so they cannot coexist.
+        if let Some(existing) = self
+            .cubes
+            .load()
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(name))
+        {
+            return Err(BatchError::AlreadyExists(existing.clone()));
         }
 
-        // Persist on disk in the boot layout so the cube reloads on restart.
-        let store = Store::create(cubes_dir.join(name), cube).map_err(BatchError::Persist)?;
+        // Persist on disk in the boot layout (ADR-0037): the folder is the
+        // lowercase, filesystem-safe slug of the display name, not the name.
+        let store = Store::create(cubes_dir.join(slug(name)), cube).map_err(BatchError::Persist)?;
         let version = self.ids.next_id();
         let state = Arc::new(CubeState {
             published: ArcSwap::from_pointee(Published {
@@ -1950,6 +1962,32 @@ mod tests {
             f.engine.create_cube("New", &dims),
             Err(BatchError::Unsupported(_))
         ));
+    }
+
+    #[test]
+    fn create_cube_rejects_a_case_insensitive_name_collision() {
+        // "Sales" already exists; "SALES"/"sales" would slug to the same on-disk
+        // folder (ADR-0037), so they must be rejected as already-existing, and no
+        // new cube/folder may be created.
+        let engine = editable_engine("create-case-collision");
+        let dims = [DimensionDef {
+            name: "D".into(),
+            elements: vec![("a".into(), ElementKind::Leaf)],
+            edges: vec![],
+            ..Default::default()
+        }];
+        for collision in ["SALES", "sales", "sAlEs"] {
+            assert!(
+                matches!(
+                    engine.create_cube(collision, &dims),
+                    Err(BatchError::AlreadyExists(_))
+                ),
+                "creating {collision:?} should collide with the existing 'Sales'"
+            );
+        }
+        // The original cube is untouched and no extra cube was registered.
+        assert!(engine.has_cube("Sales"));
+        assert_eq!(engine.cube_names(), vec!["Sales".to_string()]);
     }
 
     #[test]

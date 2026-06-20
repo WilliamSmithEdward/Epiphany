@@ -40,5 +40,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0034](0034-native-sql-source.md) | Native SQL data source (PostgreSQL + MySQL) | Accepted | Connectors |
 | [0035](0035-global-multi-cube-automation.md) | Global, multi-cube flows and schedules | Accepted | Model architecture |
 | [0036](0036-dimension-structural-editing.md) | Dimension structural editing (reorder/reparent/convert/delete) and a cube-agnostic editor | Accepted | Model architecture |
+| [0037](0037-lowercase-on-disk-layout.md) | Lowercase, filesystem-safe on-disk layout decoupled from display names | Accepted | Cross-platform persistence |
 
 > All originally-reserved ADR numbers are allocated; later decisions continue from 0020.

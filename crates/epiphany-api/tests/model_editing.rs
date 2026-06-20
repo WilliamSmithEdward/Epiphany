@@ -51,17 +51,15 @@ fn build_app(dir: &Path) -> Router {
         .collect();
     entries.sort();
     for path in &entries {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap()
-            .to_string();
-        stores.insert(name, Store::open(path).unwrap());
+        // Key by the cube's true name from the snapshot, not the folder name
+        // (ADR-0037): folders are lowercase slugs decoupled from display names.
+        let store = Store::open(path).unwrap();
+        stores.insert(store.cube_name().to_string(), store);
     }
     if stores.is_empty() {
         stores.insert(
             "Sales".to_string(),
-            Store::create(dir.join("Sales"), seed_cube()).unwrap(),
+            Store::create(dir.join(epiphany_persist::slug("Sales")), seed_cube()).unwrap(),
         );
     }
 
