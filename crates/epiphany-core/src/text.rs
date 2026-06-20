@@ -173,6 +173,15 @@ struct DimDoc {
 struct ElDoc {
     name: String,
     kind: KindDoc,
+    /// Pinned to the top level (ADR-0038). Absent means not pinned, so an existing
+    /// snapshot (which never carries the field) loads with zero pinned members and
+    /// is byte-identical on re-serialize.
+    #[serde(default, skip_serializing_if = "is_false")]
+    top_level: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -1063,6 +1072,7 @@ fn dim_doc(dim: &Dimension) -> DimDoc {
         .map(|el| ElDoc {
             name: el.name.clone(),
             kind: el.kind.into(),
+            top_level: el.pinned_to_top,
         })
         .collect();
 
@@ -1110,11 +1120,16 @@ fn dim_doc(dim: &Dimension) -> DimDoc {
 fn build_dimension(dim_doc: &DimDoc) -> Result<Dimension, LoadError> {
     let mut dim = Dimension::new(&dim_doc.name);
     for el in &dim_doc.elements {
-        match el.kind {
+        let index = match el.kind {
             KindDoc::Leaf => dim.add_leaf(&el.name),
             KindDoc::String => dim.add_string(&el.name),
             KindDoc::Consolidated => dim.add_consolidated(&el.name),
         };
+        // Restore the explicit top-level pin (ADR-0038). Absent in the doc means
+        // not pinned, so an existing snapshot loads with zero pinned members.
+        if el.top_level {
+            dim.pin_to_top(index)?;
+        }
     }
     for edge in &dim_doc.edges {
         let parent = dim
@@ -1627,6 +1642,56 @@ mod tests {
         assert_eq!(
             loaded.to_model_text().unwrap(),
             cube.to_model_text().unwrap()
+        );
+    }
+
+    #[test]
+    fn round_trips_pinned_top_level_flag() {
+        // ADR-0038: a member pinned to the top level round-trips through the text,
+        // keeping its parent edge. The flag serializes as `top_level = true`.
+        let mut region = Dimension::new("Region");
+        let east = region.add_leaf("East");
+        let total = region.add_consolidated("Total");
+        region.add_child(total, east, 1).unwrap();
+        region.pin_to_top(east).unwrap();
+        let cube = Cube::new("Sales", vec![region]).unwrap();
+
+        let text = cube.to_model_text().unwrap();
+        assert!(
+            text.contains("top_level = true"),
+            "the pin serializes as top_level = true:\n{text}"
+        );
+        let cube2 = Cube::from_model_text(&text).unwrap();
+        // Canonical fixed point including the pin.
+        assert_eq!(text, cube2.to_model_text().unwrap());
+
+        let region2 = cube2.dimension(0);
+        let east2 = region2.index_of("East").unwrap();
+        let total2 = region2.index_of("Total").unwrap();
+        assert!(
+            region2.is_pinned_to_top(east2).unwrap(),
+            "East stays pinned"
+        );
+        // The parent edge survived: East is still a child of Total.
+        assert_eq!(region2.children_of(total2).unwrap(), vec![east2]);
+        assert_eq!(region2.pinned_to_top(), vec![east2]);
+    }
+
+    #[test]
+    fn snapshot_without_the_flag_loads_with_no_pins() {
+        // Back-compat: an existing model text never carries `top_level`, so it must
+        // load with zero pinned members (roots = no-parent, exactly as before).
+        let cube = sample_cube();
+        let text = cube.to_model_text().unwrap();
+        assert!(
+            !text.contains("top_level"),
+            "an unpinned model never emits the flag:\n{text}"
+        );
+        let cube2 = Cube::from_model_text(&text).unwrap();
+        let region = cube2.dimension(0);
+        assert!(
+            region.pinned_to_top().is_empty(),
+            "no member is pinned when the flag is absent"
         );
     }
 

@@ -28,6 +28,12 @@ impl ElementKind {
 pub struct Element {
     pub name: String,
     pub kind: ElementKind,
+    /// Pinned to the top level (ADR-0038): the element is shown as a display root
+    /// EVEN IF it also rolls up under one or more consolidations (has parents).
+    /// This is a display marker only; it changes no rollup edge or value. A new
+    /// element defaults to not pinned, so an existing model loads with no pins
+    /// (display roots = members with no parent, exactly as before).
+    pub pinned_to_top: bool,
 }
 
 /// The kind of a dimension attribute.
@@ -267,7 +273,11 @@ impl Dimension {
         }
         let index = self.elements.len() as u32;
         self.index_by_name.insert(name.clone(), index);
-        self.elements.push(Element { name, kind });
+        self.elements.push(Element {
+            name,
+            kind,
+            pinned_to_top: false,
+        });
         self.children.push(Vec::new());
         self.attr_values.push(HashMap::new());
         index
@@ -393,6 +403,53 @@ impl Dimension {
             .iter()
             .map(|e| e.child)
             .collect())
+    }
+
+    // ---- explicit top-level membership (ADR-0038) ----
+    //
+    // A per-element `pinned_to_top` flag lets a member appear as a display root
+    // EVEN IF it also rolls up under consolidations (it has parents). The display
+    // roots a reader shows are {members with no parent} UNION {members pinned to
+    // top}. Rollup edges and values are unchanged, so a member can legitimately be
+    // BOTH a root and a child of a consolidation (the accepted double-count when a
+    // grand total sums display roots). The flag lives inside the [`Element`], so it
+    // travels with its element through reorder/insert/delete with no extra
+    // remapping (the element `Vec` is the single ordering authority, ADR-0036).
+
+    /// Whether `element` is pinned to the top level (ADR-0038). Rejects an
+    /// out-of-range index.
+    pub fn is_pinned_to_top(&self, element: u32) -> Result<bool, ModelError> {
+        Ok(self.element(element)?.pinned_to_top)
+    }
+
+    /// The indices of every element pinned to the top level (ADR-0038), in
+    /// definition order.
+    pub fn pinned_to_top(&self) -> Vec<u32> {
+        self.elements
+            .iter()
+            .enumerate()
+            .filter(|(_, el)| el.pinned_to_top)
+            .map(|(i, _)| i as u32)
+            .collect()
+    }
+
+    /// Pin `element` to the top level so it is a display root regardless of its
+    /// parents (ADR-0038). An edge-only-free change: no rollup edge, value, or
+    /// index is touched. Idempotent: pinning an already-pinned (or a no-parent)
+    /// member succeeds as a no-op. Rejects an out-of-range index.
+    pub fn pin_to_top(&mut self, element: u32) -> Result<(), ModelError> {
+        self.element(element)?;
+        self.elements[element as usize].pinned_to_top = true;
+        Ok(())
+    }
+
+    /// Unpin `element` from the top level (ADR-0038). It reverts to a display root
+    /// only if it has no parent. Idempotent: unpinning an unpinned member succeeds
+    /// as a no-op. Rejects an out-of-range index.
+    pub fn unpin_from_top(&mut self, element: u32) -> Result<(), ModelError> {
+        self.element(element)?;
+        self.elements[element as usize].pinned_to_top = false;
+        Ok(())
     }
 
     /// Rebuild every name and alias index after the element `Vec` has changed
@@ -635,6 +692,8 @@ impl Dimension {
             Element {
                 name: name.to_string(),
                 kind,
+                // A freshly inserted element is never pinned (ADR-0038).
+                pinned_to_top: false,
             },
         );
         self.attr_values.insert(position as usize, HashMap::new());
@@ -803,6 +862,118 @@ mod tests {
             d.set_attribute(b, "Alias", AttributeValue::Text("X".into())),
             Err(ModelError::AliasConflict { .. })
         ));
+    }
+
+    // ---- explicit top-level membership (ADR-0038) ----
+
+    /// The display roots a reader computes (the web `buildForest` rule, mirrored
+    /// here for the test): {members with no incoming edge} UNION {members pinned to
+    /// top}, in definition order. The core has no roots helper of its own (roots are
+    /// computed in the web layer), so this test helper stands in for that rule.
+    fn display_roots(d: &Dimension) -> Vec<u32> {
+        let mut has_parent = vec![false; d.len() as usize];
+        for (_, child, _) in d.edges() {
+            has_parent[child as usize] = true;
+        }
+        (0..d.len())
+            .filter(|&i| !has_parent[i as usize] || d.is_pinned_to_top(i).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn pin_adds_a_member_to_roots_keeping_its_parent_edges() {
+        // East rolls up under Total. Pinning East makes it a display root WHILE it
+        // stays a child of Total (edges and rollup unchanged); unpin reverts.
+        let mut d = Dimension::new("Region");
+        let east = d.add_leaf("East");
+        let total = d.add_consolidated("Total");
+        d.add_child(total, east, 1).unwrap();
+        // Before: only Total is a root (East has a parent).
+        assert_eq!(display_roots(&d), vec![total]);
+        assert!(!d.is_pinned_to_top(east).unwrap());
+
+        d.pin_to_top(east).unwrap();
+        assert!(d.is_pinned_to_top(east).unwrap());
+        assert_eq!(d.pinned_to_top(), vec![east]);
+        // East is now BOTH a root and a child of Total: edges and rollup are intact.
+        assert_eq!(display_roots(&d), vec![east, total]);
+        assert_eq!(d.children_of(total).unwrap(), vec![east]);
+        assert_eq!(d.leaf_weights(total).unwrap(), vec![(east, 1)]);
+
+        // Pinning again is an idempotent no-op.
+        d.pin_to_top(east).unwrap();
+        assert_eq!(d.pinned_to_top(), vec![east]);
+
+        // Unpin reverts East to a plain child (no longer a root).
+        d.unpin_from_top(east).unwrap();
+        assert!(!d.is_pinned_to_top(east).unwrap());
+        assert_eq!(display_roots(&d), vec![total]);
+        // Unpinning again is an idempotent no-op.
+        d.unpin_from_top(east).unwrap();
+        assert!(!d.is_pinned_to_top(east).unwrap());
+    }
+
+    #[test]
+    fn pinning_a_no_parent_member_is_a_harmless_no_op_for_roots() {
+        // A member with no parent is already a root; pinning it is allowed and just
+        // sets the flag (it does not appear twice in the roots).
+        let mut d = Dimension::new("D");
+        let a = d.add_leaf("A");
+        assert_eq!(display_roots(&d), vec![a]);
+        d.pin_to_top(a).unwrap();
+        assert!(d.is_pinned_to_top(a).unwrap());
+        assert_eq!(display_roots(&d), vec![a], "still a single root");
+    }
+
+    #[test]
+    fn reorder_permutes_the_pinned_flag_with_its_element() {
+        // Pin A, then reorder; the flag must follow A to its new index, not stay at
+        // the old position.
+        let mut d = Dimension::new("D");
+        let a = d.add_leaf("A");
+        let _b = d.add_leaf("B");
+        let _c = d.add_leaf("C");
+        d.pin_to_top(a).unwrap();
+        d.reorder(&["C".into(), "B".into(), "A".into()]).unwrap();
+        let a_new = d.index_of("A").unwrap();
+        assert!(d.is_pinned_to_top(a_new).unwrap(), "the pin followed A");
+        assert_eq!(d.pinned_to_top(), vec![a_new]);
+        // No other member became pinned.
+        assert!(!d.is_pinned_to_top(d.index_of("B").unwrap()).unwrap());
+        assert!(!d.is_pinned_to_top(d.index_of("C").unwrap()).unwrap());
+    }
+
+    #[test]
+    fn delete_drops_the_pinned_flag_cleanly() {
+        // Pin A and B; deleting A drops A's flag and B's flag follows B's new index.
+        let mut d = Dimension::new("D");
+        let a = d.add_leaf("A");
+        let b = d.add_leaf("B");
+        d.pin_to_top(a).unwrap();
+        d.pin_to_top(b).unwrap();
+        d.delete(a).unwrap();
+        let b_new = d.index_of("B").unwrap();
+        assert_eq!(d.index_of("A"), None, "A is gone");
+        assert!(d.is_pinned_to_top(b_new).unwrap(), "B is still pinned");
+        assert_eq!(d.pinned_to_top(), vec![b_new]);
+    }
+
+    #[test]
+    fn insert_defaults_to_not_pinned_and_preserves_others() {
+        // Pin A, insert a new member before it; the new member is not pinned and
+        // A's flag follows its shifted index.
+        let mut d = Dimension::new("D");
+        let a = d.add_leaf("A");
+        d.pin_to_top(a).unwrap();
+        d.insert_at("New", ElementKind::Leaf, 0).unwrap();
+        let new = d.index_of("New").unwrap();
+        let a_new = d.index_of("A").unwrap();
+        assert!(
+            !d.is_pinned_to_top(new).unwrap(),
+            "a new member is not pinned"
+        );
+        assert!(d.is_pinned_to_top(a_new).unwrap(), "A's pin followed it");
+        assert_eq!(d.pinned_to_top(), vec![a_new]);
     }
 
     #[test]

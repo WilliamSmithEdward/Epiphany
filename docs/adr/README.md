@@ -41,5 +41,6 @@ Significant decisions are recorded here (RG-16), one numbered file each. Use [`t
 | [0035](0035-global-multi-cube-automation.md) | Global, multi-cube flows and schedules | Accepted | Model architecture |
 | [0036](0036-dimension-structural-editing.md) | Dimension structural editing (reorder/reparent/convert/delete) and a cube-agnostic editor | Accepted | Model architecture |
 | [0037](0037-lowercase-on-disk-layout.md) | Lowercase, filesystem-safe on-disk layout decoupled from display names | Accepted | Cross-platform persistence |
+| [0038](0038-explicit-top-level-membership.md) | Explicit top-level membership (pin a member as a display root while it still rolls up) | Accepted | Model architecture |
 
 > All originally-reserved ADR numbers are allocated; later decisions continue from 0020.

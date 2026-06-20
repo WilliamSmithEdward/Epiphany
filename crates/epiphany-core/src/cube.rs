@@ -747,6 +747,49 @@ impl Cube {
         Ok(())
     }
 
+    /// Pin `element` to the top level in a dimension (ADR-0038), so it shows as a
+    /// display root regardless of its parents. A display-only marker: no rollup
+    /// edge, value, or element index changes, so no cell remap. Idempotent (pinning
+    /// an already-pinned or no-parent member is a no-op). Transactional: an unknown
+    /// element is rejected and the cube is unchanged.
+    pub fn pin_element_to_top(&mut self, dimension: &str, element: &str) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.clone();
+        let element_idx =
+            next.dimensions[d]
+                .index_of(element)
+                .ok_or_else(|| ModelError::ElementNotFound {
+                    dimension: dimension.to_string(),
+                    element: element.to_string(),
+                })?;
+        next.dimensions[d].pin_to_top(element_idx)?;
+        *self = next;
+        Ok(())
+    }
+
+    /// Unpin `element` from the top level in a dimension (ADR-0038). It reverts to a
+    /// display root only if it has no parent. Display-only, so no cell remap.
+    /// Idempotent (unpinning an unpinned member is a no-op). Transactional: an
+    /// unknown element is rejected and the cube is unchanged.
+    pub fn unpin_element_from_top(
+        &mut self,
+        dimension: &str,
+        element: &str,
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension)?;
+        let mut next = self.clone();
+        let element_idx =
+            next.dimensions[d]
+                .index_of(element)
+                .ok_or_else(|| ModelError::ElementNotFound {
+                    dimension: dimension.to_string(),
+                    element: element.to_string(),
+                })?;
+        next.dimensions[d].unpin_from_top(element_idx)?;
+        *self = next;
+        Ok(())
+    }
+
     /// Convert a dimension element's kind. A numeric/string change re-types the
     /// element's stored cells (an incompatible value is cleared, not crashed); a
     /// change to consolidated drops the element's stored leaf value (a

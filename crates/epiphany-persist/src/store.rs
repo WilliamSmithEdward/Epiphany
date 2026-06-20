@@ -157,6 +157,19 @@ impl Store {
                 match record {
                     Record::SetLeaf { coord, value } => model.cube.set_leaf(coord, *value)?,
                     Record::SetString { coord, value } => model.cube.set_string(coord, value)?,
+                    // A name-addressed top-level pin/unpin (ADR-0038); replays onto
+                    // the snapshot regardless of element order (index-stable).
+                    Record::SetPin {
+                        dimension,
+                        element,
+                        pinned,
+                    } => {
+                        if *pinned {
+                            model.cube.pin_element_to_top(dimension, element)?;
+                        } else {
+                            model.cube.unpin_element_from_top(dimension, element)?;
+                        }
+                    }
                     // Batch markers are consumed by wal::replay and never surface here.
                     Record::BatchBegin { .. } | Record::BatchEnd => {}
                 }
@@ -633,6 +646,58 @@ impl Store {
         self.checkpoint()
     }
 
+    /// Pin a member to the top level (ADR-0038): apply it to the in-memory cube and
+    /// append a `SetPin` record to the WAL. The pin is a display-only marker (no
+    /// rollup edge, value, or element index changes), so it is index-stable and the
+    /// name-addressed WAL record stays valid against the snapshot it replays onto
+    /// (like a cell write, and unlike a reindexing edit which must checkpoint). The
+    /// model validates first, so a rejected pin (unknown element) is never logged.
+    /// Idempotent (pinning an already-pinned or no-parent member is a no-op).
+    pub fn pin_element_to_top(
+        &mut self,
+        dimension: &str,
+        element: &str,
+    ) -> Result<(), PersistError> {
+        self.set_pin(dimension, element, true)
+    }
+
+    /// Unpin a member from the top level (ADR-0038): apply it and append a `SetPin`
+    /// record. Index-stable (see [`pin_element_to_top`](Self::pin_element_to_top)).
+    /// Idempotent (unpinning an unpinned member is a no-op).
+    pub fn unpin_element_from_top(
+        &mut self,
+        dimension: &str,
+        element: &str,
+    ) -> Result<(), PersistError> {
+        self.set_pin(dimension, element, false)
+    }
+
+    /// Apply a pin/unpin and append its `SetPin` WAL record. Shared by
+    /// [`pin_element_to_top`](Self::pin_element_to_top) and
+    /// [`unpin_element_from_top`](Self::unpin_element_from_top).
+    fn set_pin(
+        &mut self,
+        dimension: &str,
+        element: &str,
+        pinned: bool,
+    ) -> Result<(), PersistError> {
+        if pinned {
+            self.model.cube.pin_element_to_top(dimension, element)?;
+        } else {
+            self.model.cube.unpin_element_from_top(dimension, element)?;
+        }
+        let framed = wal::encode(&Record::SetPin {
+            dimension: dimension.to_string(),
+            element: element.to_string(),
+            pinned,
+        });
+        self.wal.write_all(&framed)?;
+        if self.sync_on_write {
+            self.wal.sync_data()?;
+        }
+        Ok(())
+    }
+
     /// Convert a member's kind (re-typing or clearing its cells), then checkpoint.
     pub fn set_element_kind(
         &mut self,
@@ -698,6 +763,15 @@ pub enum DimensionEdit {
     /// `Reparent` with `None` (which detaches the child from EVERY parent) and from
     /// `Delete` (which removes the member). Drops no stored value.
     RemoveChild { parent: String, child: String },
+    /// Pin `element` to the top level (ADR-0038), so it shows as a display root
+    /// even while it also rolls up under its consolidations. A display-only marker:
+    /// no rollup edge, value, or index changes. Idempotent (pinning an
+    /// already-pinned or no-parent member is a no-op).
+    PinToTop { element: String },
+    /// Unpin `element` from the top level (ADR-0038). It reverts to a display root
+    /// only if it has no parent. Idempotent (unpinning an unpinned member is a
+    /// no-op). Distinct from `RemoveChild`/`Reparent`, which change rollup edges.
+    UnpinFromTop { element: String },
     /// Convert `element` to `kind`.
     SetKind { element: String, kind: ElementKind },
     /// Delete `element` (rejected if it still has children).
@@ -733,6 +807,10 @@ impl Store {
             } => self.add_child_element(dimension, parent, child, *weight),
             DimensionEdit::RemoveChild { parent, child } => {
                 self.remove_child_element(dimension, parent, child)
+            }
+            DimensionEdit::PinToTop { element } => self.pin_element_to_top(dimension, element),
+            DimensionEdit::UnpinFromTop { element } => {
+                self.unpin_element_from_top(dimension, element)
             }
             DimensionEdit::SetKind { element, kind } => {
                 self.set_element_kind(dimension, element, *kind)
@@ -956,6 +1034,118 @@ mod tests {
             store.cube().get(&[region_total, period_total]).unwrap(),
             Fixed::from(30)
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pin_to_top_recovers_via_wal_replay() {
+        // ADR-0038: a pin is logged as a name-addressed WAL record and recovers by
+        // replay onto the snapshot WITHOUT an explicit checkpoint (the crash case).
+        let dir = scratch("pin-wal");
+        let f = fixture();
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            // R0 rolls up under Total; pin it to the top level.
+            store.pin_element_to_top("Region", "R0").unwrap();
+            // Drop WITHOUT a checkpoint: the pin must replay from the WAL.
+        }
+        let store = Store::open(&dir).unwrap();
+        let region = store
+            .cube()
+            .dimensions()
+            .iter()
+            .find(|d| d.name() == "Region")
+            .unwrap();
+        let r0 = region.index_of("R0").unwrap();
+        let total = region.index_of("Total").unwrap();
+        assert!(region.is_pinned_to_top(r0).unwrap(), "the pin replayed");
+        // The rollup edge is intact: R0 is still a child of Total.
+        assert_eq!(region.children_of(total).unwrap()[0], r0);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn pin_persists_through_checkpoint_and_unpin_reverts() {
+        // A pin survives a checkpoint (snapshot rewrite + WAL clear), and a later
+        // unpin (also WAL-logged) reverts it across a reopen.
+        let dir = scratch("pin-checkpoint");
+        let f = fixture();
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            store.pin_element_to_top("Region", "R0").unwrap();
+            store.checkpoint().unwrap();
+            // After the checkpoint the WAL is back to its header (the pin folded
+            // into the snapshot).
+            assert_eq!(
+                fs::metadata(dir.join(WAL_FILE)).unwrap().len(),
+                wal::WAL_HEADER_LEN
+            );
+        }
+        {
+            let store = Store::open(&dir).unwrap();
+            let region = store
+                .cube()
+                .dimensions()
+                .iter()
+                .find(|d| d.name() == "Region")
+                .unwrap();
+            assert!(region
+                .is_pinned_to_top(region.index_of("R0").unwrap())
+                .unwrap());
+        }
+        // Unpin (WAL-logged), drop without checkpoint, reopen: the unpin replays.
+        {
+            let mut store = Store::open(&dir).unwrap();
+            store.unpin_element_from_top("Region", "R0").unwrap();
+        }
+        let store = Store::open(&dir).unwrap();
+        let region = store
+            .cube()
+            .dimensions()
+            .iter()
+            .find(|d| d.name() == "Region")
+            .unwrap();
+        assert!(!region
+            .is_pinned_to_top(region.index_of("R0").unwrap())
+            .unwrap());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn edit_dimension_dispatches_pin_and_unpin() {
+        // The DimensionEdit dispatch (ADR-0038) reaches the pin/unpin Store methods.
+        fn r1_pinned(store: &Store) -> bool {
+            let region = store
+                .cube()
+                .dimensions()
+                .iter()
+                .find(|d| d.name() == "Region")
+                .unwrap();
+            region
+                .is_pinned_to_top(region.index_of("R1").unwrap())
+                .unwrap()
+        }
+        let dir = scratch("pin-edit-dispatch");
+        let f = fixture();
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        store
+            .edit_dimension(
+                "Region",
+                &DimensionEdit::PinToTop {
+                    element: "R1".into(),
+                },
+            )
+            .unwrap();
+        assert!(r1_pinned(&store), "PinToTop dispatched and applied");
+        store
+            .edit_dimension(
+                "Region",
+                &DimensionEdit::UnpinFromTop {
+                    element: "R1".into(),
+                },
+            )
+            .unwrap();
+        assert!(!r1_pinned(&store), "UnpinFromTop dispatched and applied");
         fs::remove_dir_all(&dir).ok();
     }
 

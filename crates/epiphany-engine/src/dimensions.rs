@@ -250,6 +250,26 @@ impl SharedDimension {
                 // and its other parents. The per-cube fan-out mirrors this.
                 next.remove_child(parent_idx, child_idx)?;
             }
+            DimensionEdit::PinToTop { element } => {
+                let element_idx =
+                    next.index_of(element)
+                        .ok_or_else(|| ModelError::ElementNotFound {
+                            dimension: next.name().to_string(),
+                            element: element.clone(),
+                        })?;
+                // Display-only marker (ADR-0038); the cell-less registry copy just
+                // mirrors the flag, the per-cube fan-out mirrors it too. Idempotent.
+                next.pin_to_top(element_idx)?;
+            }
+            DimensionEdit::UnpinFromTop { element } => {
+                let element_idx =
+                    next.index_of(element)
+                        .ok_or_else(|| ModelError::ElementNotFound {
+                            dimension: next.name().to_string(),
+                            element: element.clone(),
+                        })?;
+                next.unpin_from_top(element_idx)?;
+            }
             DimensionEdit::SetKind { element, kind } => {
                 let element_idx =
                     next.index_of(element)

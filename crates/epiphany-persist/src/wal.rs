@@ -18,6 +18,7 @@ const OP_SET_LEAF: u8 = 1;
 const OP_SET_STRING: u8 = 2;
 const OP_BATCH_BEGIN: u8 = 3;
 const OP_BATCH_END: u8 = 4;
+const OP_SET_PIN: u8 = 5;
 
 /// A decoded WAL record. Cell writes (numeric and string) are logged
 /// individually; a transactional batch wraps its writes between `BatchBegin` and
@@ -26,10 +27,27 @@ const OP_BATCH_END: u8 = 4;
 /// a checkpoint (a fresh snapshot), not the log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Record {
-    SetLeaf { coord: Vec<u32>, value: Fixed },
-    SetString { coord: Vec<u32>, value: String },
-    BatchBegin { count: u32 },
+    SetLeaf {
+        coord: Vec<u32>,
+        value: Fixed,
+    },
+    SetString {
+        coord: Vec<u32>,
+        value: String,
+    },
+    BatchBegin {
+        count: u32,
+    },
     BatchEnd,
+    /// Pin/unpin a member to/from the top level (ADR-0038). Addressed by dimension
+    /// and member NAME (not index), because the flag is a display marker that does
+    /// not change indices, so a name-addressed record stays valid against the
+    /// snapshot it replays onto even across index-stable edits.
+    SetPin {
+        dimension: String,
+        element: String,
+        pinned: bool,
+    },
 }
 
 /// Why a WAL file could not be read.
@@ -86,6 +104,16 @@ pub(crate) fn encode(record: &Record) -> Vec<u8> {
         }
         Record::BatchEnd => {
             payload.push(OP_BATCH_END);
+        }
+        Record::SetPin {
+            dimension,
+            element,
+            pinned,
+        } => {
+            payload.push(OP_SET_PIN);
+            write_str(&mut payload, dimension);
+            write_str(&mut payload, element);
+            payload.push(u8::from(*pinned));
         }
     }
     let mut framed = Vec::with_capacity(payload.len() + 8);
@@ -163,6 +191,22 @@ fn write_coord(payload: &mut Vec<u8>, coord: &[u32]) {
     }
 }
 
+/// Append a length-prefixed UTF-8 string as `[len u32][bytes]` (little-endian).
+fn write_str(payload: &mut Vec<u8>, s: &str) {
+    let bytes = s.as_bytes();
+    payload.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+    payload.extend_from_slice(bytes);
+}
+
+/// Read a length-prefixed UTF-8 string from the front of `rest`, returning it and
+/// the bytes consumed. Returns `None` on a truncated or non-UTF-8 payload.
+fn read_str(rest: &[u8]) -> Option<(String, usize)> {
+    let len = u32::from_le_bytes(rest.get(0..4)?.try_into().unwrap()) as usize;
+    let end = 4 + len;
+    let s = std::str::from_utf8(rest.get(4..end)?).ok()?.to_string();
+    Some((s, end))
+}
+
 /// Read a coordinate from the front of `rest`, returning it and the bytes consumed.
 fn read_coord(rest: &[u8]) -> Option<(Vec<u32>, usize)> {
     let rank = u16::from_le_bytes([*rest.first()?, *rest.get(1)?]) as usize;
@@ -201,6 +245,16 @@ fn decode(payload: &[u8]) -> Option<Record> {
             Some(Record::BatchBegin { count })
         }
         OP_BATCH_END => Some(Record::BatchEnd),
+        OP_SET_PIN => {
+            let (dimension, pos) = read_str(rest)?;
+            let (element, pos2) = read_str(rest.get(pos..)?)?;
+            let pinned = *rest.get(pos + pos2)? != 0;
+            Some(Record::SetPin {
+                dimension,
+                element,
+                pinned,
+            })
+        }
         _ => None,
     }
 }
@@ -256,6 +310,30 @@ mod tests {
             Record::SetLeaf {
                 coord: vec![1, 0, 2],
                 value: Fixed::from(-5),
+            },
+        ];
+        for record in &records {
+            bytes.extend_from_slice(&encode(record));
+        }
+        let replay = replay(&bytes).unwrap();
+        assert_eq!(replay.records, records);
+        assert_eq!(replay.good_len as usize, bytes.len());
+    }
+
+    #[test]
+    fn set_pin_record_round_trips_through_encode_replay() {
+        // ADR-0038: a name-addressed pin/unpin record survives encode -> replay.
+        let mut bytes = header().to_vec();
+        let records = vec![
+            Record::SetPin {
+                dimension: "Region".to_string(),
+                element: "East".to_string(),
+                pinned: true,
+            },
+            Record::SetPin {
+                dimension: "Region".to_string(),
+                element: "East".to_string(),
+                pinned: false,
             },
         ];
         for record in &records {
