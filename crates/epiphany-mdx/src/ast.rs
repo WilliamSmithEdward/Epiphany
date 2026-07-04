@@ -17,9 +17,10 @@ pub enum SetExpr {
     Member(MemberRef),
     /// `<ref>.Members` - every element of the named dimension, definition order.
     Members(MemberRef),
-    /// `<ref>.Children` - the member's immediate children, edge order.
+    /// `<ref>.Children` - the member's immediate children, authored rollup order.
     Children(MemberRef),
-    /// `<ref>.Descendants` or `Descendants(<ref>)` - pre-order DFS, de-duped.
+    /// `<ref>.Descendants` or `Descendants(<ref>)` - authored-order pre-order
+    /// DFS, de-duped.
     Descendants(MemberRef),
     /// `Filter(set, predicate)` - members for which the predicate holds.
     Filter(Box<SetExpr>, Predicate),
@@ -51,13 +52,17 @@ impl MemberRef {
     }
 }
 
-/// Sort direction for `Order`. The `B` forms break hierarchy (a flat sort);
-/// the plain forms preserve hierarchy as a stable tie-break (Phase 3B).
+/// Sort direction for `Order`. All four forms are accepted for MDX
+/// compatibility, but because a subset here is a flat member list (not a nested
+/// hierarchy), the plain `ASC`/`DESC` and the hierarchy-breaking `BASC`/`BDESC`
+/// forms behave identically: a flat key sort with the input position as a
+/// stable tie-break (see `eval::order_set`). Plain forms therefore do NOT
+/// preserve parent grouping in this implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderDir {
-    /// Ascending, hierarchy-preserving.
+    /// Ascending (flat sort, as noted above).
     Asc,
-    /// Descending, hierarchy-preserving.
+    /// Descending (flat sort, as noted above).
     Desc,
     /// Ascending, hierarchy-breaking (flat).
     BAsc,

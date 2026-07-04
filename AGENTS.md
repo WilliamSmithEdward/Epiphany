@@ -42,18 +42,20 @@ CI (`.github/workflows/ci.yml`) runs all of the above and gates merges.
 
 ## Local toolchain (Windows dev machine)
 - **Rust:** rustup, default toolchain `stable-x86_64-pc-windows-gnu`. The GNU toolchain avoids needing the Visual Studio C++ Build Tools. `cargo` lives at `%USERPROFILE%\.cargo\bin`.
-- **mingw-w64 binutils (needed from Phase 2 on):** the rustup GNU toolchain's bundled mingw ships `dlltool` and `ld` but not `as`, so crates that link Windows APIs via raw-dylib (`windows-sys` through `mio`/`tokio`, hence `axum`) fail to compile with a `dlltool ... CreateProcess` error. Phase 1 crates are pure Rust and unaffected. Fix: a portable mingw-w64 (WinLibs) extracted to `C:\Development\tools\mingw64`, used on the build PATH only, with the linker forced to Rust's own self-contained MSVCRT gcc (WinLibs is UCRT; letting its gcc become the linker mixes C runtimes and breaks linking):
-  ```bash
-  export PATH="/c/Development/tools/mingw64/bin:$PATH"
-  export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER="$HOME/.rustup/toolchains/stable-x86_64-pc-windows-gnu/lib/rustlib/x86_64-pc-windows-gnu/bin/self-contained/x86_64-w64-mingw32-gcc.exe"
+- **mingw-w64 (needed from Phase 2 on):** the rustup GNU toolchain's bundled mingw ships `dlltool` and `ld` but not `as`, so crates that link Windows APIs via raw-dylib (`windows-sys` through `mio`/`tokio`, hence `axum`) fail to compile with a `dlltool ... CreateProcess` error, and C-compiling crates (the `tls` feature: rustls + ring) additionally need a full GCC with `cc1`. Both are covered by the full WinLibs UCRT GCC: `winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT`, which puts its `mingw64\bin` on the user PATH. `C:\Development\tools\mingw64` is a directory junction to that winget package (kept so scripts referencing the old portable-extract path keep working). WinLibs is UCRT, so its gcc must never become cargo's linker (mixing C runtimes breaks linking); the linker is forced persistently in `%USERPROFILE%\.cargo\config.toml` to Rust's own self-contained MSVCRT gcc:
+  ```toml
+  [target.x86_64-pc-windows-gnu]
+  linker = "C:\\Users\\<user>\\.rustup\\toolchains\\stable-x86_64-pc-windows-gnu\\lib\\rustlib\\x86_64-pc-windows-gnu\\bin\\self-contained\\x86_64-w64-mingw32-gcc.exe"
   ```
-  CI builds on Linux, so this is a local-Windows-only requirement. **C-compiling crates (the `tls` feature: rustls + ring) need a full GCC, not the binutils-only extract** at `C:\Development\tools\mingw64` (it lacks `cc1`). Install the full WinLibs UCRT GCC (`winget install -e --id BrechtSanders.WinLibs.POSIX.UCRT`) and prepend its bin (`%LOCALAPPDATA%\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_*\mingw64\bin`) before the binutils dir on PATH; keep the forced linker. Then `cargo build -p epiphany-server --features tls` and `cargo deny` build locally.
+  With that in place no per-shell PATH/linker exports are needed; `cargo build -p epiphany-server --features tls` and `cargo deny check` work from any shell. CI builds on Linux, so this is a local-Windows-only requirement.
 - **Node:** managed by fnm, with the version pinned in `.node-version`. In a fresh PowerShell, expose `node` and `npm` with:
   ```powershell
   fnm env --shell powershell | Out-String | Invoke-Expression; fnm use
   ```
   The concrete install is under `%APPDATA%\fnm\node-versions\<ver>\installation`.
 - **git** is on PATH.
+- **.NET SDK 8** (`winget install -e --id Microsoft.DotNet.SDK.8`) builds the Excel add-in: `dotnet build -c Release` from `excel-addin/`.
+- **cargo-deny** is a prebuilt release binary in `%USERPROFILE%\.cargo\bin` (run `cargo deny check` from the repo root).
 
 ## Supported platforms
 Epiphany ships as a single self-contained binary (the web UI is embedded with `--features embed-ui`). Cross-platform and multi-arch support is CI-gated, not assumed: on every push and PR, `cargo clippy -D warnings` and `cargo test --workspace` run on each of the tested targets below, so the cfg-gated paths (e.g. the Windows vs Unix command-connector code) are linted and exercised on every platform. Each runner refreshes to the current stable Rust before building.

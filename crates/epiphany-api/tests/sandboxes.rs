@@ -669,3 +669,73 @@ async fn sandbox_rejects_string_what_if_but_allows_numeric() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A sandboxed batch write must HONOR `base_version` (optimistic concurrency),
+/// not silently drop it: two sessions staging into the same sandbox otherwise
+/// clobber each other's what-if overrides with no conflict signal. (Regression:
+/// the sandbox path passed `None` regardless of the request's `base_version`.)
+#[tokio::test]
+async fn sandbox_batch_honors_base_version() {
+    let dir = scratch("sandbox-batch-base");
+    let app = router(&dir);
+    let ann = login(&app, "ann").await;
+
+    let (s, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/sandboxes",
+        &ann,
+        Some(json!({ "name": "wi" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+
+    // Stage an initial what-if batch; capture the sandbox's new cube version.
+    let batch = |coord_val: &str| {
+        json!({
+            "writes": [ { "coord": { "Region": "North", "Measure": "Sales" }, "value": coord_val } ]
+        })
+    };
+    let (s, first) = call_h(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/cells/batch",
+        &ann,
+        Some(batch("10")),
+        ("x-epiphany-sandbox", "wi"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    let version = first["version"].as_u64().unwrap();
+
+    // A second batch carrying a STALE base_version (one behind) is now rejected
+    // with 409 instead of last-writer-wins.
+    let mut stale = batch("20");
+    stale["base_version"] = json!(version - 1);
+    let (s, body) = call_h(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/cells/batch",
+        &ann,
+        Some(stale),
+        ("x-epiphany-sandbox", "wi"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+
+    // The same batch with the CURRENT base_version commits.
+    let mut fresh = batch("20");
+    fresh["base_version"] = json!(version);
+    let (s, body) = call_h(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/cells/batch",
+        &ann,
+        Some(fresh),
+        ("x-epiphany-sandbox", "wi"),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -36,12 +36,27 @@ impl std::error::Error for CsvError {}
 /// Parse CSV `text` into records keyed by the header row's column names. An empty
 /// input (or header-only input) yields no records.
 pub fn parse_csv(text: &str) -> Result<Vec<Row>, CsvError> {
+    // Strip a leading UTF-8 byte-order mark: files exported from Excel as
+    // "CSV UTF-8" prepend one, and left in place it becomes part of the first
+    // column name (`\u{FEFF}Region`), silently breaking `r.Region` lookups.
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let records = split_records(text, MAX_CSV_ROWS)?;
     let mut iter = records.into_iter();
     let header = match iter.next() {
         Some(h) => h,
         None => return Ok(Vec::new()),
     };
+    // Reject duplicate header names: a row crossing into JS becomes an object keyed
+    // by column name, so a duplicated column would silently overwrite (last wins)
+    // and lose a whole column of data. Fail loud instead.
+    for (i, name) in header.iter().enumerate() {
+        if header[..i].iter().any(|prior| prior == name) {
+            return Err(CsvError {
+                message: format!("duplicate header column '{name}'"),
+                line: 1,
+            });
+        }
+    }
     // A trailing newline produces a final empty record; drop empty records.
     let mut rows = Vec::new();
     for fields in iter {
@@ -72,7 +87,10 @@ fn split_records(text: &str, max_records: usize) -> Result<Vec<Vec<String>>, Csv
 
     while i < chars.len() {
         let c = chars[i];
-        if c == '"' {
+        if c == '"' && field.is_empty() {
+            // A quote opens a quoted field only at the field start; a quote in the
+            // middle of an unquoted field (inch marks, hand-edited data) is a
+            // literal character (handled by the final `else`), not a mode switch.
             started = true;
             i += 1;
             // Quoted field: copy until the closing quote, doubling `""` to `"`.
@@ -106,7 +124,24 @@ fn split_records(text: &str, max_records: usize) -> Result<Vec<Vec<String>>, Csv
             record.push(std::mem::take(&mut field));
             i += 1;
         } else if c == '\r' {
-            i += 1; // fold CRLF
+            // A true CRLF folds to one line break; a bare CR (classic-Mac line
+            // ending) also terminates the record. Either way, end the record here
+            // and consume the following `\n` if present, so no CR reaches a field.
+            if chars.get(i + 1) == Some(&'\n') {
+                i += 2;
+            } else {
+                i += 1;
+            }
+            line += 1;
+            record.push(std::mem::take(&mut field));
+            records.push(std::mem::take(&mut record));
+            started = false;
+            if records.len() > max_records {
+                return Err(CsvError {
+                    message: format!("too many rows (limit {max_records})"),
+                    line,
+                });
+            }
         } else if c == '\n' {
             line += 1;
             record.push(std::mem::take(&mut field));
@@ -203,5 +238,57 @@ mod tests {
     #[test]
     fn unterminated_quote_errors() {
         assert!(parse_csv("A\n\"oops\n").is_err());
+    }
+
+    #[test]
+    fn strips_leading_utf8_bom() {
+        // An Excel "CSV UTF-8" export prepends a BOM; the first header must not
+        // carry it, so `r.Region` resolves.
+        let rows = parse_csv("\u{feff}Region,Value\nNorth,100\n").unwrap();
+        assert_eq!(rows[0][0].0, "Region");
+        assert_eq!(rows[0][0].1, "North");
+    }
+
+    #[test]
+    fn classic_mac_cr_line_endings_split_rows() {
+        // Bare `\r` line endings must terminate records, not be deleted (which would
+        // fold the whole file into one header row).
+        let rows = parse_csv("A,B\r1,2\r3,4\r").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[0],
+            vec![("A".into(), "1".into()), ("B".into(), "2".into())]
+        );
+        assert_eq!(
+            rows[1],
+            vec![("A".into(), "3".into()), ("B".into(), "4".into())]
+        );
+    }
+
+    #[test]
+    fn crlf_folds_to_one_line_break() {
+        let rows = parse_csv("A,B\r\n1,2\r\n").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0],
+            vec![("A".into(), "1".into()), ("B".into(), "2".into())]
+        );
+    }
+
+    #[test]
+    fn mid_field_quote_is_a_literal_character() {
+        // A quote not at the field start is literal content, not a mode switch, so
+        // commas and newlines after it are still delimiters.
+        let rows = parse_csv("A,B\nsays \"hi\" ok,2\n").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][0].1, "says \"hi\" ok");
+        assert_eq!(rows[0][1].1, "2");
+    }
+
+    #[test]
+    fn duplicate_header_columns_error() {
+        // A duplicated header would silently collapse to one JS object key; reject.
+        let err = parse_csv("A,A\n1,2\n").unwrap_err();
+        assert!(err.message.contains("duplicate header"));
     }
 }

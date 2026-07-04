@@ -27,7 +27,7 @@ use crate::model_routes::{
     LocalEdgeDto,
 };
 use crate::resolve::kind_str;
-use crate::routes::{broadcast_with_version, map_batch_error, snapshot};
+use crate::routes::{blocking_commit, broadcast_with_version, snapshot};
 use crate::{ApiError, AppState};
 
 // ---- request bodies ----
@@ -179,6 +179,10 @@ fn map_dimension_error(e: DimensionError) -> ApiError {
             cubes.len(),
             cubes.join(", ")
         )),
+        // A durable-registry persist failure (E3): the delete did not take effect,
+        // so surface a clean 500 rather than a silent best-effort. The cause is
+        // never serialized (RG-12), matching the cube write path.
+        DimensionError::Persist(_) => ApiError::internal(),
     }
 }
 
@@ -192,6 +196,10 @@ fn map_promote_error(e: PromoteError) -> ApiError {
             "dimension is already a global dimension (#{})",
             id.0
         )),
+        // A durable-registry persist failure (E3): the promotion did not take
+        // effect, so surface a clean 500 rather than a silent best-effort. The
+        // cause is never serialized (RG-12).
+        PromoteError::Persist(_) => ApiError::internal(),
     }
 }
 
@@ -239,10 +247,11 @@ pub(crate) async fn register_dimension(
     // engine realizes it into a core `Dimension` through the validated element/
     // edge path and the registry mints its stable id.
     let def = build_dimension_def(&body.name, &body.elements, &body.edges)?;
-    let id = state
-        .engine
-        .register_dimension_def(&def)
-        .map_err(map_batch_error)?;
+    // Run the registry write (fsync) off the async workers (A2).
+    let id = blocking_commit(&state.engine, move |engine| {
+        engine.register_dimension_def(&def)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -379,24 +388,21 @@ pub(crate) async fn grow_dimension(
         })
         .collect();
 
-    let generation = state
-        .engine
-        .grow_dimension(DimensionId(id), &elements, &edges)
-        .map_err(map_batch_error)?;
+    // Run the grow + per-cube fan-out (writer locks + fsyncs) off the async
+    // workers (A2).
+    let generation = blocking_commit(&state.engine, move |engine| {
+        engine.grow_dimension(DimensionId(id), &elements, &edges)
+    })
+    .await?;
 
-    // Broadcast each fanned-out cube's new version so connected UIs refresh.
+    // A1: the grow fans out to each referencing cube through `define_elements`, and
+    // each per-cube commit fires the commit-ordered change feed from inside the
+    // engine, so connected UIs refresh in commit order without a handler broadcast.
+    // `fanned_out_to` is still reported in the response.
     let fanned_out_to = state
         .engine
         .dimension_registry()
         .referencing(DimensionId(id));
-    for cube in &fanned_out_to {
-        if let Some(version) = state.engine.version(cube) {
-            let _ = state.events.send(crate::ws::ChangeEvent::ObjectsChanged {
-                cube: cube.clone(),
-                version,
-            });
-        }
-    }
 
     audit(
         &state,
@@ -427,9 +433,12 @@ pub(crate) async fn delete_dimension(
         None,
         AccessLevel::Write,
     )?;
-    state
-        .engine
-        .delete_dimension(DimensionId(id))
+    // Run the registry write (fsync) off the async workers (A2); `DimensionError`
+    // has its own mapper, so this does not use the `BatchError` helper.
+    let engine = state.engine.clone();
+    tokio::task::spawn_blocking(move || engine.delete_dimension(DimensionId(id)))
+        .await
+        .map_err(|_| ApiError::internal())?
         .map_err(map_dimension_error)?;
     audit(
         &state,
@@ -499,21 +508,20 @@ pub(crate) async fn edit_dimension_by_id(
     }
 
     let edit = body.into_edit()?;
-    let outcome = state
-        .engine
-        .edit_dimension(&entry_cube, &dim_name, &edit)
-        .map_err(map_batch_error)?;
+    // Run the edit + per-cube cell remap (writer locks + fsyncs) off the async
+    // workers (A2).
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.edit_dimension(&entry_cube, &dim_name, &edit)
+    })
+    .await?;
 
-    // Broadcast every fanned-out cube's new version so connected UIs refresh.
+    // A1: the edit fans out to each referencing cube, and each per-cube commit fires
+    // the commit-ordered change feed from inside the engine, so UIs refresh in commit
+    // order without a handler broadcast. `fanned_out_to` is still reported.
     let fanned_out_to = state
         .engine
         .dimension_registry()
         .referencing(DimensionId(id));
-    for cube in &fanned_out_to {
-        if let Some(version) = state.engine.version(cube) {
-            broadcast_with_version(&state, cube, version);
-        }
-    }
 
     audit(
         &state,
@@ -554,18 +562,21 @@ pub(crate) async fn promote_dimension(
     // the (unmasked) global registry, where get_dimension would expose every
     // element name. Mirrors the rule/flow/feeder whole-cube gates.
     deny_if_element_restricted(&state, &auth, &snapshot(&state, &cube)?)?;
-    let id = state
-        .engine
-        .promote_cube_dimension(&cube, &dim)
+    // Run the registry write (fsync) off the async workers (A2); `PromoteError`
+    // has its own mapper.
+    let engine = state.engine.clone();
+    let (cube_c, dim_c) = (cube.clone(), dim.clone());
+    let id = tokio::task::spawn_blocking(move || engine.promote_cube_dimension(&cube_c, &dim_c))
+        .await
+        .map_err(|_| ApiError::internal())?
         .map_err(map_promote_error)?;
     // The cube's data/version is unchanged, but its dimension is now
-    // registry-backed; broadcast so connected explorers refresh the dimension
-    // list (the dimension moves from "lives in cube" to a global entry).
+    // registry-backed; broadcast so connected explorers refresh the dimension list
+    // (the dimension moves from "lives in cube" to a global entry). Promotion is a
+    // registry-only op with no cube commit, so the commit-ordered change feed (A1)
+    // never fires for it — this is one of the few places a handler still emits.
     if let Some(version) = state.engine.version(&cube) {
-        let _ = state.events.send(crate::ws::ChangeEvent::ObjectsChanged {
-            cube: cube.clone(),
-            version,
-        });
+        broadcast_with_version(&state, &cube, version);
     }
     audit(
         &state,

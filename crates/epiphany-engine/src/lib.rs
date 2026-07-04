@@ -17,7 +17,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use arc_swap::ArcSwap;
 use epiphany_core::{
@@ -47,6 +47,42 @@ pub type Version = u64;
 pub struct CommitOutcome {
     /// The committed cube's new version (also the global commit id).
     pub version: Version,
+}
+
+/// A commit event emitted from inside the engine's commit path (E4), carrying the
+/// cube that changed and the new global [`Version`] assigned to it. The version
+/// is the global commit id (minted from the shared, monotonic counter), so a
+/// consumer can totally-order events across cubes by `version` even though the
+/// per-cube writer locks fire independently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitEvent {
+    /// The cube whose state advanced.
+    pub cube: String,
+    /// The new global commit version published for that cube.
+    pub version: Version,
+    /// The sandbox this commit wrote into, when it was a private what-if write
+    /// (`sandbox_set_cells`); `None` for a base-cube commit (a base write, a
+    /// definition op, a structural edit, a create, or a sandbox *commit* that
+    /// applies overrides to the base). Lets an observer route a private
+    /// sandbox-write notification only to the sandbox's owner while a base commit
+    /// is delivered to every cube reader (the API change feed relies on this to
+    /// preserve ADR-0014 sandbox privacy while ordering events in commit order).
+    pub sandbox: Option<String>,
+}
+
+/// An additive seam for observing commits in order (E4). The engine invokes
+/// [`on_commit`](CommitObserver::on_commit) from inside the commit path, right
+/// after a new version is published and while the cube's writer lock is still
+/// held — so two commits to the *same* cube are observed strictly in version
+/// order. Across cubes, order events by [`CommitEvent::version`] (the global
+/// commit id). The default engine has no observer, so this changes no existing
+/// behavior; the API layer subscribes later to fix change-feed ordering. The
+/// callback must be cheap and non-blocking (it runs under the writer lock); a
+/// real consumer forwards the event to its own queue/broadcast and returns.
+pub trait CommitObserver: Send + Sync {
+    /// Called once per successful commit, in per-cube version order, before the
+    /// committing call returns to its caller.
+    fn on_commit(&self, event: &CommitEvent);
 }
 
 /// Why a batch did not commit. On any variant the cube is left unchanged.
@@ -109,6 +145,10 @@ pub enum DimensionError {
     Unknown(DimensionId),
     /// The dimension is still referenced by these cubes, so it cannot be deleted.
     Referenced(Vec<String>),
+    /// Durably persisting the registry after the change failed (E3). The
+    /// in-memory registry is left unchanged (the delete is not published), so a
+    /// caller sees a clean failure instead of a silent divergence from disk.
+    Persist(PersistError),
 }
 
 impl std::fmt::Display for DimensionError {
@@ -121,6 +161,9 @@ impl std::fmt::Display for DimensionError {
                 cubes.len(),
                 cubes.join(", ")
             ),
+            DimensionError::Persist(e) => {
+                write!(f, "could not persist the dimension registry: {e}")
+            }
         }
     }
 }
@@ -138,6 +181,10 @@ pub enum PromoteError {
     /// The dimension is already a global (registry-backed) dimension for this
     /// cube, so there is nothing to promote.
     AlreadyGlobal(DimensionId),
+    /// Durably persisting the registry after the promotion failed (E3). The
+    /// minted identity is not published, so the caller never holds a global
+    /// dimension id whose durable home was silently lost.
+    Persist(PersistError),
 }
 
 impl std::fmt::Display for PromoteError {
@@ -149,6 +196,9 @@ impl std::fmt::Display for PromoteError {
             }
             PromoteError::AlreadyGlobal(id) => {
                 write!(f, "dimension is already a global dimension (#{})", id.0)
+            }
+            PromoteError::Persist(e) => {
+                write!(f, "could not persist the dimension registry: {e}")
             }
         }
     }
@@ -244,12 +294,78 @@ impl ReadSnapshot {
 struct Writer {
     store: Store,
     version: Version,
+    /// Set when a durability failure left the on-disk snapshot/WAL relationship
+    /// unverified AND the recovery checkpoint (which would rewrite both from the
+    /// last published model) also failed. Recovery posture: reads keep serving
+    /// the last published version (it is immutable and already replicated to
+    /// readers), while every write to this cube is rejected with a persist
+    /// error — accepting one could append WAL records that replay onto a
+    /// different on-disk element order after a crash (wrong cells). Cleared by
+    /// a later successful [`Engine::checkpoint`] (which re-establishes
+    /// snapshot + WAL == published) or by reopening the store (restart).
+    fail_stopped: bool,
 }
 
 /// Per-cube shared state: the serialized writer plus the lock-free published version.
 struct CubeState {
     writer: Mutex<Writer>,
     published: ArcSwap<Published>,
+}
+
+/// Lock one of the engine's coarse topology mutexes (`topology`,
+/// `dim_topology`), recovering from a poisoned lock instead of panicking. The
+/// guarded value is `()` and every structure mutated under these locks is
+/// staged on a clone and published atomically via `ArcSwap` (readers always
+/// see a consistent old-or-new value), so a panic under the lock cannot leave
+/// partial state behind: recovery is safe, and it keeps dimension and cube
+/// topology operations available instead of turning every later call into a
+/// cascade of panics.
+fn lock_coarse(mutex: &Mutex<()>) -> MutexGuard<'_, ()> {
+    mutex.lock().unwrap_or_else(|poisoned| {
+        mutex.clear_poison();
+        poisoned.into_inner()
+    })
+}
+
+/// Lock a cube's writer, recovering from a poisoned lock instead of panicking.
+///
+/// A panic mid-commit (a bug in a core op, an allocation failure during the
+/// model clone) may have left the store's in-memory model and the writer's
+/// version mid-mutation. `published` is only ever updated on success, so it is
+/// the engine's known-good state: recovery resynchronizes the writer's version
+/// and the store's in-memory model from it, then re-checkpoints so the on-disk
+/// snapshot/WAL match it too (the panicked op may have already checkpointed a
+/// state that was never published). If that resync checkpoint fails the writer
+/// is fail-stopped (see [`Writer::fail_stopped`]) rather than left pointing at
+/// unverified disk state. Either way the caller gets a usable guard and a
+/// structured error path instead of a poisoned-mutex panic on every write.
+fn lock_writer(state: &CubeState) -> MutexGuard<'_, Writer> {
+    match state.writer.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => {
+            state.writer.clear_poison();
+            let mut writer = poisoned.into_inner();
+            let published = state.published.load();
+            writer.version = published.version;
+            writer.store.restore_model(published.model.clone());
+            if writer.store.checkpoint().is_err() {
+                writer.fail_stopped = true;
+            }
+            writer
+        }
+    }
+}
+
+/// The error a fail-stopped cube writer returns for every write until it heals
+/// (see [`Writer::fail_stopped`]): reads keep serving the last published
+/// version; a successful [`Engine::checkpoint`] or a store reopen recovers.
+fn fail_stopped_error(cube: &str) -> BatchError {
+    BatchError::Persist(PersistError::Io(std::io::Error::other(format!(
+        "cube '{cube}' is fail-stopped: a durability failure left its on-disk \
+         state unverified and the recovery checkpoint failed; reads continue \
+         from the last published version, writes are rejected until a \
+         checkpoint succeeds or the server restarts"
+    ))))
 }
 
 /// The engine: a set of named, durably-backed cubes with snapshot-isolation reads
@@ -275,9 +391,25 @@ pub struct Engine {
     /// cube set; mutated under `dim_topology`. Additive and not yet wired into the
     /// live read/commit path.
     dimensions: Arc<ArcSwap<DimensionRegistry>>,
-    /// Serializes registry mutations. The lock order is `dim_topology` before any
-    /// per-cube `writer` (ADR-0024) to preclude an AB/BA deadlock.
+    /// Serializes the *registry read-modify-write* (clone → durable persist →
+    /// ArcSwap publish). The lock order is `dim_topology` before any per-cube
+    /// `writer` (ADR-0024) to preclude an AB/BA deadlock. Held only briefly for the
+    /// registry swap itself; the expensive per-cube fan-out repacks run *outside*
+    /// it, serialized instead by [`registry_edit`](Self::registry_edit) (E2).
     dim_topology: Arc<Mutex<()>>,
+    /// Serializes the whole of a shared-dimension **grow / edit** (registry swap +
+    /// the fan-out to every referencing cube), so two structural fan-outs to the
+    /// same dimension never interleave and apply out of order (consistency, E2).
+    /// It is the OUTERMOST registry lock: the total order is `registry_edit` →
+    /// `dim_topology` → per-cube `writer`, never the reverse, so no cycle. Because
+    /// grow/edit release `dim_topology` before their fan-out (holding only
+    /// `registry_edit` across the per-cube fsyncs), other registry ops that need
+    /// just the brief `dim_topology` — `register_dimension`, `attach_dimension`,
+    /// `create_cube_with_refs`, `delete_dimension`, `promote_cube_dimension` — are
+    /// no longer blocked for the entire fan-out, shrinking the reader-visible
+    /// critical section while preserving the ADR-0024 lock order and the
+    /// durable-registry-write-before-repack invariant.
+    registry_edit: Arc<Mutex<()>>,
     /// On-disk root (`<data_dir>/dimensions`) for the durable registry. `None`
     /// keeps the registry in memory only (e.g. tests without a directory).
     dimensions_dir: Option<PathBuf>,
@@ -285,6 +417,29 @@ pub struct Engine {
     /// on `with_dimensions_dir` so ids never collide across restarts (the commit
     /// `IdGen` restarts each boot, so dimension ids use this separate counter).
     next_dim_id: Arc<AtomicU64>,
+    /// Data directory for the durable commit high-water mark (E1). When set, every
+    /// commit records its freshly-minted version here (fsynced) BEFORE publishing,
+    /// so a restart seeds the version counter past it and versions strictly
+    /// increase across restarts (no ABA reuse of a `base_version`/cache key). The
+    /// composition root seeds the shared [`IdGen`] from this mark, then sets the
+    /// dir so subsequent commits keep it current. `None` (tests, embedded engines)
+    /// keeps versions in memory only.
+    commit_watermark_dir: Option<PathBuf>,
+    /// Serializes durable high-water writes so two cubes committing concurrently
+    /// cannot race the watermark file (each commit already advances the shared,
+    /// atomic [`IdGen`], so versions are globally ordered; this lock only guards
+    /// the tiny file write, never the commit's data path).
+    commit_watermark_lock: Arc<Mutex<()>>,
+    /// Optional commit observer (E4): invoked in per-cube version order from the
+    /// commit path, after publish. Empty by default (no behavior change); the API
+    /// injects one to emit an ordered change feed. Held in a SHARED, swappable slot
+    /// so registering it on any `Engine` handle takes effect for every clone
+    /// (including handles cloned before registration) — the composition root clones
+    /// the engine into `AppState` and the scheduler before the API installs the
+    /// observer, and the commit that fires the hook may come through any of those
+    /// clones. Read once per commit under a tiny mutex (just an `Arc` clone, far
+    /// cheaper than the commit's own fsync and uncontended vs the lock-free reads).
+    commit_observer: Arc<Mutex<Option<Arc<dyn CommitObserver>>>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -307,7 +462,11 @@ impl Engine {
                     model: store.model().clone(),
                 });
                 let state = Arc::new(CubeState {
-                    writer: Mutex::new(Writer { store, version: 0 }),
+                    writer: Mutex::new(Writer {
+                        store,
+                        version: 0,
+                        fail_stopped: false,
+                    }),
                     published,
                 });
                 (name, state)
@@ -320,8 +479,12 @@ impl Engine {
             topology: Arc::new(Mutex::new(())),
             dimensions: Arc::new(ArcSwap::from_pointee(DimensionRegistry::default())),
             dim_topology: Arc::new(Mutex::new(())),
+            registry_edit: Arc::new(Mutex::new(())),
             dimensions_dir: None,
             next_dim_id: Arc::new(AtomicU64::new(1)),
+            commit_watermark_dir: None,
+            commit_watermark_lock: Arc::new(Mutex::new(())),
+            commit_observer: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -331,9 +494,45 @@ impl Engine {
     /// new ids never collide across restarts) and reconciles every referencing
     /// cube forward to the loaded dimension (idempotent append), so a cube that
     /// missed a fan-out before a crash catches up.
-    pub fn with_dimensions_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// Panics if the registry is present but unreadable, or if a referencing
+    /// cube cannot be reconciled — see
+    /// [`try_with_dimensions_dir`](Self::try_with_dimensions_dir) for why boot
+    /// must fail loudly here rather than continue. Use the `try_` variant to
+    /// handle the error instead.
+    pub fn with_dimensions_dir(self, dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
-        let entries = load_registry(&dir).unwrap_or_default();
+        match self.try_with_dimensions_dir(dir.clone()) {
+            Ok(engine) => engine,
+            Err(e) => panic!(
+                "failed to bring up the shared-dimension registry from '{}': {e}",
+                dir.display()
+            ),
+        }
+    }
+
+    /// Fallible form of [`with_dimensions_dir`](Self::with_dimensions_dir).
+    ///
+    /// Fail-closed: an *absent* registry is an empty one (first run), but a
+    /// registry that is present and unreadable (corrupt `index.toml`, a listed
+    /// `<id>.model` body missing or unparsable) is an error, never silently
+    /// substituted with an empty registry — the registry is the durable
+    /// authority for shared-dimension identity (ADR-0024), and booting with an
+    /// empty substitute would quarantine every dimension body on the next
+    /// save, drop every cube reference set (silently stopping fan-out), and
+    /// re-mint `DimensionId`s that were already handed out. A failed reconcile
+    /// of a referencing cube is likewise an error: reconcile is the mechanism
+    /// ADR-0024 relies on to keep a cube in lockstep with its shared
+    /// dimension, so a cube that cannot be brought forward would silently
+    /// serve rollups that diverge from every sibling cube.
+    pub fn try_with_dimensions_dir(
+        mut self,
+        dir: impl Into<PathBuf>,
+    ) -> Result<Self, PersistError> {
+        let dir = dir.into();
+        let entries = load_registry(&dir)?;
         let mut registry = DimensionRegistry::default();
         let mut max_id = 0u64;
         let mut reconcile: Vec<(String, Vec<ElementSpec>, Vec<EdgeSpec>)> = Vec::new();
@@ -357,12 +556,23 @@ impl Engine {
         self.dimensions.store(Arc::new(registry));
         self.dimensions_dir = Some(dir);
         // Bring any cube that lagged a fan-out forward (idempotent, append-only).
+        // A failure here means the cube genuinely diverged from the registry (or
+        // its store is failing); surface it rather than boot a silently
+        // inconsistent server.
         for (cube, els, edgs) in reconcile {
             if self.has_cube(&cube) {
-                let _ = self.define_elements(&cube, None, &els, &edgs);
+                if let Err(e) = self.define_elements(&cube, None, &els, &edgs) {
+                    return Err(match e {
+                        BatchError::Persist(e) => e,
+                        e => PersistError::Corrupt(format!(
+                            "cube '{cube}' could not be reconciled to its shared \
+                             dimension: {e}"
+                        )),
+                    });
+                }
             }
         }
-        self
+        Ok(self)
     }
 
     /// Enable runtime cube creation by telling the engine where to create new
@@ -371,6 +581,72 @@ impl Engine {
     pub fn with_cubes_dir(mut self, cubes_dir: impl Into<PathBuf>) -> Self {
         self.cubes_dir = Some(cubes_dir.into());
         self
+    }
+
+    /// Persist the durable commit high-water mark under `dir` (E1). Once set,
+    /// every commit records its minted version here (fsynced) *before* it is
+    /// published, so no restart can reissue an already-observable version.
+    ///
+    /// The caller MUST first seed the shared [`IdGen`] past the existing mark
+    /// (see [`read_commit_watermark`](epiphany_persist::read_commit_watermark) and
+    /// [`IdGen::starting_at`]) so the counter continues above the last durable
+    /// version; this method only keeps the mark current from then on. Without it
+    /// (tests, embedded engines) versions live in memory only and restart at the
+    /// counter's seed.
+    pub fn with_commit_watermark_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.commit_watermark_dir = Some(dir.into());
+        self
+    }
+
+    /// Durably record `version` as the commit high-water mark (E1), if a watermark
+    /// directory is configured. Called on the commit path AFTER a version is
+    /// minted and BEFORE it is published, so a crash can never leave a published
+    /// version above the durable mark. Monotonic and idempotent at the persist
+    /// layer, so an out-of-order advance (two cubes racing) never moves it
+    /// backwards. A persist failure is propagated as [`BatchError::Persist`]: the
+    /// caller must not publish a version whose high-water could not be recorded,
+    /// or a later restart might alias it (the minted number is simply skipped,
+    /// leaving a harmless gap). A no-op when no directory is set.
+    fn record_commit_version(&self, version: Version) -> Result<(), BatchError> {
+        let Some(dir) = self.commit_watermark_dir.as_ref() else {
+            return Ok(());
+        };
+        let _guard = lock_coarse(&self.commit_watermark_lock);
+        epiphany_persist::write_commit_watermark(dir, version).map_err(BatchError::Persist)
+    }
+
+    /// Register a commit observer (E4). The engine invokes it in per-cube version
+    /// order from inside the commit path (after publish), so a consumer can build
+    /// an ordered change feed. Additive: without this the engine emits nothing and
+    /// behaves exactly as before. Replaces any previously-set observer.
+    pub fn with_commit_observer(self, observer: Arc<dyn CommitObserver>) -> Self {
+        // The slot is SHARED across clones, so this registration is visible to every
+        // handle (the composition root cloned the engine into `AppState` and the
+        // scheduler before installing the observer). Replaces any previous observer.
+        *self.commit_observer.lock().expect("commit observer mutex") = Some(observer);
+        self
+    }
+
+    /// Emit a commit event to the registered observer (E4), if any. Called from
+    /// the commit path after a version is published, while the cube's writer lock
+    /// is still held, so same-cube commits are observed in version order. A no-op
+    /// when no observer is set (the default), so existing behavior is unchanged.
+    fn notify_commit(&self, cube: &str, version: Version, sandbox: Option<&str>) {
+        // Clone the shared observer out under a tiny lock, then invoke it OUTSIDE the
+        // guard; `None` (the default) is a cheap no-op, so a commit costs nothing
+        // extra when no feed is installed.
+        let observer = self
+            .commit_observer
+            .lock()
+            .expect("commit observer mutex")
+            .clone();
+        if let Some(observer) = observer {
+            observer.on_commit(&CommitEvent {
+                cube: cube.to_string(),
+                version,
+                sandbox: sandbox.map(str::to_string),
+            });
+        }
     }
 
     /// Look up a cube's shared state, cloning the `Arc` so callers can drop the
@@ -395,18 +671,22 @@ impl Engine {
     /// id. Mints the id from the dedicated dimension counter, copy-on-write swaps
     /// it into the registry under `dim_topology`, and persists. Not yet referenced
     /// by any cube.
-    pub fn register_dimension(&self, dimension: Dimension) -> DimensionId {
-        let _topo = self
-            .dim_topology
-            .lock()
-            .expect("dim_topology mutex poisoned");
+    ///
+    /// Fail-closed (ADR-0024: the registry is the durable authority): the durable
+    /// registry write happens *before* the new dimension is published, so a
+    /// persist failure returns [`BatchError::Persist`] with the registry
+    /// unchanged — the caller never holds a minted id whose durable home was
+    /// silently lost (the unused id leaves a harmless gap in the sequence).
+    pub fn register_dimension(&self, dimension: Dimension) -> Result<DimensionId, BatchError> {
+        let _topo = lock_coarse(&self.dim_topology);
         let id = DimensionId(self.next_dim_id.fetch_add(1, Ordering::SeqCst));
         let shared = Arc::new(SharedDimension::new(id, dimension));
         let mut next = (**self.dimensions.load()).clone();
         next.put(shared);
+        self.persist_registry_state(&next)
+            .map_err(BatchError::Persist)?;
         self.dimensions.store(Arc::new(next));
-        self.persist_registry();
-        id
+        Ok(id)
     }
 
     /// Build a shared dimension from a [`DimensionDef`] through the same validated
@@ -418,30 +698,39 @@ impl Engine {
         let built = SharedDimension::new(DimensionId(0), Dimension::new(&def.name))
             .grown(&elements, &edges)
             .map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
-        Ok(self.register_dimension(built.dimension))
+        self.register_dimension(built.dimension)
     }
 
     /// Record that `cube` references shared dimension `id` (ADR-0024 v1): the cube
     /// has materialized a copy of it, and a later grow fans out to the cube.
-    pub fn attach_dimension(&self, id: DimensionId, cube: &str) {
-        let _topo = self
-            .dim_topology
-            .lock()
-            .expect("dim_topology mutex poisoned");
+    ///
+    /// Fail-closed like [`register_dimension`](Self::register_dimension): the
+    /// reference is durably persisted before it is published, so a persist
+    /// failure returns [`BatchError::Persist`] with the registry unchanged (a
+    /// silently lost reference would stop future grows/edits from fanning out
+    /// to the cube).
+    pub fn attach_dimension(&self, id: DimensionId, cube: &str) -> Result<(), BatchError> {
+        let _topo = lock_coarse(&self.dim_topology);
         let mut next = (**self.dimensions.load()).clone();
         next.attach(id, cube);
+        self.persist_registry_state(&next)
+            .map_err(BatchError::Persist)?;
         self.dimensions.store(Arc::new(next));
-        self.persist_registry();
+        Ok(())
     }
 
-    /// Persist the current registry to `dimensions_dir`, if durable. Best-effort:
-    /// a write failure is not fatal because every referencing cube already holds
-    /// its own durable copy of the dimension (the registry reconciles on reload).
-    fn persist_registry(&self) {
+    /// Durably persist `registry` to `dimensions_dir` (ADR-0024: the durable
+    /// registry write happens *before* the new state is published or fanned
+    /// out, so the registry on disk is always the authority). Callers stage the
+    /// next registry on a clone, persist it here, and only publish on success.
+    /// An engine without a dimensions dir (tests, embedded engines) keeps the
+    /// registry in memory only and always succeeds. Each save rewrites the
+    /// whole registry, so a later successful save also heals any earlier
+    /// best-effort failure.
+    fn persist_registry_state(&self, registry: &DimensionRegistry) -> Result<(), PersistError> {
         let Some(dir) = self.dimensions_dir.as_ref() else {
-            return;
+            return Ok(());
         };
-        let registry = self.dimensions.load();
         let entries: Vec<RegistryEntry> = registry
             .all()
             .into_iter()
@@ -452,7 +741,7 @@ impl Engine {
                 dimension: shared.dimension.clone(),
             })
             .collect();
-        let _ = save_registry(dir, &entries);
+        save_registry(dir, &entries)
     }
 
     /// Append elements/edges to a registered shared dimension, publish the new
@@ -461,38 +750,58 @@ impl Engine {
     /// authoritative event; per-cube application reuses the append-only,
     /// idempotent `define_elements` path keyed by the dimension's name, so every
     /// referencing cube converges to the grown dimension. A rejected change leaves
-    /// the registry untouched. Holds `dim_topology` across the per-cube writer
-    /// locks (the `dim_topology` -> `writer` order, never the reverse).
+    /// the registry untouched.
+    ///
+    /// Locking (E2): the whole grow is serialized by `registry_edit`, but the
+    /// `dim_topology` critical section is shrunk to just the registry read-modify-
+    /// write (build → durable persist → ArcSwap publish). The per-cube fan-out
+    /// repacks then run WITHOUT `dim_topology` held (only `registry_edit`), so they
+    /// no longer block a concurrent `register_dimension`/`attach`/create-with-refs
+    /// that needs only the brief `dim_topology`. The durable registry write still
+    /// precedes any repack (ADR-0024), and `registry_edit` keeps two fan-outs from
+    /// interleaving; the lock order `registry_edit` → `dim_topology` → `writer` is
+    /// acyclic.
     pub fn grow_dimension(
         &self,
         id: DimensionId,
         elements: &[ElementSpec],
         edges: &[EdgeSpec],
     ) -> Result<u64, BatchError> {
-        let _topo = self
-            .dim_topology
-            .lock()
-            .expect("dim_topology mutex poisoned");
-        let snapshot = self.dimensions.load_full();
-        let current = snapshot.get(id).cloned().ok_or_else(|| {
-            BatchError::Invalid(QueryError::Model(ModelError::UnknownDimension {
-                cube: "registry".to_string(),
-                dimension: format!("#{}", id.0),
-            }))
-        })?;
-        let grown = current
-            .grown(elements, edges)
-            .map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
-        let generation = grown.generation;
-        let dim_name = grown.dimension.name().to_string();
+        // Outermost: serialize the whole grow (registry swap + fan-out) so no two
+        // structural fan-outs to the registry interleave.
+        let _edit = lock_coarse(&self.registry_edit);
 
-        // Publish the new registry generation (the authoritative event).
-        let mut next = (**self.dimensions.load()).clone();
-        next.put(Arc::new(grown));
-        self.dimensions.store(Arc::new(next));
+        // Registry read-modify-write under the SHRUNK dim_topology section. Publish
+        // the new generation durably, then release dim_topology before the fan-out.
+        let (generation, dim_name, referrers) = {
+            let _topo = lock_coarse(&self.dim_topology);
+            let snapshot = self.dimensions.load_full();
+            let current = snapshot.get(id).cloned().ok_or_else(|| {
+                BatchError::Invalid(QueryError::Model(ModelError::UnknownDimension {
+                    cube: "registry".to_string(),
+                    dimension: format!("#{}", id.0),
+                }))
+            })?;
+            let grown = current
+                .grown(elements, edges)
+                .map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
+            let generation = grown.generation;
+            let dim_name = grown.dimension.name().to_string();
+            // Durably persist, then publish, the new registry generation (the
+            // authoritative event; the durable write comes first, fail-closed, per
+            // ADR-0024 — a persist failure leaves the registry untouched).
+            let mut next = (**self.dimensions.load()).clone();
+            next.put(Arc::new(grown));
+            self.persist_registry_state(&next)
+                .map_err(BatchError::Persist)?;
+            self.dimensions.store(Arc::new(next));
+            (generation, dim_name, snapshot.referencing(id))
+        };
 
-        // Fan out to every referencing cube, re-stamping the dimension name so the
-        // append targets each cube's materialized copy of this dimension.
+        // Fan out to every referencing cube WITHOUT dim_topology held (still under
+        // registry_edit), re-stamping the dimension name so the append targets each
+        // cube's materialized copy. The append is idempotent and forward-only, so a
+        // cube already at this generation is a no-op.
         let els: Vec<ElementSpec> = elements
             .iter()
             .map(|e| ElementSpec {
@@ -510,8 +819,7 @@ impl Engine {
                 weight: e.weight,
             })
             .collect();
-        self.persist_registry();
-        for cube in snapshot.referencing(id) {
+        for cube in referrers {
             if self.has_cube(&cube) {
                 self.define_elements(&cube, None, &els, &edgs)?;
             }
@@ -548,51 +856,69 @@ impl Engine {
         dim_name: &str,
         edit: &DimensionEdit,
     ) -> Result<CommitOutcome, BatchError> {
-        let _topo = self
-            .dim_topology
-            .lock()
-            .expect("dim_topology mutex poisoned");
+        // Outermost: serialize the whole edit (registry swap + fan-out) so two
+        // structural fan-outs to the same dimension never interleave and apply the
+        // (non-commutative) edits out of order across cubes (consistency, E2).
+        let _edit = lock_coarse(&self.registry_edit);
 
-        // Registry-backed for this cube? Resolve under the held lock.
-        let backing = self.dimensions.load().backing_of(cube, dim_name);
+        // Resolve backing and, if registry-backed, do the registry read-modify-
+        // write under the SHRUNK dim_topology section, then release dim_topology
+        // before the fan-out. `referrers` is `None` for a cube-embedded dimension.
+        let referrers: Option<Vec<String>> = {
+            let _topo = lock_coarse(&self.dim_topology);
+            match self.dimensions.load().backing_of(cube, dim_name) {
+                Some(id) => {
+                    // Validate the registry edit first; a rejection touches nothing.
+                    let snapshot = self.dimensions.load_full();
+                    let current = snapshot.get(id).cloned().ok_or_else(|| {
+                        BatchError::Invalid(QueryError::Model(ModelError::UnknownDimension {
+                            cube: "registry".to_string(),
+                            dimension: format!("#{}", id.0),
+                        }))
+                    })?;
+                    let edited = current
+                        .edited(edit)
+                        .map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
+                    // Durably persist, then publish, the new registry generation
+                    // (the authoritative event; durable write first, fail-closed,
+                    // per ADR-0024 — a persist failure leaves the registry
+                    // untouched).
+                    let mut next = (**self.dimensions.load()).clone();
+                    next.put(Arc::new(edited));
+                    self.persist_registry_state(&next)
+                        .map_err(BatchError::Persist)?;
+                    self.dimensions.store(Arc::new(next));
+                    Some(snapshot.referencing(id))
+                }
+                None => None,
+            }
+        };
 
-        if let Some(id) = backing {
-            // Validate the registry edit first; a rejection touches nothing.
-            let snapshot = self.dimensions.load_full();
-            let current = snapshot.get(id).cloned().ok_or_else(|| {
-                BatchError::Invalid(QueryError::Model(ModelError::UnknownDimension {
-                    cube: "registry".to_string(),
-                    dimension: format!("#{}", id.0),
-                }))
-            })?;
-            let edited = current
-                .edited(edit)
-                .map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
+        let Some(referrers) = referrers else {
+            // Cube-embedded dimension: edit only this cube (no registry, no fan-out).
+            return self.apply_dimension_edit_to_cube(cube, dim_name, edit);
+        };
 
-            // Publish the new registry generation (the authoritative event).
-            let mut next = (**self.dimensions.load()).clone();
-            next.put(Arc::new(edited));
-            self.dimensions.store(Arc::new(next));
-            self.persist_registry();
-
-            // Fan the same name-addressed edit out to every referencing cube; each
-            // cube remaps its own cells. The requesting cube is included in the
-            // referrer set, so it is edited here too.
-            let mut last = None;
-            for referrer in snapshot.referencing(id) {
-                if self.has_cube(&referrer) {
-                    last = Some(self.apply_dimension_edit_to_cube(&referrer, dim_name, edit)?);
+        // Fan the same name-addressed edit out to every referencing cube WITHOUT
+        // dim_topology held (still serialized by registry_edit); each cube remaps
+        // its own cells. The requesting cube is included in the referrer set, so it
+        // is edited here too. Return the outcome of the cube the CALLER named (not
+        // whichever referrer the sorted fan-out visited last): the caller feeds this
+        // version back into its optimistic base-version bookkeeping for that cube.
+        let mut requested = None;
+        for referrer in referrers {
+            if self.has_cube(&referrer) {
+                let outcome = self.apply_dimension_edit_to_cube(&referrer, dim_name, edit)?;
+                if referrer == cube {
+                    requested = Some(outcome);
                 }
             }
-            // If the cube somehow is not in the referrer set, edit it directly so
-            // the caller still gets a committed version for it.
-            match last {
-                Some(outcome) => Ok(outcome),
-                None => self.apply_dimension_edit_to_cube(cube, dim_name, edit),
-            }
-        } else {
-            // Cube-embedded dimension: edit only this cube.
-            self.apply_dimension_edit_to_cube(cube, dim_name, edit)
+        }
+        // If the cube somehow is not in the referrer set, edit it directly so the
+        // caller still gets a committed version for it.
+        match requested {
+            Some(outcome) => Ok(outcome),
+            None => self.apply_dimension_edit_to_cube(cube, dim_name, edit),
         }
     }
 
@@ -624,10 +950,7 @@ impl Engine {
         name: &str,
         dims: &[CubeDimensionSpec],
     ) -> Result<CommitOutcome, BatchError> {
-        let _topo = self
-            .dim_topology
-            .lock()
-            .expect("dim_topology mutex poisoned");
+        let _topo = lock_coarse(&self.dim_topology);
         let registry = self.dimensions.load_full();
 
         // Resolve every reference to a materialized def before creating anything,
@@ -654,14 +977,20 @@ impl Engine {
         // reverse), validates, persists, and publishes the cube.
         let outcome = self.create_cube(name, &defs)?;
 
-        // Record the cube as a referrer of each shared dimension it materialized.
+        // Record the cube as a referrer of each shared dimension it materialized
+        // (durable write before publish, fail-closed like `attach_dimension`). If
+        // the persist fails the cube itself stays created and readable — undoing
+        // a durable create is riskier than the gap — but the error tells the
+        // caller the references were NOT recorded, so grows will not fan out to
+        // this cube until it is re-attached.
         if !refs.is_empty() {
             let mut next = (**self.dimensions.load()).clone();
             for id in &refs {
                 next.attach(*id, name);
             }
+            self.persist_registry_state(&next)
+                .map_err(BatchError::Persist)?;
             self.dimensions.store(Arc::new(next));
-            self.persist_registry();
         }
         Ok(outcome)
     }
@@ -671,10 +1000,7 @@ impl Engine {
     /// copies; only the library entry would vanish). Holds `dim_topology` so the
     /// reference check and removal are atomic against a concurrent attach.
     pub fn delete_dimension(&self, id: DimensionId) -> Result<(), DimensionError> {
-        let _topo = self
-            .dim_topology
-            .lock()
-            .expect("dim_topology mutex poisoned");
+        let _topo = lock_coarse(&self.dim_topology);
         let registry = self.dimensions.load();
         if registry.get(id).is_none() {
             return Err(DimensionError::Unknown(id));
@@ -685,8 +1011,14 @@ impl Engine {
         }
         let mut next = (**registry).clone();
         next.remove(id);
+        // Fail-closed (E3): durably persist the new registry BEFORE publishing it,
+        // so a save failure leaves the in-memory registry untouched and surfaces as
+        // `DimensionError::Persist` rather than a silent divergence from disk (a lost
+        // delete that a restart would resurrect). Matches every other registry
+        // mutation's durable-write-first discipline (ADR-0024).
+        self.persist_registry_state(&next)
+            .map_err(DimensionError::Persist)?;
         self.dimensions.store(Arc::new(next));
-        self.persist_registry();
         Ok(())
     }
 
@@ -703,10 +1035,7 @@ impl Engine {
         cube: &str,
         dim_name: &str,
     ) -> Result<DimensionId, PromoteError> {
-        let _topo = self
-            .dim_topology
-            .lock()
-            .expect("dim_topology mutex poisoned");
+        let _topo = lock_coarse(&self.dim_topology);
         // The cube's current dimension definition (its elements, hierarchy, and
         // attributes) becomes the canonical registry copy.
         let snapshot = self
@@ -732,8 +1061,15 @@ impl Engine {
         let mut next = (**self.dimensions.load()).clone();
         next.put(Arc::new(SharedDimension::new(id, dimension)));
         next.attach(id, cube);
+        // Fail-closed (E3): the promotion's new identity (and the cube-to-id
+        // backing) lives ONLY in the registry, so durably persist BEFORE publishing.
+        // A save failure leaves the registry untouched and returns
+        // `PromoteError::Persist`, so the caller never holds a minted id whose
+        // durable home was silently lost (the unused id leaves a harmless gap). The
+        // cube's own data is untouched either way (promote only copies).
+        self.persist_registry_state(&next)
+            .map_err(PromoteError::Persist)?;
         self.dimensions.store(Arc::new(next));
-        self.persist_registry();
         Ok(id)
     }
 
@@ -792,7 +1128,10 @@ impl Engine {
         let state = self
             .state(cube)
             .ok_or_else(|| BatchError::UnknownCube(cube.to_string()))?;
-        let mut writer = state.writer.lock().expect("writer mutex poisoned");
+        let mut writer = lock_writer(&state);
+        if writer.fail_stopped {
+            return Err(fail_stopped_error(cube));
+        }
 
         if let Some(base) = base {
             if base != writer.version {
@@ -810,17 +1149,38 @@ impl Engine {
             Err(PersistError::BatchRejected { index, source }) => {
                 return Err(BatchError::Rejected { index, source })
             }
+            // Durability failure — including [`PersistError::Poisoned`]: a failed
+            // WAL append/fsync rolled the log back to its last good offset,
+            // dropped the trial cube (memory stays consistent with the durable
+            // log), and poisoned the store. (An auto-checkpoint that fails AFTER a
+            // successful WAL append leaves the batch durable in the WAL and applied
+            // in memory — still consistent with the durable log, which replays it
+            // on recovery — without poisoning; the next commit re-publishes.)
+            // Nothing is published here, so readers keep serving the last good
+            // version; a poisoned store keeps rejecting writes for this cube until
+            // the server restarts (reopen truncates the WAL to its last intact
+            // record).
             Err(e) => return Err(BatchError::Persist(e)),
         }
 
-        // Publish the new immutable version (lock-free for readers), then record
-        // the version (also the per-cube CAS base) under the held writer lock.
+        // Mint the new global version, durably record it as the commit high-water
+        // BEFORE publishing (E1: no restart may reissue an observable version),
+        // then publish the immutable version (lock-free for readers) and record it
+        // as the per-cube CAS base under the held writer lock. If the high-water
+        // write fails the batch is already durable in the WAL but is NOT published;
+        // the store's model is ahead of `published` exactly as in any other
+        // post-WAL durability failure, and recovery reconstructs the same state.
         let version = self.ids.next_id();
+        self.record_commit_version(version)?;
         state.published.store(Arc::new(Published {
             version,
             model: writer.store.model().clone(),
         }));
         writer.version = version;
+        // Emit the ordered commit event (E4) while still under the writer lock, so
+        // same-cube commits are observed in version order. `apply_batch` is a
+        // base-cube write (no sandbox).
+        self.notify_commit(cube, version, None);
 
         Ok(CommitOutcome { version })
     }
@@ -999,7 +1359,10 @@ impl Engine {
         writes: &[CellWrite],
     ) -> Result<CommitOutcome, BatchError> {
         let updated = self.ids.next_id();
-        self.define(cube, base, |store| {
+        // A private what-if write: tag the commit event with the sandbox so the API
+        // change feed delivers it only to the sandbox's owner (ADR-0014), never to
+        // every cube reader.
+        self.define_sandbox(cube, base, Some(name), |store| {
             store.sandbox_set_cells(name, writes, updated)
         })
     }
@@ -1090,10 +1453,14 @@ impl Engine {
     /// returns [`BatchError::Unsupported`]. A duplicate name returns
     /// [`BatchError::AlreadyExists`]; an invalid structure returns
     /// [`BatchError::Invalid`]. On success the new cube is durable and visible to
-    /// readers, and existing cubes are untouched. A name that collides
-    /// case-insensitively with an existing cube is also rejected with
-    /// [`BatchError::AlreadyExists`] (ADR-0037): such names would slug to the
-    /// same on-disk folder, so they cannot coexist.
+    /// readers, and existing cubes are untouched. A name whose on-disk slug
+    /// equals an existing cube's slug — which covers case-insensitive collisions
+    /// AND slug-equivalent characters ("Sales Plan" vs "Sales?Plan") — is also
+    /// rejected with [`BatchError::AlreadyExists`] (ADR-0037): both names map to
+    /// one on-disk folder, so creating the second would overwrite the first
+    /// cube's snapshot and WAL. As a final guard, a slug folder that already
+    /// holds a cube snapshot on disk (e.g. one that failed to load at boot) is
+    /// never overwritten either.
     pub fn create_cube(
         &self,
         name: &str,
@@ -1108,29 +1475,42 @@ impl Engine {
             Cube::build(name, dims).map_err(|e| BatchError::Invalid(QueryError::Model(e)))?;
 
         // Serialize registration so two concurrent creates cannot lose a cube.
-        let _topo = self.topology.lock().expect("topology mutex poisoned");
-        // Reject an exact duplicate AND a name that collides case-insensitively
-        // with an existing cube (ADR-0037): two names that differ only by case
-        // would slug to the same on-disk folder, so they cannot coexist.
-        if let Some(existing) = self
-            .cubes
-            .load()
-            .keys()
-            .find(|k| k.eq_ignore_ascii_case(name))
-        {
+        let _topo = lock_coarse(&self.topology);
+        // Reject any name whose SLUG collides with an existing cube's (ADR-0037):
+        // on-disk identity is `slug(name)`, and `slug` maps every character
+        // outside `[a-z0-9-_]` to '-', so names far beyond case variants ("Sales
+        // Plan", "Sales-Plan", "Sales?Plan") share one folder. `Store::create`
+        // replaces what is there, so admitting such a name would silently
+        // destroy the existing cube's snapshot and WAL. Slug equality subsumes
+        // the exact-duplicate and case-insensitive checks (slug lowercases).
+        let new_slug = slug(name);
+        if let Some(existing) = self.cubes.load().keys().find(|k| slug(k) == new_slug) {
             return Err(BatchError::AlreadyExists(existing.clone()));
+        }
+        // The same guard for a cube the engine does NOT have loaded (e.g. a
+        // store that failed to open at boot, or a folder restored out-of-band):
+        // never overwrite an existing on-disk snapshot.
+        if cubes_dir.join(&new_slug).join("snapshot.model").exists() {
+            return Err(BatchError::AlreadyExists(new_slug));
         }
 
         // Persist on disk in the boot layout (ADR-0037): the folder is the
         // lowercase, filesystem-safe slug of the display name, not the name.
-        let store = Store::create(cubes_dir.join(slug(name)), cube).map_err(BatchError::Persist)?;
+        let store = Store::create(cubes_dir.join(new_slug), cube).map_err(BatchError::Persist)?;
+        // Mint and durably record the commit high-water (E1) before the cube is
+        // registered/published, so a restart never reissues this create's version.
         let version = self.ids.next_id();
+        self.record_commit_version(version)?;
         let state = Arc::new(CubeState {
             published: ArcSwap::from_pointee(Published {
                 version,
                 model: store.model().clone(),
             }),
-            writer: Mutex::new(Writer { store, version }),
+            writer: Mutex::new(Writer {
+                store,
+                version,
+                fail_stopped: false,
+            }),
         });
 
         // Copy-on-write swap: clone the map (Arc values are cheap to clone), add
@@ -1138,6 +1518,9 @@ impl Engine {
         let mut next = (**self.cubes.load()).clone();
         next.insert(name.to_string(), state);
         self.cubes.store(Arc::new(next));
+        // Emit the ordered commit event for the newly-created cube (E4); a create
+        // is a base-cube commit (no sandbox).
+        self.notify_commit(name, version, None);
         Ok(CommitOutcome { version })
     }
 
@@ -1150,7 +1533,21 @@ impl Engine {
         base: Option<Version>,
         op: impl FnOnce(&mut Store) -> Result<(), PersistError>,
     ) -> Result<CommitOutcome, BatchError> {
-        self.define_with(cube, base, op)
+        self.define_sandbox(cube, base, None, op)
+    }
+
+    /// [`define`](Self::define) for a commit that writes into a named sandbox
+    /// (`sandbox`), so the emitted [`CommitEvent`] carries it and an observer can
+    /// keep the private what-if write off every non-owner's change feed (ADR-0014).
+    /// A base commit uses [`define`](Self::define) (`sandbox: None`).
+    fn define_sandbox(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        sandbox: Option<&str>,
+        op: impl FnOnce(&mut Store) -> Result<(), PersistError>,
+    ) -> Result<CommitOutcome, BatchError> {
+        self.define_with_sandbox(cube, base, sandbox, op)
             .map(|(outcome, ())| outcome)
     }
 
@@ -1162,10 +1559,25 @@ impl Engine {
         base: Option<Version>,
         op: impl FnOnce(&mut Store) -> Result<T, PersistError>,
     ) -> Result<(CommitOutcome, T), BatchError> {
+        self.define_with_sandbox(cube, base, None, op)
+    }
+
+    /// [`define_with`](Self::define_with) carrying the sandbox context for the
+    /// emitted [`CommitEvent`] (see [`define_sandbox`](Self::define_sandbox)).
+    fn define_with_sandbox<T>(
+        &self,
+        cube: &str,
+        base: Option<Version>,
+        sandbox: Option<&str>,
+        op: impl FnOnce(&mut Store) -> Result<T, PersistError>,
+    ) -> Result<(CommitOutcome, T), BatchError> {
         let state = self
             .state(cube)
             .ok_or_else(|| BatchError::UnknownCube(cube.to_string()))?;
-        let mut writer = state.writer.lock().expect("writer mutex poisoned");
+        let mut writer = lock_writer(&state);
+        if writer.fail_stopped {
+            return Err(fail_stopped_error(cube));
+        }
 
         if let Some(base) = base {
             if base != writer.version {
@@ -1197,29 +1609,63 @@ impl Engine {
                     // A bare model rejection from a definition op (e.g. unknown
                     // dimension, kind conflict, alias collision) is a client-
                     // correctable error, not a durability failure, so it surfaces
-                    // as Invalid (422), not Persist.
+                    // as Invalid (422), not Persist. Neither class touched disk,
+                    // so the in-memory restore above fully recovers.
                     PersistError::Model(e) => BatchError::Invalid(QueryError::Model(e)),
-                    e => BatchError::Persist(e),
+                    // A durability-path failure (I/O, save, corruption, a
+                    // poisoned WAL) may have left DISK ahead of the restored
+                    // model: the op could have renamed a post-op snapshot into
+                    // place before failing (so a crash would recover the "failed"
+                    // op), or durably appended a WAL unit whose batch the caller
+                    // was told failed (`commit_sandbox`), or — worst — left a
+                    // post-reindex snapshot under a WAL that later collects
+                    // pre-reindex coordinates, which recovery would replay onto
+                    // the wrong elements. Re-checkpointing the restored model
+                    // rewrites the snapshot and clears the WAL, making disk agree
+                    // with what callers were told. If even that fails (or the
+                    // store is poisoned), fail-stop the writer: reads keep
+                    // serving the last published version, writes are rejected
+                    // until a checkpoint succeeds or the store is reopened.
+                    e => {
+                        if writer.store.checkpoint().is_err() {
+                            writer.fail_stopped = true;
+                        }
+                        BatchError::Persist(e)
+                    }
                 });
             }
         };
 
+        // Mint, durably record the commit high-water (E1) BEFORE publishing, then
+        // publish. A high-water failure leaves the definition durable on disk but
+        // unpublished (like any post-checkpoint durability failure here).
         let version = self.ids.next_id();
+        self.record_commit_version(version)?;
         state.published.store(Arc::new(Published {
             version,
             model: writer.store.model().clone(),
         }));
         writer.version = version;
+        // Emit the ordered commit event (E4) under the still-held writer lock,
+        // carrying the sandbox context (if any) so an observer can keep a private
+        // what-if write off non-owners' feeds.
+        self.notify_commit(cube, version, sandbox);
         Ok((CommitOutcome { version }, value))
     }
 
-    /// Force a checkpoint (full-persist) of a cube.
+    /// Force a checkpoint (full-persist) of a cube. A success also heals a
+    /// fail-stopped writer (see [`Writer::fail_stopped`]): a fail-stopped cube
+    /// rejected every write since the failure, so its in-memory model still
+    /// equals the last published version, and a full checkpoint re-establishes
+    /// snapshot + WAL == that model — disk agrees with readers again.
     pub fn checkpoint(&self, cube: &str) -> Result<(), BatchError> {
         let state = self
             .state(cube)
             .ok_or_else(|| BatchError::UnknownCube(cube.to_string()))?;
-        let mut writer = state.writer.lock().expect("writer mutex poisoned");
-        writer.store.checkpoint().map_err(BatchError::Persist)
+        let mut writer = lock_writer(&state);
+        writer.store.checkpoint().map_err(BatchError::Persist)?;
+        writer.fail_stopped = false;
+        Ok(())
     }
 }
 
@@ -1407,6 +1853,153 @@ mod tests {
         assert!(
             snap.cube().dimension(0).resolve("Ghost").is_none(),
             "the failed op's appended member must not leak into the next commit"
+        );
+    }
+
+    #[test]
+    fn failed_durability_op_cannot_resurrect_after_recovery() {
+        // Models a commit_sandbox-style failure: the op durably WAL-appends a
+        // whole batch, then a later step (its checkpoint) fails with I/O. The
+        // caller is told the commit failed and the live engine rolls back — and
+        // the resync checkpoint must make DISK agree, so a crash + recovery
+        // cannot resurrect the "failed" batch (before the fix, the durable WAL
+        // unit replayed it into the base cube).
+        let dir = scratch("durability-resync");
+        let (region, _rt, r) = sum_dim("R", 3);
+        let (period, _pt, p) = sum_dim("P", 2);
+        let cube = Cube::new("Sales", vec![region, period]).unwrap();
+        let store = Store::create(dir.clone(), cube).unwrap();
+        let mut stores = BTreeMap::new();
+        stores.insert("Sales".to_string(), store);
+        let engine = Engine::from_stores(stores, Arc::new(IdGen::default()));
+
+        let coord = vec![r[0], p[0]];
+        let batch_coord = coord.clone();
+        let res = engine.define_with("Sales", None, move |store| {
+            store.set_batch(&[CellWrite::Leaf {
+                coord: batch_coord,
+                value: Fixed::from(500),
+            }])?;
+            Err::<(), PersistError>(PersistError::Io(std::io::Error::other(
+                "simulated checkpoint failure after a durable WAL append",
+            )))
+        });
+        assert!(matches!(res, Err(BatchError::Persist(_))));
+
+        // Live: rolled back, still readable, and still writable (the resync
+        // checkpoint succeeded, so the writer is not fail-stopped).
+        assert_eq!(
+            engine
+                .snapshot("Sales")
+                .unwrap()
+                .cube()
+                .get_leaf(&coord)
+                .unwrap(),
+            Fixed::ZERO
+        );
+        engine
+            .apply_batch("Sales", None, &[leaf(vec![r[1], p[0]], 7)])
+            .unwrap();
+
+        // Durable: recovery agrees with what callers were told. The "failed"
+        // 500 is gone; the later acknowledged 7 survives.
+        drop(engine);
+        let reopened = Store::open(dir).unwrap();
+        assert_eq!(
+            reopened.cube().get_leaf(&coord).unwrap(),
+            Fixed::ZERO,
+            "a batch whose commit was reported failed must not survive recovery"
+        );
+        assert_eq!(
+            reopened.cube().get_leaf(&[r[1], p[0]]).unwrap(),
+            Fixed::from(7),
+            "an acknowledged later write must survive recovery"
+        );
+    }
+
+    #[test]
+    fn fail_stopped_writer_rejects_writes_serves_reads_and_heals() {
+        // The documented recovery posture (Writer::fail_stopped): when disk
+        // state cannot be re-verified, reads keep serving the last published
+        // version while writes are rejected, until a checkpoint succeeds.
+        let f = fixture("fail-stop-posture");
+        f.engine
+            .apply_batch("Sales", Some(0), &[leaf(vec![f.r[0], f.p[0]], 10)])
+            .unwrap();
+        let state = f.engine.state("Sales").unwrap();
+        state.writer.lock().unwrap().fail_stopped = true;
+
+        // Every write path is rejected with a persist error...
+        assert!(matches!(
+            f.engine
+                .apply_batch("Sales", None, &[leaf(vec![f.r[1], f.p[0]], 1)]),
+            Err(BatchError::Persist(_))
+        ));
+        assert!(matches!(
+            f.engine
+                .define_rules("Sales", None, "['R':'R0'] = 1;".to_string()),
+            Err(BatchError::Persist(_))
+        ));
+        // ...while reads keep serving the last published version.
+        assert_eq!(
+            f.engine
+                .snapshot("Sales")
+                .unwrap()
+                .cube()
+                .get_leaf(&[f.r[0], f.p[0]])
+                .unwrap(),
+            Fixed::from(10)
+        );
+
+        // A successful forced checkpoint re-verifies disk and lifts the stop.
+        f.engine.checkpoint("Sales").unwrap();
+        f.engine
+            .apply_batch("Sales", None, &[leaf(vec![f.r[1], f.p[0]], 5)])
+            .unwrap();
+        assert_eq!(
+            f.engine
+                .snapshot("Sales")
+                .unwrap()
+                .cube()
+                .get_leaf(&[f.r[1], f.p[0]])
+                .unwrap(),
+            Fixed::from(5)
+        );
+    }
+
+    #[test]
+    fn poisoned_writer_recovers_instead_of_panicking() {
+        // A panic while holding a cube's writer lock (a bug in a core op) must
+        // not brick the cube: the next lock recovers by resynchronizing the
+        // store from the last published version and returns to normal service,
+        // instead of panicking on every later write.
+        let f = fixture("writer-poison-recovery");
+        f.engine
+            .apply_batch("Sales", Some(0), &[leaf(vec![f.r[0], f.p[0]], 10)])
+            .unwrap();
+
+        let engine = f.engine.clone();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _ = engine.define("Sales", None, |_store| -> Result<(), PersistError> {
+                panic!("simulated panic inside a commit");
+            });
+        }));
+        assert!(panicked.is_err(), "the op's panic must propagate");
+
+        // The next write recovers the poisoned lock and commits normally.
+        f.engine
+            .apply_batch("Sales", None, &[leaf(vec![f.r[1], f.p[0]], 5)])
+            .unwrap();
+        let snap = f.engine.snapshot("Sales").unwrap();
+        assert_eq!(
+            snap.cube().get_leaf(&[f.r[0], f.p[0]]).unwrap(),
+            Fixed::from(10),
+            "the pre-panic committed value survives"
+        );
+        assert_eq!(
+            snap.cube().get_leaf(&[f.r[1], f.p[0]]).unwrap(),
+            Fixed::from(5),
+            "the post-recovery commit landed"
         );
     }
 
@@ -1991,6 +2584,91 @@ mod tests {
     }
 
     #[test]
+    fn create_cube_rejects_a_slug_equivalent_name_collision() {
+        // On-disk identity is slug(name), and slug() maps every character
+        // outside [a-z0-9-_] to '-': "Sales Plan", "Sales-Plan", and
+        // "Sales?Plan" are distinct case-insensitively yet share one folder.
+        // Admitting the second such name would silently overwrite the first
+        // cube's snapshot and WAL (ADR-0037 requires rejecting it).
+        let engine = editable_engine("create-slug-collision");
+        let dims = [DimensionDef {
+            name: "D".into(),
+            elements: vec![("a".into(), ElementKind::Leaf)],
+            edges: vec![],
+            ..Default::default()
+        }];
+        engine.create_cube("Sales Plan", &dims).unwrap();
+        engine
+            .apply_batch("Sales Plan", None, &[leaf(vec![0], 42)])
+            .unwrap();
+
+        for collision in [
+            "Sales Plan",
+            "sales plan",
+            "Sales-Plan",
+            "Sales?Plan",
+            "SALES//PLAN",
+            "sales-plan",
+        ] {
+            match engine.create_cube(collision, &dims) {
+                Err(BatchError::AlreadyExists(existing)) => assert_eq!(
+                    existing, "Sales Plan",
+                    "rejecting {collision:?} must name the surviving cube"
+                ),
+                other => panic!("creating {collision:?} should collide, got {other:?}"),
+            }
+        }
+
+        // No extra cube was registered and the original cube's data survived.
+        assert_eq!(
+            engine.cube_names(),
+            vec!["Sales".to_string(), "Sales Plan".to_string()]
+        );
+        assert_eq!(
+            engine
+                .snapshot("Sales Plan")
+                .unwrap()
+                .cube()
+                .get_leaf(&[0])
+                .unwrap(),
+            Fixed::from(42),
+            "the existing cube's data must not be overwritten"
+        );
+    }
+
+    #[test]
+    fn create_cube_never_overwrites_an_unloaded_on_disk_store() {
+        // A cube can exist on disk without being loaded (e.g. its store failed
+        // to open at boot). Creating a cube whose slug lands on that folder
+        // must refuse rather than replace the snapshot and WAL.
+        let root = scratch("create-ondisk-guard");
+        std::fs::create_dir_all(&root).unwrap();
+        let (region, _t, _r) = sum_dim("R", 2);
+        let ghost = Cube::new("My Cube", vec![region]).unwrap();
+        drop(Store::create(root.join("my-cube"), ghost).unwrap());
+
+        let engine = Engine::from_stores(BTreeMap::new(), Arc::new(IdGen::default()))
+            .with_cubes_dir(root.clone());
+        let dims = [DimensionDef {
+            name: "D".into(),
+            elements: vec![("a".into(), ElementKind::Leaf)],
+            edges: vec![],
+            ..Default::default()
+        }];
+        assert!(matches!(
+            engine.create_cube("My?Cube", &dims),
+            Err(BatchError::AlreadyExists(_))
+        ));
+        assert!(!engine.has_cube("My?Cube"));
+
+        // The on-disk store survived untouched (still the 3-member R cube, not
+        // the 1-member D cube that would have replaced it).
+        let survivor = Store::open(root.join("my-cube")).unwrap();
+        assert_eq!(survivor.cube_name(), "My Cube");
+        assert_eq!(survivor.cube().dimension(0).len(), 3);
+    }
+
+    #[test]
     fn define_and_set_attributes_commit() {
         let f = fixture("attrs");
         f.engine
@@ -2025,7 +2703,7 @@ mod tests {
         let f = fixture("dim-registry");
         let mut product = Dimension::new("Product");
         product.add_leaf("Widget");
-        let id = f.engine.register_dimension(product);
+        let id = f.engine.register_dimension(product).unwrap();
 
         // The registry snapshot sees it at generation 0.
         let reg = f.engine.dimension_registry();
@@ -2063,7 +2741,7 @@ mod tests {
         // A shared Product dimension with one member.
         let mut product = Dimension::new("Product");
         product.add_leaf("Widget");
-        let id = engine.register_dimension(product);
+        let id = engine.register_dimension(product).unwrap();
         let product_def = engine
             .dimension_registry()
             .get(id)
@@ -2082,7 +2760,7 @@ mod tests {
             engine
                 .create_cube(cube, &[product_def.clone(), measure()])
                 .unwrap();
-            engine.attach_dimension(id, cube);
+            engine.attach_dimension(id, cube).unwrap();
         }
 
         // Growing the shared dimension fans out to both cubes.
@@ -2117,6 +2795,127 @@ mod tests {
     }
 
     #[test]
+    fn shrunk_lock_grow_persists_durably_and_fans_out_consistently() {
+        // E2: with the shrunk dim_topology critical section (registry swap under
+        // dim_topology; fan-out under registry_edit only), a DURABLE grow still
+        // persists the registry before fanning out, and every referencing cube
+        // converges. Interleaving a register + a second grow keeps all cubes
+        // consistent, and a reload reconstructs identical state (proving the
+        // durable-write-before-repack invariant survived the lock change).
+        let root = scratch("e2-shrunk-lock");
+        std::fs::create_dir_all(&root).unwrap();
+        let dims_dir = root.join("dimensions");
+
+        let engine = {
+            let (region, _t, _r) = sum_dim("R", 1);
+            let cube = Cube::new("Seed", vec![region]).unwrap();
+            let store = Store::create(root.join("seed"), cube).unwrap();
+            let mut stores = BTreeMap::new();
+            stores.insert("Seed".to_string(), store);
+            Engine::from_stores(stores, Arc::new(IdGen::default()))
+                .with_cubes_dir(root.clone())
+                .with_dimensions_dir(dims_dir.clone())
+        };
+
+        // A shared Product dimension referenced by two cubes.
+        let mut product = Dimension::new("Product");
+        product.add_leaf("Widget");
+        let id = engine.register_dimension(product).unwrap();
+        let product_def = engine
+            .dimension_registry()
+            .get(id)
+            .unwrap()
+            .to_dimension_def();
+        let measure = || DimensionDef {
+            name: "Measure".into(),
+            elements: vec![("Amount".into(), ElementKind::Leaf)],
+            edges: vec![],
+            ..Default::default()
+        };
+        for cube in ["CubeA", "CubeB"] {
+            engine
+                .create_cube(cube, &[product_def.clone(), measure()])
+                .unwrap();
+            engine.attach_dimension(id, cube).unwrap();
+        }
+
+        // Grow the shared dimension (fan-out runs outside dim_topology now).
+        engine
+            .grow_dimension(
+                id,
+                &[ElementSpec {
+                    dimension: "Product".into(),
+                    name: "Gadget".into(),
+                    kind: ElementKind::Leaf,
+                }],
+                &[],
+            )
+            .unwrap();
+        // Interleave an unrelated register (needs only the brief dim_topology) and
+        // a second grow to the same dimension (serialized by registry_edit).
+        let mut other = Dimension::new("Other");
+        other.add_leaf("X");
+        engine.register_dimension(other).unwrap();
+        engine
+            .grow_dimension(
+                id,
+                &[ElementSpec {
+                    dimension: "Product".into(),
+                    name: "Gizmo".into(),
+                    kind: ElementKind::Leaf,
+                }],
+                &[],
+            )
+            .unwrap();
+
+        // Both cubes converged to BOTH new members, in order.
+        for cube in ["CubeA", "CubeB"] {
+            let snap = engine.snapshot(cube).unwrap();
+            let product = snap
+                .cube()
+                .dimensions()
+                .iter()
+                .find(|d| d.name() == "Product")
+                .unwrap();
+            assert!(product.index_of("Gadget").is_some(), "{cube} has Gadget");
+            assert!(product.index_of("Gizmo").is_some(), "{cube} has Gizmo");
+        }
+        assert_eq!(engine.dimension_registry().get(id).unwrap().generation, 2);
+        drop(engine);
+
+        // Reload: the durable registry (written under the shrunk lock) reconstructs
+        // the same generation and the cubes reconcile forward identically.
+        let reloaded = {
+            let stores = {
+                let mut s = BTreeMap::new();
+                for (name, folder) in [("CubeA", "cubea"), ("CubeB", "cubeb"), ("Seed", "seed")] {
+                    let path = root.join(folder);
+                    if path.join("snapshot.model").exists() {
+                        s.insert(name.to_string(), Store::open(&path).unwrap());
+                    }
+                }
+                s
+            };
+            Engine::from_stores(stores, Arc::new(IdGen::default()))
+                .with_cubes_dir(root.clone())
+                .with_dimensions_dir(dims_dir.clone())
+        };
+        assert_eq!(reloaded.dimension_registry().get(id).unwrap().generation, 2);
+        for cube in ["CubeA", "CubeB"] {
+            let snap = reloaded.snapshot(cube).unwrap();
+            let product = snap
+                .cube()
+                .dimensions()
+                .iter()
+                .find(|d| d.name() == "Product")
+                .unwrap();
+            assert!(product.index_of("Gadget").is_some());
+            assert!(product.index_of("Gizmo").is_some());
+        }
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn registry_persists_and_reloads_across_restart() {
         let root = scratch("dim-reload");
         std::fs::create_dir_all(&root).unwrap();
@@ -2139,9 +2938,9 @@ mod tests {
                 .with_cubes_dir(root.clone())
                 .with_dimensions_dir(dims_dir.clone());
 
-            let id = engine.register_dimension(product);
-            engine.attach_dimension(id, "Sales");
-            engine.attach_dimension(id, "Budget");
+            let id = engine.register_dimension(product).unwrap();
+            engine.attach_dimension(id, "Sales").unwrap();
+            engine.attach_dimension(id, "Budget").unwrap();
             engine
                 .grow_dimension(
                     id,
@@ -2174,8 +2973,137 @@ mod tests {
         // never collides with a restored id.
         let mut other = Dimension::new("Other");
         other.add_leaf("X");
-        let new_id = engine.register_dimension(other);
+        let new_id = engine.register_dimension(other).unwrap();
         assert!(new_id.0 > id.0);
+    }
+
+    #[test]
+    fn present_but_unreadable_registry_fails_boot_instead_of_loading_empty() {
+        // A corrupt index must fail loudly: silently substituting an empty
+        // registry would quarantine every dimension body on the next save,
+        // drop every cube reference set, and re-mint already-issued ids.
+        let dir = scratch("dim-corrupt-registry");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.toml"), "this is not valid toml { [").unwrap();
+        let res = Engine::from_stores(BTreeMap::new(), Arc::new(IdGen::default()))
+            .try_with_dimensions_dir(&dir);
+        assert!(
+            matches!(res, Err(PersistError::Corrupt(_))),
+            "a corrupt registry index must fail boot, not load as empty"
+        );
+
+        // An index whose listed dimension body is missing (the historical
+        // save-crash window) is equally fatal.
+        let dir = scratch("dim-missing-body-registry");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("index.toml"),
+            "[[dimension]]\nid = 7\ngeneration = 0\nreferences = []\n",
+        )
+        .unwrap();
+        let res = Engine::from_stores(BTreeMap::new(), Arc::new(IdGen::default()))
+            .try_with_dimensions_dir(&dir);
+        assert!(
+            res.is_err(),
+            "an index naming a missing dimension body must fail boot"
+        );
+
+        // An absent registry (first run) is still simply empty.
+        let dir = scratch("dim-absent-registry");
+        std::fs::create_dir_all(&dir).unwrap();
+        let engine = Engine::from_stores(BTreeMap::new(), Arc::new(IdGen::default()))
+            .try_with_dimensions_dir(&dir)
+            .unwrap();
+        assert!(engine.dimension_registry().is_empty());
+    }
+
+    #[test]
+    fn registry_persist_failure_is_fail_closed() {
+        // The durable registry write happens BEFORE the mutation is published
+        // (ADR-0024): if the save fails, the caller gets an error and the
+        // in-memory registry is unchanged — no minted id whose durable home
+        // was silently lost. The save is forced to fail by occupying the
+        // dimensions-dir path with a plain file.
+        let root = scratch("dim-persist-failclosed");
+        std::fs::create_dir_all(&root).unwrap();
+        let blocker = root.join("dimensions");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let engine = Engine::from_stores(BTreeMap::new(), Arc::new(IdGen::default()))
+            .with_dimensions_dir(&blocker);
+
+        let mut product = Dimension::new("Product");
+        product.add_leaf("Widget");
+        assert!(
+            matches!(
+                engine.register_dimension(product),
+                Err(BatchError::Persist(_))
+            ),
+            "a failed registry save must surface, not vanish"
+        );
+        assert!(
+            engine.dimension_registry().is_empty(),
+            "a failed save must leave the registry unchanged (fail-closed)"
+        );
+    }
+
+    #[test]
+    fn delete_and_promote_propagate_a_persist_failure() {
+        // E3: `delete_dimension` and `promote_cube_dimension` used to persist
+        // best-effort (a lost save vanished silently). They now propagate a save
+        // failure as `DimensionError::Persist` / `PromoteError::Persist`, leaving
+        // the in-memory registry unchanged. First build the registry with a WORKING
+        // dir, then redirect the private `dimensions_dir` at a plain file so the
+        // next save fails on every platform (a portable, dependency-free injection;
+        // the same-file `tests` module may set the private field).
+        let root = scratch("dim-delete-promote-persist");
+        std::fs::create_dir_all(&root).unwrap();
+        let dims_dir = root.join("dimensions");
+        // `editable_engine` gives a "Sales" cube whose embedded "R" dimension we can
+        // promote. Register a separate UNREFERENCED dimension to delete.
+        let mut engine = editable_engine("delete-promote-persist").with_dimensions_dir(&dims_dir);
+        let mut region = Dimension::new("Region");
+        region.add_leaf("North");
+        let del_id = engine.register_dimension(region).unwrap();
+
+        // Break persistence: occupy the (child) save path with a plain file so
+        // `create_dir_all` inside the registry save fails.
+        let blocker = root.join("blocker");
+        std::fs::write(&blocker, "not a directory").unwrap();
+        engine.dimensions_dir = Some(blocker.join("sub"));
+
+        // The delete now fails on save and must NOT drop the entry in memory.
+        assert!(
+            matches!(
+                engine.delete_dimension(del_id),
+                Err(DimensionError::Persist(_))
+            ),
+            "a failed registry save on delete must surface, not silently drop"
+        );
+        assert!(
+            engine.dimension_registry().get(del_id).is_some(),
+            "the failed delete must be rolled back (the entry stays)"
+        );
+
+        // The promote likewise fails on save and mints nothing durable/visible.
+        let before = engine.dimension_registry().all().len();
+        assert!(
+            matches!(
+                engine.promote_cube_dimension("Sales", "R"),
+                Err(PromoteError::Persist(_))
+            ),
+            "a failed registry save on promote must surface"
+        );
+        assert_eq!(
+            engine.dimension_registry().all().len(),
+            before,
+            "the failed promote must not publish a new registry entry"
+        );
+        assert!(
+            engine.dimension_backing("Sales", "R").is_none(),
+            "the failed promote must not attach a backing"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     // ---- structural editing fan-out (ADR-0036) ----
@@ -2195,7 +3123,7 @@ mod tests {
         region.add_child(total, north, 1).unwrap();
         region.add_child(total, south, 1).unwrap();
         region.add_child(total, east, 1).unwrap();
-        let id = engine.register_dimension(region);
+        let id = engine.register_dimension(region).unwrap();
         let region_def = engine
             .dimension_registry()
             .get(id)
@@ -2213,7 +3141,7 @@ mod tests {
             engine
                 .create_cube(cube, &[region_def.clone(), measure()])
                 .unwrap();
-            engine.attach_dimension(id, cube);
+            engine.attach_dimension(id, cube).unwrap();
         }
 
         // Seed cells: CubeA gets 10/20/30, CubeB gets 1/2/3 across North/South/East.
@@ -2306,6 +3234,40 @@ mod tests {
         assert_eq!(
             read_named(&engine, "CubeB", "Total", "Amount"),
             Fixed::from(6)
+        );
+    }
+
+    #[test]
+    fn edit_dimension_returns_the_requested_cubes_outcome() {
+        // The fan-out visits referrers in sorted order ([CubeA, CubeB]); the
+        // outcome returned to the caller must be the one for the cube the
+        // caller named, not whichever referrer happened to be visited last
+        // (clients feed this version into per-cube optimistic bookkeeping).
+        let (engine, _id) = fanout_engine("dim-edit-outcome");
+
+        let outcome = engine
+            .edit_dimension(
+                "CubeA",
+                "Region",
+                &DimensionEdit::Reorder {
+                    new_order: vec![
+                        "East".into(),
+                        "North".into(),
+                        "South".into(),
+                        "Total".into(),
+                    ],
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            Some(outcome.version),
+            engine.version("CubeA"),
+            "the outcome must be the requested cube's new version"
+        );
+        assert_ne!(
+            Some(outcome.version),
+            engine.version("CubeB"),
+            "not the last fanned-out cube's"
         );
     }
 
@@ -2446,5 +3408,175 @@ mod tests {
         // Values followed their members.
         assert_eq!(read_named(&engine, "Local", "A", "Amount"), Fixed::from(5));
         assert_eq!(read_named(&engine, "Local", "B", "Amount"), Fixed::from(7));
+    }
+
+    #[test]
+    fn commit_versions_strictly_increase_across_a_restart() {
+        // E1: commit versions must never be reused across a restart. A run records
+        // a durable high-water mark on every commit; a restart seeds the version
+        // counter past it, so the first post-restart version is strictly greater
+        // than any version the previous run handed out (no ABA aliasing of a
+        // base_version / sandbox / cache key).
+        let dir = scratch("e1-version-aba");
+
+        // Build a store on disk and an engine whose commits persist the high-water.
+        fn build_engine(dir: &std::path::Path, seed: u64) -> (Engine, Vec<u32>, Vec<u32>) {
+            let (region, _rt, r) = sum_dim("R", 3);
+            let (period, _pt, p) = sum_dim("P", 2);
+            let store = if dir.join("snapshot.model").exists() {
+                Store::open(dir).unwrap()
+            } else {
+                let cube = Cube::new("Sales", vec![region, period]).unwrap();
+                Store::create(dir, cube).unwrap()
+            };
+            let mut stores = BTreeMap::new();
+            stores.insert("Sales".to_string(), store);
+            let engine = Engine::from_stores(stores, Arc::new(IdGen::starting_at(seed)))
+                .with_commit_watermark_dir(dir.to_path_buf());
+            (engine, r, p)
+        }
+
+        // First run: seed from the (absent) mark, i.e. start at 1, and commit twice.
+        let seed0 = epiphany_persist::read_commit_watermark(&dir).saturating_add(1);
+        let pre_restart_max;
+        {
+            let (engine, r, p) = build_engine(&dir, seed0);
+            let v1 = engine
+                .apply_batch("Sales", None, &[leaf(vec![r[0], p[0]], 10)])
+                .unwrap()
+                .version;
+            let v2 = engine
+                .apply_batch("Sales", None, &[leaf(vec![r[1], p[0]], 20)])
+                .unwrap()
+                .version;
+            assert!(v2 > v1, "versions advance within a run");
+            pre_restart_max = v2;
+            // Drop the engine (simulated shutdown/crash): the mark is durable.
+        }
+
+        // The durable mark is at least the last version handed out.
+        let mark = epiphany_persist::read_commit_watermark(&dir);
+        assert!(
+            mark >= pre_restart_max,
+            "the high-water mark ({mark}) covers the last pre-restart version ({pre_restart_max})"
+        );
+
+        // Restart: seed the counter past the durable mark and commit again.
+        let seed1 = mark.saturating_add(1);
+        let (engine, r, p) = build_engine(&dir, seed1);
+        let post_restart = engine
+            .apply_batch("Sales", None, &[leaf(vec![r[2], p[0]], 30)])
+            .unwrap()
+            .version;
+        assert!(
+            post_restart > pre_restart_max,
+            "the first post-restart version ({post_restart}) must exceed every \
+             pre-restart version ({pre_restart_max}); a reused number would alias"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn commit_observer_receives_events_in_commit_order() {
+        // E4: with an observer registered, every successful commit emits a
+        // CommitEvent carrying the cube and its new version, in version order.
+        // Without an observer (the default) nothing is emitted (proven by the
+        // other tests, which register none and still pass).
+        use std::sync::Mutex as StdMutex;
+
+        #[derive(Default)]
+        struct Recorder {
+            events: StdMutex<Vec<CommitEvent>>,
+        }
+        impl CommitObserver for Recorder {
+            fn on_commit(&self, event: &CommitEvent) {
+                self.events.lock().unwrap().push(event.clone());
+            }
+        }
+
+        let f = fixture("e4-commit-order");
+        let recorder = Arc::new(Recorder::default());
+        // Rebuild the engine wrapping the same store, now with an observer. (The
+        // fixture engine has none; `with_commit_observer` is additive.)
+        let engine = f.engine.with_commit_observer(recorder.clone());
+
+        let v1 = engine
+            .apply_batch("Sales", None, &[leaf(vec![f.r[0], f.p[0]], 10)])
+            .unwrap()
+            .version;
+        let v2 = engine
+            .define_rules("Sales", None, "['R':'R0'] = 1;".to_string())
+            .unwrap()
+            .version;
+        let v3 = engine
+            .apply_batch("Sales", None, &[leaf(vec![f.r[1], f.p[0]], 20)])
+            .unwrap()
+            .version;
+
+        let events = recorder.events.lock().unwrap().clone();
+        assert_eq!(
+            events,
+            vec![
+                CommitEvent {
+                    cube: "Sales".into(),
+                    version: v1,
+                    sandbox: None,
+                },
+                CommitEvent {
+                    cube: "Sales".into(),
+                    version: v2,
+                    sandbox: None,
+                },
+                CommitEvent {
+                    cube: "Sales".into(),
+                    version: v3,
+                    sandbox: None,
+                },
+            ],
+            "the observer saw every base commit exactly once, in version order"
+        );
+        // Versions are strictly increasing, so ordering by version is total.
+        assert!(v1 < v2 && v2 < v3);
+    }
+
+    #[test]
+    fn commit_observer_tags_a_sandbox_write_with_its_sandbox() {
+        // A1: a private what-if write (`sandbox_set_cells`) emits a CommitEvent
+        // carrying the sandbox name, so the API change feed can keep it off every
+        // non-owner's stream; a base write carries `sandbox: None`.
+        use std::sync::Mutex as StdMutex;
+        #[derive(Default)]
+        struct Recorder {
+            events: StdMutex<Vec<CommitEvent>>,
+        }
+        impl CommitObserver for Recorder {
+            fn on_commit(&self, event: &CommitEvent) {
+                self.events.lock().unwrap().push(event.clone());
+            }
+        }
+
+        let f = fixture("e4-sandbox-tag");
+        let recorder = Arc::new(Recorder::default());
+        let engine = f.engine.with_commit_observer(recorder.clone());
+
+        // Create the sandbox (a base-cube definition commit), then write into it.
+        engine.create_sandbox("Sales", None, "wf", "ann").unwrap();
+        engine
+            .sandbox_set_cells("Sales", None, "wf", &[leaf(vec![f.r[0], f.p[0]], 5)])
+            .unwrap();
+
+        let events = recorder.events.lock().unwrap().clone();
+        assert_eq!(
+            events.len(),
+            2,
+            "the create and the sandbox write both emit"
+        );
+        assert_eq!(events[0].sandbox, None, "create is a base commit");
+        assert_eq!(
+            events[1].sandbox.as_deref(),
+            Some("wf"),
+            "the what-if write carries its sandbox name for owner-only delivery"
+        );
     }
 }

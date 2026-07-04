@@ -21,17 +21,18 @@ mod spread;
 mod text;
 mod value;
 
-pub use cube::{Coord, Cube, DimensionDef, EdgeSpec, ElementSpec, Position};
+pub use cube::{BatchWrite, Coord, Cube, DimensionDef, EdgeSpec, ElementSpec, Position};
 pub use dimension::{AttributeDef, AttributeKind, AttributeValue, Dimension, Element, ElementKind};
 pub use element_mask::ElementMask;
 pub use error::ModelError;
 pub use query::{
-    execute_view, execute_view_with, resolve_subset, validate_subset, validate_view, Automation,
-    Axis, AxisSpec, CellResolver, CellTrace, Cellset, CommandSpec, Connection, ConnectionSpec,
-    ExplainDepth, Flow, FlowInput, FlowInputBinding, FlowTest, HttpAuth, HttpAuthKind, HttpSpec,
-    Job, Model, NoSetEvaluator, Parallelism, QueryError, RuleSet, RuleTest, Sandbox, SetEvaluator,
-    SourceFormat, SqlEngine, SqlSpec, SqlSslMode, StoredCells, Subset, SubsetKind, TestCell,
-    TraceKind, Trigger, View, Visibility,
+    execute_view, execute_view_with, references_to_member, resolve_subset, validate_subset,
+    validate_view, Automation, Axis, AxisSpec, CellResolver, CellTrace, Cellset, CommandSpec,
+    Connection, ConnectionSpec, ExplainDepth, Flow, FlowInput, FlowInputBinding, FlowTest,
+    HttpAuth, HttpAuthKind, HttpSpec, Job, MemberRef, Model, NoSetEvaluator, Parallelism,
+    QueryError, RuleSet, RuleTest, Sandbox, SetEvaluator, SourceFormat, SqlEngine, SqlSpec,
+    SqlSslMode, StoredCells, Subset, SubsetKind, TestCell, TraceKind, Trigger, View, Visibility,
+    MAX_CELLSET_CELLS,
 };
 pub use spread::{spread_leaves, SpreadError, SpreadMethod, MAX_SPREAD_LEAVES};
 pub use text::{extract_legacy_automation, LoadError, SaveError};

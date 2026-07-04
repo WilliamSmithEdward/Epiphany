@@ -65,8 +65,21 @@ fn status(
 }
 
 fn run_service() -> Result<(), Box<dyn std::error::Error>> {
-    let config = crate::config::Config::from_env();
-    crate::observability::init(&config.log_filter);
+    // Initialize tracing before the full config parse so its diagnostics are
+    // emitted; a fatal config issue (e.g. an unrecognized EPIPHANY_TLS) fails the
+    // service start rather than serving a surprising configuration.
+    crate::observability::init(&crate::config::Config::log_filter_from_env());
+    let config = match crate::config::Config::from_env() {
+        Ok(c) => c,
+        Err(issues) => {
+            let vars: Vec<&str> = issues.iter().map(|i| i.var.as_str()).collect();
+            return Err(format!(
+                "invalid configuration; fix and restart the service: {}",
+                vars.join(", ")
+            )
+            .into());
+        }
+    };
 
     // The SCM control handler runs on its own thread; a Stop stores a permit on
     // the Notify (notify_one is permit-based, so it is never lost to a race), and

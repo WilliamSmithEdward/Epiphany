@@ -465,3 +465,66 @@ async fn m4_definition_of_done() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// A structural edit can invalidate a previously-valid rule with no re-validation.
+/// The read path must then FAIL LOUD, over the real router, rather than silently
+/// reverting every rule-derived cell to stored/aggregated values (which is what a
+/// swallowed compile error would do). This is the regression gate for the
+/// silent-rule-drop hazard on the calc/API resolver seam.
+#[tokio::test]
+async fn broken_rules_after_a_dimension_edit_fail_reads_loud() {
+    let dir = scratch("ruledrop");
+    let app = router_for(&dir);
+    let token = login(&app).await;
+
+    // Define the valid Margin = Sales - Cost rule; it reads back correctly.
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/cubes/Sales/rules",
+        &token,
+        Some(json!({ "source": MARGIN_RULE })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        read_value(&app, &token, "Sales", margin_coord("North")).await,
+        "40"
+    );
+
+    // Delete the "Cost" element the rule references, through the real dimension-
+    // edit endpoint. No rule revalidation runs, so the stored rule source is
+    // retained but now fails to compile (unknown element 'Cost').
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/dimensions/Measure/edit",
+        &token,
+        Some(json!({ "op": "delete", "element": "Cost" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "delete Cost: {body}");
+
+    // A read of the now-broken cube errors loud instead of returning a number.
+    // (Pre-fix this returned a silently-wrong stored/aggregated value.)
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/cells/read",
+        &token,
+        Some(json!({ "coords": [margin_coord("North")] })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a broken-rules read must error, not return a value: {body}"
+    );
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("rules fail to compile"),
+        "the error is a loud rule-compile failure: {body}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

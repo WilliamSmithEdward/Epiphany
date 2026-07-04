@@ -398,8 +398,11 @@ fn build_axis(docs: &[AxisSpecDoc]) -> Vec<AxisSpec> {
 }
 
 fn view_doc(view: &View) -> ViewDoc {
-    // Context is sorted by dimension for canonical, order-independent output.
-    let mut context: Vec<ContextDoc> = view
+    // Context is emitted in AUTHOR order, which build_view preserves on load, so
+    // the order a client sees echoed from a view is the same before and after a
+    // save/load cycle (sorting here made the echoed order flip across a restart).
+    // A Vec round-trips canonically: parse -> serialize is byte-identical.
+    let context: Vec<ContextDoc> = view
         .context
         .iter()
         .map(|(dimension, member)| ContextDoc {
@@ -407,7 +410,6 @@ fn view_doc(view: &View) -> ViewDoc {
             member: member.clone(),
         })
         .collect();
-    context.sort_by(|a, b| a.dimension.cmp(&b.dimension));
     ViewDoc {
         name: view.name.clone(),
         cube: view.cube.clone(),
@@ -1076,15 +1078,23 @@ fn dim_doc(dim: &Dimension) -> DimDoc {
         })
         .collect();
 
-    let edges = dim
-        .edges()
-        .into_iter()
-        .map(|(parent, child, weight)| EdgeDoc {
-            parent: dim.element(parent).expect("valid index").name.clone(),
-            child: dim.element(child).expect("valid index").name.clone(),
-            weight,
-        })
-        .collect();
+    // Edges are emitted per parent (in element order), each parent's children in
+    // EDGE-DECLARATION order — the order that breaks equal-depth diamond ties in
+    // consolidation (ADR-0039). The loader replays `add_child` in document order,
+    // so the declaration order (and therefore every tie-broken weight) survives a
+    // save/load round trip; a `(parent, child)`-sorted emission would silently
+    // reorder it. Still canonical: parse -> serialize is byte-identical, since
+    // parsing preserves the per-parent order.
+    let mut edges = Vec::new();
+    for parent in 0..dim.len() {
+        for (child, weight) in dim.child_edges(parent).expect("valid index") {
+            edges.push(EdgeDoc {
+                parent: dim.element(parent).expect("valid index").name.clone(),
+                child: dim.element(child).expect("valid index").name.clone(),
+                weight,
+            });
+        }
+    }
 
     let attributes = dim
         .attribute_defs()
@@ -1631,6 +1641,46 @@ mod tests {
     }
 
     #[test]
+    fn diamond_tie_break_weight_survives_a_save_load_cycle() {
+        // ADR-0039 breaks equal-depth diamond ties by EDGE-DECLARATION order, so
+        // the serializer must preserve that order (per parent) — a
+        // (parent, child)-sorted emission would reorder Variance's children on
+        // reload and silently flip the recorded weight, changing consolidated
+        // values across a restart. X is reachable from Variance at depth 2 via
+        // BOTH Budget (net -1, declared first) and Actual (net +1, lower index):
+        // declaration order wins, so X carries -1 before AND after the round trip.
+        let mut d = Dimension::new("Version");
+        let x = d.add_leaf("X");
+        let variance = d.add_consolidated("Variance");
+        let actual = d.add_consolidated("Actual");
+        let budget = d.add_consolidated("Budget");
+        d.add_child(variance, budget, -1).unwrap(); // declared before Actual,
+        d.add_child(variance, actual, 1).unwrap(); // out of index order
+        d.add_child(actual, x, 1).unwrap();
+        d.add_child(budget, x, 1).unwrap();
+        assert_eq!(d.leaf_weights(variance).unwrap(), vec![(x, -1)]);
+
+        let mut cube = Cube::new("PnL", vec![d]).unwrap();
+        cube.set_leaf(&[x], Fixed::from(7)).unwrap();
+        assert_eq!(cube.get(&[variance]).unwrap(), Fixed::from(-7));
+
+        let text1 = cube.to_model_text().unwrap();
+        let reloaded = Cube::from_model_text(&text1).unwrap();
+        assert_eq!(
+            reloaded.dimension(0).leaf_weights(variance).unwrap(),
+            vec![(x, -1)],
+            "the declaration-order tie-break survives reload"
+        );
+        assert_eq!(
+            reloaded.get(&[variance]).unwrap(),
+            Fixed::from(-7),
+            "the consolidated value is unchanged across a save/load cycle"
+        );
+        // Still canonical: parse -> serialize is byte-identical.
+        assert_eq!(text1, reloaded.to_model_text().unwrap());
+    }
+
+    #[test]
     fn saves_and_loads_through_a_file() {
         let cube = sample_cube();
         let path =
@@ -1809,6 +1859,48 @@ mod tests {
         let grid = model2.view("Grid").unwrap();
         assert!(grid.suppress_zero_rows);
         assert!(!grid.suppress_zero_columns);
+    }
+
+    #[test]
+    fn view_context_round_trips_in_author_order() {
+        use crate::{AxisSpec, View, Visibility};
+
+        // Context deliberately NOT sorted by dimension: the author put Version
+        // before Region. The echoed order must be identical before and after a
+        // save/load cycle (serializing sorted while the API preserved author
+        // order made a view's context flip across a restart).
+        let mut model = Model::new(sample_cube());
+        model.views.insert(
+            "Sliced".into(),
+            View {
+                name: "Sliced".into(),
+                cube: "Sales".into(),
+                owner: None,
+                visibility: Visibility::Public,
+                rows: Vec::new(),
+                columns: Vec::new(),
+                context: vec![
+                    ("Version".into(), "Actual".into()),
+                    ("Region".into(), "North".into()),
+                ],
+                suppress_zero_rows: false,
+                suppress_zero_columns: false,
+            },
+        );
+        let axis_free = model.views["Sliced"].context.clone();
+
+        let text1 = model.to_model_text().unwrap();
+        let model2 = Model::from_model_text(&text1).unwrap();
+        assert_eq!(
+            model2.view("Sliced").unwrap().context,
+            axis_free,
+            "Model -> text -> Model preserves the author's context order"
+        );
+        // And the text itself stays a canonical fixed point.
+        assert_eq!(text1, model2.to_model_text().unwrap());
+
+        // rows/columns axis specs were already author-ordered; unchanged.
+        assert_eq!(model2.view("Sliced").unwrap().rows, Vec::<AxisSpec>::new());
     }
 
     #[test]

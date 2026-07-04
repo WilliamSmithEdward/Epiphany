@@ -30,10 +30,39 @@ pub struct Rule {
     pub span: Span,
 }
 
+/// The scope marker on a rule area (ADR-0041): whether an *unconstrained*
+/// dimension of the area matches leaf (numeric) or consolidated members. It
+/// governs only the implicit dimensions; an explicitly named selector matches its
+/// members regardless. No marker is [`Scope::Leaf`] in meaning but prints as no
+/// marker, so existing rules round-trip byte-for-byte.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// No marker was written: leaf-only, the historical default. Prints nothing.
+    Unmarked,
+    /// `N:` — leaf (numeric) cells. Same meaning as [`Scope::Unmarked`], but the
+    /// author wrote it, so it prints back as `N:`.
+    Leaf,
+    /// `C:` — consolidated cells: an unconstrained dimension matches consolidated
+    /// members, so the rule fires *at* consolidations and recomputes there
+    /// instead of the components being aggregated (non-additive measures).
+    Consolidated,
+}
+
+impl Scope {
+    /// Whether an unconstrained dimension under this scope matches CONSOLIDATED
+    /// members (`C:`) rather than leaves (unmarked / `N:`).
+    pub fn targets_consolidated(self) -> bool {
+        matches!(self, Scope::Consolidated)
+    }
+}
+
 /// A conjunction of per-dimension selectors. A dimension absent from the area is
-/// unconstrained (the rule applies across all of its members).
+/// unconstrained (the rule applies across all of its members — leaves by default,
+/// or consolidations under a `C:` [`scope`](Area::scope) marker, ADR-0041).
 #[derive(Debug, Clone)]
 pub struct Area {
+    /// The scope marker (ADR-0041): what an unconstrained dimension matches.
+    pub scope: Scope,
     /// One selector per constrained dimension (each dimension at most once).
     pub selectors: Vec<DimSelector>,
 }
@@ -314,6 +343,18 @@ impl fmt::Display for SelectorKind {
     }
 }
 
+impl fmt::Display for Scope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Unmarked prints nothing so an unmarked rule round-trips byte-for-byte;
+        // N:/C: print their marker so an authored scope survives Display -> parse.
+        f.write_str(match self {
+            Scope::Unmarked => "",
+            Scope::Leaf => "N:",
+            Scope::Consolidated => "C:",
+        })
+    }
+}
+
 impl fmt::Display for Area {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let parts: Vec<String> = self
@@ -321,7 +362,7 @@ impl fmt::Display for Area {
             .iter()
             .map(|s| format!("{}: {}", quote(&s.dimension), s.kind))
             .collect();
-        write!(f, "[{}]", parts.join(", "))
+        write!(f, "{}[{}]", self.scope, parts.join(", "))
     }
 }
 
@@ -399,13 +440,18 @@ impl fmt::Display for Expr {
             Expr::Cell(r) => write!(f, "{r}"),
             Expr::Neg(e) => write!(f, "-{e}"),
             Expr::Bin { op, left, right } => write!(f, "({left} {op} {right})"),
+            // Always parenthesized, like `Bin`: a bare `IF` used as an operand
+            // (e.g. `(IF c THEN 1 ELSE 2) + 3`) would let its trailing branch
+            // greedily absorb the following operator on re-parse, changing the
+            // value. Wrapping keeps Display idempotent and semantics-preserving in
+            // every position (`then`/`otherwise` are full expressions).
             Expr::If {
                 cond,
                 then,
                 otherwise,
             } => match otherwise {
-                Some(o) => write!(f, "IF {cond} THEN {then} ELSE {o}"),
-                None => write!(f, "IF {cond} THEN {then}"),
+                Some(o) => write!(f, "(IF {cond} THEN {then} ELSE {o})"),
+                None => write!(f, "(IF {cond} THEN {then})"),
             },
             Expr::Func(c) => write!(f, "{c}"),
         }

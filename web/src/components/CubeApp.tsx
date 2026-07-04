@@ -6,11 +6,13 @@ import {
   deleteFlow,
   deleteSchedule,
   deleteView,
+  getMe,
   listCubes,
   logout,
   promoteDimension,
   runSchedule,
   type CubeSummary,
+  type Persona,
 } from '../api/client'
 import DimensionEditor from './DimensionEditor'
 import DimensionsWorkspace from './DimensionsWorkspace'
@@ -227,6 +229,35 @@ export default function CubeApp({
     [tabs, activeId],
   )
   const selection = activeTab?.selection ?? null
+
+  // The caller's persona (ADR-0020 progressive disclosure), which selects the
+  // shell: a business user gets Views + data entry only, a modeler the full model
+  // tree and raw-MDX/rules/flows affordances, an admin the modeler shell plus
+  // Administration. Seeded synchronously so the first paint is never the wrong,
+  // broader-than-earned shell: an admin starts 'admin', a non-admin starts
+  // 'modeler' - the safe non-locking default (ADR-0020 is explicit that wrongly
+  // hiding MDX/rules/flows from a non-admin modeler is the failure to avoid).
+  //
+  // The AUTHORITATIVE persona is the server's own derivation, returned by
+  // GET /auth/me (self-only, so it works for any authenticated caller - not just
+  // admins). We refine to it below; this is what lets a real non-admin business
+  // user get the business shell instead of the safe modeler fallback.
+  const [persona, setPersona] = useState<Persona>(isAdmin ? 'admin' : 'modeler')
+  useEffect(() => {
+    let cancelled = false
+    getMe()
+      .then((me) => {
+        if (!cancelled) setPersona(me.persona)
+      })
+      .catch(() => {
+        // A transient failure leaves the safe seed in place; never narrows a
+        // non-admin to 'business' on error, so no one is locked out.
+        if (!cancelled) setPersona(isAdmin ? 'admin' : 'modeler')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [isAdmin])
 
   // Open-or-activate a tab and hand its pane a fresh intent. If a tab for this
   // selection already exists, make it active and bump its nav signal (merging
@@ -615,15 +646,57 @@ export default function CubeApp({
   )
 
   useEffect(() => {
-    const socket = connectWs((event) => {
-      if (event.type === 'cells_changed' || event.type === 'objects_changed') {
-        setReload((n) => n + 1)
+    // Re-create the socket on every drop with exponential backoff, so a
+    // transient disconnect (server restart, laptop sleep, proxy idle timeout)
+    // does not permanently freeze live updates - grids, views, the tree, and
+    // feeder diagnostics all resync via reloadSignal. On a successful reconnect
+    // (not the first connect) bump reloadSignal once so any change missed while
+    // offline is picked up. The badge reads 'offline' only while a retry is
+    // actually scheduled, so the "reconnecting" tooltip is honest.
+    let socket: WebSocket | null = null
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
+    let backoff = 1000
+    let firstConnect = true
+    let unmounted = false
+
+    const open = () => {
+      socket = connectWs((event) => {
+        if (event.type === 'cells_changed' || event.type === 'objects_changed') {
+          setReload((n) => n + 1)
+        }
+      })
+      socket.onopen = () => {
+        setConn('live')
+        backoff = 1000 // reset backoff after a healthy connection
+        if (!firstConnect) setReload((n) => n + 1) // resync after a reconnect
+        firstConnect = false
       }
-    })
-    socket.onopen = () => setConn('live')
-    socket.onclose = () => setConn('offline')
-    socket.onerror = () => setConn('offline')
-    return () => socket.close()
+      const scheduleReconnect = () => {
+        if (unmounted || retryTimer) return
+        setConn('offline')
+        const delay = backoff
+        backoff = Math.min(backoff * 2, 30000)
+        retryTimer = setTimeout(() => {
+          retryTimer = null
+          if (!unmounted) open()
+        }, delay)
+      }
+      socket.onclose = scheduleReconnect
+      socket.onerror = scheduleReconnect
+    }
+
+    open()
+    return () => {
+      unmounted = true
+      if (retryTimer) clearTimeout(retryTimer)
+      if (socket) {
+        // Detach handlers so the close we trigger on unmount does not schedule a
+        // reconnect against a torn-down component.
+        socket.onclose = null
+        socket.onerror = null
+        socket.close()
+      }
+    }
   }, [])
 
   // After closing the active tab, move focus to the neighbor we re-activated
@@ -689,26 +762,32 @@ export default function CubeApp({
         run: () => navigate({ kind: 'cube', cube: cube.name }, {}),
       })
     }
-    // Resource-type roots (mirror the tree's Dimensions / Flows / Schedules).
-    list.push({
-      id: 'go:dimensions',
-      label: 'Go to Dimensions',
-      group: 'Go to',
-      keywords: 'reusable across cubes library',
-      run: () => navigate({ kind: 'dimension', id: -1, name: '' }, {}),
-    })
-    list.push({
-      id: 'go:flows',
-      label: 'Go to Flows',
-      group: 'Go to',
-      run: () => onAction('new-flow', {}),
-    })
-    list.push({
-      id: 'go:schedules',
-      label: 'Go to Schedules',
-      group: 'Go to',
-      run: () => onAction('new-schedule', {}),
-    })
+    // Resource-type roots and create actions are model-authoring machinery: a
+    // business user's palette omits them entirely (ADR-0020 progressive
+    // disclosure), matching the tree, which hides those roots for that persona.
+    // Modelers and admins keep the full set.
+    if (persona !== 'business') {
+      // Resource-type roots (mirror the tree's Dimensions / Flows / Schedules).
+      list.push({
+        id: 'go:dimensions',
+        label: 'Go to Dimensions',
+        group: 'Go to',
+        keywords: 'reusable across cubes library',
+        run: () => navigate({ kind: 'dimension', id: -1, name: '' }, {}),
+      })
+      list.push({
+        id: 'go:flows',
+        label: 'Go to Flows',
+        group: 'Go to',
+        run: () => onAction('new-flow', {}),
+      })
+      list.push({
+        id: 'go:schedules',
+        label: 'Go to Schedules',
+        group: 'Go to',
+        run: () => onAction('new-schedule', {}),
+      })
+    }
     if (isAdmin) {
       list.push({
         id: 'go:connections',
@@ -722,9 +801,11 @@ export default function CubeApp({
     if (isAdmin) {
       list.push({ id: 'new:cube', label: 'New cube...', group: 'Create', run: () => onAction('new-cube', {}) })
     }
-    list.push({ id: 'new:dimension', label: 'New dimension...', group: 'Create', run: () => onAction('register-dimension', {}) })
-    list.push({ id: 'new:flow', label: 'New flow...', group: 'Create', run: () => onAction('new-flow', {}) })
-    list.push({ id: 'new:schedule', label: 'New schedule...', group: 'Create', run: () => onAction('new-schedule', {}) })
+    if (persona !== 'business') {
+      list.push({ id: 'new:dimension', label: 'New dimension...', group: 'Create', run: () => onAction('register-dimension', {}) })
+      list.push({ id: 'new:flow', label: 'New flow...', group: 'Create', run: () => onAction('new-flow', {}) })
+      list.push({ id: 'new:schedule', label: 'New schedule...', group: 'Create', run: () => onAction('new-schedule', {}) })
+    }
     if (isAdmin) {
       list.push({ id: 'go:overview', label: 'Go to Server overview', group: 'Admin', run: () => goAdmin('overview') })
       list.push({ id: 'go:security', label: 'Go to Security & audit', group: 'Admin', run: () => goAdmin('security') })
@@ -732,7 +813,7 @@ export default function CubeApp({
     list.push({ id: 'pw', label: 'Change password', group: 'Account', run: () => setPwOpen(true) })
     list.push({ id: 'signout', label: 'Sign out', group: 'Account', run: signOut })
     return list
-  }, [cubes, isAdmin, signOut, navigate, onAction, goAdmin])
+  }, [cubes, isAdmin, persona, signOut, navigate, onAction, goAdmin])
 
   const segs = crumbs(selection, { autoNew: activeTab?.nav.autoNew })
   const cube = cubeOf(selection)
@@ -885,7 +966,7 @@ export default function CubeApp({
             <ModelExplorer
               selection={selection}
               onSelect={(s) => navigate(s, {})}
-              isAdmin={isAdmin}
+              persona={persona}
               reloadSignal={reload}
               onAction={onAction}
             />
@@ -990,7 +1071,15 @@ export default function CubeApp({
                   }
                 />
               ) : activeTab.selection.kind === 'cube' && cube ? (
-                <PivotGrid cube={cube} reloadSignal={reload} onModelChange={bumpReload} />
+                <PivotGrid
+                  cube={cube}
+                  reloadSignal={reload}
+                  onModelChange={bumpReload}
+                  // Raw MDX is modeler/admin machinery: a business user's grid
+                  // hides the "Show MDX" affordance (ADR-0020 progressive
+                  // disclosure). Modelers and admins keep it.
+                  showMdx={persona !== 'business'}
+                />
               ) : activeTab.selection.kind === 'cube-dimension' &&
                 cube &&
                 (activeTab.selection.dim || activeTab.nav.dim) &&

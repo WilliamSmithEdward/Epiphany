@@ -15,14 +15,22 @@
 //! spawned directly with an argv array (no shell, so no command injection), with
 //! a timeout, a stdout size cap, and a non-zero-exit error.
 //!
-//! Limitation: on a timeout only the spawned process is killed, not any
-//! grandchildren it forked (process-group/job-object termination is platform
-//! work deferred for now). Configure a connection to run the target program
-//! directly (e.g. `python script.py`) rather than wrapping it in a shell that
-//! forks, so a kill reaches the real worker.
+//! On a timeout the whole process tree is terminated, not just the direct child
+//! (CN1): the child is spawned as its own process-group leader on Unix and killed
+//! with a negative-PID `kill` that signals the group, and on Windows with
+//! `taskkill /T /F`, so forked workers do not survive the deadline. This is
+//! dependency-free and `unsafe`-free (the crate denies `unsafe_code`; no
+//! `libc`/`windows-sys` dep). Separately, a grandchild that keeps a stdout/stderr
+//! pipe open cannot hang the caller: the wait for EOF is bounded by the same
+//! deadline as the process, so such a run returns a timeout instead of blocking
+//! forever (its detached reader thread ends when the pipe finally closes). A
+//! worker that deliberately detaches into a new session/process group is out of
+//! scope, the same limit a shell's own job control has; still prefer to configure
+//! a connection to run the target program directly (e.g. `python script.py`).
 
 use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use epiphany_core::{CommandSpec, SourceFormat};
@@ -41,6 +49,12 @@ pub use sql::{fetch_sql, fetch_sql_capped};
 /// Default cap on a command's captured stdout (16 MiB): output beyond this fails
 /// the run rather than risking memory exhaustion.
 pub const MAX_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+
+/// Default timeout (30s) when a spec leaves `timeout_ms` unset (0). The REST layer
+/// already coerces an unset value to this, so 0 only reaches a connector from a
+/// hand-edited model; every connector applies the same default so no spec value
+/// can produce an unbounded fetch. Shared by the command, HTTP, and SQL paths.
+pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
 /// How long to poll between process liveness checks.
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -117,7 +131,10 @@ pub fn run_command(spec: &CommandSpec) -> Result<Vec<Row>, ConnectError> {
 ///
 /// Spawns `spec.program` with `spec.args` directly (no shell), with no stdin,
 /// reading stdout and stderr concurrently (so neither pipe can deadlock), and
-/// killing the process if it runs past `spec.timeout_ms`. On a clean exit the
+/// killing the process *tree* if it runs past `spec.timeout_ms` (0 means the 30s
+/// default) so forked workers do not outlive the deadline (CN1). The same
+/// deadline bounds the wait for the pipes to reach EOF, so a backgrounded
+/// grandchild holding a pipe open cannot hang the caller. On a clean exit the
 /// stdout is parsed per `spec.format` into rows.
 pub fn run_command_capped(spec: &CommandSpec, cap: usize) -> Result<Vec<Row>, ConnectError> {
     let mut command = Command::new(&spec.program);
@@ -134,37 +151,73 @@ pub fn run_command_capped(spec: &CommandSpec, cap: usize) -> Result<Vec<Row>, Co
     if let Some(dir) = &spec.working_dir {
         command.current_dir(dir);
     }
+    // Put the child in its own process group so a timeout can signal the whole
+    // tree, not just the direct child (CN1). `process_group(0)` makes the child a
+    // new group leader (its PID == PGID), so `kill -<pid>` reaches every
+    // descendant that has not itself detached into a new group. Stable and
+    // `unsafe`-free (the crate denies `unsafe_code`); Windows uses `taskkill /T`
+    // in `kill_tree` instead, which walks the tree by parent PID.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        command.process_group(0);
+    }
     let mut child = command.spawn().map_err(ConnectError::Spawn)?;
 
     // Drain both pipes on threads so a chatty program cannot deadlock on a full
     // pipe buffer; stdout is capped, stderr is bounded small for error context.
+    // Each reader reports its result over a channel so the wait for EOF can be
+    // bounded by the same deadline as the process (a background grandchild can
+    // hold a pipe's write end open after the direct child exits, so a bare
+    // `join()` would block the caller forever on an otherwise clean exit).
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let out_reader = spawn_reader(stdout, cap);
-    let err_reader = spawn_reader(stderr, 64 * 1024);
+    let (out_tx, out_rx) = mpsc::channel();
+    let (err_tx, err_rx) = mpsc::channel();
+    spawn_reader(stdout, cap, out_tx);
+    spawn_reader(stderr, 64 * 1024, err_tx);
 
-    // Poll for exit, enforcing the timeout.
-    let timeout = Duration::from_millis(spec.timeout_ms);
+    // A timeout of 0 means "unset"; default it so no spec value runs unbounded
+    // (matches the HTTP and SQL connectors). The deadline covers both waiting for
+    // the process to exit and waiting for the pipes to reach EOF.
+    let millis = if spec.timeout_ms == 0 {
+        DEFAULT_TIMEOUT_MS
+    } else {
+        spec.timeout_ms
+    };
+    let timeout = Duration::from_millis(millis);
     let start = Instant::now();
+
+    // Poll for exit, enforcing the deadline.
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) => {
-                if spec.timeout_ms != 0 && start.elapsed() >= timeout {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(ConnectError::Timeout {
-                        millis: spec.timeout_ms,
-                    });
+                if start.elapsed() >= timeout {
+                    kill_and_reap(&mut child);
+                    return Err(ConnectError::Timeout { millis });
                 }
                 std::thread::sleep(POLL_INTERVAL);
             }
-            Err(e) => return Err(ConnectError::Spawn(e)),
+            // The wait itself failed; kill the child so we do not orphan it.
+            Err(e) => {
+                kill_and_reap(&mut child);
+                return Err(ConnectError::Spawn(e));
+            }
         }
     };
 
-    let (out_bytes, overflow) = out_reader.join().unwrap_or((Vec::new(), false));
-    let (err_bytes, _) = err_reader.join().unwrap_or((Vec::new(), false));
+    // Collect both reader results, still bounded by the deadline. If a pipe has
+    // not reached EOF by the deadline (a grandchild still holds it open), kill the
+    // child to release its own ends and report a timeout rather than blocking the
+    // caller forever. The detached reader threads end when their pipe finally
+    // closes; they cannot wedge the caller.
+    let out = recv_by_deadline(&out_rx, start, timeout);
+    let err = recv_by_deadline(&err_rx, start, timeout);
+    let (Some((out_bytes, overflow)), Some((err_bytes, _))) = (out, err) else {
+        kill_and_reap(&mut child);
+        return Err(ConnectError::Timeout { millis });
+    };
 
     if overflow {
         return Err(ConnectError::OutputTooLarge { cap });
@@ -181,13 +234,17 @@ pub fn run_command_capped(spec: &CommandSpec, cap: usize) -> Result<Vec<Row>, Co
     parse_output(&text, spec.format, spec.json_path.as_deref())
 }
 
-/// Read a stream to EOF on a background thread, storing up to `cap` bytes and
-/// reporting whether more was produced (draining the rest so the writer never
-/// blocks). Returns `(bytes, overflowed)`.
+/// Read a stream to EOF on a detached background thread, storing up to `cap` bytes
+/// and reporting whether more was produced (draining the rest so the writer never
+/// blocks), then send `(bytes, overflowed)` on `tx`. The thread is detached: the
+/// caller waits on the channel with a deadline instead of joining, so a stream
+/// that never reaches EOF (a grandchild holding the write end open) cannot block
+/// the caller. A send failure (receiver dropped after a timeout) is ignored.
 fn spawn_reader(
     mut stream: impl Read + Send + 'static,
     cap: usize,
-) -> std::thread::JoinHandle<(Vec<u8>, bool)> {
+    tx: mpsc::Sender<(Vec<u8>, bool)>,
+) {
     std::thread::spawn(move || {
         let mut buf = Vec::new();
         let mut chunk = [0u8; 8192];
@@ -207,8 +264,73 @@ fn spawn_reader(
                 Err(_) => break,
             }
         }
-        (buf, total > cap)
-    })
+        let _ = tx.send((buf, total > cap));
+    });
+}
+
+/// Wait for a reader's result, bounded by `start + timeout`. Returns `None` if the
+/// deadline passes before the reader reports EOF (or the sender vanished).
+fn recv_by_deadline(
+    rx: &mpsc::Receiver<(Vec<u8>, bool)>,
+    start: Instant,
+    timeout: Duration,
+) -> Option<(Vec<u8>, bool)> {
+    let remaining = timeout.checked_sub(start.elapsed())?;
+    rx.recv_timeout(remaining).ok()
+}
+
+/// Terminate the child's whole process tree, then reap the direct child so no
+/// zombie/orphan is left behind (CN1). A wrapped program that forks workers (a
+/// shell, `python` spawning helpers) must not leave those grandchildren running
+/// past a timeout. Ordering: signal the tree first so descendants die, then kill
+/// and reap the direct child. Every step is best-effort - the process may already
+/// have exited, and terminating the tree must never itself fail the caller.
+fn kill_and_reap(child: &mut Child) {
+    kill_tree(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Kill the process tree rooted at `pid`, dependency-free and without `unsafe`
+/// (the crate denies `unsafe_code`, and no `libc`/`windows-sys` dep is available).
+///
+/// - Unix: the child was spawned as its own process-group leader, so its PID is
+///   also its PGID; `kill -KILL -<pid>` (a negative target) signals the entire
+///   group, reaching forked workers that stayed in the group. Delivered via the
+///   `kill` utility so no FFI/`unsafe` is needed. A worker that deliberately
+///   detached into a new session is out of scope (the same limit a shell's job
+///   control has).
+/// - Windows: `taskkill /T /F /PID <pid>` force-kills the process and its whole
+///   child tree (walked by parent PID). Output is discarded; a failure (already
+///   gone) is ignored.
+///
+/// Runs synchronously but bounded: the helper is short-lived and reaped here, so
+/// it cannot outlive or wedge the caller.
+fn kill_tree(pid: u32) {
+    #[cfg(unix)]
+    let mut killer = {
+        let mut c = Command::new("kill");
+        c.args(["-KILL", &format!("-{pid}")]);
+        c
+    };
+    #[cfg(windows)]
+    let mut killer = {
+        let mut c = Command::new("taskkill");
+        c.args(["/T", "/F", "/PID", &pid.to_string()]);
+        c
+    };
+    #[cfg(any(unix, windows))]
+    {
+        // Detach the helper's own stdio so it neither inherits our pipes nor
+        // prints to the server console; reap it so it leaves no zombie.
+        killer
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Ok(mut proc) = killer.spawn() {
+            let _ = proc.wait();
+        }
+    }
 }
 
 /// Parse a connector's output text into rows per the configured format. Shared
@@ -443,6 +565,67 @@ mod tests {
 
         let err = run_command(&spec).unwrap_err();
         assert!(matches!(err, ConnectError::Timeout { .. }), "{err}");
+    }
+
+    // A program that forks a background grandchild inheriting the stdout pipe and
+    // then exits cleanly used to hang the caller forever: the direct child was
+    // reaped, but the reader `join()` waited on an EOF that never came while the
+    // grandchild held the write end open. The deadline now bounds the EOF wait,
+    // so the call returns a Timeout promptly instead of blocking. Unix-only: it
+    // relies on `sh` job control to background a process that inherits the pipe
+    // (Windows handle-inheritance for `start /b` is not reliable here), matching
+    // the crate's other shell-quoting-dependent Unix-only test.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_grandchild_holding_the_pipe_does_not_hang() {
+        // `sleep 30 &` backgrounds a process that inherits stdout; the shell exits
+        // at once. Without the fix, stdout never reaches EOF for ~30s and the old
+        // join blocked forever; the 300ms deadline must win.
+        let spec = shell("sleep 30 &", SourceFormat::Csv, 300);
+        let start = Instant::now();
+        let err = run_command(&spec).unwrap_err();
+        let elapsed = start.elapsed();
+        assert!(matches!(err, ConnectError::Timeout { .. }), "{err}");
+        // Comfortably under the grandchild's 30s lifetime: proves we did not block
+        // on EOF. Generous upper bound to stay robust on a loaded CI machine.
+        assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    }
+
+    // CN1: a timeout must terminate the *whole tree*, not just the direct child.
+    // The child shell forks a grandchild that, after a delay, writes a sentinel
+    // file; the caller times out well before that delay. Because the child was
+    // spawned as its own process-group leader and the timeout signals the group,
+    // the grandchild is killed before it can create the sentinel - so the file
+    // must never appear. Unix-only: it depends on `sh` job control and
+    // process-group signalling (Windows uses `taskkill /T`, exercised in prod but
+    // not portably scriptable here). Without the tree-kill this test fails: the
+    // orphaned grandchild survives and writes the sentinel.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_timeout_kills_the_whole_process_tree() {
+        let dir =
+            std::env::temp_dir().join(format!("epiphany-connect-tree-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sentinel = dir.join("grandchild-survived");
+        std::fs::remove_file(&sentinel).ok();
+
+        // Background a grandchild that sleeps, then touches the sentinel. The child
+        // shell exits immediately after forking it. `sh -c` runs in a directory we
+        // control, and the sentinel path is absolute.
+        let script = format!("(sleep 2; touch '{}') & exit 0", sentinel.display());
+        let spec = shell(&script, SourceFormat::Csv, 200);
+        let err = run_command(&spec).unwrap_err();
+        assert!(matches!(err, ConnectError::Timeout { .. }), "{err}");
+
+        // Wait past the grandchild's 2s delay: if the tree-kill worked it is dead
+        // and the sentinel never appears; if it leaked, the file shows up here.
+        std::thread::sleep(Duration::from_millis(3000));
+        let survived = sentinel.exists();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            !survived,
+            "the grandchild survived the timeout - the process tree was not killed"
+        );
     }
 
     #[test]

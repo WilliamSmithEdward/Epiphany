@@ -16,7 +16,9 @@ pub use acl::{AccessLevel, AccessList, ObjectKind, ObjectRef, Scope, Subject};
 pub use audit::{AuditAction, AuditFilter, AuditLog, AuditRecord, RetentionPolicy};
 pub use password::PasswordPolicy;
 pub use secret::SecretStore;
-pub use store::{GeneratedAdminPassword, Principal, SecurityError, SecurityStore, UserView};
+pub use store::{
+    verify_password, GeneratedAdminPassword, Principal, SecurityError, SecurityStore, UserView,
+};
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-security";
@@ -77,6 +79,32 @@ pub(crate) fn write_owner_only(path: &std::path::Path, contents: &[u8]) -> std::
     {
         std::fs::write(path, contents)?;
     }
+    Ok(())
+}
+
+/// Write `contents` to `path`, owner-only from creation (as [`write_owner_only`])
+/// **and fsync the file's data+metadata before returning**, so the bytes are
+/// durable on disk once this returns. Used by the security store's stage-then-
+/// commit save (a temp file is written durably here, then atomically renamed over
+/// the artifact), so an I/O failure is observed *before* the rename and the
+/// in-memory change can be rolled back to keep memory and disk in agreement.
+pub(crate) fn write_owner_only_synced(
+    path: &std::path::Path,
+    contents: &[u8],
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    set_owner_only(&mut opts); // owner-only from creation (ADR-0017)
+    let mut f = opts.open(path)?;
+    f.write_all(contents)?;
+    // Fsync the temp's data+metadata so the rename cannot expose a half-written or
+    // not-yet-durable artifact after a crash (fsync discipline; ADR-0002 framing
+    // rationale applies to the security artifact too).
+    f.sync_all()?;
+    // `mode` applies only on creation; normalize in case the file pre-existed
+    // (e.g. a stale temp from an interrupted save) with looser bits.
+    restrict_to_owner(path)?;
     Ok(())
 }
 

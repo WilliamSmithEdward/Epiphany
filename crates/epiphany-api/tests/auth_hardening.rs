@@ -175,6 +175,73 @@ async fn a_successful_login_resets_the_failure_counter() {
     assert_eq!(login_status(&app, "ann", "right").await, StatusCode::OK);
 }
 
+/// POST /auth/password with a bearer token; returns the status.
+async fn change_password_status(app: &Router, token: &str, current: &str, new: &str) -> StatusCode {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/auth/password")
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "current_password": current, "new_password": new }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn change_password_locks_out_after_repeated_wrong_current_password() {
+    // A hijacked session must not be able to brute-force the real (current)
+    // password invisibly: /auth/password shares the login lockout (ADR-0017).
+    let clock = Arc::new(ManualClock::new(1_000));
+    let security = SecurityStore::with_admin("ann", "right", false);
+    let app = app_with(
+        security,
+        clock.clone(),
+        LoginGuard::new(3, 900_000),
+        "cp-lock",
+    );
+    let (_, body) = login_full(&app, "ann", "right").await;
+    let token = body["token"].as_str().unwrap().to_string();
+
+    // Two wrong current-password attempts are 401 each...
+    for _ in 0..2 {
+        assert_eq!(
+            change_password_status(&app, &token, "wrong", "a-strong-pass-1").await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // ...the third trips the lockout (threshold 3): now even a correct current
+    // password is refused with 429, so the guess rate is bounded.
+    assert_eq!(
+        change_password_status(&app, &token, "wrong", "a-strong-pass-1").await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        change_password_status(&app, &token, "right", "a-strong-pass-1").await,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn overlong_credentials_are_rejected_before_the_hasher() {
+    let clock = Arc::new(ManualClock::new(1_000));
+    let security = SecurityStore::with_admin("ann", "right", false);
+    let app = app_with(security, clock, LoginGuard::new(5, 900_000), "cred-len");
+    // A 300-byte password (> the 256-byte bound) is a 400, not a 401: rejected
+    // before the guard/hasher/audit ever see it.
+    let long = "x".repeat(300);
+    assert_eq!(
+        login_status(&app, "ann", &long).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
 #[tokio::test]
 async fn password_change_revokes_other_sessions_but_keeps_current() {
     let clock = Arc::new(ManualClock::new(1_000));

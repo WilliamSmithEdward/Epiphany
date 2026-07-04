@@ -242,9 +242,10 @@ impl SecurityStore {
         password: &str,
         is_admin: bool,
     ) -> Result<(), SecurityError> {
-        self.check_password(password)?;
-        self.insert_user(username, password, is_admin, false, &[])?;
-        self.save()
+        self.commit(|s| {
+            s.check_password(password)?;
+            s.insert_user(username, password, is_admin, false, &[])
+        })
     }
 
     /// Enforce the password-strength policy on a user-set password (ADR-0017).
@@ -271,6 +272,27 @@ impl SecurityStore {
         })
     }
 
+    /// The stored PHC hash string for `username`, or a fixed dummy hash for an
+    /// unknown user so a caller that verifies off-lock costs the same one Argon2
+    /// verify whether or not the user exists (the same user-enumeration timing
+    /// defense as [`authenticate`](Self::authenticate), ADR-0017). Lets the API
+    /// verify a password against [`verify_password`] WITHOUT holding the global
+    /// security mutex across the Argon2 KDF: lock briefly to copy the PHC string,
+    /// then release and verify. The returned string is a password *hash*, never a
+    /// secret usable to authenticate, and its `Debug` is not special-cased because
+    /// a PHC hash is safe to surface (it is what is already persisted).
+    pub fn password_hash_for(&self, username: &str) -> Option<String> {
+        Some(match self.users.get(username) {
+            Some(user) => user.password_hash.clone(),
+            // Return the dummy so the caller still runs one verify on the
+            // not-found path; the caller treats a hit on the dummy as a denial
+            // because no real password can verify against it. `None` would let a
+            // caller skip the KDF for an unknown user and reopen the timing channel,
+            // so this deliberately returns `Some`.
+            None => self.dummy_hash.clone(),
+        })
+    }
+
     /// Whether a user must change their password before normal use.
     pub fn must_change_password(&self, username: &str) -> bool {
         self.users
@@ -285,19 +307,21 @@ impl SecurityStore {
         current: &str,
         new: &str,
     ) -> Result<(), SecurityError> {
-        let user = self
-            .users
-            .get(username)
-            .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
-        if !verify_password(current, &user.password_hash) {
-            return Err(SecurityError::IncorrectPassword);
-        }
-        self.check_password(new)?;
-        let new_hash = hash_password(new, self.fast_kdf)?;
-        let user = self.users.get_mut(username).expect("user present");
-        user.password_hash = new_hash;
-        user.must_change_password = false;
-        self.save()
+        self.commit(|s| {
+            let user = s
+                .users
+                .get(username)
+                .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
+            if !verify_password(current, &user.password_hash) {
+                return Err(SecurityError::IncorrectPassword);
+            }
+            s.check_password(new)?;
+            let new_hash = hash_password(new, s.fast_kdf)?;
+            let user = s.users.get_mut(username).expect("user present");
+            user.password_hash = new_hash;
+            user.must_change_password = false;
+            Ok(())
+        })
     }
 
     /// Number of users.
@@ -327,13 +351,15 @@ impl SecurityStore {
         is_admin: bool,
         groups: &[String],
     ) -> Result<(), SecurityError> {
-        self.check_password(password)?;
-        let refs: Vec<&str> = groups.iter().map(String::as_str).collect();
-        self.insert_user(username, password, is_admin, false, &refs)?;
-        for g in groups {
-            self.groups.insert(g.clone());
-        }
-        self.save()
+        self.commit(|s| {
+            s.check_password(password)?;
+            let refs: Vec<&str> = groups.iter().map(String::as_str).collect();
+            s.insert_user(username, password, is_admin, false, &refs)?;
+            for g in groups {
+                s.groups.insert(g.clone());
+            }
+            Ok(())
+        })
     }
 
     /// The number of users with the admin flag, used to refuse removing the last
@@ -343,16 +369,38 @@ impl SecurityStore {
     }
 
     /// Delete a user. Returns whether one was removed; persists on change. Refuses
-    /// to remove the last administrator (RG-12).
+    /// to remove the last administrator (RG-12). Every grant and element ACL naming
+    /// the user is purged too, so a later account that reuses the name does not
+    /// silently inherit the deleted user's access.
     pub fn delete_user(&mut self, username: &str) -> Result<bool, SecurityError> {
         if self.users.get(username).is_some_and(|u| u.is_admin) && self.admin_count() == 1 {
             return Err(SecurityError::LastAdmin);
         }
-        let removed = self.users.remove(username).is_some();
-        if removed {
-            self.save()?;
+        // No such user: nothing changes, so do not rewrite the artifact (matches the
+        // prior behavior of skipping the save when nothing was removed).
+        if !self.users.contains_key(username) {
+            return Ok(false);
         }
-        Ok(removed)
+        self.commit(|s| {
+            s.users.remove(username);
+            s.purge_subject(&Subject::User(username.to_string()));
+            Ok(true)
+        })
+    }
+
+    /// Strip a subject (user or group) from every `grants` and `element_acls` row,
+    /// dropping any list left empty, so a deleted principal leaves no dangling
+    /// grant that would resurrect on name reuse. Iteration is over sorted maps and
+    /// mutates in place, so it is deterministic. Does not persist; the caller saves.
+    fn purge_subject(&mut self, subject: &Subject) {
+        self.grants.retain(|_, list| {
+            list.set(subject, AccessLevel::None);
+            !list.is_empty()
+        });
+        self.element_acls.retain(|_, list| {
+            list.set(subject, AccessLevel::None);
+            !list.is_empty()
+        });
     }
 
     /// Set a user's admin flag, persisting. Refuses to demote the last
@@ -368,12 +416,14 @@ impl SecurityStore {
         if demoting_last_admin {
             return Err(SecurityError::LastAdmin);
         }
-        let user = self
-            .users
-            .get_mut(username)
-            .expect("user presence checked above");
-        user.is_admin = is_admin;
-        self.save()
+        self.commit(|s| {
+            let user = s
+                .users
+                .get_mut(username)
+                .expect("user presence checked above");
+            user.is_admin = is_admin;
+            Ok(())
+        })
     }
 
     /// Replace a user's group membership, persisting (and registering any new
@@ -383,27 +433,31 @@ impl SecurityStore {
         username: &str,
         groups: &[String],
     ) -> Result<(), SecurityError> {
-        let user = self
-            .users
-            .get_mut(username)
-            .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
-        user.groups = groups.iter().cloned().collect();
-        for g in groups {
-            self.groups.insert(g.clone());
-        }
-        self.save()
+        self.commit(|s| {
+            let user = s
+                .users
+                .get_mut(username)
+                .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
+            user.groups = groups.iter().cloned().collect();
+            for g in groups {
+                s.groups.insert(g.clone());
+            }
+            Ok(())
+        })
     }
 
     /// Reset a user's password (admin operation), persisting.
     pub fn reset_password(&mut self, username: &str, new: &str) -> Result<(), SecurityError> {
-        self.check_password(new)?;
-        let new_hash = hash_password(new, self.fast_kdf)?;
-        let user = self
-            .users
-            .get_mut(username)
-            .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
-        user.password_hash = new_hash;
-        self.save()
+        self.commit(|s| {
+            s.check_password(new)?;
+            let new_hash = hash_password(new, s.fast_kdf)?;
+            let user = s
+                .users
+                .get_mut(username)
+                .ok_or_else(|| SecurityError::UserNotFound(username.to_string()))?;
+            user.password_hash = new_hash;
+            Ok(())
+        })
     }
 
     /// Reset a user to a freshly generated temporary password and require a
@@ -419,13 +473,14 @@ impl SecurityStore {
         if !self.users.contains_key(username) {
             return Err(SecurityError::UserNotFound(username.to_string()));
         }
-        let temp = generate_password();
-        let new_hash = hash_password(&temp, self.fast_kdf)?;
-        let user = self.users.get_mut(username).expect("user present");
-        user.password_hash = new_hash;
-        user.must_change_password = true;
-        self.save()?;
-        Ok(GeneratedAdminPassword(temp))
+        self.commit(|s| {
+            let temp = generate_password();
+            let new_hash = hash_password(&temp, s.fast_kdf)?;
+            let user = s.users.get_mut(username).expect("user present");
+            user.password_hash = new_hash;
+            user.must_change_password = true;
+            Ok(GeneratedAdminPassword(temp))
+        })
     }
 
     /// All group names.
@@ -435,22 +490,30 @@ impl SecurityStore {
 
     /// Create a group (idempotent), persisting.
     pub fn create_group(&mut self, name: &str) -> Result<(), SecurityError> {
-        self.groups.insert(name.to_string());
-        self.save()
+        self.commit(|s| {
+            s.groups.insert(name.to_string());
+            Ok(())
+        })
     }
 
     /// Delete a group and remove it from every user's membership. Returns whether
-    /// it existed; persists on change. (Any grants naming it become dangling and
-    /// are simply never consulted, per ADR-0015.)
+    /// it existed; persists on change. Every grant and element ACL naming the group
+    /// is purged too, so recreating a group of the same name does not resurrect the
+    /// old group's access.
     pub fn delete_group(&mut self, name: &str) -> Result<bool, SecurityError> {
-        let removed = self.groups.remove(name);
-        if removed {
-            for user in self.users.values_mut() {
+        // Nothing to remove: leave the artifact untouched (matches the prior
+        // skip-the-save-when-nothing-changed behavior).
+        if !self.groups.contains(name) {
+            return Ok(false);
+        }
+        self.commit(|s| {
+            s.groups.remove(name);
+            for user in s.users.values_mut() {
                 user.groups.remove(name);
             }
-            self.save()?;
-        }
-        Ok(removed)
+            s.purge_subject(&Subject::Group(name.to_string()));
+            Ok(true)
+        })
     }
 
     // ---- access resolution (ADR-0023) ----
@@ -523,11 +586,16 @@ impl SecurityStore {
     }
 
     /// Whether any element ACL exists for a `(cube, dimension)` - lets the hot
-    /// path skip building a mask when there are none.
+    /// path skip building a mask when there are none. The keys are sorted, so all
+    /// entries for one `(cube, dim)` are contiguous: a range probe from the band's
+    /// lower bound is O(log n), not a scan of every element-ACL key.
     pub fn has_element_acls(&self, cube: &str, dim: &str) -> bool {
+        use std::ops::Bound;
+        let lower = (cube.to_string(), dim.to_string(), String::new());
         self.element_acls
-            .keys()
-            .any(|(c, d, _)| c == cube && d == dim)
+            .range((Bound::Included(lower), Bound::Unbounded))
+            .next()
+            .is_some_and(|((c, d, _), _)| c == cube && d == dim)
     }
 
     /// Set (or remove) an element grant for a subject, persisting the change.
@@ -539,18 +607,39 @@ impl SecurityStore {
         subject: &Subject,
         level: AccessLevel,
     ) -> Result<(), SecurityError> {
-        let key = (cube.to_string(), dim.to_string(), element.to_string());
-        let list = self.element_acls.entry(key.clone()).or_default();
-        list.set(subject, level);
-        if list.is_empty() {
-            self.element_acls.remove(&key);
-        }
-        self.save()
+        self.commit(|s| {
+            let key = (cube.to_string(), dim.to_string(), element.to_string());
+            let list = s.element_acls.entry(key.clone()).or_default();
+            list.set(subject, level);
+            if list.is_empty() {
+                s.element_acls.remove(&key);
+            }
+            Ok(())
+        })
     }
 
     /// All element grants, for the admin listing surface.
     pub fn element_acls(&self) -> &BTreeMap<(String, String, String), AccessList> {
         &self.element_acls
+    }
+
+    /// The element ACLs for one `(cube, dimension)`, as `element name -> AccessList`
+    /// (ADR-0015). The flat store is keyed `(cube, dim, element)` and sorted, so all
+    /// entries for one `(cube, dim)` are contiguous: this range-probes the band and
+    /// collects just those rows - O(log n + k) in the ACL count `k` of this
+    /// dimension, not a scan of every element-ACL key. It is the per-`(cube, dim)`
+    /// view of the flat map: a caller re-resolving element access (e.g. building a
+    /// per-request deny mask) can iterate only the ACL'd elements of the dimensions
+    /// in play instead of every ACL in the store. Deterministic (BTreeMap order).
+    /// Empty when the `(cube, dim)` has no element ACLs.
+    pub fn element_acls_for(&self, cube: &str, dim: &str) -> BTreeMap<&str, &AccessList> {
+        use std::ops::Bound;
+        let lower = (cube.to_string(), dim.to_string(), String::new());
+        self.element_acls
+            .range((Bound::Included(lower), Bound::Unbounded))
+            .take_while(|((c, d, _), _)| c == cube && d == dim)
+            .map(|((_, _, element), list)| (element.as_str(), list))
+            .collect()
     }
 
     // ---- modular per-object-kind grants (ADR-0023) ----
@@ -569,13 +658,15 @@ impl SecurityStore {
         kind: ObjectKind,
         level: AccessLevel,
     ) -> Result<(), SecurityError> {
-        let key = (scope, kind);
-        let list = self.grants.entry(key.clone()).or_default();
-        list.set(subject, level);
-        if list.is_empty() {
-            self.grants.remove(&key);
-        }
-        self.save()
+        self.commit(|s| {
+            let key = (scope, kind);
+            let list = s.grants.entry(key.clone()).or_default();
+            list.set(subject, level);
+            if list.is_empty() {
+                s.grants.remove(&key);
+            }
+            Ok(())
+        })
     }
 
     /// The level a principal holds for `(scope, kind)` from the modular grants.
@@ -727,17 +818,30 @@ impl SecurityStore {
         // Rebuild the grant maps. Tolerate unknown kinds/levels/subjects rather
         // than failing the load (load is total; dangling/odd rows are simply
         // never consulted).
+        // Element ACLs are FAIL-CLOSED, unlike the tolerant allow-grants below: an
+        // element ACL is a restriction list (only the named subjects may see the
+        // member), so silently skipping an unparseable row would drop the only
+        // restriction on that member and flip it to unrestricted for every cube
+        // reader. A token typo must therefore reject the artifact, not quietly
+        // unprotect the member (ADR-0015 element security stays fail-closed).
         let mut element_acls: BTreeMap<ElementKey, AccessList> = BTreeMap::new();
         for row in doc.element_acls {
-            if let (Some(level), Some(subject)) = (
-                AccessLevel::parse(&row.level),
-                subject_from(&row.subject_kind, &row.subject),
-            ) {
-                element_acls
-                    .entry((row.cube, row.dimension, row.element))
-                    .or_default()
-                    .set(&subject, level);
-            }
+            let Some(level) = AccessLevel::parse(&row.level) else {
+                return Err(SecurityError::Format(format!(
+                    "element ACL for '{}/{}/{}' has an unknown level '{}'",
+                    row.cube, row.dimension, row.element, row.level
+                )));
+            };
+            let Some(subject) = subject_from(&row.subject_kind, &row.subject) else {
+                return Err(SecurityError::Format(format!(
+                    "element ACL for '{}/{}/{}' has an unknown subject kind '{}'",
+                    row.cube, row.dimension, row.element, row.subject_kind
+                )));
+            };
+            element_acls
+                .entry((row.cube, row.dimension, row.element))
+                .or_default()
+                .set(&subject, level);
         }
         // Modular per-kind grants (ADR-0023). Tolerant load: a row whose subject,
         // scope, kind, or level does not parse is skipped, never guessed at.
@@ -777,18 +881,80 @@ impl SecurityStore {
         })
     }
 
+    /// Apply a mutation under a stage-then-commit discipline (S3): snapshot the
+    /// persisted collections, run `mutate`, then durably persist; if either the
+    /// mutation *or* the save fails, restore the snapshot so the in-memory store is
+    /// left exactly as it was and never diverges from disk. A "failed" revoke does
+    /// not stay live. All the security mutators funnel through here, so the
+    /// guarantee is uniform.
+    ///
+    /// Only the four persisted maps (`users`, `groups`, `element_acls`, `grants`)
+    /// are captured/restored; the other fields (`path`, `fast_kdf`, `dummy_hash`,
+    /// `password_policy`) are never touched by a mutator. The snapshot clone is on
+    /// the infrequent admin-write path only. On a validation error `mutate` returns
+    /// before mutating, so the restore is a harmless no-op and no save is attempted
+    /// (a rejected op must not rewrite the artifact).
+    fn commit<T>(
+        &mut self,
+        mutate: impl FnOnce(&mut Self) -> Result<T, SecurityError>,
+    ) -> Result<T, SecurityError> {
+        let snapshot = StoreSnapshot {
+            users: self.users.clone(),
+            groups: self.groups.clone(),
+            element_acls: self.element_acls.clone(),
+            grants: self.grants.clone(),
+        };
+        let value = match mutate(self) {
+            Ok(value) => value,
+            Err(e) => {
+                snapshot.restore(self);
+                return Err(e);
+            }
+        };
+        if let Err(e) = self.save() {
+            snapshot.restore(self);
+            return Err(e);
+        }
+        Ok(value)
+    }
+
+    /// Durably write the current in-memory state to the artifact: serialize, write
+    /// a temp file owner-only, **fsync it**, then atomically rename over the path.
+    /// The fsync-before-rename ordering means a caller ([`commit`](Self::commit))
+    /// sees an I/O failure before the rename publishes it, so it can roll the
+    /// in-memory change back. A no-op for an in-memory store (`path` is `None`).
     fn save(&self) -> Result<(), SecurityError> {
         if let Some(path) = &self.path {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent)?;
             }
             let tmp = path.with_extension("model.tmp");
-            // Owner-only from creation: the artifact holds password hashes, so it
-            // must never be briefly world-readable (ADR-0017).
-            crate::write_owner_only(&tmp, self.to_model_text().as_bytes())?;
+            // Owner-only from creation and fsync'd before the rename: the artifact
+            // holds password hashes, so it must never be briefly world-readable
+            // (ADR-0017), and the temp must be durable before it is published so a
+            // crash cannot leave a torn artifact.
+            crate::write_owner_only_synced(&tmp, self.to_model_text().as_bytes())?;
             std::fs::rename(&tmp, path)?;
         }
         Ok(())
+    }
+}
+
+/// A snapshot of the [`SecurityStore`]'s persisted collections, taken before a
+/// mutation so [`SecurityStore::commit`] can roll back on a save failure (S3).
+struct StoreSnapshot {
+    users: BTreeMap<String, User>,
+    groups: BTreeSet<String>,
+    element_acls: BTreeMap<ElementKey, AccessList>,
+    grants: BTreeMap<(Scope, ObjectKind), AccessList>,
+}
+
+impl StoreSnapshot {
+    fn restore(self, store: &mut SecurityStore) {
+        store.users = self.users;
+        store.groups = self.groups;
+        store.element_acls = self.element_acls;
+        store.grants = self.grants;
     }
 }
 
@@ -812,9 +978,15 @@ fn hash_password(password: &str, fast: bool) -> Result<String, SecurityError> {
         .map_err(|e| SecurityError::Hashing(e.to_string()))
 }
 
-/// Constant-time verify. Parameters are read from the stored PHC string, so the
-/// `fast` distinction only affects hashing, not verification.
-fn verify_password(password: &str, phc: &str) -> bool {
+/// Constant-time-ish Argon2 verify of `password` against a stored PHC string.
+/// Parameters are read from the PHC string, so the `fast` distinction only
+/// affects hashing, not verification, and no lock is needed. Paired with
+/// [`SecurityStore::password_hash_for`] this lets the API verify a password
+/// without holding the global security mutex across the KDF: copy the PHC string
+/// under a brief lock, release, then call this. An unparseable PHC string verifies
+/// to `false` (fail-closed). This is the same routine [`SecurityStore::authenticate`]
+/// uses, so the two always agree.
+pub fn verify_password(password: &str, phc: &str) -> bool {
     PasswordHash::new(phc)
         .map(|parsed| {
             Argon2::default()
@@ -933,6 +1105,81 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_save_rolls_back_the_in_memory_change() {
+        // S3 stage-then-commit: if the durable save fails, the in-memory store must
+        // be left exactly as it was, so a "failed" revoke does not stay live.
+        let path = scratch("rollback");
+        let (mut store, _) = SecurityStore::open_or_bootstrap(path, true, None).unwrap();
+        // A non-admin user is the vehicle for observing a grant: the `admin` user
+        // bypasses every grant to `Admin` in `effective`, so its `cube_access`
+        // could never reflect a `Read` grant. `analyst` has no bypass, so its
+        // `cube_access` mirrors the grant map exactly - the only way to *see* that a
+        // failed revoke was rolled back. This creation itself must persist (writable
+        // path) before we inject the save failure below.
+        store
+            .create_user("analyst", "a-strong-pass-1", false)
+            .unwrap();
+        // Establish a live grant that persisted successfully.
+        store
+            .set_grant(
+                &Subject::User("analyst".into()),
+                Scope::Cube("Sales".into()),
+                ObjectKind::Cube,
+                AccessLevel::Read,
+            )
+            .unwrap();
+        assert_eq!(store.cube_access("analyst", "Sales"), AccessLevel::Read);
+
+        // Redirect persistence at an unwritable path: its parent is a regular file,
+        // so `create_dir_all(parent)` inside `save()` fails on every platform. This
+        // is a portable, dependency-free save-failure injection (the `tests` module
+        // can set the private `path`).
+        let blocker = scratch("rollback-blocker");
+        std::fs::create_dir_all(blocker.parent().unwrap()).unwrap();
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        store.path = Some(blocker.join("sub").join("security.model"));
+
+        // A revoke now fails on save; it must return an I/O error AND leave the
+        // in-memory grant intact (the revoke did not stay live).
+        let err = store
+            .set_grant(
+                &Subject::User("analyst".into()),
+                Scope::Cube("Sales".into()),
+                ObjectKind::Cube,
+                AccessLevel::None,
+            )
+            .unwrap_err();
+        assert!(matches!(err, SecurityError::Io(_)), "{err}");
+        assert_eq!(
+            store.cube_access("analyst", "Sales"),
+            AccessLevel::Read,
+            "the failed revoke must be rolled back, not left live"
+        );
+
+        // A failed *creation* likewise does not stay in memory.
+        let err = store
+            .create_user("ghost", "a-strong-pass-1", false)
+            .unwrap_err();
+        assert!(matches!(err, SecurityError::Io(_)), "{err}");
+        assert!(
+            store.authenticate("ghost", "a-strong-pass-1").is_none(),
+            "a user whose save failed must not remain in the store"
+        );
+
+        // Restore a writable path: the same operation now commits and sticks.
+        store.path = Some(scratch("rollback-ok"));
+        store
+            .set_grant(
+                &Subject::User("analyst".into()),
+                Scope::Cube("Sales".into()),
+                ObjectKind::Cube,
+                AccessLevel::None,
+            )
+            .unwrap();
+        assert_eq!(store.cube_access("analyst", "Sales"), AccessLevel::None);
+    }
+
+    #[test]
     fn with_admin_is_hermetic_and_authenticates() {
         let store = SecurityStore::with_admin("alice", "s3cret", true);
         let principal = store.authenticate("alice", "s3cret").unwrap();
@@ -940,6 +1187,39 @@ mod tests {
         assert!(principal.is_admin);
         assert!(store.authenticate("alice", "nope").is_none());
         assert!(store.authenticate("bob", "s3cret").is_none());
+    }
+
+    #[test]
+    fn off_lock_verify_agrees_with_authenticate() {
+        // S-argon2 seam: `password_hash_for` + the free `verify_password` let the
+        // API check a password without holding the store lock across the KDF, and
+        // must agree with `authenticate` for both a correct and an incorrect
+        // password, and equalize timing on the not-found path.
+        let store = SecurityStore::with_admin("alice", "s3cret", false);
+
+        let hash = store
+            .password_hash_for("alice")
+            .expect("known user has a hash");
+        assert!(verify_password("s3cret", &hash));
+        assert!(!verify_password("wrong", &hash));
+        // Agreement with the existing authenticate path.
+        assert_eq!(
+            verify_password("s3cret", &hash),
+            store.authenticate("alice", "s3cret").is_some()
+        );
+        assert_eq!(
+            verify_password("wrong", &hash),
+            store.authenticate("alice", "wrong").is_some()
+        );
+
+        // An unknown user still yields a hash (the dummy), so the off-lock caller
+        // runs one verify and denies, matching authenticate's not-found timing
+        // defense; no real password verifies against it.
+        let dummy = store
+            .password_hash_for("ghost")
+            .expect("unknown user yields the dummy hash");
+        assert!(!verify_password("s3cret", &dummy));
+        assert!(store.authenticate("ghost", "s3cret").is_none());
     }
 
     #[test]
@@ -1134,6 +1414,204 @@ mod tests {
         // Admin bypasses element security entirely.
         assert!(store.element_readable(&admin, "Sales", "Region", "North"));
         assert!(store.element_writable(&admin, "Sales", "Region", "North"));
+    }
+
+    #[test]
+    fn element_acls_for_matches_filtering_the_flat_map() {
+        // S1: the per-(cube,dim) accessor returns exactly the acls a filter over the
+        // flat `element_acls()` map would, so a caller can iterate only the ACL'd
+        // elements of the dimensions in play (not every ACL in the store).
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        let put = |store: &mut SecurityStore, cube, dim, el| {
+            store
+                .set_element_access(
+                    cube,
+                    dim,
+                    el,
+                    &Subject::Group("g".into()),
+                    AccessLevel::Read,
+                )
+                .unwrap();
+        };
+        // Several dimensions/cubes so the range probe must isolate one band.
+        put(&mut store, "Sales", "Region", "North");
+        put(&mut store, "Sales", "Region", "South");
+        put(&mut store, "Sales", "Product", "Widget");
+        put(&mut store, "Budget", "Region", "North");
+
+        for (cube, dim) in [
+            ("Sales", "Region"),
+            ("Sales", "Product"),
+            ("Budget", "Region"),
+            ("Sales", "Nope"),  // no acls
+            ("Nope", "Region"), // no acls
+        ] {
+            let got = store.element_acls_for(cube, dim);
+            // The oracle: filter the flat map for this (cube, dim).
+            let want: BTreeMap<&str, &AccessList> = store
+                .element_acls()
+                .iter()
+                .filter(|((c, d, _), _)| c == cube && d == dim)
+                .map(|((_, _, el), list)| (el.as_str(), list))
+                .collect();
+            assert_eq!(got, want, "{cube}/{dim}");
+        }
+        // The Region band under Sales has exactly its two elements and nothing from
+        // Budget/Region or Sales/Product bleeds in.
+        let region = store.element_acls_for("Sales", "Region");
+        assert_eq!(
+            region.keys().copied().collect::<Vec<_>>(),
+            vec!["North", "South"]
+        );
+        assert!(store.element_acls_for("Sales", "Nope").is_empty());
+    }
+
+    #[test]
+    fn deleting_a_user_purges_their_grants_and_element_acls() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store.create_user("ann", "pw", false).unwrap();
+        // Ann holds a cube grant and is the sole subject on an element ACL.
+        store
+            .set_grant(
+                &Subject::User("ann".into()),
+                Scope::Cube("Sales".into()),
+                ObjectKind::Cube,
+                AccessLevel::Read,
+            )
+            .unwrap();
+        store
+            .set_element_access(
+                "Sales",
+                "Region",
+                "North",
+                &Subject::User("ann".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        assert!(!store.grants().is_empty());
+        assert!(store.has_element_acls("Sales", "Region"));
+
+        // Deleting the user strips every row naming her, so nothing dangles.
+        assert!(store.delete_user("ann").unwrap());
+        assert!(store.grants().is_empty(), "grant rows are purged");
+        assert!(
+            !store.has_element_acls("Sales", "Region"),
+            "element ACL emptied by the purge is dropped"
+        );
+
+        // A new account reusing the name inherits none of the old access.
+        store.create_user("ann", "pw", false).unwrap();
+        assert_eq!(store.cube_access("ann", "Sales"), AccessLevel::None);
+        let ann = principal("ann", false, &[]);
+        assert!(store.element_readable(&ann, "Sales", "Region", "North"));
+    }
+
+    #[test]
+    fn deleting_a_group_purges_its_grants_and_element_acls() {
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store.create_group("managers").unwrap();
+        store
+            .set_grant(
+                &Subject::Group("managers".into()),
+                Scope::Global,
+                ObjectKind::Flow,
+                AccessLevel::Write,
+            )
+            .unwrap();
+        store
+            .set_element_access(
+                "Sales",
+                "Region",
+                "North",
+                &Subject::Group("managers".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        assert!(!store.grants().is_empty());
+        assert!(store.has_element_acls("Sales", "Region"));
+
+        assert!(store.delete_group("managers").unwrap());
+        assert!(store.grants().is_empty(), "group grant rows are purged");
+        assert!(
+            !store.has_element_acls("Sales", "Region"),
+            "element ACL naming the group is dropped once empty"
+        );
+
+        // Recreating the group name inherits none of the old access.
+        store.create_group("managers").unwrap();
+        let mgr = principal("m", false, &["managers"]);
+        assert_eq!(
+            store.effective(&mgr, ObjectKind::Flow, Some("Sales")),
+            AccessLevel::None
+        );
+        assert!(store.element_readable(&mgr, "Sales", "Region", "North"));
+    }
+
+    #[test]
+    fn purge_keeps_other_subjects_on_a_shared_element_acl() {
+        // When two subjects share an element ACL, purging one leaves the other's
+        // restriction intact (the entry is not dropped).
+        let mut store = SecurityStore::with_admin("admin", "pw", true);
+        store.create_user("ann", "pw", false).unwrap();
+        store
+            .set_element_access(
+                "Sales",
+                "Region",
+                "North",
+                &Subject::User("ann".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        store
+            .set_element_access(
+                "Sales",
+                "Region",
+                "North",
+                &Subject::Group("managers".into()),
+                AccessLevel::Read,
+            )
+            .unwrap();
+        assert!(store.delete_user("ann").unwrap());
+        // The ACL survives (the group is still listed), so it still restricts.
+        assert!(store.has_element_acls("Sales", "Region"));
+        let mgr = principal("m", false, &["managers"]);
+        let other = principal("other", false, &[]);
+        assert!(store.element_readable(&mgr, "Sales", "Region", "North"));
+        assert!(!store.element_readable(&other, "Sales", "Region", "North"));
+    }
+
+    #[test]
+    fn unparseable_element_acl_row_is_rejected_not_silently_dropped() {
+        // Element ACLs are restriction lists, so a dropped row would unrestrict the
+        // member (fail-open). A bad level/subject must reject the artifact instead.
+        let bad_level = format!(
+            "format = \"{FORMAT_TAG}\"\n\n\
+             [[element_acl]]\ncube = \"Sales\"\ndimension = \"Region\"\nelement = \"North\"\n\
+             subject_kind = \"group\"\nsubject = \"managers\"\nlevel = \"Read\"\n"
+        );
+        assert!(matches!(
+            SecurityStore::from_model_text(&bad_level, true),
+            Err(SecurityError::Format(_))
+        ));
+
+        let bad_subject = format!(
+            "format = \"{FORMAT_TAG}\"\n\n\
+             [[element_acl]]\ncube = \"Sales\"\ndimension = \"Region\"\nelement = \"North\"\n\
+             subject_kind = \"role\"\nsubject = \"managers\"\nlevel = \"read\"\n"
+        );
+        assert!(matches!(
+            SecurityStore::from_model_text(&bad_subject, true),
+            Err(SecurityError::Format(_))
+        ));
+
+        // A well-formed row still loads.
+        let ok = format!(
+            "format = \"{FORMAT_TAG}\"\n\n\
+             [[element_acl]]\ncube = \"Sales\"\ndimension = \"Region\"\nelement = \"North\"\n\
+             subject_kind = \"group\"\nsubject = \"managers\"\nlevel = \"read\"\n"
+        );
+        let store = SecurityStore::from_model_text(&ok, true).unwrap();
+        assert!(store.has_element_acls("Sales", "Region"));
     }
 
     #[test]

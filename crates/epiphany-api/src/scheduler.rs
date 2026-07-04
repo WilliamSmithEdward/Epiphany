@@ -15,13 +15,15 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use epiphany_core::Job;
-use epiphany_flow::{due_firings, run_flow, Firing, FlowError, RunRecord, RunState};
-use epiphany_security::{AuditAction, ObjectKind, ObjectRef};
+use epiphany_core::{FlowInputBinding, Job};
+use epiphany_flow::{due_firings, Firing, RunRecord, RunState};
+use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
-use crate::authz::audit_at;
-use crate::flow_reader::ApiFlowReader;
-use crate::flow_routes::{apply_outcome, authorize_outcome_as, resolve_flow_inputs};
+use crate::auth::AuthPrincipal;
+use crate::authz::{audit_at, require_kind_access};
+use crate::flow_routes::{
+    apply_outcome, authorize_outcome_as, resolve_flow_inputs, run_flow_watchdog, FlowRunError,
+};
 use crate::AppState;
 
 /// The service principal recorded for timer-fired runs (ADR-0013 decision 9).
@@ -156,6 +158,31 @@ impl Scheduler {
                 return;
             };
 
+            // Reading a GLOBAL connection's rows is data access gated by
+            // `Connection:Read` (ADR-0035): a flow must not launder data its
+            // principal lacks. A scheduled run bounds its rights by the owner, so
+            // require the OWNER to hold `Connection:Read` before any global input
+            // is fetched -- mirroring the run-path gate in flow_routes.rs so an
+            // unattended run cannot surface a global connection the owner could not
+            // read by hand. Local (inline) inputs are the owner's own definition.
+            if flow
+                .inputs
+                .iter()
+                .any(|i| i.binding == FlowInputBinding::Global)
+            {
+                let owner_auth = AuthPrincipal::synthetic(&owner);
+                if let Err(e) = require_kind_access(
+                    &self.state,
+                    &owner_auth,
+                    ObjectKind::Connection,
+                    None,
+                    AccessLevel::Read,
+                ) {
+                    self.fail(firing, agg, e.message(), &owner);
+                    return;
+                }
+            }
+
             // Resolve the flow's declared inputs (global + local connections) to
             // rows, exactly as a manual run does; a scheduled run fetches its
             // declared sources (ADR-0035).
@@ -167,20 +194,26 @@ impl Scheduler {
                 }
             };
             let cube_names = self.state.engine.cube_names();
-            let reader = ApiFlowReader::new(self.state.clone(), &owner);
-            // The fire time is the frozen tick value (ADR-0013 decision 0).
-            let outcome = match run_flow(
-                &flow.source,
-                flow.default_cube.as_deref(),
-                &cube_names,
+            // The fire time is the frozen tick value (ADR-0013 decision 0). Run under
+            // the wall-clock watchdog (F1): a scheduled flow that wedges (a
+            // pathological in-budget-but-slow computation) is aborted after the
+            // deadline and recorded as a failed run, instead of leaking a
+            // spawn_blocking thread that the ledger shows running forever. The
+            // scheduler tick is already on a blocking thread, so the sync watchdog is
+            // called directly. The reader is built inside the watchdog.
+            let outcome = match run_flow_watchdog(
+                self.state.clone(),
+                owner.clone(),
+                flow.source.clone(),
+                flow.default_cube.clone(),
+                cube_names,
                 inputs,
-                &BTreeMap::new(),
+                BTreeMap::new(),
                 firing.fire_millis,
-                Box::new(reader),
             ) {
                 Ok(o) => o,
                 Err(e) => {
-                    self.fail(firing, agg, &flow_error_message(&e), &owner);
+                    self.fail(firing, agg, &flow_run_error_message(&e), &owner);
                     return;
                 }
             };
@@ -276,10 +309,19 @@ impl Scheduler {
     }
 }
 
-/// A client-safe message for a flow run failure (no internal cause).
-fn flow_error_message(err: &FlowError) -> String {
+/// A client-safe message for a watchdog-supervised flow run failure (no internal
+/// cause), recorded in the run ledger for an operator to read back (F1: a timeout
+/// is a recorded failure reason, not a leaked never-terminating run).
+fn flow_run_error_message(err: &FlowRunError) -> String {
     match err {
-        FlowError::Strip(e) => e.message.clone(),
-        FlowError::Runtime { message } => message.clone(),
+        FlowRunError::Flow(e) => match e {
+            epiphany_flow::FlowError::Strip(s) => s.message.clone(),
+            epiphany_flow::FlowError::Runtime { message } => message.clone(),
+        },
+        FlowRunError::TimedOut(deadline) => format!(
+            "flow run exceeded the {}s wall-clock deadline and was aborted",
+            deadline.as_secs()
+        ),
+        FlowRunError::Panicked => "flow run failed unexpectedly".to_string(),
     }
 }

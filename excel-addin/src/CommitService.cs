@@ -16,7 +16,9 @@ public static class CommitService
 {
     public static void CommitSelection()
     {
-        if (AddIn.Client is null)
+        // Capture the client once; it may be replaced/cleared from the UI thread.
+        var client = AddIn.Client;
+        if (client is null)
         {
             MessageBox.Show("Not connected. Use the Epiphany ribbon to Connect first.",
                 "Epiphany", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -59,21 +61,34 @@ public static class CommitService
             return;
         }
 
-        using var prompt = new CubePromptForm();
-        if (prompt.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(prompt.Cube))
-            return;
+        string cube;
+        using (var prompt = new CubePromptForm())
+        {
+            if (prompt.ShowDialog() != DialogResult.OK || string.IsNullOrWhiteSpace(prompt.Cube))
+                return;
+            cube = prompt.Cube;
+        }
 
-        try
+        // The selection has been read on the UI thread; the HTTP round trip must
+        // NOT block it (a slow/unreachable server would freeze Excel for up to the
+        // 30s timeout). Fire it on a background task and marshal the result dialog
+        // back onto Excel's main thread via QueueAsMacro (ADR-0022 point 4).
+        _ = Task.Run(async () =>
         {
-            var applied = AddIn.Client.BatchWriteAsync(prompt.Cube, writes).GetAwaiter().GetResult();
-            MessageBox.Show($"Committed {applied} cell(s) to \"{prompt.Cube}\".", "Epiphany",
-                MessageBoxButtons.OK, MessageBoxIcon.Information);
-        }
-        catch (Exception e)
-        {
-            MessageBox.Show("Commit failed (nothing was written): " + e.Message, "Epiphany",
-                MessageBoxButtons.OK, MessageBoxIcon.Error);
-        }
+            try
+            {
+                var applied = await client.BatchWriteAsync(cube, writes).ConfigureAwait(false);
+                ExcelAsyncUtil.QueueAsMacro(() =>
+                    MessageBox.Show($"Committed {applied} cell(s) to \"{cube}\".", "Epiphany",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information));
+            }
+            catch (Exception e)
+            {
+                ExcelAsyncUtil.QueueAsMacro(() =>
+                    MessageBox.Show("Commit failed (nothing was written): " + e.Message, "Epiphany",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error));
+            }
+        });
     }
 
     /// <summary>Read the active selection as a 1-based 2D object grid, or null if not a table.</summary>
@@ -81,6 +96,12 @@ public static class CommitService
     {
         dynamic app = ExcelDnaUtil.Application;
         dynamic selection = app.Selection;
+        // Value2 of a multi-area (Ctrl-clicked, discontiguous) selection returns
+        // only the FIRST area - committing it would silently drop the rest. Refuse
+        // it so the "whole selection is one transaction" contract holds.
+        if ((int)selection.Areas.Count > 1)
+            throw new FormatException(
+                "Select one contiguous table, not multiple separate blocks. Only the first block would be committed.");
         int rows = (int)selection.Rows.Count;
         int cols = (int)selection.Columns.Count;
         if (rows < 2 || cols < 2) return null;
@@ -99,8 +120,11 @@ public static class CommitService
         for (int c = 0; c < cols; c++)
             headers[c] = Convert.ToString(grid[rLo, cLo + c], CultureInfo.InvariantCulture)?.Trim() ?? "";
 
+        // Require an explicit "Value" header (README contract). Do not guess the
+        // last column - a mis-selected range should fail fast, not be reinterpreted.
         int valueCol = Array.FindLastIndex(headers, h => h.Equals("Value", StringComparison.OrdinalIgnoreCase));
-        if (valueCol < 0) valueCol = cols - 1; // fall back to the last column
+        if (valueCol < 0)
+            throw new FormatException("The header row needs a \"Value\" column (the last column holds the values to write).");
         if (valueCol == 0)
             throw new FormatException("The first row needs dimension columns and a Value column.");
 
@@ -117,7 +141,12 @@ public static class CommitService
             {
                 if (c == valueCol || headers[c].Length == 0) continue;
                 var member = Convert.ToString(grid[rLo + r, cLo + c], CultureInfo.InvariantCulture)?.Trim();
-                if (string.IsNullOrEmpty(member)) continue;
+                // A blank member under a labelled dimension is an ambiguous
+                // coordinate - reject it rather than silently dropping the
+                // dimension (which would change the coordinate's rank).
+                if (string.IsNullOrEmpty(member))
+                    throw new FormatException(
+                        $"Row {r + 1} has no value for dimension \"{headers[c]}\". Fill every coordinate cell or remove the row.");
                 coord[headers[c]] = member;
             }
             if (coord.Count > 0)

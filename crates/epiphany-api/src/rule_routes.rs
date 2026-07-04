@@ -10,8 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use epiphany_calc::{
-    explain_with, infer_feeders, run_rule_tests, validate_feeders, CalcError, EvalRegistry,
-    SandboxOverlay,
+    explain_with, infer_feeders, validate_feeders, CalcError, EvalRegistry, SandboxOverlay,
 };
 use epiphany_core::{CellTrace, Cube, ExplainDepth, RuleTest, TraceKind};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
@@ -20,16 +19,23 @@ use crate::auth::AuthPrincipal;
 use crate::authz::{
     audit, deny_if_element_restricted, element_mask, require_cube_access, require_kind_access,
 };
-use crate::calc_factory::{compile_source, OwnedOverlay, PinnedRegistry, ValidateError};
+use crate::calc_factory::{
+    compile_source, run_cross_cube_rule_tests, OwnedOverlay, PinnedRegistry, ValidateError,
+};
 use crate::dto::{
     from_cell, to_cell, CoordMap, FailureDto, TestCellDto, TestOutcomeDto, TestReportDto,
 };
 use crate::resolve::resolve;
-use crate::routes::{broadcast_with_version, map_batch_error, snapshot};
+use crate::routes::{blocking_commit, map_batch_error, snapshot};
 use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
 use crate::{ApiError, AppState};
 
 // ---- shared helpers ----
+
+/// How many times `put_rules` re-validates and retries when a concurrent commit
+/// moves the cube's version between validate and commit. Commits strictly advance
+/// the version, so a small bound converges; exhausting it surfaces a 409.
+const RULE_VALIDATE_RETRY_LIMIT: usize = 8;
 
 fn coord_names(cube: &Cube, coord: &[u32]) -> Vec<String> {
     coord
@@ -96,12 +102,38 @@ pub(crate) async fn put_rules(
         AccessLevel::Write,
     )?;
     // Validate (parse + compile) before persisting; bad rules never get stored.
-    compile_source(&state.engine, &cube, &body.source)
-        .map_err(|e| map_validate(e, &body.source))?;
-    let outcome = state
-        .engine
-        .define_rules(&cube, None, body.source.clone())
-        .map_err(map_batch_error)?;
+    // Bind the commit to the version we validated against so a concurrent
+    // structural edit (e.g. deleting an element the rules reference) landing
+    // between validate and commit cannot store rules that no longer compile: the
+    // stale base conflicts and we re-validate on the new version (TOCTOU close).
+    let mut outcome = None;
+    for _ in 0..RULE_VALIDATE_RETRY_LIMIT {
+        let base = state.engine.version(&cube);
+        compile_source(&state.engine, &cube, &body.source)
+            .map_err(|e| map_validate(e, &body.source))?;
+        // Run the rule commit (writer lock + checkpoint fsync) off the async workers
+        // (A2). The raw `BatchError` is inspected so a `Conflict` still drives the
+        // re-validate/retry; only a terminal error is mapped.
+        let engine = state.engine.clone();
+        let cube_c = cube.clone();
+        let source = body.source.clone();
+        let result =
+            tokio::task::spawn_blocking(move || engine.define_rules(&cube_c, base, source))
+                .await
+                .map_err(|_| ApiError::internal())?;
+        match result {
+            Ok(o) => {
+                outcome = Some(o);
+                break;
+            }
+            // A concurrent commit advanced the cube; re-validate and retry.
+            Err(epiphany_engine::BatchError::Conflict { .. }) => continue,
+            Err(e) => return Err(map_batch_error(e)),
+        }
+    }
+    outcome.ok_or_else(|| {
+        ApiError::conflict("the cube changed concurrently; retry the rule update")
+    })?;
     audit(
         &state,
         &auth.principal.username,
@@ -109,7 +141,8 @@ pub(crate) async fn put_rules(
         Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, "rules")),
         true,
     );
-    broadcast_with_version(&state, &cube, outcome.version);
+    // The commit-ordered change feed (A1) emits the change from inside the engine
+    // commit (cube-read-filtered per subscriber); the handler no longer broadcasts.
     Ok(Json(body))
 }
 
@@ -126,10 +159,12 @@ pub(crate) async fn delete_rules(
         Some(&cube),
         AccessLevel::Write,
     )?;
-    let outcome = state
-        .engine
-        .delete_rules(&cube, None)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let cube_c = cube.clone();
+    blocking_commit(&state.engine, move |engine| {
+        engine.delete_rules(&cube_c, None)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -137,7 +172,8 @@ pub(crate) async fn delete_rules(
         Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, "rules")),
         true,
     );
-    broadcast_with_version(&state, &cube, outcome.version);
+    // The commit-ordered change feed (A1) emits the change from inside the engine
+    // commit; the handler no longer broadcasts.
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -245,7 +281,7 @@ pub(crate) async fn explain_cell(
     // Explaining a denied cell (or one rolling up a denied leaf) is itself a
     // direct read: it returns 403, not a provenance trace (ADR-0015).
     let mask = element_mask(&state, &auth, &snap);
-    let trace = explain_with(
+    let mut trace = explain_with(
         &registry,
         ordinal,
         &resolved.indices,
@@ -257,7 +293,36 @@ pub(crate) async fn explain_cell(
         CalcError::AccessDenied => ApiError::forbidden("you do not have access to this cell"),
         other => ApiError::unprocessable("CALC_ERROR", other.to_string()),
     })?;
+    // A rule can reference another cube (ADR cross-cube rules). The element mask
+    // above is scoped to the target cube only, and Cube:Read was checked only for
+    // the target, so a referenced cube's value and coordinate names would leak to a
+    // caller with no grant on it. Prune any cross-cube input the caller cannot read
+    // (fail-closed) so provenance never discloses a cube they lack access to.
+    redact_unreadable_inputs(&state, &auth, &cube, &mut trace);
     Ok(Json(trace_dto(trace)))
+}
+
+/// Recursively drop trace inputs drawn from a cube other than `target` that the
+/// caller lacks `Cube:Read` on (ADR-0015/0023): explain runs the target cube's
+/// element mask but nothing gates a referenced cube, so its value and coordinate
+/// member names must not appear in the trace for a caller with no read grant on
+/// it. The retained subtree is pruned recursively. Same-cube inputs (and the root,
+/// which is always the target) are unaffected -- the target's own element security
+/// was already enforced during `explain_with`.
+fn redact_unreadable_inputs(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    target: &str,
+    trace: &mut CellTrace,
+) {
+    trace.inputs.retain(|input| {
+        input.cube == target
+            || crate::authz::cube_level(state, &auth.principal.username, &input.cube)
+                >= AccessLevel::Read
+    });
+    for input in &mut trace.inputs {
+        redact_unreadable_inputs(state, auth, target, input);
+    }
 }
 
 // ---- feeder diagnostics ----
@@ -268,11 +333,24 @@ pub(crate) struct OpaqueDto {
     pub reason: String,
 }
 
+/// One coordinate whose rule value could not be evaluated during feeder
+/// validation (e.g. DivByZero, Cycle), with the rendered error. Its feed status is
+/// indeterminate, so it is reported here rather than aborting the whole report.
+#[derive(Serialize)]
+pub(crate) struct ErroringDto {
+    pub coord: Vec<String>,
+    pub error: String,
+}
+
 #[derive(Serialize)]
 pub(crate) struct FeederReportDto {
     pub fed_cell_count: usize,
     pub under_fed: Vec<Vec<String>>,
     pub over_fed: Vec<Vec<String>>,
+    /// Targets that errored during validation (indeterminate feed status): a single
+    /// erroring rule no longer withholds the under/over-feed report for healthy
+    /// rules (calc `FeederDiagnostics::erroring`).
+    pub erroring: Vec<ErroringDto>,
     pub estimated_over_fed_bytes: usize,
     pub opaque_rules: Vec<OpaqueDto>,
 }
@@ -290,7 +368,23 @@ pub(crate) async fn feeder_diagnostics(
         .ordinal_of(&cube)
         .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
     let cube_ref = registry.cube(ordinal).ok_or_else(ApiError::internal)?;
-    let model = registry.compiled(ordinal).ok_or_else(ApiError::internal)?;
+    // A cube whose stored rule source no longer compiles (e.g. a structural edit
+    // deleted an element a rule references) has no compiled model. That is a clear
+    // 422 ("rules fail to compile"), not a 500: diagnostics cannot report feeders
+    // for rules that do not compile. Distinguishes the broken-rules case (a loud,
+    // client-actionable error) from an internal invariant violation.
+    let model = match registry.compiled(ordinal) {
+        Some(m) => m,
+        None => {
+            let detail = registry
+                .compile_error(ordinal)
+                .unwrap_or("the cube's rules do not compile");
+            return Err(ApiError::unprocessable(
+                "RULE_COMPILE_ERROR",
+                format!("cannot infer feeders: {detail}"),
+            ));
+        }
+    };
     let inference = infer_feeders(cube_ref, model, ordinal);
     let diag = validate_feeders(&registry, ordinal, &inference.index)
         .map_err(|e| ApiError::unprocessable("CALC_ERROR", e.to_string()))?;
@@ -301,6 +395,14 @@ pub(crate) async fn feeder_diagnostics(
         fed_cell_count: diag.fed_cell_count,
         under_fed: names(diag.under_fed),
         over_fed: names(diag.over_fed),
+        erroring: diag
+            .erroring
+            .into_iter()
+            .map(|(coord, error)| ErroringDto {
+                coord: coord_names(cube_ref, &coord),
+                error,
+            })
+            .collect(),
         estimated_over_fed_bytes: diag.estimated_over_fed_bytes,
         opaque_rules: inference
             .opaque
@@ -370,10 +472,12 @@ pub(crate) async fn put_rule_test(
         assertions: body.assertions.into_iter().map(to_cell).collect(),
     };
     let response = test_dto(&test);
-    let outcome = state
-        .engine
-        .define_rule_test(&cube, None, test)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let cube_c = cube.clone();
+    blocking_commit(&state.engine, move |engine| {
+        engine.define_rule_test(&cube_c, None, test)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -381,7 +485,8 @@ pub(crate) async fn put_rule_test(
         Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, &body.name)),
         true,
     );
-    broadcast_with_version(&state, &cube, outcome.version);
+    // The commit-ordered change feed (A1) emits the change from inside the engine
+    // commit; the handler no longer broadcasts.
     Ok((StatusCode::CREATED, Json(response)))
 }
 
@@ -398,10 +503,12 @@ pub(crate) async fn delete_rule_test(
         Some(&cube),
         AccessLevel::Write,
     )?;
-    let outcome = state
-        .engine
-        .delete_rule_test(&cube, None, &name)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, name_c) = (cube.clone(), name.clone());
+    blocking_commit(&state.engine, move |engine| {
+        engine.delete_rule_test(&cube_c, None, &name_c)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -409,7 +516,8 @@ pub(crate) async fn delete_rule_test(
         Some(&ObjectRef::in_cube(ObjectKind::Rule, &cube, &name)),
         true,
     );
-    broadcast_with_version(&state, &cube, outcome.version);
+    // The commit-ordered change feed (A1) emits the change from inside the engine
+    // commit; the handler no longer broadcasts.
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -424,7 +532,16 @@ pub(crate) async fn run_rule_tests_handler(
     // Tests evaluate over a clone of the live cube, so they expose derived values
     // across the whole cube; an element-restricted caller is denied (ADR-0015).
     deny_if_element_restricted(&state, &auth, &snap)?;
-    let outcomes = run_rule_tests(snap.model())
+    // Run the tests against the pinned MULTI-cube registry (A6/CA4), so a cross-cube
+    // rule test evaluates on real values instead of erroring with calc's single-cube
+    // limitation. The registry compiles every cube's rules once against the pinned
+    // models; a fixtures-modified target cube reuses those compiled rules (fixtures
+    // change values, not structure).
+    let registry = PinnedRegistry::build(&state.engine);
+    let target = registry
+        .ordinal_of(&cube)
+        .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))?;
+    let outcomes = run_cross_cube_rule_tests(&registry, target, snap.model())
         .map_err(|e| ApiError::unprocessable("RULE_TEST_ERROR", e.to_string()))?;
     let all_passed = outcomes.iter().all(|o| o.passed);
     Ok(Json(TestReportDto {

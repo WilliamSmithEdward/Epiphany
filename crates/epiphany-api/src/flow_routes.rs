@@ -10,6 +10,9 @@
 //! (`grow_dimension`).
 
 use std::collections::BTreeMap;
+use std::sync::mpsc;
+use std::sync::OnceLock;
+use std::time::Duration;
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -34,7 +37,7 @@ use crate::authz::{audit, require_cube_access, require_element_write, require_ki
 use crate::connection_routes::{fetch_connection_rows, spec_from_dto, ConnectionDto};
 use crate::dto::{from_cell, to_cell, FailureDto, TestCellDto, TestOutcomeDto, TestReportDto};
 use crate::flow_reader::ApiFlowReader;
-use crate::routes::{broadcast, build_write, map_batch_error, map_persist_error};
+use crate::routes::{build_write, map_batch_error, map_persist_error};
 use crate::{ApiError, AppState};
 
 /// Map a flow run/validate failure to the API envelope, attaching line/column
@@ -44,6 +47,161 @@ fn map_flow_error(err: FlowError) -> ApiError {
         FlowError::Strip(e) => ApiError::unprocessable("FLOW_STRIP_ERROR", e.message.clone())
             .with_details(json!({ "line": e.line, "column": e.column })),
         FlowError::Runtime { message } => ApiError::unprocessable("FLOW_RUNTIME_ERROR", message),
+    }
+}
+
+// ---- flow-run wall-clock watchdog (F1) ----
+//
+// The flow interpreter has a DETERMINISTIC loop/recursion budget (epiphany-flow
+// run.rs), but no wall-clock ceiling: a pathological-but-in-budget computation (a
+// catastrophically backtracking regex, a tight arithmetic loop just under the
+// iteration cap) can pin a worker for an unbounded time. This adds a configurable
+// wall-clock DEADLINE around a flow run so such a wedge is aborted with a clear
+// error instead of pinning a thread forever.
+//
+// SCOPE / limitation (documented deliberately, matching epiphany-flow's own doc):
+// this is a LIVENESS bound, not OS-level isolation. boa runs synchronously and
+// cannot be preempted from outside, so on a timeout the run thread is DETACHED and
+// keeps running to completion (or forever) in the background — the watchdog frees
+// the *caller* (the HTTP worker or the scheduler tick), returns a clear error, and
+// stops the run's effects from ever being applied, but it cannot reclaim the wedged
+// CPU. True CPU/RSS reclamation needs subprocess isolation, which is out of scope
+// for the single-binary design (ADR-0004 / epiphany-flow run.rs). The deadline is a
+// real wall-clock read: it is a deliberate liveness bound and is NOT part of any
+// flow's deterministic output (a run that finishes within the deadline behaves
+// identically regardless of the deadline value), so it does not violate the
+// determinism mandate.
+
+/// Default wall-clock ceiling for a single flow run (5 minutes). Generous for a
+/// legitimate ETL over a large input, tight enough that a wedged flow does not pin
+/// a worker indefinitely.
+const DEFAULT_FLOW_DEADLINE_MILLIS: u64 = 300_000;
+
+/// The configured flow wall-clock deadline, read ONCE from
+/// `EPIPHANY_FLOW_DEADLINE_MILLIS` (defaulting to [`DEFAULT_FLOW_DEADLINE_MILLIS`]).
+/// `0` or an unparseable value disables the watchdog (unbounded, the pre-F1
+/// behavior) so an operator can opt out. Cached in a `OnceLock` because it is a
+/// process-wide operational knob, not per-request state (it deliberately does not
+/// live on `AppState`, which the composition root owns).
+fn flow_deadline() -> Option<Duration> {
+    static DEADLINE: OnceLock<Option<Duration>> = OnceLock::new();
+    *DEADLINE.get_or_init(|| {
+        let millis = std::env::var("EPIPHANY_FLOW_DEADLINE_MILLIS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .unwrap_or(DEFAULT_FLOW_DEADLINE_MILLIS);
+        (millis > 0).then(|| Duration::from_millis(millis))
+    })
+}
+
+/// Why a watchdog-supervised flow run did not produce an outcome.
+pub(crate) enum FlowRunError {
+    /// The flow itself failed (strip/runtime error), as before.
+    Flow(FlowError),
+    /// The run exceeded the wall-clock deadline and was abandoned (its thread is
+    /// detached and its effects are never applied). Carries the deadline for the
+    /// error message.
+    TimedOut(Duration),
+    /// The run thread panicked (a bug in the interpreter host); surfaced as a clean
+    /// internal error rather than propagating the panic.
+    Panicked,
+}
+
+/// Run a flow under the wall-clock watchdog (F1). All inputs are owned so the run
+/// executes on its own thread (the non-`Send` `FlowReader` is built INSIDE the
+/// thread, so nothing non-`Send` crosses the boundary); the caller waits up to the
+/// deadline for the result. On a timeout the flow thread is detached (see the
+/// module note) and [`FlowRunError::TimedOut`] is returned, so the run's staged
+/// effects are never applied. With the watchdog disabled (deadline `None`) the flow
+/// runs inline exactly as before.
+///
+/// This is a SYNC, blocking helper: the HTTP handler calls it from within
+/// `spawn_blocking` (so a wait never occupies an async worker), and the scheduler —
+/// already on a blocking thread — calls it directly.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_flow_watchdog(
+    state: AppState,
+    username: String,
+    source: String,
+    default_cube: Option<String>,
+    cube_names: Vec<String>,
+    inputs: BTreeMap<String, Vec<Row>>,
+    params: BTreeMap<String, String>,
+    now_millis: u64,
+) -> Result<FlowOutcome, FlowRunError> {
+    let run = move || {
+        let reader = ApiFlowReader::new(state, &username);
+        run_flow(
+            &source,
+            default_cube.as_deref(),
+            &cube_names,
+            inputs,
+            &params,
+            now_millis,
+            Box::new(reader),
+        )
+    };
+
+    match run_with_deadline(flow_deadline(), run) {
+        Ok(result) => result.map_err(FlowRunError::Flow),
+        Err(DeadlineError::TimedOut(deadline)) => Err(FlowRunError::TimedOut(deadline)),
+        Err(DeadlineError::Panicked) => Err(FlowRunError::Panicked),
+    }
+}
+
+/// Why [`run_with_deadline`] did not return the closure's value.
+#[derive(Debug)]
+enum DeadlineError {
+    /// The closure did not finish within the deadline; its thread is detached.
+    TimedOut(Duration),
+    /// The closure's thread panicked (or the OS refused to spawn it).
+    Panicked,
+}
+
+/// Run `f` on a dedicated thread, returning its value if it finishes within
+/// `deadline`, else abandoning the thread and returning [`DeadlineError::TimedOut`]
+/// (F1). With `deadline` `None` the closure runs INLINE (no extra thread), matching
+/// the unbounded pre-watchdog behavior. The thread is intentionally detached on a
+/// timeout: a wedged computation cannot be interrupted, so joining it would defeat
+/// the whole liveness guarantee — the value it may eventually produce is dropped
+/// (the caller never applies it). Generic over the payload so the mechanism is unit-
+/// testable without a full flow run.
+fn run_with_deadline<T: Send + 'static>(
+    deadline: Option<Duration>,
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, DeadlineError> {
+    let Some(deadline) = deadline else {
+        return Ok(f());
+    };
+    // A bounded channel of one carries the result back. If the run finishes after we
+    // have already timed out, the send fails (the receiver is gone) and the value is
+    // dropped — never applied.
+    let (tx, rx) = mpsc::sync_channel::<T>(1);
+    std::thread::Builder::new()
+        .name("epiphany-flow-run".to_string())
+        .spawn(move || {
+            let _ = tx.send(f());
+        })
+        .map_err(|_| DeadlineError::Panicked)?;
+    match rx.recv_timeout(deadline) {
+        Ok(value) => Ok(value),
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(DeadlineError::TimedOut(deadline)),
+        // The sender hung up without sending: the run thread panicked.
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(DeadlineError::Panicked),
+    }
+}
+
+/// Map a [`FlowRunError`] to the API envelope: a flow error keeps its existing
+/// mapping; a timeout is a clear 503 (the server could not complete the run in
+/// time), and a panic is a clean 500.
+fn map_flow_run_error(err: FlowRunError) -> ApiError {
+    match err {
+        FlowRunError::Flow(e) => map_flow_error(e),
+        FlowRunError::TimedOut(deadline) => ApiError::service_unavailable(format!(
+            "flow run exceeded the {}s wall-clock deadline and was aborted",
+            deadline.as_secs()
+        )),
+        FlowRunError::Panicked => ApiError::internal(),
     }
 }
 
@@ -168,6 +326,32 @@ pub(crate) fn authorize_outcome(
         if !outcome.dimensions.is_empty() {
             require_kind_access(state, auth, ObjectKind::Dimension, None, AccessLevel::Write)?;
         }
+    }
+    Ok(())
+}
+
+/// Gate a flow run's *input* connections as the runner (ADR-0035 decision 7):
+/// authoring/running a flow must not grant data access the principal lacks, and a
+/// **global** connection's output rows (a SQL result, an HTTP body) are such data,
+/// gated by `Connection:Read`. Require it once per run before any global
+/// connection is fetched, so a `Flow:Write` holder who lacks `Connection:Read`
+/// cannot surface a global connection's rows via `ctx.log`. Flow-scoped (`Local`)
+/// connections are the runner's own inline definition and are unaffected; the
+/// legacy single `connection` field is a global reference and is covered by the
+/// `legacy_global` flag.
+fn require_connection_read_for_inputs(
+    state: &AppState,
+    auth: &AuthPrincipal,
+    flow: &Flow,
+    legacy_global: bool,
+) -> Result<(), ApiError> {
+    let uses_global = legacy_global
+        || flow
+            .inputs
+            .iter()
+            .any(|i| i.binding == FlowInputBinding::Global);
+    if uses_global {
+        require_kind_access(state, auth, ObjectKind::Connection, None, AccessLevel::Read)?;
     }
     Ok(())
 }
@@ -569,6 +753,11 @@ pub(crate) async fn run_flow_handler(
         ));
     }
 
+    // Reading a GLOBAL connection's rows is data access gated by `Connection:Read`
+    // (ADR-0035 decision 7): a `Flow:Write` holder without it may not fetch a
+    // global connection's output through a flow. Checked before any fetch.
+    require_connection_read_for_inputs(&state, &auth, &flow, body.connection.is_some())?;
+
     // The legacy single source: either a named connection's rows or inline CSV. A
     // named connection's rows are fetched and keyed under the flow's first declared
     // source address (or "data") via the legacy path; an inline body uses the
@@ -606,23 +795,49 @@ pub(crate) async fn run_flow_handler(
     }
 
     let cube_names = state.engine.cube_names();
-    let reader = ApiFlowReader::new(state.clone(), &auth.principal.username);
     let now = state.clock.now_millis();
-    let outcome = run_flow(
-        &flow.source,
-        flow.default_cube.as_deref(),
-        &cube_names,
-        inputs,
-        &body.params,
-        now,
-        Box::new(reader),
-    )
-    .map_err(map_flow_error)?;
+    // Run the flow under the wall-clock watchdog (F1) AND off the async workers (A2,
+    // boa is blocking): a wedged or long-running flow can no longer pin an async
+    // worker, and one that overruns the deadline is aborted with a clear 503 rather
+    // than running forever. The reader is built inside the watchdog thread, so no
+    // non-`Send` value crosses the boundary.
+    let outcome = {
+        let state = state.clone();
+        let username = auth.principal.username.clone();
+        let source = flow.source.clone();
+        let default_cube = flow.default_cube.clone();
+        let params = body.params.clone();
+        tokio::task::spawn_blocking(move || {
+            run_flow_watchdog(
+                state,
+                username,
+                source,
+                default_cube,
+                cube_names,
+                inputs,
+                params,
+                now,
+            )
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(map_flow_run_error)?
+    };
 
     // A flow runs as the caller: it may only make changes the caller could make
     // directly (ADR-0023/0035). Authorize the staged effects before applying.
     authorize_outcome(&state, &auth, &outcome)?;
-    let (elements_added, cells_written) = apply_outcome(&state, &outcome)?;
+    // Apply the staged outcome (per-cube writer locks + fsyncs) off the async
+    // workers (A2): a flow can write many cubes, each a blocking commit, so running
+    // it inline would starve readers. The engine + outcome are cheap to clone into
+    // the task; the scheduler path already runs `apply_outcome` under spawn_blocking.
+    let (elements_added, cells_written) = {
+        let state = state.clone();
+        let outcome = outcome.clone();
+        tokio::task::spawn_blocking(move || apply_outcome(&state, &outcome))
+            .await
+            .map_err(|_| ApiError::internal())??
+    };
     audit(
         &state,
         &auth.principal.username,
@@ -630,10 +845,9 @@ pub(crate) async fn run_flow_handler(
         Some(&ObjectRef::global(ObjectKind::Flow, &name)),
         true,
     );
-    // Notify every cube the run wrote (a global flow has no single cube).
-    for cube in outcome.cubes.keys() {
-        broadcast(&state, cube);
-    }
+    // A1: each per-cube write inside `apply_outcome` fires the commit-ordered change
+    // feed from within the engine commit, so the handler no longer broadcasts per
+    // cube here.
     Ok(Json(RunReport {
         rows_read: outcome.report.rows_read,
         cells_written,
@@ -675,7 +889,14 @@ pub(crate) async fn import_csv(
     // members (Dimension:Write) and writes cells (Cube:Write + element write), so
     // it can never load past the caller's own access.
     authorize_outcome(&state, &auth, &outcome)?;
-    let (elements_added, cells_written) = apply_outcome(&state, &outcome)?;
+    // Apply the import (writer lock + fsync) off the async workers (A2); `outcome` is
+    // not needed after, so it moves into the task.
+    let (elements_added, cells_written) = {
+        let state = state.clone();
+        tokio::task::spawn_blocking(move || apply_outcome(&state, &outcome))
+            .await
+            .map_err(|_| ApiError::internal())??
+    };
     audit(
         &state,
         &auth.principal.username,
@@ -683,7 +904,8 @@ pub(crate) async fn import_csv(
         Some(&ObjectRef::in_cube(ObjectKind::Flow, &cube, "import")),
         true,
     );
-    broadcast(&state, &cube);
+    // A1: the import's per-cube write fires the commit-ordered change feed inside the
+    // engine commit; the handler no longer broadcasts.
     Ok(Json(RunReport {
         rows_read: rows.len(),
         cells_written,
@@ -934,4 +1156,43 @@ pub(crate) async fn run_flow_tests_handler(
 
 fn map_flow_test_error(err: FlowTestError) -> ApiError {
     ApiError::unprocessable("FLOW_TEST_ERROR", err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// F1: the wall-clock watchdog aborts a run that overruns the deadline and
+    /// returns a timeout — proving the liveness bound. The overrunning closure's
+    /// thread is detached (we never join it), so the test does not hang on it.
+    #[test]
+    fn deadline_aborts_an_overrunning_run() {
+        let deadline = Duration::from_millis(20);
+        let result = run_with_deadline(Some(deadline), || {
+            // Simulate a wedged, uninterruptible computation.
+            std::thread::sleep(Duration::from_secs(30));
+            42
+        });
+        match result {
+            Err(DeadlineError::TimedOut(d)) => assert_eq!(d, deadline),
+            Ok(_) => panic!("the overrunning run must time out, not complete"),
+            Err(DeadlineError::Panicked) => panic!("the run did not panic; it overran"),
+        }
+    }
+
+    /// A run that finishes within the deadline returns its value normally.
+    #[test]
+    fn a_fast_run_completes_within_the_deadline() {
+        let value = run_with_deadline(Some(Duration::from_secs(5)), || 7)
+            .unwrap_or_else(|_| panic!("a fast run must not time out"));
+        assert_eq!(value, 7);
+    }
+
+    /// With the watchdog disabled (deadline `None`) the closure runs inline and its
+    /// value is returned unchanged (the unbounded pre-F1 behavior).
+    #[test]
+    fn a_disabled_watchdog_runs_inline() {
+        let value = run_with_deadline(None, || 9).expect("inline run never times out");
+        assert_eq!(value, 9);
+    }
 }

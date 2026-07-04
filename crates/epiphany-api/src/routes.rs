@@ -11,13 +11,14 @@ use epiphany_core::{
     spread_leaves, AttributeKind, AttributeValue, CellResolver, Cube, ElementMask, Fixed,
     SpreadError, SpreadMethod,
 };
-use epiphany_engine::{BatchError, CellWrite, ReadSnapshot};
+use epiphany_engine::{BatchError, CellWrite, Engine, ReadSnapshot};
 use epiphany_security::AccessLevel;
 
 use crate::auth::AuthPrincipal;
 use crate::authz::{
     element_mask, require_cube_access, require_element_write, require_element_write_indices,
 };
+use crate::calc_factory::RuleCoverage;
 use crate::dto::{
     AttributeDto, AttributeValueDto, BatchWriteRequest, BatchWriteResponse, CellDto, CoordMap,
     CubeDetailDto, DimensionDto, EdgeDto, ElementDto, ReadCellsRequest, ReadCellsResponse,
@@ -39,16 +40,39 @@ pub(crate) fn snapshot(state: &AppState, cube: &str) -> Result<ReadSnapshot, Api
         .ok_or_else(|| ApiError::not_found(format!("unknown cube '{cube}'")))
 }
 
-/// Broadcast that a cube's objects changed, at its current version (a no-op if
-/// the cube has no version yet). Used after object edits where the caller does
-/// not already hold the committed version.
-pub(crate) fn broadcast(state: &AppState, cube: &str) {
-    if let Some(version) = state.engine.version(cube) {
-        broadcast_with_version(state, cube, version);
-    }
+/// Run a blocking engine MUTATION (`op`) off the async worker threads (A2).
+///
+/// Every engine commit/checkpoint takes the per-cube writer lock and then does
+/// blocking disk I/O under it — at least one WAL fsync, and a full-model checkpoint
+/// for a definitional or sandbox op. Called inline from an async handler that would
+/// OS-block a tokio worker on the mutex + fsync; a handful of concurrent writers (or
+/// one slow-disk checkpoint) then starves the runtime, including the "lock-free"
+/// snapshot reads and `/healthz`, which still need a worker thread (ADR-0013 already
+/// routes flow work this way; the HTTP write surface did not). The engine is
+/// `Clone + Send` (a cheap Arc handle), so this clones it into a `spawn_blocking`
+/// task and awaits the result, leaving writer-lock contention and fsync latency on
+/// the blocking pool. Error mapping and response shapes are unchanged: a
+/// `BatchError` still flows through [`map_batch_error`]; a task-join failure (a
+/// panic in the op) is a clean 500.
+pub(crate) async fn blocking_commit<T, F>(engine: &Engine, op: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&Engine) -> Result<T, BatchError> + Send + 'static,
+{
+    let engine = engine.clone();
+    tokio::task::spawn_blocking(move || op(&engine))
+        .await
+        .map_err(|_| ApiError::internal())?
+        .map_err(map_batch_error)
 }
 
-/// Broadcast an objects-changed event at a specific (just-committed) version.
+/// Emit an `ObjectsChanged` for a cube at a specific version, for the FEW mutations
+/// that do NOT flow through the engine commit path — so the commit-ordered change
+/// feed (A1) never fires for them. Today that is only promoting a cube's dimension
+/// into the global registry (a registry-only op with no cube commit). Every
+/// committing mutation is emitted by the [`ChangeFeed`](crate::ws::ChangeFeed)
+/// observer instead, so this must not be called after a commit (it would double the
+/// event and reintroduce post-commit reordering).
 pub(crate) fn broadcast_with_version(state: &AppState, cube: &str, version: u64) {
     let _ = state.events.send(ChangeEvent::ObjectsChanged {
         cube: cube.to_string(),
@@ -184,6 +208,10 @@ pub(crate) async fn read_cells(
     // rollup of a denied leaf) returns 403.
     let mask = element_mask(&state, &auth, &snap);
     let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
+    // Rule coverage drives the `editable` flag (ADR-0040): a rule-calculated leaf
+    // renders read-only so the client's write path matches the server's. Built
+    // once; a cube with no rules skips the per-cell probe.
+    let coverage = RuleCoverage::build(&state.engine, &snap);
     let mut cells = Vec::with_capacity(req.coords.len());
     for coord in &req.coords {
         let resolved = resolve(cube_ref, coord)?;
@@ -191,7 +219,10 @@ pub(crate) async fn read_cells(
         // (a consolidation that merely rolled one up is not flagged). Overrides
         // are numeric this phase (ADR-0014), so only `cells` is consulted.
         let overlaid = sandbox.is_some_and(|sb| sb.cells.contains_key(&resolved.indices));
-        cells.push(read_one(&*resolver, coord, &resolved, overlaid)?);
+        let covered = resolved.all_leaf
+            && coverage.has_rules()
+            && coverage.covers(cube_ref, &resolved.indices);
+        cells.push(read_one(&*resolver, coord, &resolved, overlaid, covered)?);
     }
     Ok(Json(ReadCellsResponse { cells }))
 }
@@ -208,30 +239,29 @@ pub(crate) async fn write_cell(
     // Element security (ADR-0015): a write to a coordinate the caller may not
     // write is rejected before anything is staged.
     require_element_write(&state, &auth, &cube, &req.coord)?;
-    let (write, sandbox_name) = {
-        let snap = snapshot(&state, &cube)?;
-        let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
-        (
-            build_write(snap.cube(), &req.coord, &req.value)?,
-            sandbox_name,
-        )
-    };
-    // A what-if write stages into the sandbox (base untouched); a base write
-    // commits to the cube (ADR-0014).
-    let outcome = match &sandbox_name {
-        Some(name) => state.engine.sandbox_set_cells(&cube, None, name, &[write]),
-        None => state.engine.apply_batch(&cube, None, &[write]),
-    }
-    .map_err(map_batch_error)?;
-    let _ = state.events.send(ChangeEvent::CellsChanged {
-        cube: cube.clone(),
-        version: outcome.version,
-        coords: vec![req.coord.clone()],
-        sandbox: sandbox_name.clone(),
-        owner: sandbox_name
-            .as_ref()
-            .map(|_| auth.principal.username.clone()),
-    });
+    // Resolve the coordinate name -> index and submit with the resolving
+    // snapshot's version as the optimistic base, retrying on a concurrent commit.
+    // A structural edit (ADR-0036) committed between resolve and apply remaps
+    // element indices; without a base an index-addressed write would silently land
+    // on the WRONG element. Binding the base makes such a race a conflict we retry
+    // by re-resolving the name on the fresh snapshot, so the write always lands on
+    // the element the caller named (the external contract stays "succeeds").
+    // The commit version is not needed here (the change feed emits it; the response
+    // re-reads on a fresh snapshot below), so discard the outcome.
+    let (_outcome, sandbox_name, _applied) = commit_resolved(&state, &cube, |snap| {
+        let sandbox_name = resolve_sandbox(snap, &auth.principal, &selector)?;
+        let writes = vec![build_write(snap.cube(), &req.coord, &req.value)?];
+        // A rule-calculated leaf is not writable (ADR-0040): reject rather than
+        // silently persist a value the rule will shadow on the next read.
+        reject_rule_covered_writes(&state, snap, &writes)?;
+        Ok((writes, sandbox_name))
+    })
+    .await?;
+    // The commit-ordered change feed (A1) emits the `CellsChanged` from inside the
+    // engine commit (in version order, tagged with the sandbox for owner-scoped
+    // delivery), so the handler no longer sends it here — doing so would double the
+    // event and reintroduce the post-commit reordering the observer fixes.
+    // (`sandbox_name` is still used just below to overlay the re-read.)
     // Re-read on a fresh snapshot, overlaying the sandbox so the caller sees the
     // staged what-if value (flagged overlaid).
     let snap = state
@@ -245,7 +275,13 @@ pub(crate) async fn write_cell(
     let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
     let resolved = resolve(snap.cube(), &req.coord)?;
     let overlaid = sandbox.is_some_and(|sb| sb.cells.contains_key(&resolved.indices));
-    Ok(Json(read_one(&*resolver, &req.coord, &resolved, overlaid)?))
+    // A just-written leaf is never rule-covered (the write above would have been
+    // rejected), but re-derive the flag from the same authority for consistency.
+    let coverage = RuleCoverage::build(&state.engine, &snap);
+    let covered = resolved.all_leaf && coverage.covers(snap.cube(), &resolved.indices);
+    Ok(Json(read_one(
+        &*resolver, &req.coord, &resolved, overlaid, covered,
+    )?))
 }
 
 /// `POST /api/v1/cubes/{cube}/cells/batch` -> apply all writes or none.
@@ -271,27 +307,31 @@ pub(crate) async fn batch_write(
             .iter()
             .map(|item| build_write(cube_ref, &item.coord, &item.value))
             .collect::<Result<Vec<_>, _>>()?;
+        // Reject the whole batch if any target is a rule-calculated leaf
+        // (ADR-0040), before anything is staged — consistent with the
+        // element-security all-or-nothing gate above.
+        reject_rule_covered_writes(&state, &snap, &writes)?;
         (writes, sandbox_name)
     };
-    // A what-if batch stages into the sandbox (base untouched); the base-version
-    // check applies only to base commits.
-    let outcome = match &sandbox_name {
-        Some(name) => state.engine.sandbox_set_cells(&cube, None, name, &writes),
-        None => state.engine.apply_batch(&cube, req.base_version, &writes),
-    }
-    .map_err(map_batch_error)?;
-    let coords = req.writes.iter().map(|w| w.coord.clone()).collect();
-    let _ = state.events.send(ChangeEvent::CellsChanged {
-        cube: cube.clone(),
-        version: outcome.version,
-        coords,
-        sandbox: sandbox_name.clone(),
-        owner: sandbox_name
-            .as_ref()
-            .map(|_| auth.principal.username.clone()),
-    });
+    // A what-if batch stages into the sandbox (base untouched). Honor the client's
+    // optimistic `base_version` on BOTH paths (the engine's sandbox define supports
+    // a base check, like commit_sandbox does): dropping it on the sandbox path would
+    // silently give last-writer-wins and let two sessions clobber each other's
+    // what-if overrides despite sending a concurrency guard.
+    //
+    // Run the commit (writer lock + fsync) off the async workers (A2). The change
+    // feed (A1) emits the `CellsChanged` from inside the commit; the handler no
+    // longer sends it. `sandbox_name` only selects the sandbox-vs-base path here.
+    let applied = writes.len();
+    let base = req.base_version;
+    let cube_name = cube.clone();
+    let outcome = blocking_commit(&state.engine, move |engine| match &sandbox_name {
+        Some(name) => engine.sandbox_set_cells(&cube_name, base, name, &writes),
+        None => engine.apply_batch(&cube_name, base, &writes),
+    })
+    .await?;
     Ok(Json(BatchWriteResponse {
-        applied: writes.len(),
+        applied,
         version: outcome.version,
     }))
 }
@@ -311,61 +351,62 @@ pub(crate) async fn spread_cells(
         ApiError::unprocessable("INVALID_NUMBER", format!("invalid number '{}'", req.value))
     })?;
 
-    let snap = snapshot(&state, &cube)?;
-    let sandbox_name = resolve_sandbox(&snap, &auth.principal, &selector)?;
-    let resolved = resolve(snap.cube(), &req.target)?;
-    if resolved.has_string {
-        return Err(ApiError::unprocessable(
-            "SPREAD_TO_STRING",
-            "cannot spread into a string cell",
-        ));
-    }
-
-    // Expand the target into leaf writes, reading current values (for the
-    // proportional basis) through a resolver that honors the sandbox + mask.
-    let writes = {
-        let sandbox = sandbox_name
-            .as_deref()
-            .and_then(|n| snap.model().sandbox(n));
-        let mask = element_mask(&state, &auth, &snap);
-        let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
-        spread_leaves(snap.cube(), &resolved.indices, value, method, &|c| {
-            resolver.value(c)
-        })
-        .map_err(map_spread_error)?
-    };
-    if writes.is_empty() {
-        return Ok(Json(BatchWriteResponse {
-            applied: 0,
-            version: snap.version(),
-        }));
-    }
-
-    // Element security (ADR-0015): fail-closed. If any contributing leaf is not
-    // writable, the whole spread is denied before anything is staged.
-    let coords: Vec<Vec<u32>> = writes.iter().map(|(c, _)| c.clone()).collect();
-    require_element_write_indices(&state, &auth, &cube, &snap, &coords)?;
-
-    let batch: Vec<CellWrite> = writes
-        .into_iter()
-        .map(|(coord, value)| CellWrite::Leaf { coord, value })
-        .collect();
-    let outcome = match &sandbox_name {
-        Some(name) => state.engine.sandbox_set_cells(&cube, None, name, &batch),
-        None => state.engine.apply_batch(&cube, None, &batch),
-    }
-    .map_err(map_batch_error)?;
-    let _ = state.events.send(ChangeEvent::CellsChanged {
-        cube: cube.clone(),
-        version: outcome.version,
-        coords: vec![req.target.clone()],
-        sandbox: sandbox_name.clone(),
-        owner: sandbox_name
-            .as_ref()
-            .map(|_| auth.principal.username.clone()),
-    });
+    // Re-expand and commit under the optimistic base, retrying on a concurrent
+    // commit (ADR-0036): the expanded leaves are index-addressed, so a structural
+    // edit between expand and apply would otherwise silently shift the spread onto
+    // different leaves. Binding the resolving snapshot's version as the base turns
+    // that race into a conflict we retry by re-expanding on the fresh snapshot;
+    // the proportional basis and element-security check use that same snapshot.
+    let (outcome, sandbox_name, applied) = commit_resolved(&state, &cube, |snap| {
+        let sandbox_name = resolve_sandbox(snap, &auth.principal, &selector)?;
+        let resolved = resolve(snap.cube(), &req.target)?;
+        if resolved.has_string {
+            return Err(ApiError::unprocessable(
+                "SPREAD_TO_STRING",
+                "cannot spread into a string cell",
+            ));
+        }
+        // Expand the target into leaf writes, reading current values (for the
+        // proportional basis) through a resolver that honors the sandbox + mask.
+        // Rule-covered leaves (ADR-0040) are excluded before distribution, so the
+        // entered total spreads only across leaves that can hold it and reproduces
+        // on read-back; if every target leaf is rule-covered the spread is rejected
+        // (there is nowhere to place the value).
+        let expanded = {
+            let sandbox = sandbox_name
+                .as_deref()
+                .and_then(|n| snap.model().sandbox(n));
+            let mask = element_mask(&state, &auth, snap);
+            let resolver = state.cells.resolver_with(snap, sandbox, mask.as_ref());
+            let coverage = RuleCoverage::build(&state.engine, snap);
+            let cube_ref = snap.cube();
+            spread_leaves(
+                cube_ref,
+                &resolved.indices,
+                value,
+                method,
+                &|c| resolver.value(c),
+                &|c| coverage.covers(cube_ref, c),
+            )
+            .map_err(map_spread_error)?
+        };
+        // Element security (ADR-0015): fail-closed. If any contributing leaf is not
+        // writable, the whole spread is denied before anything is staged.
+        let coords: Vec<Vec<u32>> = expanded.iter().map(|(c, _)| c.clone()).collect();
+        require_element_write_indices(&state, &auth, &cube, snap, &coords)?;
+        let batch: Vec<CellWrite> = expanded
+            .into_iter()
+            .map(|(coord, value)| CellWrite::Leaf { coord, value })
+            .collect();
+        Ok((batch, sandbox_name))
+    })
+    .await?;
+    // The commit-ordered change feed (A1) emits the `CellsChanged` from inside the
+    // engine commit; the handler no longer sends it (see `write_cell`). `sandbox_name`
+    // only decided the sandbox-vs-base commit path inside `commit_resolved`.
+    let _ = &sandbox_name;
     Ok(Json(BatchWriteResponse {
-        applied: batch.len(),
+        applied,
         version: outcome.version,
     }))
 }
@@ -392,6 +433,10 @@ fn map_spread_error(err: SpreadError) -> ApiError {
             "SPREAD_TOO_LARGE",
             format!("the target expands to {count} cells, over the limit of {cap}"),
         ),
+        SpreadError::AllExcluded => ApiError::unprocessable(
+            "RULE_COVERED_CELL",
+            "every target leaf is rule-calculated; there is nothing to spread into",
+        ),
         SpreadError::Read(query_error) => ApiError::from(query_error),
     }
 }
@@ -401,6 +446,7 @@ fn read_one(
     coord: &CoordMap,
     resolved: &Resolved,
     overlaid: bool,
+    covered: bool,
 ) -> Result<CellDto, ApiError> {
     if resolved.has_string {
         let value = cells.string_value(&resolved.indices)?;
@@ -408,7 +454,10 @@ fn read_one(
             coord: coord.clone(),
             value,
             kind: "string",
-            editable: resolved.all_leaf,
+            // A string cell is not numerically editable; and a rule-covered leaf
+            // is read-only (ADR-0040) so the client never offers an input the
+            // write path would reject.
+            editable: resolved.all_leaf && !covered,
             overlaid,
         })
     } else {
@@ -417,10 +466,103 @@ fn read_one(
             coord: coord.clone(),
             value: Some(value.to_string()),
             kind: "numeric",
-            editable: resolved.all_leaf,
+            editable: resolved.all_leaf && !covered,
             overlaid,
         })
     }
+}
+
+/// How many times a name-resolved write re-resolves and retries when a concurrent
+/// commit moves the cube's version out from under it. A structural edit (ADR-0036)
+/// is rare and a commit strictly advances the version, so a small bound converges;
+/// exhausting it (sustained contention) surfaces the 409 rather than looping.
+const RESOLVE_RETRY_LIMIT: usize = 8;
+
+/// Resolve a name-addressed write against a fresh snapshot and commit it with that
+/// snapshot's version as the optimistic base, retrying on a `Conflict` by
+/// re-resolving on the new snapshot. This closes the versionless-write race: an
+/// index-addressed batch submitted with no base could land on the wrong element if
+/// a structural edit remapped indices between resolve and apply; binding the base
+/// turns that race into a conflict we transparently retry, so the write lands on
+/// the element the caller named. `build` returns the writes plus the resolved
+/// sandbox name (both are re-derived per attempt from the passed snapshot).
+async fn commit_resolved(
+    state: &AppState,
+    cube: &str,
+    build: impl Fn(&ReadSnapshot) -> Result<(Vec<CellWrite>, Option<String>), ApiError>,
+) -> Result<(epiphany_engine::CommitOutcome, Option<String>, usize), ApiError> {
+    let mut last_conflict: Option<BatchError> = None;
+    for _ in 0..RESOLVE_RETRY_LIMIT {
+        let snap = snapshot(state, cube)?;
+        let base = snap.version();
+        let (writes, sandbox_name) = build(&snap)?;
+        // Drop the snapshot before committing so we do not pin it across the write.
+        drop(snap);
+        // An empty batch is a no-op: report the current version without committing
+        // (so, e.g., a spread that expands to no writable leaf does not bump the
+        // version), matching the pre-existing short-circuit.
+        if writes.is_empty() {
+            return Ok((
+                epiphany_engine::CommitOutcome { version: base },
+                sandbox_name,
+                0,
+            ));
+        }
+        // Run the commit (writer lock + fsync) off the async workers (A2). The raw
+        // `BatchError` is inspected here so a `Conflict` still drives the re-resolve
+        // retry; only a terminal error is mapped to an `ApiError`. The engine is a
+        // cheap Clone handle, and the owned writes/cube/sandbox move into the task.
+        let applied = writes.len();
+        let engine = state.engine.clone();
+        let cube_owned = cube.to_string();
+        let sandbox_for_commit = sandbox_name.clone();
+        let result = tokio::task::spawn_blocking(move || match &sandbox_for_commit {
+            Some(name) => engine.sandbox_set_cells(&cube_owned, Some(base), name, &writes),
+            None => engine.apply_batch(&cube_owned, Some(base), &writes),
+        })
+        .await
+        .map_err(|_| ApiError::internal())?;
+        match result {
+            Ok(outcome) => return Ok((outcome, sandbox_name, applied)),
+            Err(e @ BatchError::Conflict { .. }) => {
+                // A concurrent commit advanced the version; re-resolve and retry.
+                last_conflict = Some(e);
+            }
+            Err(e) => return Err(map_batch_error(e)),
+        }
+    }
+    Err(map_batch_error(
+        last_conflict.expect("loop ran at least once"),
+    ))
+}
+
+/// Reject the batch if any write targets a rule-covered leaf (ADR-0040): the rule
+/// computes that cell, so a stored value would be silently shadowed on every read
+/// (`write_cell` would even return the rule value, not what was sent). Fail-loud
+/// with a typed 422 instead. Checked against the same pinned `snap` the write
+/// commits against, so it cannot race a concurrent rule change; a cube with no
+/// rules is a cheap no-op. Batches are all-or-nothing (like the element-security
+/// gate): one covered cell rejects the whole batch before anything is staged.
+fn reject_rule_covered_writes(
+    state: &AppState,
+    snap: &ReadSnapshot,
+    writes: &[CellWrite],
+) -> Result<(), ApiError> {
+    let coverage = RuleCoverage::build(&state.engine, snap);
+    if !coverage.has_rules() {
+        return Ok(());
+    }
+    for w in writes {
+        if let CellWrite::Leaf { coord, .. } = w {
+            if coverage.covers(snap.cube(), coord) {
+                return Err(ApiError::unprocessable(
+                    "RULE_COVERED_CELL",
+                    "cannot write to a rule-calculated cell; its value is computed by a rule",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn build_write(

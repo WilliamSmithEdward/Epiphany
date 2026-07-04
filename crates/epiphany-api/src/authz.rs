@@ -14,6 +14,43 @@ use epiphany_core::ElementMask;
 use epiphany_engine::ReadSnapshot;
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
+/// The caller's own effective PERSONA (ADR-0020), derived server-side from their
+/// grants so the web shell can progressively disclose chrome for non-admins without
+/// reading the admin-only grant list. Least-privilege and self-only: it reports the
+/// caller's OWN capability class, never anyone else's.
+///
+/// - `admin`: a server administrator, or a holder of the global cube-management
+///   permission (can create/delete cubes) — the full admin/modeler chrome.
+/// - `modeler`: holds at least `Write` on a MODELING object kind (Dimension, Rule,
+///   or Flow) at any scope (global or any cube) — the review's "any dimension/rule/
+///   flow write grant => modeler" rule (major-64). Sees the modeler chrome.
+/// - `business`: everyone else (data-entry / view consumers) — no modeler or admin
+///   machinery.
+pub(crate) fn caller_persona(state: &AppState, username: &str) -> &'static str {
+    let store = state.security.lock().expect("security mutex");
+    let Some(principal) = store.principal(username) else {
+        // An unknown principal has no capabilities (fail-closed): plain business.
+        return "business";
+    };
+    if principal.is_admin || store.can_manage_cubes(&principal) {
+        return "admin";
+    }
+    // Modeler iff the caller holds >= Write on any modeling kind at any scope. The
+    // grant map is keyed `(scope, kind)`; a modeling-kind row that grants this
+    // principal (by user or group) at least Write makes them a modeler.
+    let is_modeler = store.grants().iter().any(|((_, kind), list)| {
+        matches!(
+            kind,
+            ObjectKind::Dimension | ObjectKind::Rule | ObjectKind::Flow
+        ) && list.level_for(&principal.username, &principal.groups) >= AccessLevel::Write
+    });
+    if is_modeler {
+        "modeler"
+    } else {
+        "business"
+    }
+}
+
 use crate::auth::AuthPrincipal;
 use crate::dto::CoordMap;
 use crate::{ApiError, AppState};
@@ -215,20 +252,30 @@ pub(crate) fn element_mask(
 
 /// As [`element_mask`], but for an arbitrary principal by username (ADR-0035): a
 /// scheduled flow run reads and writes as the flow's recorded owner, not a request
-/// caller, so the reader resolves that owner's mask. Same fail-closed semantics:
-/// an unknown principal is masked against nothing here (the caller still gates
-/// reads, and `denied_registry_elements`/writes deny an unknown principal).
+/// caller, so the reader resolves that owner's mask. Fail-closed: an **unknown**
+/// principal (e.g. a deleted user who still owns a scheduled flow) gets an
+/// all-deny mask, never `None` (which would mean *unrestricted* reads) — treating
+/// an unknown principal as fully denied, matching ADR-0033 and the
+/// `denied_registry_elements` union. `None` is returned only for the genuine
+/// no-restriction cases: an admin (bypass) or a known principal with no element
+/// ACL denying them any element of this cube.
 pub(crate) fn element_mask_for(
     state: &AppState,
     username: &str,
     snapshot: &ReadSnapshot,
 ) -> Option<ElementMask> {
     let security = state.security.lock().expect("security mutex");
-    let principal = security.principal(username)?;
+    let cube = snapshot.cube();
+    let Some(principal) = security.principal(username) else {
+        // Unknown principal: deny every element of every dimension (defense in
+        // depth), so a read masked by this can never expose a cell.
+        let counts: Vec<u32> = (0..cube.rank()).map(|d| cube.dimension(d).len()).collect();
+        let denied: Vec<Vec<u32>> = counts.iter().map(|&n| (0..n).collect()).collect();
+        return Some(ElementMask::from_denied(&counts, &denied));
+    };
     if principal.is_admin {
         return None;
     }
-    let cube = snapshot.cube();
     let cube_name = cube.name();
     let mut counts = Vec::with_capacity(cube.rank());
     let mut denied: Vec<Vec<u32>> = Vec::with_capacity(cube.rank());
@@ -237,14 +284,26 @@ pub(crate) fn element_mask_for(
         let dim = cube.dimension(d);
         counts.push(dim.len());
         let mut dim_denied = Vec::new();
-        if security.has_element_acls(cube_name, dim.name()) {
-            for (idx, el) in dim.iter_elements().enumerate() {
-                if !security.element_readable(&principal, cube_name, dim.name(), &el.name) {
-                    dim_denied.push(idx as u32);
+        // Visit ONLY the ACL'd elements of this dimension, not every element
+        // (ADR-0015's "O(1) per coordinate component" force). `element_acls_for`
+        // range-probes the sorted flat store for just this `(cube, dim)` band, so
+        // one ACL on a 500k-element dimension costs O(log n + k) here instead of a
+        // scan of every element with three fresh `String` allocations per probe.
+        // An element carrying an ACL is denied iff its list does not grant the
+        // caller at least `Read` — the same result `element_readable` yields for an
+        // ACL'd element (an element with no ACL is unrestricted and never appears).
+        for (el_name, list) in security.element_acls_for(cube_name, dim.name()) {
+            if list.level_for(&principal.username, &principal.groups) < AccessLevel::Read {
+                if let Some(idx) = dim.index_of(el_name) {
+                    dim_denied.push(idx);
                     any = true;
                 }
             }
         }
+        // `element_acls_for` returns entries in sorted element-name order; the mask
+        // builder does not require the denied indices sorted, but keep them ordered
+        // for a deterministic, easy-to-reason-about mask.
+        dim_denied.sort_unstable();
         denied.push(dim_denied);
     }
     if !any {
@@ -274,14 +333,23 @@ pub(crate) fn denied_registry_elements(
     if principal.is_admin {
         return std::collections::HashSet::new();
     }
+    // Visit ONLY the ACL'd elements of `(cube, dim_name)` in each referencing cube,
+    // not every member (ADR-0015/0033). `element_acls_for` range-probes the sorted
+    // store for just this band, so the cost is O(log n + k) in the ACL count per
+    // referencing cube — not O(members) with three `String` allocations per member,
+    // which on a large dimension dominated the global dimension read. An ACL'd
+    // element is denied iff its list does not grant the caller at least `Read` (an
+    // element with no ACL is unrestricted and never appears here). `element_names`
+    // is still the guard that a denied name is actually a member of this dimension.
     let mut denied = std::collections::HashSet::new();
     for cube in referencing {
-        if !security.has_element_acls(cube, dim_name) {
-            continue;
-        }
-        for name in element_names {
-            if !security.element_readable(&principal, cube, dim_name, name) {
-                denied.insert(name.clone());
+        for (el_name, list) in security.element_acls_for(cube, dim_name) {
+            if list.level_for(&principal.username, &principal.groups) < AccessLevel::Read {
+                // Only suppress a name the dimension actually carries (a stale ACL
+                // on a since-removed member must not fabricate a phantom denial).
+                if let Some(name) = element_names.iter().find(|n| n.as_str() == el_name) {
+                    denied.insert(name.clone());
+                }
             }
         }
     }
@@ -371,7 +439,11 @@ pub(crate) fn require_element_write_indices(
                         let dim = cube_ref.dimension(d);
                         match dim.element(idx) {
                             Ok(el) => !security.element_writable(&p, cube, dim.name(), &el.name),
-                            Err(_) => false,
+                            // An index that no longer resolves to an element is
+                            // treated as DENIED (fail-closed, matching this
+                            // module's convention). The engine's later range
+                            // validation still returns a precise 422 when apt.
+                            Err(_) => true,
                         }
                     })
                 })

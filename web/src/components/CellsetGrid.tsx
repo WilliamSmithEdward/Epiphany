@@ -47,11 +47,23 @@ export default function CellsetGrid({
     return [rowName, colName].filter(Boolean).join(' × ') || 'Value'
   }
 
-  async function commit(r: number, c: number, previous: string, next: string) {
+  // A stable, collision-free key for a tuple: its member names joined with a
+  // control character that cannot appear in an element name (matching the
+  // pivot's tupleKey convention). Used to key rows/cells by identity so a live
+  // refetch that reorders tuples remounts the affected inputs (discarding a
+  // stranded in-progress edit) instead of silently preserving a value-keyed DOM
+  // input over a now-different coordinate.
+  const tupleKey = (tuple: { name: string }[]): string => tuple.map((m) => m.name).join('')
+
+  // Commit against the coordinate CAPTURED at render (bound into the cell's
+  // closure), not one re-resolved from (r,c) against whatever cellset is current
+  // at blur time - so a refetch between focus and blur cannot redirect the write
+  // to a different cell.
+  async function commit(coord: Coord, previous: string, next: string) {
     if (next === previous) return
     try {
       setError(null)
-      await writeCell(cube, coordFor(r, c), next)
+      await writeCell(cube, coord, next)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not save the cell')
     } finally {
@@ -86,48 +98,57 @@ export default function CellsetGrid({
           )}
         </thead>
         <tbody>
-          {cellset.row_tuples.map((_, r) => (
-            <tr key={r}>
+          {cellset.row_tuples.map((rowTuple, r) => {
+            const rowKey = tupleKey(rowTuple)
+            return (
+            <tr key={rowKey}>
               {rowHeaderAt[r].map((h, i) => (
                 <th key={i} scope="row" className="rowhead" rowSpan={h.rowSpan}>
                   {h.name}
                 </th>
               ))}
               {Array.from({ length: ncols }, (_, c) => {
+                const colKey = tupleKey(cellset.column_tuples[c] ?? [])
                 const cell = cellset.cells[r * ncols + c]
-                if (!cell) return <td key={c} className="cell" />
+                if (!cell) return <td key={colKey} className="cell" />
                 if (!cell.editable) {
                   return (
                     <td
-                      key={c}
+                      key={colKey}
                       className={cell.overlaid ? 'cell consolidated overlaid' : 'cell consolidated'}
                     >
                       {cell.value ?? ''}
                     </td>
                   )
                 }
+                // Capture this cell's coordinate now, at render, so a live
+                // refetch between focus and blur cannot redirect the write.
+                const coord = coordFor(r, c)
+                const previous = cell.value ?? ''
                 return (
                   <td
-                    key={c}
+                    key={colKey}
                     className={cell.overlaid ? 'cell overlaid' : 'cell'}
                     title={cell.overlaid ? 'Uncommitted what-if value' : undefined}
                   >
                     <input
-                      key={cell.value ?? ''}
+                      // Key by tuple identity + value so a remote reorder or value
+                      // change remounts the input (rather than preserving a
+                      // value-keyed DOM node over a now-different coordinate).
+                      key={`${rowKey}||${colKey}||${previous}`}
                       aria-label={cellLabel(r, c)}
-                      defaultValue={cell.value ?? ''}
+                      defaultValue={previous}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') e.currentTarget.blur()
                       }}
-                      onBlur={(e) =>
-                        void commit(r, c, cell.value ?? '', e.currentTarget.value.trim())
-                      }
+                      onBlur={(e) => void commit(coord, previous, e.currentTarget.value.trim())}
                     />
                   </td>
                 )
               })}
             </tr>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>

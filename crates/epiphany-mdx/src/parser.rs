@@ -6,8 +6,10 @@
 //! as a member, e.g. `[Filter]`):
 //!
 //! ```text
-//! query      := 'SELECT' ( axis ( ',' axis )* )? 'FROM' member
+//! query      := 'SELECT' axis ( ',' axis )* 'FROM' member
 //!               ( 'WHERE' '(' member ( ',' member )* ')' )?
+//!               -- at least one axis is required; a slicer-only
+//!               -- `SELECT FROM [Cube]` is rejected with a clear error.
 //! axis       := set 'ON' ( 'COLUMNS' | 'ROWS' | number )
 //! set        := crossjoin
 //! crossjoin  := primary ( '*' primary )*
@@ -156,6 +158,19 @@ impl Parser {
 
     fn parse_query(&mut self) -> Result<Query, MdxParseError> {
         self.expect_keyword("select", "`SELECT`")?;
+        // A query needs at least one axis. Keywords are not reserved, so a bare
+        // `SELECT FROM [Cube]` would otherwise consume `FROM` as a member name
+        // and fail deep in axis parsing with a misleading message; catch it here
+        // and point the error at `FROM`.
+        if self.peek_keyword("from") {
+            return Err(MdxParseError::new(
+                ParseErrorKind::UnexpectedToken {
+                    found: "FROM".to_string(),
+                    expected: "at least one axis (a set `ON` an axis) before `FROM`",
+                },
+                self.here_span(),
+            ));
+        }
         let mut axes: Vec<(AxisName, SetExpr)> = Vec::new();
         loop {
             let set = self.parse_set()?;
@@ -540,13 +555,27 @@ impl Parser {
     /// (`[Dim].CurrentMember`, etc.) is contextual sugar; only the attribute
     /// name inside `Properties(...)` is retained.
     fn parse_property_operand(&mut self) -> Result<Operand, MdxParseError> {
-        let mut last = self.expect_name("a member reference")?;
+        // Remember where the path starts so a "bare attribute" error (a path
+        // that does not end in `.Properties`) points at the path itself, not at
+        // the operator that follows it.
+        let path_start = self.here_span();
+        let mut path = vec![self.expect_name("a member reference")?];
+        let mut path_end = path_start;
         while self.peek() == Some(&Tok::Dot) && matches!(self.peek2(), Some(Tok::Name { .. })) {
             self.bump(); // '.'
-            last = self.expect_name("a member reference")?;
+            path_end = self.here_span();
+            path.push(self.expect_name("a member reference")?);
         }
+        let last = path.last().expect("path has at least one segment");
         if !last.eq_ignore_ascii_case("properties") {
-            return Err(self.unexpected("`.Properties(\"Attr\")`"));
+            let span = Span::new(path_start.start, path_end.end);
+            return Err(MdxParseError::new(
+                ParseErrorKind::UnexpectedToken {
+                    found: path.join("."),
+                    expected: "`.Properties(\"Attr\")`",
+                },
+                span,
+            ));
         }
         self.expect(&Tok::LParen, "`(`")?;
         let attr = match self.peek() {
@@ -881,6 +910,42 @@ mod tests {
                 .kind,
             ParseErrorKind::TrailingInput
         );
+    }
+
+    #[test]
+    fn bare_attribute_error_points_at_the_path_not_the_operator() {
+        // `Code` is a bare attribute (missing `.Properties(...)`). The error must
+        // span `Code`, not the following `=`, and report the path as `found`.
+        let src = "Filter([R].Members, Code = \"N\")";
+        let err = parse(src).unwrap_err();
+        match err.kind {
+            ParseErrorKind::UnexpectedToken { found, expected } => {
+                assert_eq!(found, "Code", "error should name the bare path");
+                assert_eq!(expected, "`.Properties(\"Attr\")`");
+            }
+            other => panic!("expected UnexpectedToken, got {other:?}"),
+        }
+        // Span covers `Code`, not the `=` that follows it.
+        let code_start = src.find("Code").unwrap();
+        assert_eq!(err.span, Span::new(code_start, code_start + "Code".len()));
+    }
+
+    #[test]
+    fn select_without_axes_reports_a_clear_error_on_from() {
+        // Standard-looking but unsupported slicer-only query. The error must
+        // name `FROM` (not consume it as a member and blame the cube), so the
+        // squiggle lands on the right token.
+        let err = parse_query("SELECT FROM [Sales]").unwrap_err();
+        match err.kind {
+            ParseErrorKind::UnexpectedToken { found, expected } => {
+                assert_eq!(found, "FROM");
+                assert!(
+                    expected.contains("axis"),
+                    "message should mention the missing axis, got {expected:?}"
+                );
+            }
+            other => panic!("expected UnexpectedToken naming FROM, got {other:?}"),
+        }
     }
 
     #[test]

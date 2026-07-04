@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   executeAdhoc,
   executeView,
   getCube,
   getView,
+  isAbortError,
   listSubsets,
   updateView,
   type AxisSpecDef,
@@ -53,6 +54,19 @@ export default function ViewWorkspace({
   const [editorDim, setEditorDim] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Monotonic run generation, so a slow executeAdhoc that resolves after a newer
+  // run (e.g. a WS re-run overlapping a manual one) does not commit a stale
+  // cellset. Only the latest run's result is applied. The AbortController below
+  // is the systemic fix (it actually cancels the superseded fetch and frees the
+  // server work); the generation counter remains a cheap in-process backstop.
+  const runGen = useRef(0)
+  // The in-flight run's AbortController, aborted when a newer run starts (or on
+  // unmount) so a superseded executeAdhoc is cancelled rather than left to
+  // resolve and be discarded (ADR-0020 performance mandate).
+  const runAbort = useRef<AbortController | null>(null)
+
+  // Abort any still-in-flight view execution when the workspace unmounts.
+  useEffect(() => () => runAbort.current?.abort(), [])
   // The name of the saved view currently open (so re-saving updates it in place
   // rather than failing on a duplicate name); null for an unsaved draft.
   const [openedName, setOpenedName] = useState<string | null>(null)
@@ -141,14 +155,25 @@ export default function ViewWorkspace({
   }, [detail, config, suppressRows, suppressCols])
 
   const run = useCallback(async () => {
+    // A WS-triggered re-run (reloadSignal) can overlap a manual run. Abort the
+    // previous run's fetch so it is cancelled server-side, then bump the run
+    // generation as a same-tick backstop: only the latest run applies its result.
+    runAbort.current?.abort()
+    const controller = new AbortController()
+    runAbort.current = controller
+    const gen = (runGen.current += 1)
     setBusy(true)
     try {
-      setCellset(await executeAdhoc(cube, buildDef()))
+      const cs = await executeAdhoc(cube, buildDef(), { signal: controller.signal })
+      if (gen !== runGen.current) return
+      setCellset(cs)
       setError(null)
     } catch (err) {
+      // A cancelled run (superseded or unmounted) is not an error to surface.
+      if (isAbortError(err) || gen !== runGen.current) return
       setError(err instanceof Error ? err.message : 'Could not run the view')
     } finally {
-      setBusy(false)
+      if (gen === runGen.current) setBusy(false)
     }
   }, [cube, buildDef])
 

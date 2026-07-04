@@ -4,8 +4,10 @@
 //! the command connector produces, so the flow engine is unchanged. Redirects
 //! are NOT followed: the fetch only ever contacts the configured URL's host (the
 //! API gates that host against an operator allowlist), so a 3xx cannot bounce the
-//! request to an internal host (SSRF). Bounded by the spec timeout and a
-//! response-size cap. The client is `ureq` over rustls with the ring provider;
+//! request to an internal host (SSRF). A 3xx (like any non-2xx) is surfaced as an
+//! error rather than parsed as an empty body, so a feed that begins redirecting
+//! fails loudly instead of silently yielding zero rows. Bounded by the spec
+//! timeout and a response-size cap. The client is `ureq` over rustls with ring;
 //! the connector never sees the secret store (the API resolves a credential into
 //! the `Authorization` header value and passes it in).
 
@@ -15,11 +17,7 @@ use std::time::Duration;
 use epiphany_core::HttpSpec;
 use epiphany_flow::Row;
 
-use crate::{parse_output, ConnectError, MAX_OUTPUT_BYTES};
-
-/// Default request timeout when the spec leaves it unset (the REST layer coerces
-/// an unset value to this, so 0 only arises from a hand-edited model).
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+use crate::{parse_output, ConnectError, DEFAULT_TIMEOUT_MS, MAX_OUTPUT_BYTES};
 
 /// Fetch an HTTP(S) connection and return its rows. `auth_header`, if set, is the
 /// full `Authorization` header value the API resolved from a secret.
@@ -55,6 +53,21 @@ pub fn fetch_http_capped(
 
     let response = req.call().map_err(map_ureq_error)?;
 
+    // `ureq` only maps status >= 400 to an error; with redirects disabled a 3xx
+    // is returned as a normal response. Treat anything outside 2xx as a failure so
+    // a feed that starts redirecting (the common http->https or trailing-slash
+    // 301) fails loudly instead of parsing the empty redirect body as "zero rows"
+    // and silently clearing the target on an ingest-and-replace.
+    let status = response.status();
+    if !(200..300).contains(&status) {
+        // Surface the Location so an operator can see where the redirect points.
+        let location = response.header("location").unwrap_or("").to_string();
+        return Err(ConnectError::HttpStatus {
+            code: status,
+            body: truncate_on_char_boundary(location, 2048),
+        });
+    }
+
     // Read the body, capped: take cap+1 bytes so an overflow is detectable.
     let mut buf = Vec::new();
     response
@@ -75,12 +88,31 @@ pub fn fetch_http_capped(
 fn map_ureq_error(err: ureq::Error) -> ConnectError {
     match err {
         ureq::Error::Status(code, response) => {
-            let mut body = response.into_string().unwrap_or_default();
-            body.truncate(2048);
-            ConnectError::HttpStatus { code, body }
+            let body = response.into_string().unwrap_or_default();
+            ConnectError::HttpStatus {
+                code,
+                // The body is the remote server's error page: it may hold a
+                // multi-byte character straddling byte 2048, so truncate on a
+                // char boundary (`String::truncate` panics off-boundary).
+                body: truncate_on_char_boundary(body, 2048),
+            }
         }
         other => ConnectError::Http(other.to_string()),
     }
+}
+
+/// Truncate `s` to at most `max` bytes without splitting a UTF-8 character (which
+/// would panic `String::truncate`), backing up to the nearest char boundary.
+fn truncate_on_char_boundary(mut s: String, max: usize) -> String {
+    if s.len() <= max {
+        return s;
+    }
+    let mut n = max;
+    while n > 0 && !s.is_char_boundary(n) {
+        n -= 1;
+    }
+    s.truncate(n);
+    s
 }
 
 #[cfg(test)]
@@ -104,6 +136,21 @@ mod tests {
                     "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        port
+    }
+
+    /// Like [`serve_once`] but writes a fully-formed raw response, so a test can
+    /// add its own headers (e.g. a redirect `Location`).
+    fn serve_raw(response: String) -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 2048];
+                let _ = stream.read(&mut buf);
                 let _ = stream.write_all(response.as_bytes());
             }
         });
@@ -153,5 +200,39 @@ mod tests {
         let port = serve_once("200 OK", "aaaaaaaaaaaaaaaaaaaaaaaa");
         let err = fetch_http_capped(&spec(port, SourceFormat::Csv), None, 4).unwrap_err();
         assert!(matches!(err, ConnectError::OutputTooLarge { .. }), "{err}");
+    }
+
+    #[test]
+    fn redirect_is_an_error_not_zero_rows() {
+        // A 302 with an (empty) body must surface as HttpStatus carrying the
+        // Location, not parse as CSV into an empty row set (which would silently
+        // clear the target on ingest-and-replace).
+        let port = serve_raw(
+            "HTTP/1.1 302 Found\r\nLocation: https://elsewhere.example/\r\n\
+             Content-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        );
+        let err = fetch_http(&spec(port, SourceFormat::Csv), None).unwrap_err();
+        match err {
+            ConnectError::HttpStatus { code, body } => {
+                assert_eq!(code, 302);
+                assert_eq!(body, "https://elsewhere.example/");
+            }
+            other => panic!("expected HttpStatus, got {other}"),
+        }
+    }
+
+    #[test]
+    fn truncate_on_char_boundary_never_splits_a_char() {
+        // A short string is returned unchanged.
+        assert_eq!(truncate_on_char_boundary("hi".to_string(), 2048), "hi");
+        // Byte `max` lands mid-character (é is 2 bytes): back up, do not panic.
+        let s = "aé".to_string(); // bytes: 'a'(1) + 'é'(2) = 3 bytes
+        assert_eq!(truncate_on_char_boundary(s, 2), "a");
+        // A long multi-byte string truncates to a valid (<= max) UTF-8 string.
+        let long = "é".repeat(2000); // 4000 bytes
+        let out = truncate_on_char_boundary(long, 2048);
+        assert!(out.len() <= 2048);
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
     }
 }

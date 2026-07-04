@@ -16,7 +16,7 @@
 //! is the injected clock value frozen at firing (ADR-0013 decision 0), so the
 //! ledger carries no wall-clock reads of its own.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -146,8 +146,11 @@ pub struct RunLedger {
     policy: RunRetention,
     /// Full append history, in order.
     records: Vec<RunRecord>,
-    /// Run id -> index of its latest record in `records`.
-    latest: HashMap<String, usize>,
+    /// Run id -> index of its latest record in `records`. A `BTreeMap` (not a
+    /// `HashMap`) so every iteration over the latest records is in a stable run-id
+    /// order: the durable ledger bytes written by compaction and crash recovery,
+    /// and the retention tie-break, must not depend on hash iteration order.
+    latest: BTreeMap<String, usize>,
 }
 
 impl RunLedger {
@@ -195,7 +198,7 @@ impl RunLedger {
             path: Some(path),
             policy,
             records: Vec::new(),
-            latest: HashMap::new(),
+            latest: BTreeMap::new(),
         };
         for record in records {
             ledger.index(record);
@@ -212,7 +215,7 @@ impl RunLedger {
             path: None,
             policy: RunRetention::default(),
             records: Vec::new(),
-            latest: HashMap::new(),
+            latest: BTreeMap::new(),
         }
     }
 
@@ -270,7 +273,11 @@ impl RunLedger {
                 let entry = best_success
                     .entry((r.cube.clone(), r.target.clone()))
                     .or_insert((0, String::new()));
-                if r.fire_millis >= entry.0 {
+                // A strict total order on (fire_millis, id): on a fire_millis tie
+                // the larger id wins, so which run survives compaction never depends
+                // on iteration order (two distinct ids can share a fire_millis under
+                // a frozen clock).
+                if (r.fire_millis, &r.id) > (entry.0, &entry.1) {
                     *entry = (r.fire_millis, r.id.clone());
                 }
             }
@@ -318,7 +325,7 @@ impl RunLedger {
     /// crash; record it `Interrupted` so the convergent loop re-derives its
     /// firing as due (ADR-0013 decision 5).
     fn recover_interrupted(&mut self) -> io::Result<()> {
-        let interrupted: Vec<RunRecord> = self
+        let mut interrupted: Vec<RunRecord> = self
             .latest
             .values()
             .map(|&i| &self.records[i])
@@ -329,6 +336,14 @@ impl RunLedger {
                 ..r.clone()
             })
             .collect();
+        // Append in the canonical (fire_millis, id) order the rest of the ledger
+        // uses, so two identical crash recoveries write byte-identical durable
+        // files (`latest` is now ordered, but by id alone).
+        interrupted.sort_by(|a, b| {
+            a.fire_millis
+                .cmp(&b.fire_millis)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         for record in interrupted {
             self.append(record)?;
         }
@@ -718,6 +733,56 @@ mod tests {
         assert_eq!(l.last_succeeded_fire("Sales", "a"), Some(1));
         // Job "b"'s latest success is the newest.
         assert_eq!(l.last_succeeded_fire("Sales", "b"), Some(119));
+    }
+
+    #[test]
+    fn crash_recovery_writes_byte_identical_files() {
+        // Two identical crash recoveries (same in-flight runs) must append the
+        // Interrupted records in the same order, so the durable file is
+        // byte-for-byte reproducible (no HashMap iteration order in the artifact).
+        fn recovered_bytes(name: &str) -> Vec<u8> {
+            let path = scratch(name);
+            {
+                let mut l = RunLedger::open(path.clone()).unwrap();
+                // Several active runs whose ids sort differently from insertion.
+                for id in ["r-c", "r-a", "r-b", "r-e", "r-d"] {
+                    l.append(run(id, "nightly", 1000, RunState::Running))
+                        .unwrap();
+                }
+            }
+            // Reopen: recover_interrupted appends Interrupted records.
+            let _ = RunLedger::open(path.clone()).unwrap();
+            std::fs::read(&path).unwrap()
+        }
+        assert_eq!(recovered_bytes("recover1"), recovered_bytes("recover2"));
+    }
+
+    #[test]
+    fn retention_tie_break_is_deterministic_on_equal_fire_millis() {
+        // Two distinct successful runs of the same job at the same fire_millis, both
+        // outside the newest-max window: which one is retained must be a total order
+        // on the id, not hash iteration order. Larger id wins.
+        fn survivor(name: &str) -> Option<u64> {
+            let path = scratch(name);
+            let policy = RunRetention { max_runs: 2 };
+            let mut l = RunLedger::open_with_policy(path, policy).unwrap();
+            // Two ties for job "a" at fire 5, then newer runs of "b" to push "a"
+            // out of the newest window.
+            l.append(run("a:manual:5", "a", 5, RunState::Succeeded))
+                .unwrap();
+            l.append(run("a:sched:5", "a", 5, RunState::Succeeded))
+                .unwrap();
+            for i in 0..10 {
+                let id = format!("b@{i}");
+                l.append(run(&id, "b", 100 + i, RunState::Succeeded))
+                    .unwrap();
+            }
+            l.last_succeeded_fire("Sales", "a")
+        }
+        // Deterministic across identical replays.
+        assert_eq!(survivor("tie1"), survivor("tie2"));
+        // And the tie is actually resolved (the success is retained).
+        assert_eq!(survivor("tie3"), Some(5));
     }
 
     #[test]

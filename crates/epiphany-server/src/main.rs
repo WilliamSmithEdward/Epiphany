@@ -8,6 +8,7 @@
 mod boot;
 mod config;
 mod demo;
+mod lock;
 mod observability;
 #[cfg(windows)]
 mod service_windows;
@@ -75,9 +76,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Foreground: drain on Ctrl-C / SIGTERM.
-    let config = Config::from_env();
-    observability::init(&config.log_filter);
+    // Foreground: drain on Ctrl-C / SIGTERM. Initialize tracing from the log
+    // filter first (a bad EPIPHANY_LOG just falls back), then resolve the full
+    // config so its diagnostics are actually emitted; a fatal config issue (e.g.
+    // an unrecognized EPIPHANY_TLS) aborts before we bind.
+    let log_filter = Config::log_filter_from_env();
+    observability::init(&log_filter);
+    let config = match Config::from_env() {
+        Ok(c) => c,
+        Err(_) => {
+            std::process::exit(2);
+        }
+    };
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(run_server(config, shutdown::signal()))
 }
@@ -97,6 +107,12 @@ where
         version = env!("CARGO_PKG_VERSION"),
         "starting Epiphany server"
     );
+
+    // Take an exclusive lock on the data directory before opening any store, so a
+    // second server process over the same directory fails cleanly here instead of
+    // silently corrupting the shared WAL (the store assumes single-process
+    // ownership but does not enforce it). Held for the whole run; released on exit.
+    let _data_dir_lock = lock::DataDirLock::acquire(&config.data_dir)?;
 
     let engine = boot::load_or_init(&config.data_dir)?;
     tracing::info!("model loaded: {:?}", engine.cube_names());
@@ -223,6 +239,15 @@ where
             sql_allowed_hosts.len()
         );
     }
+    // Whether this process will *actually* serve HTTPS: TLS is requested AND this
+    // build has the `tls` feature. A `tls`-less build that was asked for TLS falls
+    // back to plain HTTP (below), so cookies must NOT be marked `Secure` on that
+    // path — browsers refuse a `Secure` cookie set over a non-localhost plaintext
+    // origin, which would silently break login. The operator can still force the
+    // flag on with EPIPHANY_SECURE_COOKIES for a TLS-terminating reverse proxy.
+    let serving_tls = config.wants_tls() && cfg!(feature = "tls");
+    let secure_cookies = config.secure_cookies(serving_tls);
+
     let state = AppState {
         engine,
         clock: Arc::new(SystemClock),
@@ -239,7 +264,7 @@ where
         mdx: Arc::new(epiphany_mdx::MdxEvaluator::new()),
         cells,
         command_connectors_enabled,
-        secure_cookies: config.wants_tls(),
+        secure_cookies,
         audit: Arc::new(Mutex::new(audit)),
         runs: Arc::new(Mutex::new(runs)),
         view_cache: Arc::new(epiphany_api::ViewCache::new(config.view_cache_entries)),

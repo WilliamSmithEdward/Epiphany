@@ -58,12 +58,31 @@ fn sample_cube() -> Cube {
 }
 
 fn router(name: &str) -> Router {
+    router_cube(name, sample_cube())
+}
+
+/// A cube with two 1500-member dimensions plus a single measure: their crossjoin
+/// (2,250,000 cells) exceeds `MAX_CELLSET_CELLS` (2,000,000), for the cellset cap.
+fn oversized_cube() -> Cube {
+    let mut rows = Dimension::new("Rows");
+    let mut cols = Dimension::new("Cols");
+    for i in 0..1500 {
+        rows.add_leaf(format!("r{i}"));
+        cols.add_leaf(format!("c{i}"));
+    }
+    let mut measure = Dimension::new("Measure");
+    measure.add_leaf("Sales");
+    Cube::new("Big", vec![rows, cols, measure]).unwrap()
+}
+
+fn router_cube(name: &str, cube: Cube) -> Router {
     let dir =
         std::env::temp_dir().join(format!("epiphany-api-query-{}-{name}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
-    let store = Store::create(dir, sample_cube()).unwrap();
+    let cube_name = cube.name().to_string();
+    let store = Store::create(dir, cube).unwrap();
     let mut stores = BTreeMap::new();
-    stores.insert("Sales".to_string(), store);
+    stores.insert(cube_name, store);
     let mut security = SecurityStore::with_admin("admin", "pw", true);
     security.create_user("bob", "pw", false).unwrap();
     // Subset-visibility tests use a non-admin who can read the cube (ADR-0023).
@@ -75,6 +94,9 @@ fn router(name: &str) -> Router {
             AccessLevel::Write,
         )
         .unwrap();
+    // A non-admin with NO cube grant, for authorization-ordering tests (a caller
+    // without access must not distinguish a missing object from a forbidden one).
+    security.create_user("carol", "pw", false).unwrap();
     let state = AppState {
         engine: Engine::from_stores(stores, Arc::new(IdGen::default())),
         clock: Arc::new(ManualClock::new(1_000)),
@@ -518,4 +540,160 @@ async fn private_subset_is_hidden_from_non_owner() {
     // The owner still sees it.
     let (status, _) = call(&app, "GET", &format!("{base}/Secret"), &admin, None).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// A caller with NO cube access must get 403 from the mutating subset/view routes
+/// whether or not the object exists, so a 404-vs-403 distinction cannot enumerate
+/// cube/object names. (Regression: these handlers used to probe existence first.)
+#[tokio::test]
+async fn mutating_routes_authorize_before_existence_probe() {
+    let app = router("authz-order");
+    let carol = login(&app, "carol").await; // non-admin, no cube grant
+
+    // PUT/DELETE a nonexistent subset -> 403 (not 404), same as an existing one.
+    let sub = "/api/v1/cubes/Sales/dimensions/Region/subsets/Nope";
+    let (status, _) = call(
+        &app,
+        "PUT",
+        sub,
+        &carol,
+        Some(json!({ "kind": "static", "members": ["North"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = call(&app, "DELETE", sub, &carol, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // PUT/DELETE a nonexistent view -> 403 (not 404).
+    let view = "/api/v1/cubes/Sales/views/Nope";
+    let (status, _) = call(
+        &app,
+        "PUT",
+        view,
+        &carol,
+        Some(json!({ "rows": [], "columns": [] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = call(&app, "DELETE", view, &carol, None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+/// A non-owner with cube Write must get a uniform 404 (not a 403 "you do not own
+/// this object") when replacing/deleting another user's PRIVATE subset, so the
+/// private object's existence is not revealed. (Regression: the ownership check
+/// used to run against an unfiltered lookup, leaking existence via 403.)
+#[tokio::test]
+async fn mutating_a_foreign_private_subset_404s_not_403() {
+    let app = router("authz-private");
+    let admin = login(&app, "admin").await;
+    let base = "/api/v1/cubes/Sales/dimensions/Region/subsets";
+    let (status, _) = call(
+        &app,
+        "POST",
+        base,
+        &admin,
+        Some(json!({ "name": "Secret", "kind": "static", "members": ["North"], "visibility": "private" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Bob has global Cube:Write but is not the owner and cannot see the private
+    // subset: PUT and DELETE both 404 (existence stays hidden), never 403.
+    let bob = login(&app, "bob").await;
+    let target = format!("{base}/Secret");
+    let (status, _) = call(
+        &app,
+        "PUT",
+        &target,
+        &bob,
+        Some(json!({ "kind": "static", "members": ["South"] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&app, "DELETE", &target, &bob, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// An ad-hoc view axis referencing another user's PRIVATE subset must not resolve
+/// (the private membership must not leak through the cellset's tuples): the
+/// execute path now applies the same visibility filter as the direct subset
+/// endpoints, so the reference reads as UnknownSubset (404). (Regression: execute
+/// passed an unfiltered subset lookup.)
+#[tokio::test]
+async fn adhoc_view_cannot_resolve_a_foreign_private_subset() {
+    let app = router("authz-subset-exec");
+    let admin = login(&app, "admin").await;
+    let base = "/api/v1/cubes/Sales/dimensions/Region/subsets";
+    let (status, _) = call(
+        &app,
+        "POST",
+        base,
+        &admin,
+        Some(json!({ "name": "Secret", "kind": "static", "members": ["North"], "visibility": "private" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Bob (cube Write, non-owner) references the private subset on an ad-hoc axis.
+    let bob = login(&app, "bob").await;
+    let spec = json!({
+        "rows": [ { "dimension": "Region", "type": "subset", "subset": "Secret" } ],
+        "columns": [ { "dimension": "Measure", "type": "members", "members": ["Sales"] } ],
+        "context": [ { "dimension": "Product", "member": "Widget" } ]
+    });
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/cellset",
+        &bob,
+        Some(spec),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["error"]["code"], "UNKNOWN_SUBSET");
+
+    // The owner can still resolve it.
+    let spec = json!({
+        "rows": [ { "dimension": "Region", "type": "subset", "subset": "Secret" } ],
+        "columns": [ { "dimension": "Measure", "type": "members", "members": ["Sales"] } ],
+        "context": [ { "dimension": "Product", "member": "Widget" } ]
+    });
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Sales/cellset",
+        &admin,
+        Some(spec),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// An ad-hoc cellset whose axis crossjoin exceeds `MAX_CELLSET_CELLS` is refused
+/// with a clean 422 `CELLSET_TOO_LARGE` (before any dense grid is allocated), so a
+/// reader cannot OOM the server with a large-crossjoin view. (Regression: this
+/// mapped to the generic MODEL_ERROR.)
+#[tokio::test]
+async fn oversized_cellset_is_refused_with_a_clean_422() {
+    let app = router_cube("oversized", oversized_cube());
+    let admin = login(&app, "admin").await;
+    // Rows (1500) x Cols (1500) = 2,250,000 tuples > the 2,000,000 cell cap.
+    let spec = json!({
+        "rows": [ { "dimension": "Rows", "type": "members",
+                    "members": (0..1500).map(|i| format!("r{i}")).collect::<Vec<_>>() } ],
+        "columns": [ { "dimension": "Cols", "type": "members",
+                       "members": (0..1500).map(|i| format!("c{i}")).collect::<Vec<_>>() } ],
+        "context": [ { "dimension": "Measure", "member": "Sales" } ]
+    });
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/Big/cellset",
+        &admin,
+        Some(spec),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["error"]["code"], "CELLSET_TOO_LARGE");
 }

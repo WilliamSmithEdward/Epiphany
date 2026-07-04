@@ -48,20 +48,34 @@ pub struct CompiledRule {
     pub span: Span,
 }
 
-/// A resolved area: one membership predicate per target-cube dimension.
+/// A resolved area: one membership predicate per target-cube dimension, plus the
+/// scope marker (ADR-0041) that says what an *unconstrained* (`Any`) dimension
+/// matches.
 #[derive(Debug, Clone)]
 pub struct CompiledArea {
     /// Index = dimension position in the target cube.
     pub per_dim: Vec<DimPredicate>,
+    /// Whether an unconstrained (`Any`) dimension matches CONSOLIDATED members
+    /// (`C:`, ADR-0041) instead of leaves. Compiled from the AST area's
+    /// [`Scope`](crate::rules::Scope): `false` for an unmarked or `N:` area
+    /// (today's leaf-only default), `true` for `C:`. It governs ONLY the `Any`
+    /// dimensions; an explicit `OneOf` selector matches its resolved members
+    /// regardless of the marker.
+    pub consolidated: bool,
 }
 
 impl CompiledArea {
     /// Whether `coord` (one element index per dimension) falls in this area.
     ///
-    /// An unconstrained dimension (`Any`) matches only LEAF members, so a rule
-    /// that leaves a dimension free computes leaf values and lets consolidations
-    /// roll those up; overriding a consolidated cell requires explicitly naming
-    /// the consolidated element (an `OneOf` set that includes it).
+    /// An unconstrained dimension (`Any`) matches only LEAF members by default, so
+    /// a rule that leaves a dimension free computes leaf values and lets
+    /// consolidations roll those up. Under a `C:` scope
+    /// ([`consolidated`](Self::consolidated), ADR-0041) an `Any` dimension instead
+    /// matches only CONSOLIDATED members, so the rule fires *at* the consolidated
+    /// coordinate and its formula is recomputed there (a non-additive total like a
+    /// ratio) rather than the components being aggregated. Either way, overriding a
+    /// specific consolidated cell can also be done by explicitly naming it (an
+    /// `OneOf` set that includes it), which the marker does not affect.
     pub fn matches(&self, cube: &Cube, coord: &[u32]) -> bool {
         if coord.len() != self.per_dim.len() {
             return false;
@@ -69,10 +83,13 @@ impl CompiledArea {
         for (d, pred) in self.per_dim.iter().enumerate() {
             let idx = coord[d];
             let ok = match pred {
+                // An unconstrained dimension matches leaves (default / `N:`) or
+                // consolidations (`C:`), per the area's scope. A missing element
+                // matches neither.
                 DimPredicate::Any => cube
                     .dimension(d)
                     .element(idx)
-                    .map(|e| e.kind.is_leaf())
+                    .map(|e| e.kind.is_leaf() != self.consolidated)
                     .unwrap_or(false),
                 DimPredicate::OneOf(set) => set.binary_search(&idx).is_ok(),
             };

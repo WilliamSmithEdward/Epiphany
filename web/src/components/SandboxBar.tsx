@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   commitSandbox,
   createSandbox,
@@ -22,16 +22,27 @@ export default function SandboxBar({ cube, onChange }: { cube: string; onChange:
   const [active, setActive] = useState<string>(BASE)
   const [newName, setNewName] = useState('')
   const [error, setError] = useState<string | null>(null)
+  // The currently-applied sandbox, mirrored in a ref so apply() can tell a real
+  // change from a no-op without capturing a stale `active`. Starts at BASE, the
+  // initial state, so resolving to BASE on mount is correctly a no-op.
+  const activeRef = useRef<string>(BASE)
 
   const storageKey = `epiphany.sandbox.${cube}`
 
   const apply = useCallback(
     (name: string) => {
+      // Skip the app-wide reload when the sandbox is unchanged. Every cube-tab
+      // open resolves the sandbox once (usually back to BASE); firing onChange
+      // unconditionally there triggers a needless app-wide refetch storm (the
+      // tree re-runs every expanded loader, the grid double-fetches) - against
+      // the perf mandate. Only a genuine switch recomputes over the overlay.
+      const changed = name !== activeRef.current
+      activeRef.current = name
       setActive(name)
       setActiveSandbox(name === BASE ? null : name)
       if (name === BASE) localStorage.removeItem(storageKey)
       else localStorage.setItem(storageKey, name)
-      onChange()
+      if (changed) onChange()
     },
     [onChange, storageKey],
   )

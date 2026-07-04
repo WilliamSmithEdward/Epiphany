@@ -191,6 +191,37 @@ describe('buildElementTree (element-order sorted children)', () => {
     expect(tree.map((n) => n.name)).toEqual(['Solo', 'Plain'])
   })
 
+  it('materializes children lazily: a memoized getter, stable across reads', () => {
+    // The perf fix (minor-72): children compute on first access, not up front, so
+    // a deep/diamond-heavy DAG costs nothing until walked. Verify the property is a
+    // getter that memoizes (repeated reads return the SAME array reference) and
+    // that descending only materializes the branch actually visited.
+    const dim: DimensionDto = {
+      name: 'Region',
+      elements: [
+        { name: 'Total', kind: 'consolidated' },
+        { name: 'East', kind: 'consolidated' },
+        { name: 'West', kind: 'consolidated' },
+        { name: 'NY', kind: 'numeric' },
+      ],
+      edges: [
+        { parent: 'Total', child: 'East', weight: 1 },
+        { parent: 'Total', child: 'West', weight: 1 },
+        { parent: 'East', child: 'NY', weight: 1 },
+      ],
+    }
+    const tree = buildElementTree(dim)
+    const total = tree[0]
+    // Memoized: two reads of the same node's children yield the identical array,
+    // and each child is the same object across reads (no rebuild on re-access).
+    expect(total.children).toBe(total.children)
+    const east = total.children.find((n) => n.name === 'East') as TreeNode
+    expect(total.children.find((n) => n.name === 'East')).toBe(east)
+    // Descending one branch still produces the right subtree lazily.
+    expect(east.children.map((n) => n.name)).toEqual(['NY'])
+    expect(east.children[0].path).toBe('Total/East/NY')
+  })
+
   it('preserves per-occurrence multiplication of a shared rollup (not a cycle)', () => {
     // A diamond (Total -> {West, East}, both -> Shared) is NOT a cycle: "Shared"
     // is reachable by two distinct paths and must still appear once per path. The

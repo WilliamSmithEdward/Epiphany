@@ -12,12 +12,28 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use epiphany_security::{AuditAction, Principal, SecurityError};
+use epiphany_security::{verify_password, AuditAction, Principal, SecurityError};
 
 use crate::authz::audit;
 use crate::{ApiError, AppState};
 
 const SESSION_COOKIE: &str = "epiphany_session";
+
+/// Upper bound on a submitted username or password, in bytes. A credential longer
+/// than this can never authenticate, so it is rejected with 400 before the login
+/// guard, the Argon2 hasher, or the audit log ever sees it. This bounds the
+/// attacker-controlled strings an unauthenticated client can pin in memory (the
+/// login-guard map and the audit records) and keeps a hostile body from bloating
+/// the audit log (ADR-0017).
+const MAX_CREDENTIAL_LEN: usize = 256;
+
+/// Reject an over-long username/password (see [`MAX_CREDENTIAL_LEN`]) with 400.
+fn check_credential_bounds(username: &str, password: &str) -> Result<(), ApiError> {
+    if username.len() > MAX_CREDENTIAL_LEN || password.len() > MAX_CREDENTIAL_LEN {
+        return Err(ApiError::bad_request("credential too long"));
+    }
+    Ok(())
+}
 
 /// An authenticated request: the verified principal plus the session token (so a
 /// handler can revoke it on logout). Extracting it requires a valid session.
@@ -128,6 +144,9 @@ pub async fn login(
     Json(req): Json<LoginRequest>,
 ) -> Result<Response, ApiError> {
     let now = state.clock.now_millis();
+    // Bound the credential sizes before touching the guard, hasher, or audit log
+    // (ADR-0017): an over-long credential can never authenticate anyway.
+    check_credential_bounds(&req.username, &req.password)?;
     // Lockout check before verifying the password (ADR-0017): a locked account
     // never runs Argon2, removing a CPU/timing lever.
     if state
@@ -141,31 +160,74 @@ pub async fn login(
             "too many failed login attempts; try again later",
         ));
     }
-    let authenticated = state
+    // The Argon2id verify is deliberately expensive (~50-100ms of CPU) and runs
+    // even for an unknown username (a dummy verify, to remove the enumeration
+    // timing channel, ADR-0017). Two hardening properties (A4):
+    //
+    // 1. It runs on the BLOCKING pool, not an async worker, so a burst of bogus
+    //    logins cannot pin the runtime's worker threads and stall every other
+    //    endpoint (the lock-free snapshot reads, health checks).
+    // 2. It runs OFF the global security mutex: copy the stored PHC hash (or the
+    //    fixed dummy hash for an unknown user) out under a brief lock, DROP the
+    //    lock, then run the KDF against the copy via the lock-free `verify_password`
+    //    seam. Previously the lock was held for the whole KDF, so a handful of
+    //    concurrent bogus logins (rotating usernames to dodge the per-username
+    //    lockout) serialized every request's authorization gate behind the KDF — an
+    //    unauthenticated whole-API DoS. The dummy hash on the not-found path keeps
+    //    the unknown-user cost identical to a wrong-password cost.
+    let phc = state
         .security
         .lock()
         .expect("security mutex")
-        .authenticate(&req.username, &req.password);
-    let principal = match authenticated {
-        Some(principal) => {
-            state
-                .login_guard
-                .lock()
-                .expect("login guard mutex")
-                .record_success(&req.username);
-            principal
+        .password_hash_for(&req.username)
+        // An unknown user still yields a hash (the store returns the dummy), so this
+        // is only ever `None` if the seam contract changes; treat that as a denial.
+        .unwrap_or_default();
+    let password = req.password.clone();
+    let verified = tokio::task::spawn_blocking(move || verify_password(&password, &phc))
+        .await
+        .map_err(|_| ApiError::internal())?;
+    // A verify against the dummy hash never succeeds (no real password can), so an
+    // unknown user always lands on the denial arm; a known user with the correct
+    // password re-resolves their live principal under a brief lock (admin flag and
+    // groups may have changed since the hash was read).
+    let principal = if verified {
+        match state
+            .security
+            .lock()
+            .expect("security mutex")
+            .principal(&req.username)
+        {
+            Some(principal) => {
+                state
+                    .login_guard
+                    .lock()
+                    .expect("login guard mutex")
+                    .record_success(&req.username);
+                principal
+            }
+            // The user vanished between the hash read and here (an admin delete
+            // raced the login): deny, fail-closed, as an unknown user would.
+            None => {
+                state
+                    .login_guard
+                    .lock()
+                    .expect("login guard mutex")
+                    .record_failure(&req.username, now);
+                audit(&state, &req.username, AuditAction::Login, None, false);
+                return Err(ApiError::unauthorized("invalid credentials"));
+            }
         }
-        None => {
-            // Count the failure (may trip the lockout) and audit it (no password
-            // in the record, RG-13).
-            state
-                .login_guard
-                .lock()
-                .expect("login guard mutex")
-                .record_failure(&req.username, now);
-            audit(&state, &req.username, AuditAction::Login, None, false);
-            return Err(ApiError::unauthorized("invalid credentials"));
-        }
+    } else {
+        // Count the failure (may trip the lockout) and audit it (no password in the
+        // record, RG-13).
+        state
+            .login_guard
+            .lock()
+            .expect("login guard mutex")
+            .record_failure(&req.username, now);
+        audit(&state, &req.username, AuditAction::Login, None, false);
+        return Err(ApiError::unauthorized("invalid credentials"));
     };
     let must_change_password = state
         .security
@@ -226,6 +288,14 @@ pub(crate) struct MeResponse {
     /// `/auth/me` is in MUST_CHANGE_ALLOWED, so it resolves during a pending
     /// change. Computed from the live security store, as `login` does.
     must_change_password: bool,
+    /// The caller's OWN effective persona (`business` | `modeler` | `admin`),
+    /// derived server-side from their grants (ADR-0020). Lets the web shell
+    /// progressively disclose modeler/admin chrome for a NON-admin without reading
+    /// the admin-only `/acl/grants` list: a business/data-entry user is never shown
+    /// Rules/Flows/Dimensions/MDX, a modeler is. Self-only and least-privilege — it
+    /// reflects only this caller's capabilities. Re-resolved per request from the
+    /// live store, so a granted/revoked capability takes effect immediately.
+    persona: &'static str,
 }
 
 /// `GET /api/v1/auth/me` -> the current principal.
@@ -235,11 +305,15 @@ pub async fn me(State(state): State<AppState>, auth: AuthPrincipal) -> Json<MeRe
         .lock()
         .expect("security mutex")
         .must_change_password(&auth.principal.username);
+    // The persona is derived from the caller's own grants (self-only), so the web
+    // shell can gate modeler/admin chrome without the admin-only grant list.
+    let persona = crate::authz::caller_persona(&state, &auth.principal.username);
     Json(MeResponse {
         username: auth.principal.username,
         is_admin: auth.principal.is_admin,
         groups: auth.principal.groups,
         must_change_password,
+        persona,
     })
 }
 
@@ -255,23 +329,97 @@ pub async fn change_password(
     auth: AuthPrincipal,
     Json(req): Json<ChangePasswordRequest>,
 ) -> Result<StatusCode, ApiError> {
-    state
+    let now = state.clock.now_millis();
+    let username = auth.principal.username.clone();
+    check_credential_bounds(&username, &req.new_password)?;
+    // The current password is attacker-supplied over a hijacked session, so subject
+    // it to the SAME lockout as /auth/login (ADR-0017): otherwise a stolen token
+    // could brute-force the real password (the one credential a password change is
+    // meant to rotate away) with no lockout ever tripping. Locked -> 429.
+    if state
+        .login_guard
+        .lock()
+        .expect("login guard mutex")
+        .is_locked(&username, now)
+    {
+        audit(&state, &username, AuditAction::UserChange, None, false);
+        return Err(ApiError::too_many_requests(
+            "too many failed attempts; try again later",
+        ));
+    }
+    // Verify the CURRENT password OFF the global security mutex (A4), the same
+    // lock-free discipline as `login`: copy the caller's stored PHC hash (or the
+    // dummy for a vanished user) under a brief lock, DROP it, then run the KDF via
+    // `verify_password` on the blocking pool. The current password is
+    // attacker-supplied over a hijacked session, so an online guess of it is the
+    // expensive, DoS-relevant check; running it off-lock means a wrong guess never
+    // serializes the authorization gate every other request needs, and never takes
+    // the write lock at all.
+    let phc = state
         .security
         .lock()
         .expect("security mutex")
-        .change_password(
-            &auth.principal.username,
-            &req.current_password,
-            &req.new_password,
-        )
-        .map_err(|e| match e {
+        .password_hash_for(&username)
+        .unwrap_or_default();
+    let current = req.current_password.clone();
+    let current_ok = tokio::task::spawn_blocking(move || verify_password(&current, &phc))
+        .await
+        .map_err(|_| ApiError::internal())?;
+    if !current_ok {
+        // Count the failure (may trip the lockout) and AUDIT it, so an online guess
+        // of the current password is both rate-limited and visible to an operator
+        // reviewing the log (no password in the record, RG-13). A vanished user
+        // verifies against the dummy and lands here too (fail-closed).
+        state
+            .login_guard
+            .lock()
+            .expect("login guard mutex")
+            .record_failure(&username, now);
+        audit(&state, &username, AuditAction::UserChange, None, false);
+        return Err(ApiError::unauthorized("current password is incorrect"));
+    }
+    // The current password is proven; apply the change on the blocking pool (a
+    // rehash of the NEW password is one more Argon2 cost). The store re-verifies for
+    // atomicity, enforces the strength policy, rehashes, and persists under commit.
+    // A concurrent password change could make the re-verify fail (a benign race);
+    // surface it as the same 401 as a wrong current password.
+    let result = {
+        let security = state.security.clone();
+        let current = req.current_password.clone();
+        let new = req.new_password.clone();
+        let user = username.clone();
+        tokio::task::spawn_blocking(move || {
+            security
+                .lock()
+                .expect("security mutex")
+                .change_password(&user, &current, &new)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+    };
+    if let Err(e) = result {
+        return Err(match e {
             SecurityError::IncorrectPassword => {
+                state
+                    .login_guard
+                    .lock()
+                    .expect("login guard mutex")
+                    .record_failure(&username, now);
+                audit(&state, &username, AuditAction::UserChange, None, false);
                 ApiError::unauthorized("current password is incorrect")
             }
             // The strength-policy reason is client-safe (no password material).
             SecurityError::WeakPassword(_) => ApiError::bad_request(e.to_string()),
             _ => ApiError::internal(),
-        })?;
+        });
+    }
+    // A correct current password clears the failure counter (as a successful login
+    // does), so a legitimate rotation after a few typos does not stay penalized.
+    state
+        .login_guard
+        .lock()
+        .expect("login guard mutex")
+        .record_success(&username);
     // Revoke this user's OTHER sessions (ADR-0017): a password change invalidates
     // every token issued before it, so a stolen session elsewhere cannot outlive
     // the change. The caller's current session is kept (it just proved the correct

@@ -25,9 +25,9 @@ use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use epiphany_core::{
-    validate_subset, validate_view, AttributeKind, AttributeValue, Cube, EdgeSpec, ElementKind,
-    ElementSpec, Fixed, LoadError, Model, ModelError, Position, QueryError, RuleSet, RuleTest,
-    Sandbox, SaveError, Subset, View,
+    validate_subset, validate_view, AttributeKind, AttributeValue, BatchWrite, Cube, EdgeSpec,
+    ElementKind, ElementSpec, Fixed, LoadError, Model, ModelError, Position, QueryError, RuleSet,
+    RuleTest, Sandbox, SaveError, Subset, View,
 };
 
 use crate::wal::{self, Record};
@@ -35,6 +35,18 @@ use crate::wal::{self, Record};
 const SNAPSHOT_FILE: &str = "snapshot.model";
 const SNAPSHOT_TMP: &str = "snapshot.model.tmp";
 const WAL_FILE: &str = "wal.log";
+
+/// Default WAL byte budget past which the store auto-checkpoints (P1): once the
+/// log grows beyond this many bytes it folds itself into a fresh snapshot and
+/// truncates, bounding recovery-replay work and on-disk WAL size instead of
+/// letting the log grow unbounded until an explicit [`Store::checkpoint`].
+///
+/// The trigger is purely *size*-based (deterministic, ADR-0009: no wall clock),
+/// so a given sequence of writes always checkpoints at the same points. 8 MiB is
+/// a balance: large enough that steady cell writes rarely pay a snapshot rewrite,
+/// small enough to keep the replay tail and WAL footprint bounded. Configurable
+/// per store via [`Store::set_wal_checkpoint_threshold`].
+pub const DEFAULT_WAL_CHECKPOINT_THRESHOLD: u64 = 8 * 1024 * 1024;
 
 /// A single write in a batch: a numeric leaf value or a string cell value at a
 /// coordinate (element indices, in dimension order).
@@ -61,6 +73,10 @@ pub enum PersistError {
     BatchRejected { index: usize, source: ModelError },
     /// A subset/view definition was structurally invalid; nothing was changed.
     Query(QueryError),
+    /// A prior WAL append or fsync failed and left the log in an unknown state;
+    /// the store is poisoned and refuses further writes until it is reopened
+    /// (which truncates the WAL back to its last intact record on recovery).
+    Poisoned,
 }
 
 impl std::fmt::Display for PersistError {
@@ -75,6 +91,10 @@ impl std::fmt::Display for PersistError {
                 write!(f, "batch write {index} rejected: {source}")
             }
             PersistError::Query(e) => write!(f, "invalid definition: {e}"),
+            PersistError::Poisoned => write!(
+                f,
+                "store poisoned by a failed WAL append/fsync; reopen to recover"
+            ),
         }
     }
 }
@@ -120,6 +140,20 @@ pub struct Store {
     model: Model,
     wal: File,
     sync_on_write: bool,
+    /// The byte offset of the end of the last known-good (fully written and, when
+    /// `sync_on_write`, fsynced) WAL record. Every append restores the WAL to this
+    /// offset if it fails partway, so the log can never hold a torn frame followed
+    /// by live records (recovery's stop-at-first-torn-frame scan stays sound).
+    good_len: u64,
+    /// Set once a WAL append/fsync fails and the log's tail cannot be trusted. A
+    /// poisoned store rejects all further writes with [`PersistError::Poisoned`];
+    /// the engine must republish the last durable model and reopen the store,
+    /// whose recovery truncates the WAL back to its last intact record.
+    poisoned: bool,
+    /// The WAL byte budget past which a successful write auto-checkpoints (P1),
+    /// folding the log into a fresh snapshot and truncating it. Defaults to
+    /// [`DEFAULT_WAL_CHECKPOINT_THRESHOLD`]; `0` disables auto-checkpoint.
+    wal_checkpoint_threshold: u64,
 }
 
 impl Store {
@@ -136,6 +170,9 @@ impl Store {
             model,
             wal,
             sync_on_write: true,
+            good_len: wal::WAL_HEADER_LEN,
+            poisoned: false,
+            wal_checkpoint_threshold: DEFAULT_WAL_CHECKPOINT_THRESHOLD,
         })
     }
 
@@ -150,9 +187,26 @@ impl Store {
         // Replay an existing WAL only when it is at least header-sized. A missing
         // file, or one truncated below its header by a crash between creating it
         // and writing the header, is treated as fresh (the snapshot stands alone).
+        let mut good_len = wal::WAL_HEADER_LEN;
         let wal = if wal_path.exists() && fs::metadata(&wal_path)?.len() >= wal::WAL_HEADER_LEN {
             let bytes = fs::read(&wal_path)?;
             let replay = wal::replay(&bytes).map_err(|e| PersistError::Corrupt(e.to_string()))?;
+            // A bad frame with well-formed frames after it is not a torn tail: this
+            // crate's append path can never produce that (a failed append truncates
+            // back and poisons the store), so it is mid-log corruption. Silently
+            // truncating would physically erase acknowledged records after the bad
+            // frame; instead preserve the WAL as `wal.log.corrupt` and refuse to
+            // open, so an operator can inspect it rather than lose data unseen.
+            if replay.corrupt_with_valid_tail {
+                let quarantine = dir.join("wal.log.corrupt");
+                fs::rename(&wal_path, &quarantine)?;
+                return Err(PersistError::Corrupt(format!(
+                    "WAL has intact records after a corrupt frame (mid-log corruption, \
+                     not a torn tail); preserved as {} for inspection",
+                    quarantine.display()
+                )));
+            }
+            good_len = replay.good_len;
             for record in &replay.records {
                 match record {
                     Record::SetLeaf { coord, value } => model.cube.set_leaf(coord, *value)?,
@@ -188,6 +242,9 @@ impl Store {
             model,
             wal,
             sync_on_write: true,
+            good_len,
+            poisoned: false,
+            wal_checkpoint_threshold: DEFAULT_WAL_CHECKPOINT_THRESHOLD,
         })
     }
 
@@ -212,6 +269,37 @@ impl Store {
         self.sync_on_write = on;
     }
 
+    /// Set the WAL byte budget past which a successful write auto-checkpoints
+    /// (P1). `0` disables auto-checkpoint (the log grows until an explicit
+    /// [`checkpoint`](Self::checkpoint)). Defaults to
+    /// [`DEFAULT_WAL_CHECKPOINT_THRESHOLD`].
+    pub fn set_wal_checkpoint_threshold(&mut self, bytes: u64) {
+        self.wal_checkpoint_threshold = bytes;
+    }
+
+    /// The current known-good WAL length in bytes (the durable framing, header
+    /// included). Exposed for tests and metrics.
+    pub fn wal_len(&self) -> u64 {
+        self.good_len
+    }
+
+    /// Fold the WAL into a fresh snapshot and truncate it if it has grown past the
+    /// configured byte budget (P1). Called after a successful write, once the
+    /// in-memory model already reflects the just-logged change, so the rewritten
+    /// snapshot is consistent. Size-triggered only (deterministic, ADR-0009); a
+    /// disabled threshold (`0`) or a poisoned store is a no-op. A checkpoint
+    /// failure surfaces to the caller exactly like an explicit checkpoint would,
+    /// leaving the durable WAL (with the acknowledged write) intact for recovery.
+    fn maybe_auto_checkpoint(&mut self) -> Result<(), PersistError> {
+        if self.wal_checkpoint_threshold != 0
+            && !self.poisoned
+            && self.good_len > self.wal_checkpoint_threshold
+        {
+            self.checkpoint()?;
+        }
+        Ok(())
+    }
+
     /// The cube, for reads.
     pub fn cube(&self) -> &Cube {
         &self.model.cube
@@ -229,45 +317,134 @@ impl Store {
         &self.model
     }
 
-    /// Replace the in-memory model, reverting an orphaned partial mutation after a
-    /// failed definition op. The engine calls this on the error path with the last
-    /// published model, so a structural edit that mutated the cube and then failed
-    /// to checkpoint cannot leak into the next successful commit. The on-disk
-    /// snapshot and WAL are not touched here; the next successful checkpoint
-    /// rewrites the snapshot from this restored model.
+    /// Replace the in-memory model ONLY, reverting an orphaned partial mutation
+    /// after a failed definition op. The engine calls this on the error path with
+    /// the last published model, so a structural edit that mutated the cube and
+    /// then failed to checkpoint cannot leak into the next successful commit.
+    ///
+    /// # Durability hazard (E5): this is memory-only and does NOT undo disk
+    ///
+    /// This touches neither the snapshot nor the WAL. If durable side effects were
+    /// already committed past the point being restored to — a WAL unit fsynced
+    /// (e.g. `commit_sandbox`'s batch), or a post-op snapshot renamed into place —
+    /// then after this call **disk is ahead of the restored in-memory model** and
+    /// a crash before the next checkpoint would recover the very state the caller
+    /// meant to discard (and, for a reindexing edit, could replay a stale-index WAL
+    /// record onto a re-typed layout). Restoring memory alone cannot roll durable
+    /// WAL side effects back.
+    ///
+    /// The caller is therefore responsible for making disk agree afterward: either
+    /// [`checkpoint`](Self::checkpoint) the restored model (rewrites the snapshot,
+    /// clears the WAL) — which is what the engine does, failing the writer closed
+    /// if that checkpoint also fails — or use
+    /// [`restore_model_durably`](Self::restore_model_durably), which does both and
+    /// fails loudly when it cannot. Use [`has_uncheckpointed_wal`](Self::has_uncheckpointed_wal)
+    /// to detect whether a bare restore would leave disk ahead.
     pub fn restore_model(&mut self, model: Model) {
         self.model = model;
+    }
+
+    /// Restore the in-memory model AND make disk agree (E5), returning an error if
+    /// it cannot — the fail-loud counterpart of [`restore_model`](Self::restore_model).
+    ///
+    /// Swaps in `model`, then [`checkpoint`](Self::checkpoint)s it: the snapshot is
+    /// rewritten from the restored model and the WAL cleared, so any durable side
+    /// effect appended past the restore point (a fsynced WAL unit, a post-op
+    /// snapshot) is superseded rather than left to resurrect on recovery. If the
+    /// checkpoint fails (I/O, or a poisoned store) the error is propagated so the
+    /// caller can fail-stop rather than continue with disk silently ahead of the
+    /// restored model. On success, disk == the restored model.
+    pub fn restore_model_durably(&mut self, model: Model) -> Result<(), PersistError> {
+        self.model = model;
+        self.checkpoint()
+    }
+
+    /// Whether the WAL holds acknowledged records not yet folded into the snapshot
+    /// (its known-good length is past the bare header). When true, a memory-only
+    /// [`restore_model`](Self::restore_model) would leave **disk ahead** of the
+    /// restored model (E5): those records replay on the next open. A caller that
+    /// must not diverge should checkpoint (or use
+    /// [`restore_model_durably`](Self::restore_model_durably)) instead.
+    pub fn has_uncheckpointed_wal(&self) -> bool {
+        self.good_len > wal::WAL_HEADER_LEN
+    }
+
+    /// Whether a prior WAL append/fsync failed and left the log's tail untrusted.
+    /// A poisoned store rejects further writes; the engine must republish the last
+    /// durable model and reopen the directory (recovery truncates the torn tail).
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
+
+    /// Durably append a pre-framed WAL payload as one unit. On any write/fsync
+    /// failure this truncates the WAL back to the last known-good offset (so the
+    /// log can never hold a torn frame followed by later live records) and poisons
+    /// the store; the caller must NOT have mutated the in-memory cube yet, so a
+    /// poisoned append leaves memory consistent with the durable log. On success it
+    /// advances the known-good offset past the just-appended bytes.
+    fn append_wal(&mut self, framed: &[u8]) -> Result<(), PersistError> {
+        if self.poisoned {
+            return Err(PersistError::Poisoned);
+        }
+        // A partial write_all or a failed fsync leaves the tail in an unknown
+        // state: restore it to the last durable offset and refuse further writes.
+        if let Err(e) = self.wal.write_all(framed) {
+            self.poison_wal();
+            return Err(PersistError::Io(e));
+        }
+        if self.sync_on_write {
+            if let Err(e) = self.wal.sync_data() {
+                self.poison_wal();
+                return Err(PersistError::Io(e));
+            }
+        }
+        self.good_len += framed.len() as u64;
+        Ok(())
+    }
+
+    /// Roll the WAL back to the last known-good offset and mark the store poisoned.
+    /// Best-effort: if the rollback itself fails, the store stays poisoned so no
+    /// further write can land after the torn frame, and recovery on the next open
+    /// discards everything past the first torn record.
+    fn poison_wal(&mut self) {
+        self.poisoned = true;
+        let _ = self.wal.set_len(self.good_len);
+        let _ = self.wal.seek(SeekFrom::Start(self.good_len));
     }
 
     /// Write a leaf cell: apply it to the in-memory cube and append it to the
     /// WAL. The model validates the coordinate first, so a rejected write is
     /// never logged.
     pub fn set_leaf(&mut self, coord: &[u32], value: Fixed) -> Result<(), PersistError> {
+        if self.poisoned {
+            return Err(PersistError::Poisoned);
+        }
         self.model.cube.set_leaf(coord, value)?;
         let framed = wal::encode(&Record::SetLeaf {
             coord: coord.to_vec(),
             value,
         });
-        self.wal.write_all(&framed)?;
-        if self.sync_on_write {
-            self.wal.sync_data()?;
-        }
-        Ok(())
+        // If the append fails the store is poisoned; the engine republishes the
+        // last durable model and reopens, discarding this diverged in-memory write.
+        self.append_wal(&framed)?;
+        // Fold the log into a snapshot if it has crossed the byte budget (P1).
+        self.maybe_auto_checkpoint()
     }
 
     /// Write a string cell: apply it to the in-memory cube and append it to the
     /// WAL. Like [`set_leaf`](Self::set_leaf), the model validates first.
     pub fn set_string(&mut self, coord: &[u32], value: &str) -> Result<(), PersistError> {
+        if self.poisoned {
+            return Err(PersistError::Poisoned);
+        }
         self.model.cube.set_string(coord, value)?;
         let framed = wal::encode(&Record::SetString {
             coord: coord.to_vec(),
             value: value.to_string(),
         });
-        self.wal.write_all(&framed)?;
-        if self.sync_on_write {
-            self.wal.sync_data()?;
-        }
-        Ok(())
+        self.append_wal(&framed)?;
+        // Fold the log into a snapshot if it has crossed the byte budget (P1).
+        self.maybe_auto_checkpoint()
     }
 
     /// Apply a batch of writes atomically (all-or-nothing). Validates and applies
@@ -277,15 +454,19 @@ impl Store {
     /// appended as one WAL unit with a single fsync, then the trial is adopted; a
     /// batch torn by a crash before its end marker is discarded whole on recovery.
     pub fn set_batch(&mut self, writes: &[CellWrite]) -> Result<(), PersistError> {
-        // 1. Validate + apply to a throwaway clone; abort the whole batch on error.
-        let mut trial = self.model.cube.clone();
-        for (index, write) in writes.iter().enumerate() {
-            let applied = match write {
-                CellWrite::Leaf { coord, value } => trial.set_leaf(coord, *value),
-                CellWrite::Str { coord, value } => trial.set_string(coord, value),
-            };
-            applied.map_err(|source| PersistError::BatchRejected { index, source })?;
+        if self.poisoned {
+            return Err(PersistError::Poisoned);
         }
+        // 1. Validate the whole batch read-only against the LIVE cube (no clone):
+        //    `Cube::validate_batch` reports the exact `(index, error)` a mutating
+        //    trial-apply on a throwaway clone would, because a cell write changes
+        //    values, not the schema, so no earlier write can invalidate a later
+        //    write's coordinate. Abort the whole batch on the first rejection with
+        //    the live cube untouched.
+        self.model
+            .cube
+            .validate_batch(&batch_writes(writes))
+            .map_err(|(index, source)| PersistError::BatchRejected { index, source })?;
         // 2. Durably append the framed batch as one unit, a single fsync.
         let mut framed = wal::encode(&Record::BatchBegin {
             count: writes.len() as u32,
@@ -304,13 +485,21 @@ impl Store {
             framed.extend_from_slice(&wal::encode(&record));
         }
         framed.extend_from_slice(&wal::encode(&Record::BatchEnd));
-        self.wal.write_all(&framed)?;
-        if self.sync_on_write {
-            self.wal.sync_data()?;
-        }
-        // 3. Adopt the validated trial; the WAL already reflects it durably.
-        self.model.cube = trial;
-        Ok(())
+        // Durably append the whole batch as one unit BEFORE mutating memory
+        // (stage-then-commit). On failure the WAL is rolled back to the last good
+        // offset (so a fully-framed-but-unsynced batch cannot be resurrected on
+        // recovery) and the store is poisoned; nothing has touched the in-memory
+        // cube yet, so memory stays consistent with the durable log.
+        self.append_wal(&framed)?;
+        // 3. The WAL now durably reflects the batch, so apply it to the live cube.
+        //    Every write was proven writable by `validate_batch` above, and a cell
+        //    write never changes another coordinate's writability, so each apply is
+        //    infallible here; a failure would be a core invariant break, not a
+        //    client error, so it panics rather than leaving memory half-applied.
+        apply_writes(&mut self.model.cube, writes)
+            .expect("validated batch must apply cleanly to the live cube");
+        // Fold the log into a snapshot if it has crossed the byte budget (P1).
+        self.maybe_auto_checkpoint()
     }
 
     /// Full-persist: rewrite the snapshot from the current in-memory model and
@@ -320,64 +509,121 @@ impl Store {
     /// snapshot is made durable (fsync + atomic rename) before the WAL is cleared,
     /// so the WAL is never truncated while the new snapshot is not yet on disk.
     pub fn checkpoint(&mut self) -> Result<(), PersistError> {
-        write_snapshot(&self.dir, &self.model)?;
+        // A poisoned store's in-memory model may diverge from the (untrusted) WAL
+        // tail, so folding it into a fresh snapshot could persist a write whose
+        // caller was told it failed. Refuse; the engine republishes and reopens.
+        if self.poisoned {
+            return Err(PersistError::Poisoned);
+        }
+        self.checkpoint_model(None)
+    }
+
+    /// Rewrite the snapshot and clear the WAL, optionally from a `staged` model
+    /// instead of the live one. `None` checkpoints the live `self.model` (the
+    /// explicit full-persist). `Some(model)` is the stage-then-commit path (P3):
+    /// the would-be model is made durable (temp + fsync + atomic rename) and the
+    /// WAL cleared BEFORE it is committed into `self.model`, so a save failure
+    /// returns with the in-memory model untouched (no memory/disk divergence).
+    fn checkpoint_model(&mut self, staged: Option<Model>) -> Result<(), PersistError> {
+        let model = staged.as_ref().unwrap_or(&self.model);
+        // Durably rewrite the snapshot from the chosen model first. On failure
+        // nothing below runs, so neither the WAL nor `self.model` changed.
+        write_snapshot(&self.dir, model)?;
         self.wal.set_len(0)?;
         self.wal.seek(SeekFrom::Start(0))?;
         self.wal.write_all(&wal::header())?;
         self.wal.sync_data()?;
+        self.good_len = wal::WAL_HEADER_LEN;
+        // Snapshot + empty WAL are now durable; commit the staged model to memory.
+        if let Some(model) = staged {
+            self.model = model;
+        }
         Ok(())
+    }
+
+    /// Stage-then-commit a definition change (P3): clone the model, apply `op` to
+    /// the clone, and durably checkpoint the clone BEFORE adopting it, so a save
+    /// (snapshot-write) failure leaves the live `self.model` exactly as it was —
+    /// memory never diverges from disk. `op`'s own error (e.g. a rejected
+    /// definition) is returned with nothing changed either. A poisoned store
+    /// refuses, matching [`checkpoint`](Self::checkpoint).
+    ///
+    /// The staged clone is cheap relative to the snapshot serialize + fsync a
+    /// checkpoint already performs, and definition changes are infrequent
+    /// structural edits, so cloning here is not on any hot path.
+    fn staged_define<T>(
+        &mut self,
+        op: impl FnOnce(&mut Model) -> Result<T, PersistError>,
+    ) -> Result<T, PersistError> {
+        if self.poisoned {
+            return Err(PersistError::Poisoned);
+        }
+        let mut staged = self.model.clone();
+        let value = op(&mut staged)?;
+        self.checkpoint_model(Some(staged))?;
+        Ok(value)
     }
 
     /// Define (create or replace) a subset, then checkpoint so the definition is
     /// durable. Structural validation runs first: an invalid subset returns
     /// [`PersistError::Query`] and leaves the model and snapshot untouched.
     pub fn define_subset(&mut self, subset: Subset) -> Result<(), PersistError> {
-        validate_subset(&self.model.cube, &subset)?;
-        self.model
-            .subsets
-            .insert((subset.dimension.clone(), subset.name.clone()), subset);
-        self.checkpoint()
+        self.staged_define(|model| {
+            validate_subset(&model.cube, &subset)?;
+            model
+                .subsets
+                .insert((subset.dimension.clone(), subset.name.clone()), subset);
+            Ok(())
+        })
     }
 
     /// Delete a subset by dimension and name. Returns whether one was removed;
     /// checkpoints only when something changed.
     pub fn delete_subset(&mut self, dimension: &str, name: &str) -> Result<bool, PersistError> {
-        let removed = self
-            .model
-            .subsets
-            .remove(&(dimension.to_string(), name.to_string()))
-            .is_some();
-        if removed {
-            self.checkpoint()?;
+        let key = (dimension.to_string(), name.to_string());
+        if !self.model.subsets.contains_key(&key) {
+            return Ok(false);
         }
-        Ok(removed)
+        self.staged_define(|model| {
+            model.subsets.remove(&key);
+            Ok(())
+        })?;
+        Ok(true)
     }
 
     /// Define (create or replace) a view, then checkpoint. Structural validation
     /// (coverage, subset references, member/context resolution) runs first; an
     /// invalid view returns [`PersistError::Query`] and changes nothing.
     pub fn define_view(&mut self, view: View) -> Result<(), PersistError> {
-        validate_view(&self.model, &view)?;
-        self.model.views.insert(view.name.clone(), view);
-        self.checkpoint()
+        self.staged_define(|model| {
+            validate_view(model, &view)?;
+            model.views.insert(view.name.clone(), view);
+            Ok(())
+        })
     }
 
     /// Delete a view by name. Returns whether one was removed; checkpoints only
     /// when something changed.
     pub fn delete_view(&mut self, name: &str) -> Result<bool, PersistError> {
-        let removed = self.model.views.remove(name).is_some();
-        if removed {
-            self.checkpoint()?;
+        if !self.model.views.contains_key(name) {
+            return Ok(false);
         }
-        Ok(removed)
+        let name = name.to_string();
+        self.staged_define(|model| {
+            model.views.remove(&name);
+            Ok(())
+        })?;
+        Ok(true)
     }
 
     /// Set the cube's rules source, then checkpoint. The source is stored
     /// verbatim; its validity is checked by the calc layer at the API boundary
     /// (the store and persist crate stay calc-free).
     pub fn define_rules(&mut self, source: String) -> Result<(), PersistError> {
-        self.model.rules = RuleSet { source };
-        self.checkpoint()
+        self.staged_define(|model| {
+            model.rules = RuleSet { source };
+            Ok(())
+        })
     }
 
     /// Clear the cube's rules. Returns whether there were any; checkpoints only
@@ -386,25 +632,33 @@ impl Store {
         if self.model.rules.is_empty() {
             return Ok(false);
         }
-        self.model.rules = RuleSet::default();
-        self.checkpoint()?;
+        self.staged_define(|model| {
+            model.rules = RuleSet::default();
+            Ok(())
+        })?;
         Ok(true)
     }
 
     /// Define (create or replace) a rule unit test, then checkpoint.
     pub fn define_rule_test(&mut self, test: RuleTest) -> Result<(), PersistError> {
-        self.model.tests.insert(test.name.clone(), test);
-        self.checkpoint()
+        self.staged_define(|model| {
+            model.tests.insert(test.name.clone(), test);
+            Ok(())
+        })
     }
 
     /// Delete a rule test by name. Returns whether one was removed; checkpoints
     /// only when something changed.
     pub fn delete_rule_test(&mut self, name: &str) -> Result<bool, PersistError> {
-        let removed = self.model.tests.remove(name).is_some();
-        if removed {
-            self.checkpoint()?;
+        if !self.model.tests.contains_key(name) {
+            return Ok(false);
         }
-        Ok(removed)
+        let name = name.to_string();
+        self.staged_define(|model| {
+            model.tests.remove(&name);
+            Ok(())
+        })?;
+        Ok(true)
     }
 
     // Flows, flow tests, connections, and jobs are no longer per-cube (ADR-0035);
@@ -416,18 +670,24 @@ impl Store {
     /// and recovered on reopen, never in the base WAL. A create carries empty
     /// deltas; replacing an existing sandbox overwrites it.
     pub fn define_sandbox(&mut self, sandbox: Sandbox) -> Result<(), PersistError> {
-        self.model.sandboxes.insert(sandbox.name.clone(), sandbox);
-        self.checkpoint()
+        self.staged_define(|model| {
+            model.sandboxes.insert(sandbox.name.clone(), sandbox);
+            Ok(())
+        })
     }
 
     /// Delete a sandbox by name (discard). Returns whether one was removed;
     /// checkpoints only when something changed.
     pub fn delete_sandbox(&mut self, name: &str) -> Result<bool, PersistError> {
-        let removed = self.model.sandboxes.remove(name).is_some();
-        if removed {
-            self.checkpoint()?;
+        if !self.model.sandboxes.contains_key(name) {
+            return Ok(false);
         }
-        Ok(removed)
+        let name = name.to_string();
+        self.staged_define(|model| {
+            model.sandboxes.remove(&name);
+            Ok(())
+        })?;
+        Ok(true)
     }
 
     /// Stage leaf overrides into a sandbox's delta and checkpoint. The base cube
@@ -454,31 +714,34 @@ impl Store {
                 message: "string what-if values are not supported in a sandbox".to_string(),
             }));
         }
-        // Validate every override against a throwaway clone (leaf-only, in-range);
-        // this never mutates base cells, only confirms the coordinate is writable.
-        let mut trial = self.model.cube.clone();
-        for (index, write) in writes.iter().enumerate() {
-            let applied = match write {
-                CellWrite::Leaf { coord, value } => trial.set_leaf(coord, *value),
-                CellWrite::Str { coord, value } => trial.set_string(coord, value),
-            };
-            applied.map_err(|source| PersistError::BatchRejected { index, source })?;
-        }
+        // Validate every override read-only against the live cube (leaf-only,
+        // in-range) via `validate_batch`; this never mutates base cells, only
+        // confirms each coordinate is writable (P4: no clone). String writes were
+        // already rejected above, so only leaf coordinates reach here.
+        self.model
+            .cube
+            .validate_batch(&batch_writes(writes))
+            .map_err(|(index, source)| PersistError::BatchRejected { index, source })?;
         // Record the numeric overrides in the sandbox overlay (the value verbatim,
         // so an explicit zero override is kept rather than dropped). String writes
         // were rejected above, so `string_cells` stays empty this phase.
-        let sb = self
-            .model
-            .sandboxes
-            .get_mut(name)
-            .expect("sandbox presence checked above");
-        for write in writes {
-            if let CellWrite::Leaf { coord, value } = write {
-                sb.cells.insert(coord.clone(), *value);
+        // Stage-then-commit (P3): the overlay change is applied to a clone and made
+        // durable before it is adopted, so a checkpoint failure leaves the live
+        // sandbox untouched.
+        let name = name.to_string();
+        self.staged_define(|model| {
+            let sb = model
+                .sandboxes
+                .get_mut(&name)
+                .expect("sandbox presence checked above");
+            for write in writes {
+                if let CellWrite::Leaf { coord, value } = write {
+                    sb.cells.insert(coord.clone(), *value);
+                }
             }
-        }
-        sb.updated = updated;
-        self.checkpoint()
+            sb.updated = updated;
+            Ok(())
+        })
     }
 
     /// Commit a sandbox's overrides into the base cube, then clear the deltas and
@@ -509,20 +772,25 @@ impl Store {
             }));
             w
         };
-        // Apply to base (validates on a clone; WALs on success). A rejected write
-        // propagates and leaves base and the sandbox unchanged.
+        // Apply to base (validates against the live cube; WALs on success). A
+        // rejected write propagates and leaves base and the sandbox unchanged.
         self.set_batch(&writes)?;
         // Clear the now-merged deltas (the sandbox stays, empty) and checkpoint,
         // which folds the just-applied batch into the snapshot and clears the WAL.
-        let sb = self
-            .model
-            .sandboxes
-            .get_mut(name)
-            .expect("sandbox presence checked above");
-        sb.cells.clear();
-        sb.string_cells.clear();
-        sb.updated = updated;
-        self.checkpoint()
+        // Stage-then-commit (P3): the delta clear is adopted only after the
+        // snapshot is durable, so a checkpoint failure does not leave the sandbox
+        // emptied in memory while the snapshot still shows the old deltas.
+        let name = name.to_string();
+        self.staged_define(|model| {
+            let sb = model
+                .sandboxes
+                .get_mut(&name)
+                .expect("sandbox presence checked above");
+            sb.cells.clear();
+            sb.string_cells.clear();
+            sb.updated = updated;
+            Ok(())
+        })
     }
 
     /// Append dimension elements and consolidation edges (append-only,
@@ -537,11 +805,16 @@ impl Store {
         edges: &[EdgeSpec],
     ) -> Result<usize, PersistError> {
         // Cube::extend_schema is transactional (it stages on a clone and only
-        // commits on full success), so a rejected change leaves the model
-        // untouched and we only checkpoint when something actually changed.
-        let added = self.model.cube.extend_schema(elements, edges)?;
-        self.checkpoint()?;
-        Ok(added)
+        // commits on full success), so a rejected change leaves the staged model
+        // untouched. Stage-then-commit (P3): the grow is applied to a model clone
+        // and made durable before it is adopted, so a checkpoint failure leaves the
+        // live cube untouched.
+        self.staged_define(|model| {
+            model
+                .cube
+                .extend_schema(elements, edges)
+                .map_err(Into::into)
+        })
     }
 
     /// Define an attribute on a dimension (ADR-0021), then checkpoint. Idempotent
@@ -553,8 +826,10 @@ impl Store {
         name: &str,
         kind: AttributeKind,
     ) -> Result<(), PersistError> {
-        self.model.cube.define_attribute(dimension, name, kind)?;
-        self.checkpoint()
+        self.staged_define(|model| {
+            model.cube.define_attribute(dimension, name, kind)?;
+            Ok(())
+        })
     }
 
     /// Set an attribute's value for one or more elements (ADR-0021), then
@@ -567,10 +842,12 @@ impl Store {
         attribute: &str,
         values: &[(String, AttributeValue)],
     ) -> Result<(), PersistError> {
-        self.model
-            .cube
-            .set_attribute_values(dimension, attribute, values)?;
-        self.checkpoint()
+        self.staged_define(|model| {
+            model
+                .cube
+                .set_attribute_values(dimension, attribute, values)?;
+            Ok(())
+        })
     }
 
     // ---- structural dimension editing (ADR-0036) ----
@@ -587,8 +864,17 @@ impl Store {
     // into the snapshot and empties the WAL, so when the post-edit snapshot is
     // written the WAL holds no old-index records. Recovery therefore cannot replay
     // a stale coordinate onto the new layout even if a crash lands between writing
-    // the new snapshot and clearing the WAL. (reparent / add-child / remove-child /
-    // set-kind keep indices stable, so their single post-edit checkpoint suffices.)
+    // the new snapshot and clearing the WAL. (remove-child keeps every member's
+    // kind and cells, so its single post-edit checkpoint suffices.)
+    //
+    // set-kind, add-child, and reparent are index-stable but NOT writability-stable:
+    // each can re-type an element to a consolidation/string (set_element_kind
+    // directly; add_child/reparent convert a numeric/string parent that gains a
+    // child, dropping its stored cell). An outstanding WAL SetLeaf/SetString for
+    // that element, written since the last checkpoint, would then replay onto the
+    // post-edit snapshot and be rejected by the model, failing Store::open and
+    // aborting boot. So these three ALSO checkpoint BEFORE the edit, emptying the
+    // WAL so no pre-edit cell write survives to be replayed onto the re-typed layout.
 
     /// Reorder a dimension's members, remapping every stored cell, then checkpoint.
     pub fn reorder_elements(
@@ -598,9 +884,17 @@ impl Store {
     ) -> Result<(), PersistError> {
         // Reindexing op: checkpoint first so the WAL holds no old-index writes
         // when the post-edit snapshot is written (see the block comment above).
+        // (If this pre-edit checkpoint fails nothing has been mutated, so there is
+        // no divergence.)
         self.checkpoint()?;
-        self.model.reorder_elements(dimension, new_order)?;
-        self.checkpoint()
+        // Stage-then-commit the edit (P3): a post-edit checkpoint failure leaves
+        // the live model untouched. The WAL is already empty from the pre-edit
+        // checkpoint, so the rolled-back model still agrees with disk.
+        self.staged_define(|model| {
+            model
+                .reorder_elements(dimension, new_order)
+                .map_err(Into::into)
+        })
     }
 
     /// Reparent a member (or detach to a root), then checkpoint.
@@ -611,10 +905,18 @@ impl Store {
         new_parent: Option<&str>,
         weight: i64,
     ) -> Result<(), PersistError> {
-        self.model
-            .cube
-            .reparent_element(dimension, child, new_parent, weight)?;
-        self.checkpoint()
+        // Writability-changing edit: checkpoint first so no outstanding cell write
+        // lingers in the WAL to be replayed onto a re-typed element (see the block
+        // comment above).
+        self.checkpoint()?;
+        // Route through the Model wrapper so sandbox overrides the edit made
+        // unwritable are pruned alongside the cube's own cell drops. Stage-then-
+        // commit (P3): a post-edit checkpoint failure leaves the live model as-is.
+        self.staged_define(|model| {
+            model
+                .reparent_element(dimension, child, new_parent, weight)
+                .map_err(Into::into)
+        })
     }
 
     /// Add a member to a consolidation additively (keeping its other parents),
@@ -626,10 +928,17 @@ impl Store {
         child: &str,
         weight: i64,
     ) -> Result<(), PersistError> {
-        self.model
-            .cube
-            .add_child_element(dimension, parent, child, weight)?;
-        self.checkpoint()
+        // Writability-changing edit (a numeric/string parent becomes a
+        // consolidation): checkpoint first so no outstanding cell write for it
+        // lingers in the WAL (see the block comment above).
+        self.checkpoint()?;
+        // Model wrapper: prunes sandbox overrides stranded by the edit. Stage-then-
+        // commit (P3): a post-edit checkpoint failure leaves the live model as-is.
+        self.staged_define(|model| {
+            model
+                .add_child_element(dimension, parent, child, weight)
+                .map_err(Into::into)
+        })
     }
 
     /// Remove the single `parent -> child` consolidation edge (keeping the member,
@@ -640,10 +949,14 @@ impl Store {
         parent: &str,
         child: &str,
     ) -> Result<(), PersistError> {
-        self.model
-            .cube
-            .remove_child_element(dimension, parent, child)?;
-        self.checkpoint()
+        // Stage-then-commit (P3): apply on a clone and adopt only after the
+        // snapshot is durable, so a checkpoint failure leaves the live model as-is.
+        self.staged_define(|model| {
+            model
+                .cube
+                .remove_child_element(dimension, parent, child)
+                .map_err(Into::into)
+        })
     }
 
     /// Pin a member to the top level (ADR-0038): apply it to the in-memory cube and
@@ -681,6 +994,9 @@ impl Store {
         element: &str,
         pinned: bool,
     ) -> Result<(), PersistError> {
+        if self.poisoned {
+            return Err(PersistError::Poisoned);
+        }
         if pinned {
             self.model.cube.pin_element_to_top(dimension, element)?;
         } else {
@@ -691,11 +1007,9 @@ impl Store {
             element: element.to_string(),
             pinned,
         });
-        self.wal.write_all(&framed)?;
-        if self.sync_on_write {
-            self.wal.sync_data()?;
-        }
-        Ok(())
+        self.append_wal(&framed)?;
+        // Fold the log into a snapshot if it has crossed the byte budget (P1).
+        self.maybe_auto_checkpoint()
     }
 
     /// Convert a member's kind (re-typing or clearing its cells), then checkpoint.
@@ -705,8 +1019,18 @@ impl Store {
         element: &str,
         kind: ElementKind,
     ) -> Result<(), PersistError> {
-        self.model.cube.set_element_kind(dimension, element, kind)?;
-        self.checkpoint()
+        // Writability-changing edit (re-types the element): checkpoint first so no
+        // outstanding cell write for it lingers in the WAL to be replayed onto the
+        // re-typed element and rejected at recovery (see the block comment above).
+        self.checkpoint()?;
+        // Model wrapper: prunes sandbox overrides stranded by the re-typing.
+        // Stage-then-commit (P3): a post-edit checkpoint failure leaves the live
+        // model as-is.
+        self.staged_define(|model| {
+            model
+                .set_element_kind(dimension, element, kind)
+                .map_err(Into::into)
+        })
     }
 
     /// Delete a member, its edges, and its cells, reindexing the rest, then
@@ -714,8 +1038,9 @@ impl Store {
     pub fn delete_element(&mut self, dimension: &str, element: &str) -> Result<(), PersistError> {
         // Reindexing op: checkpoint first (see reorder_elements).
         self.checkpoint()?;
-        self.model.delete_element(dimension, element)?;
-        self.checkpoint()
+        // Stage-then-commit (P3): a post-edit checkpoint failure leaves the live
+        // model as-is (the WAL is already empty from the pre-edit checkpoint).
+        self.staged_define(|model| model.delete_element(dimension, element).map_err(Into::into))
     }
 
     /// Insert a member at a position, remapping cells, then checkpoint.
@@ -728,9 +1053,13 @@ impl Store {
     ) -> Result<(), PersistError> {
         // Reindexing op: checkpoint first (see reorder_elements).
         self.checkpoint()?;
-        self.model
-            .insert_element_at(dimension, name, kind, position)?;
-        self.checkpoint()
+        // Stage-then-commit (P3): a post-edit checkpoint failure leaves the live
+        // model as-is.
+        self.staged_define(|model| {
+            model
+                .insert_element_at(dimension, name, kind, position)
+                .map_err(Into::into)
+        })
     }
 }
 
@@ -825,11 +1154,52 @@ impl Store {
     }
 }
 
+/// Borrow a slice of [`CellWrite`]s as the read-only [`BatchWrite`]s that
+/// [`Cube::validate_batch`] checks, so a whole batch is validated against the
+/// live cube without cloning it (P4). The value is carried but only the
+/// coordinate is inspected.
+fn batch_writes(writes: &[CellWrite]) -> Vec<BatchWrite<'_>> {
+    writes
+        .iter()
+        .map(|w| match w {
+            CellWrite::Leaf { coord, value } => BatchWrite::Leaf {
+                coord,
+                value: *value,
+            },
+            CellWrite::Str { coord, value } => BatchWrite::Str { coord, value },
+        })
+        .collect()
+}
+
+/// Apply an already-validated batch to `cube` in order. Returns the first
+/// `ModelError` if any write is rejected; callers that pre-checked with
+/// [`Cube::validate_batch`] treat a rejection here as an invariant break.
+fn apply_writes(cube: &mut Cube, writes: &[CellWrite]) -> Result<(), ModelError> {
+    for write in writes {
+        match write {
+            CellWrite::Leaf { coord, value } => cube.set_leaf(coord, *value)?,
+            CellWrite::Str { coord, value } => cube.set_string(coord, value)?,
+        }
+    }
+    Ok(())
+}
+
 /// Write the snapshot durably: serialize to a temp file and fsync its contents,
 /// rename over the live snapshot (rename replaces the destination on all supported
-/// platforms), then fsync the directory so the rename itself is durable. Flushing
-/// the temp file before the rename is what lets [`Store::checkpoint`] clear the WAL
+/// platforms), then make the rename itself durable before returning. Flushing the
+/// temp file before the rename is what lets [`Store::checkpoint`] clear the WAL
 /// safely: the new snapshot's bytes are on disk before the WAL is truncated.
+///
+/// Making the rename durable is platform-specific. On Unix we fsync the directory.
+/// On Windows a directory handle cannot be flushed, and `fs::rename` uses
+/// `MoveFileExW` WITHOUT `MOVEFILE_WRITE_THROUGH`, so the NTFS metadata journal only
+/// guarantees the rename is *consistent*, not that it has reached disk before the
+/// subsequent fsynced WAL truncation. If the rename were still buffered on a power
+/// loss just after a checkpoint, recovery could see the OLD snapshot beside an
+/// already-truncated (empty) WAL and silently lose every acknowledged write since
+/// the previous checkpoint. So on Windows we reopen the renamed snapshot and
+/// `sync_all()` (`FlushFileBuffers`, which flushes the file's MFT record including
+/// its name attribute), forcing the rename to disk before the WAL is cleared.
 fn write_snapshot(dir: &Path, model: &Model) -> Result<(), PersistError> {
     let tmp = dir.join(SNAPSHOT_TMP);
     let text = model.to_model_text()?;
@@ -842,15 +1212,36 @@ fn write_snapshot(dir: &Path, model: &Model) -> Result<(), PersistError> {
         file.write_all(text.as_bytes())?;
         file.sync_all()?;
     }
-    fs::rename(&tmp, dir.join(SNAPSHOT_FILE))?;
+    let snapshot = dir.join(SNAPSHOT_FILE);
+    fs::rename(&tmp, &snapshot)?;
     sync_dir(dir)?;
+    sync_renamed_file(&snapshot)?;
+    Ok(())
+}
+
+/// Make a just-renamed file durable on platforms where a directory handle cannot
+/// be fsynced (Windows). Reopening the file and calling `sync_all()` flushes its
+/// metadata, including the name attribute the rename set, so the rename reaches
+/// disk. A no-op on Unix, where [`sync_dir`] already made the rename durable.
+fn sync_renamed_file(path: &Path) -> Result<(), PersistError> {
+    #[cfg(not(unix))]
+    {
+        // FlushFileBuffers (what sync_all maps to on Windows) needs write access,
+        // so the handle must be opened for writing, not read-only.
+        OpenOptions::new().write(true).open(path)?.sync_all()?;
+    }
+    #[cfg(unix)]
+    {
+        let _ = path;
+    }
     Ok(())
 }
 
 /// fsync a directory so a contained rename or create is durable. Unix supports
 /// opening a directory as a file and fsync-ing it; Windows does not (a directory
 /// handle cannot be flushed, and NTFS records the rename in its own metadata
-/// journal), so this is a no-op there.
+/// journal), so this is a no-op there (see [`sync_renamed_file`], which forces the
+/// rename to disk on Windows instead).
 fn sync_dir(dir: &Path) -> Result<(), PersistError> {
     #[cfg(unix)]
     {
@@ -1038,6 +1429,87 @@ mod tests {
     }
 
     #[test]
+    fn writability_changing_edit_folds_outstanding_writes_and_recovers() {
+        // A kind-converting edit (set_element_kind here) can re-type an element to a
+        // consolidation, which would reject an outstanding pre-edit WAL SetLeaf for
+        // it on recovery and fail boot. Like the reindexing ops, these edits must
+        // checkpoint BEFORE the edit, folding any outstanding cell write into the
+        // snapshot and emptying the WAL, so a crash in the window between the
+        // post-edit snapshot and the WAL truncation cannot resurrect a stale record.
+        let dir = scratch("writability-folds");
+        let f = fixture();
+        let (r, p) = (f.r.clone(), f.p.clone());
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            // Outstanding, un-checkpointed writes: they live only in the WAL.
+            store.set_leaf(&[r[0], p[0]], Fixed::from(10)).unwrap();
+            store.set_leaf(&[r[1], p[0]], Fixed::from(20)).unwrap();
+            assert!(
+                fs::metadata(dir.join(WAL_FILE)).unwrap().len() > wal::WAL_HEADER_LEN,
+                "outstanding writes are in the WAL before the edit"
+            );
+            // Convert R2 (a leaf) to a consolidation. The pre-edit checkpoint must
+            // fold R0/R1's writes into the snapshot and empty the WAL first.
+            store
+                .set_element_kind("Region", "R2", ElementKind::Consolidated)
+                .unwrap();
+            assert_eq!(
+                fs::metadata(dir.join(WAL_FILE)).unwrap().len(),
+                wal::WAL_HEADER_LEN,
+                "the writability-changing edit emptied the WAL"
+            );
+        }
+        // Reopen with no extra checkpoint: boot succeeds and the folded writes
+        // survived (they came from the snapshot, not a replayed WAL record).
+        let store = Store::open(&dir).unwrap();
+        assert_eq!(
+            store.cube().get_leaf(&[r[0], p[0]]).unwrap(),
+            Fixed::from(10)
+        );
+        assert_eq!(
+            store.cube().get_leaf(&[r[1], p[0]]).unwrap(),
+            Fixed::from(20)
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn recovery_survives_a_stale_write_onto_a_retyped_element() {
+        // Belt-and-braces: even if a pre-edit SetLeaf somehow reached the WAL after
+        // the element was re-typed in the snapshot (the exact crash-window state the
+        // checkpoint-first fix prevents), Store::open must not spuriously succeed by
+        // applying it; the guarantee is that this state is never produced. Here we
+        // assert the produced state after the fix: the snapshot has R2 consolidated
+        // and the WAL is empty, so no stale coordinate can replay.
+        let dir = scratch("retype-no-stale");
+        let f = fixture();
+        let (r, p) = (f.r.clone(), f.p.clone());
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        store.set_leaf(&[r[2], p[0]], Fixed::from(7)).unwrap();
+        store
+            .set_element_kind("Region", "R2", ElementKind::Consolidated)
+            .unwrap();
+        // The WAL is empty (no SetLeaf(R2) lingering to be replayed).
+        assert_eq!(
+            fs::metadata(dir.join(WAL_FILE)).unwrap().len(),
+            wal::WAL_HEADER_LEN
+        );
+        drop(store);
+        let store = Store::open(&dir).unwrap();
+        let region = store
+            .cube()
+            .dimensions()
+            .iter()
+            .find(|d| d.name() == "Region")
+            .unwrap();
+        assert_eq!(
+            region.element(region.index_of("R2").unwrap()).unwrap().kind,
+            ElementKind::Consolidated
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn pin_to_top_recovers_via_wal_replay() {
         // ADR-0038: a pin is logged as a name-addressed WAL record and recovers by
         // replay onto the snapshot WITHOUT an explicit checkpoint (the crash case).
@@ -1179,6 +1651,107 @@ mod tests {
     }
 
     #[test]
+    fn mid_log_corruption_is_preserved_not_silently_truncated() {
+        // A corrupt frame with intact, acknowledged frames after it is mid-log
+        // corruption, not a torn tail. Recovery must preserve the WAL (as
+        // wal.log.corrupt) and refuse to open, rather than silently set_len the
+        // later records away and boot with a truncated cube.
+        let dir = scratch("mid-log-corrupt");
+        let f = fixture();
+        let (r, p) = (f.r.clone(), f.p.clone());
+        {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            store.set_leaf(&[r[0], p[0]], Fixed::from(10)).unwrap();
+            store.set_leaf(&[r[1], p[0]], Fixed::from(20)).unwrap();
+            store.set_leaf(&[r[2], p[0]], Fixed::from(30)).unwrap();
+        }
+        let wal_path = dir.join(WAL_FILE);
+        // Corrupt a byte in the MIDDLE of the WAL (flip a byte after the header but
+        // before the last record) so a valid frame still follows the damage.
+        let mut bytes = fs::read(&wal_path).unwrap();
+        let mid = wal::WAL_HEADER_LEN as usize + 6; // inside the first record's payload
+        bytes[mid] ^= 0xFF;
+        fs::write(&wal_path, &bytes).unwrap();
+
+        let err = Store::open(&dir).unwrap_err();
+        assert!(matches!(err, PersistError::Corrupt(_)));
+        // The original WAL is preserved for inspection; the live WAL is gone.
+        assert!(dir.join("wal.log.corrupt").exists());
+        assert!(!wal_path.exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn poisoned_store_refuses_all_writes() {
+        // Once poisoned by a failed append, every write path fails closed with
+        // PersistError::Poisoned instead of appending after an untrusted tail.
+        let dir = scratch("poison-refuses");
+        let f = fixture();
+        let (r, p) = (f.r.clone(), f.p.clone());
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        store.set_leaf(&[r[0], p[0]], Fixed::from(10)).unwrap();
+        // Simulate the state left by a failed WAL append/fsync.
+        store.poison_wal();
+        assert!(store.is_poisoned());
+
+        assert!(matches!(
+            store.set_leaf(&[r[1], p[0]], Fixed::from(20)),
+            Err(PersistError::Poisoned)
+        ));
+        assert!(matches!(
+            store.set_string(&[r[1], p[0]], "x"),
+            Err(PersistError::Poisoned)
+        ));
+        assert!(matches!(
+            store.set_batch(&[CellWrite::Leaf {
+                coord: vec![r[1], p[0]],
+                value: Fixed::from(20),
+            }]),
+            Err(PersistError::Poisoned)
+        ));
+        assert!(matches!(
+            store.pin_element_to_top("Region", "R0"),
+            Err(PersistError::Poisoned)
+        ));
+        // A poisoned store must not fold its (untrusted) memory into a snapshot.
+        assert!(matches!(store.checkpoint(), Err(PersistError::Poisoned)));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn poison_rolls_the_wal_back_to_the_last_good_offset() {
+        // The invariant that keeps recovery's stop-at-first-torn-frame scan sound:
+        // after a failed append the WAL is truncated back to the last known-good
+        // record, so a torn frame can never be followed by later live records.
+        let dir = scratch("poison-truncates");
+        let f = fixture();
+        let (r, p) = (f.r.clone(), f.p.clone());
+        let wal_path = dir.join(WAL_FILE);
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        store.set_leaf(&[r[0], p[0]], Fixed::from(10)).unwrap();
+        let good = fs::metadata(&wal_path).unwrap().len();
+
+        // Emulate a partial frame reaching disk before the append failed, then the
+        // store poisoning itself (as append_wal does on a write/fsync error).
+        store.wal.write_all(&[7u8, 0, 0, 0, 1, 2, 3]).unwrap();
+        store.wal.sync_data().unwrap();
+        assert!(fs::metadata(&wal_path).unwrap().len() > good);
+        store.poison_wal();
+
+        // The torn bytes are gone: the file is back to the last durable record.
+        assert_eq!(fs::metadata(&wal_path).unwrap().len(), good);
+        // And recovery from that file keeps exactly the acknowledged write.
+        drop(store);
+        let store = Store::open(&dir).unwrap();
+        assert_eq!(store.cube().cell_count(), 1);
+        assert_eq!(
+            store.cube().get_leaf(&[r[0], p[0]]).unwrap(),
+            Fixed::from(10)
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn recovers_string_writes_via_wal() {
         let dir = scratch("string-wal");
         let mut measure = Dimension::new("Measure");
@@ -1301,6 +1874,71 @@ mod tests {
         assert!(
             store.model().subset("Region", "Temp").is_none(),
             "restore reverted the in-memory definition"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn bare_restore_can_leave_disk_ahead_but_durable_restore_does_not() {
+        // E5: `restore_model` is memory-only, so after a durable WAL side effect it
+        // leaves DISK ahead of the restored model (the WAL record replays on the
+        // next open). `has_uncheckpointed_wal` detects this, and
+        // `restore_model_durably` makes disk agree by checkpointing the restored
+        // model, so a reopen sees exactly the restored state.
+        let dir = scratch("e5-restore-durability");
+        let f = fixture();
+        let (r, p) = (f.r.clone(), f.p.clone());
+        let baseline = {
+            let mut store = Store::create(&dir, f.cube).unwrap();
+            let snapshot = store.model().clone();
+            // A durable, fsynced cell write: the WAL now holds an acknowledged
+            // record past the header.
+            store.set_leaf(&[r[0], p[0]], Fixed::from(99)).unwrap();
+            assert!(
+                store.has_uncheckpointed_wal(),
+                "the fsynced write left the WAL ahead of the snapshot"
+            );
+            // A bare (memory-only) restore reverts the value in memory, but the
+            // WAL record is still on disk -> disk is ahead of the restored model.
+            store.restore_model(snapshot.clone());
+            assert_eq!(store.cube().get_leaf(&[r[0], p[0]]).unwrap(), Fixed::ZERO);
+            assert!(
+                store.has_uncheckpointed_wal(),
+                "a bare restore does NOT clear the WAL: disk is still ahead"
+            );
+            snapshot
+        };
+        // Proof that disk was ahead: reopening replays the WAL and resurrects 99,
+        // NOT the restored (zero) state.
+        {
+            let reopened = Store::open(&dir).unwrap();
+            assert_eq!(
+                reopened.cube().get_leaf(&[r[0], p[0]]).unwrap(),
+                Fixed::from(99),
+                "a bare restore left the durable WAL side effect to resurrect"
+            );
+        }
+
+        // Now the fail-loud path: write again, then restore DURABLY. It checkpoints
+        // the restored model, so the WAL is cleared and a reopen sees zero.
+        {
+            let mut store = Store::open(&dir).unwrap();
+            store.set_leaf(&[r[1], p[0]], Fixed::from(7)).unwrap();
+            store.restore_model_durably(baseline.clone()).unwrap();
+            assert!(
+                !store.has_uncheckpointed_wal(),
+                "a durable restore checkpointed the restored model and cleared the WAL"
+            );
+        }
+        let reopened = Store::open(&dir).unwrap();
+        assert_eq!(
+            reopened.cube().get_leaf(&[r[0], p[0]]).unwrap(),
+            Fixed::ZERO,
+            "durable restore made disk agree with the restored model"
+        );
+        assert_eq!(
+            reopened.cube().get_leaf(&[r[1], p[0]]).unwrap(),
+            Fixed::ZERO
         );
         fs::remove_dir_all(&dir).ok();
     }
@@ -1615,6 +2253,203 @@ mod tests {
         assert!(matches!(err, PersistError::BatchRejected { index: 0, .. }));
         // The sandbox is left empty (no partial override).
         assert!(store.model().sandbox("s").unwrap().is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Force the next snapshot write to fail by occupying the temp-snapshot path
+    /// with a DIRECTORY, so `write_snapshot`'s file open errors deterministically
+    /// on every platform. Returns the blocking path (remove it to heal the store).
+    fn block_snapshot_writes(dir: &Path) -> PathBuf {
+        let blocker = dir.join(SNAPSHOT_TMP);
+        fs::create_dir_all(&blocker).unwrap();
+        blocker
+    }
+
+    #[test]
+    fn validate_batch_rejects_without_mutating_the_store() {
+        // P4: a batch with a single bad write (targeting a consolidated element) is
+        // rejected with its index, and the LIVE store is left untouched — proving
+        // the reject path no longer trial-applies to a clone it then discards, but
+        // still reports the same rejection and mutates nothing.
+        let dir = scratch("p4-reject-no-mutation");
+        let f = fixture();
+        let (r, p, region_total) = (f.r.clone(), f.p.clone(), f.region_total);
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        // Seed one good cell so we can prove the store is unchanged afterwards.
+        store.set_leaf(&[r[0], p[0]], Fixed::from(10)).unwrap();
+        let wal_before = store.wal_len();
+
+        let err = store
+            .set_batch(&[
+                CellWrite::Leaf {
+                    coord: vec![r[1], p[0]],
+                    value: Fixed::from(20),
+                },
+                // Second write targets a consolidated element: rejected.
+                CellWrite::Leaf {
+                    coord: vec![region_total, p[0]],
+                    value: Fixed::from(1),
+                },
+            ])
+            .unwrap_err();
+        assert!(matches!(err, PersistError::BatchRejected { index: 1, .. }));
+        // Nothing from the rejected batch landed: R1/P0 is still empty, the seed
+        // cell is intact, and the WAL did not grow (no frame was appended).
+        assert_eq!(store.cube().get_leaf(&[r[1], p[0]]).unwrap(), Fixed::ZERO);
+        assert_eq!(
+            store.cube().get_leaf(&[r[0], p[0]]).unwrap(),
+            Fixed::from(10)
+        );
+        assert_eq!(store.cube().cell_count(), 1);
+        assert_eq!(
+            store.wal_len(),
+            wal_before,
+            "no WAL frame for a rejected batch"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn wal_auto_checkpoints_past_the_threshold_and_recovers() {
+        // P1: with a small WAL byte budget, steady writes cross the threshold and
+        // trigger an automatic checkpoint that folds the log into the snapshot and
+        // shrinks the WAL back to its header — bounding the log instead of letting
+        // it grow unbounded. Recovery from the checkpointed store reconstructs the
+        // identical state.
+        let dir = scratch("p1-auto-checkpoint");
+        let f = fixture();
+        let (r, p, region_total, period_total) =
+            (f.r.clone(), f.p.clone(), f.region_total, f.period_total);
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        // A tiny budget so a handful of writes crosses it deterministically.
+        store.set_wal_checkpoint_threshold(64);
+        // Header only to start.
+        assert_eq!(store.wal_len(), wal::WAL_HEADER_LEN);
+
+        // Write cells one at a time; each append grows the WAL until it crosses 64
+        // bytes, at which point the next write auto-checkpoints and the WAL shrinks.
+        let mut shrank = false;
+        for (i, &leaf) in r.iter().enumerate() {
+            store
+                .set_leaf(&[leaf, p[0]], Fixed::from((i as i32 + 1) * 10))
+                .unwrap();
+            if store.wal_len() == wal::WAL_HEADER_LEN && i > 0 {
+                shrank = true;
+            }
+        }
+        // Add a couple more writes to be sure we crossed the budget at least once.
+        store.set_leaf(&[r[0], p[1]], Fixed::from(5)).unwrap();
+        store.set_leaf(&[r[1], p[1]], Fixed::from(7)).unwrap();
+        assert!(
+            shrank || store.wal_len() < 64 * 4,
+            "the WAL must have auto-checkpointed and shrunk at least once"
+        );
+        // The on-disk WAL is bounded (never grew without bound): it is at most a
+        // few records past the last auto-checkpoint, far below a naive linear log.
+        let wal_on_disk = fs::metadata(dir.join(WAL_FILE)).unwrap().len();
+        assert!(
+            wal_on_disk <= 64 * 4,
+            "WAL stays bounded near the threshold"
+        );
+
+        // Capture the live aggregate, then recover and prove identical state.
+        let live_total = store.cube().get(&[region_total, period_total]).unwrap();
+        drop(store);
+        let recovered = Store::open(&dir).unwrap();
+        assert_eq!(
+            recovered.cube().get(&[region_total, period_total]).unwrap(),
+            live_total,
+            "recovery after auto-checkpoint reconstructs identical state"
+        );
+        assert_eq!(
+            recovered.cube().get_leaf(&[r[1], p[1]]).unwrap(),
+            Fixed::from(7)
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_failure_leaves_memory_unchanged_no_divergence() {
+        // P3 (stage-then-commit): a definition mutator whose snapshot write fails
+        // must leave the in-memory model EXACTLY as it was, so memory never
+        // diverges from disk (before the fix, the model was mutated first and a
+        // failed checkpoint left the "failed" definition live until restart).
+        let dir = scratch("p3-no-divergence");
+        let f = fixture();
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        store.define_subset(static_subset("Keep", &["R0"])).unwrap();
+        assert!(store.model().subset("Region", "Keep").is_some());
+
+        // Block the next snapshot write, then attempt a define. It must fail with a
+        // persist/I-O error and change NOTHING in memory.
+        let blocker = block_snapshot_writes(&dir);
+        let err = store
+            .define_subset(static_subset("Ghost", &["R1"]))
+            .unwrap_err();
+        assert!(
+            matches!(err, PersistError::Io(_) | PersistError::Save(_)),
+            "a blocked snapshot write surfaces as a save/I-O error, got {err:?}"
+        );
+        assert!(
+            store.model().subset("Region", "Ghost").is_none(),
+            "the failed definition must NOT be live in memory (no divergence)"
+        );
+        assert!(
+            store.model().subset("Region", "Keep").is_some(),
+            "the prior committed definition is untouched"
+        );
+
+        // Heal the store (remove the blocker) and confirm disk agrees with memory:
+        // a reopen sees "Keep" and not "Ghost".
+        fs::remove_dir_all(&blocker).unwrap();
+        store.checkpoint().unwrap();
+        drop(store);
+        let reopened = Store::open(&dir).unwrap();
+        assert!(reopened.model().subset("Region", "Keep").is_some());
+        assert!(
+            reopened.model().subset("Region", "Ghost").is_none(),
+            "disk never recorded the failed definition"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn staged_structural_edit_save_failure_leaves_cube_unchanged() {
+        // P3 for a structural (cell-remapping) edit: a blocked snapshot write on the
+        // post-edit checkpoint must leave the live cube's cells and dimension order
+        // exactly as before the edit.
+        let dir = scratch("p3-structural-no-divergence");
+        let f = fixture();
+        let (r, p) = (f.r.clone(), f.p.clone());
+        let mut store = Store::create(&dir, f.cube).unwrap();
+        store.set_leaf(&[r[0], p[0]], Fixed::from(10)).unwrap();
+        store.set_leaf(&[r[1], p[0]], Fixed::from(20)).unwrap();
+        store.checkpoint().unwrap();
+
+        // Block snapshot writes, then attempt a reorder. The pre-edit checkpoint
+        // (no outstanding writes -> just rewrites the same snapshot) fails first,
+        // so the model is untouched.
+        let blocker = block_snapshot_writes(&dir);
+        let err = store
+            .reorder_elements(
+                "Region",
+                &["R1".into(), "R0".into(), "R2".into(), "Total".into()],
+            )
+            .unwrap_err();
+        assert!(matches!(err, PersistError::Io(_) | PersistError::Save(_)));
+        // The dimension order is unchanged: R0 is still index 0.
+        let region = store
+            .cube()
+            .dimensions()
+            .iter()
+            .find(|d| d.name() == "Region")
+            .unwrap();
+        assert_eq!(region.index_of("R0"), Some(r[0]));
+        assert_eq!(
+            store.cube().get_leaf(&[r[0], p[0]]).unwrap(),
+            Fixed::from(10)
+        );
+        fs::remove_dir_all(&blocker).unwrap();
         fs::remove_dir_all(&dir).ok();
     }
 }

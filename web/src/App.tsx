@@ -5,7 +5,7 @@ import ChangePassword from './components/ChangePassword'
 import ErrorBoundary from './components/ErrorBoundary'
 import ThemeToggle from './ui/ThemeToggle'
 import { TooltipProvider, ConfirmProvider } from './ui'
-import { getMe } from './api/client'
+import { ApiError, getMe, setSessionExpiredHandler } from './api/client'
 
 interface Session {
   username: string
@@ -27,24 +27,46 @@ export default function App() {
   useEffect(() => {
     let cancelled = false
     // Idempotent GET, so React StrictMode's double-invoke in dev is harmless.
-    getMe()
-      .then((me) => {
-        if (cancelled) return
-        setSession({
-          username: me.username,
-          isAdmin: me.is_admin,
-          mustChange: me.must_change_password,
+    // A 401 is a genuine "no session" (show Login). A network blip or a 5xx
+    // during load must NOT bounce a user with a live cookie session to Login, so
+    // retry getMe once for those; only after the retry also fails as non-401 do
+    // we fall back to Login (the safe default) rather than risk a wedged splash.
+    const bootstrap = (retry: boolean) => {
+      getMe()
+        .then((me) => {
+          if (cancelled) return
+          setSession({
+            username: me.username,
+            isAdmin: me.is_admin,
+            mustChange: me.must_change_password,
+          })
+          setChecking(false)
         })
-      })
-      // No active session (401 / ApiError / network): treat as "not signed in",
-      // leave session null, and show no error banner.
-      .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setChecking(false)
-      })
+        .catch((err: unknown) => {
+          if (cancelled) return
+          const is401 = err instanceof ApiError && err.status === 401
+          if (!is401 && retry) {
+            // Transient network/5xx on first try: retry once before giving up.
+            bootstrap(false)
+            return
+          }
+          // No active session (401), or a persistent failure after one retry:
+          // leave session null and show Login with no error banner.
+          setChecking(false)
+        })
+    }
+    bootstrap(true)
     return () => {
       cancelled = true
     }
+  }, [])
+
+  // When a request hits a dead session (expired mid-use), drop back to Login in
+  // place instead of leaving a zombie UI whose every panel shows a local
+  // "session expired" error. Registered once; cleared on unmount.
+  useEffect(() => {
+    setSessionExpiredHandler(() => setSession(null))
+    return () => setSessionExpiredHandler(null)
   }, [])
 
   if (checking) {

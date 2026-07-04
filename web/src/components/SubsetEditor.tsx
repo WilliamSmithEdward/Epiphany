@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   createSubset,
+  isAbortError,
   previewMdx,
   updateSubset,
   type DimensionDto,
@@ -47,18 +48,31 @@ export default function SubsetEditor({
       setPreviewError(null)
       return
     }
+    // Generation guard plus an AbortController: a request in flight when the text
+    // changes (effect cleanup runs) is both ignored (`live`) AND cancelled
+    // (`abort`), so a slower older response cannot overwrite a newer one - i.e.
+    // "Resolves to N members" always matches the current text - and the
+    // superseded preview stops consuming server work.
+    let live = true
+    const controller = new AbortController()
     const handle = setTimeout(() => {
-      previewMdx(cube, dimension.name, mdx)
+      previewMdx(cube, dimension.name, mdx, { signal: controller.signal })
         .then((members) => {
+          if (!live) return
           setPreview(members)
           setPreviewError(null)
         })
         .catch((err: unknown) => {
+          if (!live || isAbortError(err)) return
           setPreview([])
           setPreviewError(err instanceof Error ? err.message : 'Invalid expression')
         })
     }, 300)
-    return () => clearTimeout(handle)
+    return () => {
+      live = false
+      clearTimeout(handle)
+      controller.abort()
+    }
   }, [cube, dimension.name, mdx, tab])
 
   async function save() {

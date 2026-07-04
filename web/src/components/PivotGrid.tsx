@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   createView,
   executeMdx,
   explainCell,
   getCube,
+  isAbortError,
   listSubsets,
   previewMdx,
   readCells,
@@ -32,10 +33,26 @@ import {
   type VisibleMember,
 } from '../model/tree'
 import { Button, Dialog, Select } from '../ui'
+import { useVirtualRows } from '../ui/useVirtualRows'
 import CellsetGrid from './CellsetGrid'
 import PivotFields, { type AxisRole, type AxisSet } from './PivotFields'
 import SubsetEditor from './SubsetEditor'
 import { TraceView } from './TraceView'
+
+// The pivot body virtualizes above this many rendered rows: below it a large
+// model is not a concern and a plain <tbody> keeps rowSpan headers simplest;
+// above it we window the rows (and fetch only the visible window's cells) so a
+// several-thousand-row cellset stays responsive (ADR-0020 performance mandate).
+const VIRTUAL_ROW_THRESHOLD = 150
+// The fixed body-row height (px) the row windowing math assumes. Pivot data rows
+// are single-line (cells never wrap - see .grid-wrap table.pivot td), so a fixed
+// height is accurate; it must match the CSS row box (padding + line-height).
+const PIVOT_ROW_H = 33
+// Overscan rows above/below the viewport, and the extra window margin (in rows)
+// added when fetching cells so a small scroll reveals already-loaded values
+// rather than briefly-blank cells while the next windowed read lands.
+const ROW_OVERSCAN = 6
+const FETCH_MARGIN = 40
 
 /** Return a copy of `s` without `key` (or `s` unchanged if it was absent). */
 function deleteFrom(s: Set<string>, key: string): Set<string> {
@@ -134,11 +151,16 @@ export default function PivotGrid({
   cube,
   reloadSignal,
   onModelChange,
+  showMdx = true,
 }: {
   cube: string
   reloadSignal: number
   /** Called after the layout is saved as a View, so the explorer can refresh. */
   onModelChange?: () => void
+  /** Whether to offer the "Show MDX" affordance. Hidden for a pure business-user
+   * persona (ADR-0020 progressive disclosure): raw MDX is modeler/admin machinery.
+   * Defaults to shown so non-persona callers keep the existing behavior. */
+  showMdx?: boolean
 }) {
   const [detail, setDetail] = useState<CubeDetail | null>(null)
   // The dimensions nested on each axis, outer to inner. An axis may be empty (the
@@ -178,30 +200,40 @@ export default function PivotGrid({
   const [axisSet, setAxisSet] = useState<Record<string, AxisSet | null>>({})
   // The dimension whose set editor (SubsetEditor) dialog is open, if any.
   const [subsetEditorDim, setSubsetEditorDim] = useState<string | null>(null)
-  // "Save view" dialog: persist the current layout as a named, shared/private View.
+  // "Save view" dialog open flag. The dialog's own form state (name, visibility,
+  // busy, error) lives inside SaveViewDialog, not here, so a keystroke in its name
+  // field re-renders only the small dialog and never the (potentially huge) grid
+  // body - the pivot is the perf-critical surface (ADR-0020).
   const [saveOpen, setSaveOpen] = useState(false)
-  const [saveName, setSaveName] = useState('')
-  const [saveVis, setSaveVis] = useState<Visibility>('private')
   // Independent zero-suppression: hide all-zero rows / all-zero columns. These are
   // LIVE toolbar toggles - they filter the displayed grid immediately (see
   // displayRowTuples/displayColTuples) - and are also captured into a saved view
   // (see buildViewDef). Off by default.
   const [suppressRows, setSuppressRows] = useState(false)
   const [suppressCols, setSuppressCols] = useState(false)
-  const [saveBusy, setSaveBusy] = useState(false)
-  const [saveError, setSaveError] = useState<string | null>(null)
-  // "Show MDX" dialog: previews the query the current layout generates.
+  // "Show MDX" dialog open flag. Like the Save dialog, its editable query text,
+  // result, and run state live inside MdxDialog so typing in the MDX textarea
+  // never re-renders the grid.
   const [mdxOpen, setMdxOpen] = useState(false)
-  // The MDX dialog's editable query text, executed result, error, and run state.
-  const [mdxText, setMdxText] = useState('')
-  const [mdxResult, setMdxResult] = useState<CellsetDto | null>(null)
-  const [mdxError, setMdxError] = useState<string | null>(null)
-  const [mdxBusy, setMdxBusy] = useState(false)
   const gridRef = useRef<HTMLDivElement>(null)
   // Monotonic refresh generation: each refresh() bumps it and only applies its
   // own response if it is still the latest, so a slow readCells that resolves
   // after a newer refresh cannot overwrite the current cellset (request race).
+  // The AbortController below is the systemic fix (it cancels the superseded
+  // fetch); the counter stays as a same-tick backstop.
   const refreshGen = useRef(0)
+  // The in-flight readCells AbortController, aborted when a newer refresh starts
+  // or the grid unmounts, so a superseded/abandoned read is cancelled rather than
+  // left to resolve and be discarded (ADR-0020 performance mandate).
+  const refreshAbort = useRef<AbortController | null>(null)
+  // The half-open row range [from, to) whose cells are currently loaded into
+  // `cells`, so a scroll only re-reads when the needed window escapes it (a small
+  // scroll stays within the FETCH_MARGIN already fetched). Reset to empty whenever
+  // the layout/context changes and the cells map is cleared.
+  const loadedRows = useRef<{ from: number; to: number }>({ from: 0, to: 0 })
+
+  // Abort any in-flight windowed read when the grid unmounts.
+  useEffect(() => () => refreshAbort.current?.abort(), [])
 
   // Load (or reload) the saved subsets for every dimension, so each axis chip's
   // "select a set" menu is current (used on first load and after a new set saves).
@@ -245,9 +277,13 @@ export default function PivotGrid({
           if (!cancelled) setSubsetsByDim(m)
         })
       })
-      .catch((err: unknown) =>
-        setError(err instanceof Error ? err.message : 'Failed to load cube'),
-      )
+      .catch((err: unknown) => {
+        // Guard the catch too (the .then already does): a slow getCube for a
+        // previous cube can reject after we switched cubes and loaded the new
+        // one, painting a stale wrong-cube error over a healthy grid.
+        if (cancelled) return
+        setError(err instanceof Error ? err.message : 'Failed to load cube')
+      })
     return () => {
       cancelled = true
     }
@@ -350,6 +386,120 @@ export default function PivotGrid({
     },
     [detail, context, rowDims, colDims],
   )
+
+  // Whether zero-suppression is active on either axis. Suppression must judge
+  // EVERY cell of a row/column to decide it is all-zero, so it needs the full grid
+  // fetched (a windowed read cannot tell whether an unfetched row is all-zero); in
+  // that mode windowing is disabled and the whole cross-product is read, matching
+  // the original behavior. With suppression off (the common case) reads are
+  // windowed to the visible rows.
+  const suppressing = suppressRows || suppressCols
+  // Virtualize the body (and window the reads) only above the threshold and only
+  // when not suppressing. `rowTuples` (not the suppressed display list) sizes the
+  // window in the common non-suppressing path, where the two are identical.
+  const virtualizeRows = !suppressing && rowTuples.length > VIRTUAL_ROW_THRESHOLD
+
+  // Fetch cells for row window [rowFrom, rowTo) x all column tuples and store them.
+  // `replace` (a layout/context change, a manual/WS refresh) swaps the whole cells
+  // map and resets the loaded-row range; a scroll-triggered window extension merges
+  // the new rows into the existing map so already-loaded rows stay painted. Only
+  // the visible window's coords are POSTed (unless suppressing, when the caller
+  // passes the full range), so a several-thousand-row cellset is never materialized
+  // as one giant request.
+  const fetchRows = useCallback(
+    async (rowFrom: number, rowTo: number, replace: boolean) => {
+      if (!detail) return
+      if (rowDims.length === 0 || colDims.length === 0 || rowTuples.length === 0 || colTuples.length === 0) {
+        // No dimension on an axis (or an empty axis): nothing to fetch. Clear any
+        // prior slice's cells and end any in-flight busy state so the placeholder /
+        // "No data" empty state is not shown dimmed and AT does not keep announcing.
+        refreshAbort.current?.abort()
+        setCells(new Map())
+        loadedRows.current = { from: 0, to: 0 }
+        setRefreshing(false)
+        return
+      }
+      const from = Math.max(0, rowFrom)
+      const to = Math.min(rowTuples.length, rowTo)
+      const coords: Coord[] = []
+      for (let r = from; r < to; r++) {
+        const rt = rowTuples[r]
+        for (const ct of colTuples) coords.push(coordFor(rt, ct))
+      }
+      // Abort a still-in-flight read (superseded) before starting a newer one, then
+      // bump the generation as a same-tick backstop against an out-of-order resolve.
+      refreshAbort.current?.abort()
+      const controller = new AbortController()
+      refreshAbort.current = controller
+      const gen = (refreshGen.current += 1)
+      setRefreshing(true)
+      try {
+        const fetched = await readCells(cube, coords, { signal: controller.signal })
+        if (gen !== refreshGen.current) return
+        setCells((prev) => {
+          const next = replace ? new Map<string, CellDto>() : new Map(prev)
+          let i = 0
+          for (let r = from; r < to; r++) {
+            const rk = tupleKey(rowTuples[r])
+            for (const ct of colTuples) {
+              next.set(`${rk}||${tupleKey(ct)}`, fetched[i])
+              i += 1
+            }
+          }
+          return next
+        })
+        loadedRows.current = replace
+          ? { from, to }
+          : { from: Math.min(loadedRows.current.from, from), to: Math.max(loadedRows.current.to, to) }
+        setError(null)
+        setRefreshing(false)
+      } catch (err) {
+        // A cancelled read (superseded or unmounted) is benign; do not surface it.
+        if (isAbortError(err) || gen !== refreshGen.current) return
+        setError(err instanceof Error ? err.message : 'Failed to read cells')
+        setRefreshing(false)
+      }
+    },
+    [cube, detail, rowDims, colDims, coordFor, rowTuples, colTuples],
+  )
+
+  // Row windowing (ADR-0032's useVirtualRows, the same hook the member table uses):
+  // above the threshold, render only the rows in (and a small overscan around) the
+  // viewport, so the DOM node count stays constant no matter how many rows the
+  // layout produces. `enabled=false` below the threshold renders every row (short
+  // grids stay plain DOM). Disabled while suppressing, where every row must be in
+  // the DOM to be judged for all-zero anyway. The scroll container is the shared
+  // grid-wrap (its ref is merged with gridRef so focusCell can still query inputs).
+  const virtual = useVirtualRows({
+    rowCount: displayRowTuples.length,
+    rowHeight: PIVOT_ROW_H,
+    overscan: ROW_OVERSCAN,
+    enabled: virtualizeRows,
+  })
+  // Merge the virtualization container ref with gridRef (both target .grid-wrap):
+  // the hook measures/scrolls through its ref, focusCell queries inputs through
+  // gridRef, and the windowed-read seed reads scrollTop through gridRef.
+  const setGridEl = useCallback(
+    (el: HTMLDivElement | null) => {
+      gridRef.current = el
+      virtual.containerRef.current = el
+    },
+    [virtual.containerRef],
+  )
+
+  // Extend the fetched row window as the user scrolls: when the visible window
+  // (plus margin) escapes the already-loaded range, read the missing rows and merge
+  // them in. Only fires while virtualizing (windowed reads); the full-fetch paths
+  // load everything up front. Debounced implicitly by React batching + the loaded-
+  // range guard, so a fast scroll issues few reads.
+  useEffect(() => {
+    if (!virtualizeRows) return
+    const wantFrom = Math.max(0, virtual.start - FETCH_MARGIN)
+    const wantTo = Math.min(rowTuples.length, virtual.end + FETCH_MARGIN)
+    const { from, to } = loadedRows.current
+    if (wantFrom < from || wantTo > to) void fetchRows(wantFrom, wantTo, false)
+    // rowTuples.length pins the effect to the current layout; start/end drive it.
+  }, [virtualizeRows, virtual.start, virtual.end, fetchRows, rowTuples.length])
 
   // Toggle one occurrence's drill-down expansion, by its drill-path key.
   const toggleExpanded = useCallback((dim: string, key: string) => {
@@ -591,24 +741,17 @@ export default function PivotGrid({
     }
   }, [detail, rowDims, colDims, context, axisSet, suppressRows, suppressCols])
 
-  const saveView = useCallback(async () => {
-    if (saveName.trim() === '') {
-      setSaveError('Name the view before saving.')
-      return
-    }
-    setSaveBusy(true)
-    try {
-      await createView(cube, { ...buildViewDef(), name: saveName.trim(), visibility: saveVis })
-      setSaveOpen(false)
-      setSaveName('')
-      setSaveError(null)
+  // Persist the current layout as a named view. Owned by the parent (it holds the
+  // layout + buildViewDef); SaveViewDialog calls it with the name/visibility it
+  // collected and surfaces any thrown error inline. Resolves on success so the
+  // dialog can close and reset; rethrows so the dialog shows the failure.
+  const createSavedView = useCallback(
+    async (name: string, visibility: Visibility) => {
+      await createView(cube, { ...buildViewDef(), name, visibility })
       onModelChange?.()
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : 'Could not save the view')
-    } finally {
-      setSaveBusy(false)
-    }
-  }, [cube, buildViewDef, saveName, saveVis, onModelChange])
+    },
+    [cube, buildViewDef, onModelChange],
+  )
 
   // Build the MDX the current layout represents. Computed lazily (only when the
   // "Show MDX" dialog opens) rather than on every render, since visibleMembersOf
@@ -632,55 +775,23 @@ export default function PivotGrid({
     })
   }, [cube, detail, rowDims, colDims, context, visibleMembersOf])
 
+  // A full refresh of the current window: the visible window (+margin) when
+  // virtualizing, else the whole row list. Replaces the cells map. Used on layout /
+  // context / cube changes, WS reloads, and after a write. Reads the live scroll
+  // window from `loadedRows` is not possible here (it is being reset), so it starts
+  // from the top window; a subsequent scroll extends it via ensureWindow.
   const refresh = useCallback(async () => {
-    if (!detail) return
-    if (rowDims.length === 0 || colDims.length === 0) {
-      // No dimension on an axis: nothing to fetch. Clear any prior slice's cells
-      // and end any in-flight busy state so the empty placeholder is not dimmed
-      // and assistive tech does not keep announcing "Refreshing".
-      setCells(new Map())
-      setRefreshing(false)
+    if (!virtualizeRows) {
+      await fetchRows(0, rowTuples.length, true)
       return
     }
-    if (rowTuples.length === 0 || colTuples.length === 0) {
-      // Nothing to fetch (an empty axis): clear any prior slice's cells and end any
-      // in-flight busy state so the "No data" empty state is not shown dimmed.
-      setCells(new Map())
-      setRefreshing(false)
-      return
-    }
-    const coords: Coord[] = []
-    for (const rt of rowTuples) {
-      for (const ct of colTuples) {
-        coords.push(coordFor(rt, ct))
-      }
-    }
-    const gen = (refreshGen.current += 1)
-    setRefreshing(true)
-    try {
-      const fetched = await readCells(cube, coords)
-      // Ignore a stale response: a newer refresh started while this one was in
-      // flight, so applying these cells would paint older data over the current
-      // layout (the row/col keys can still match, e.g. on a context change).
-      if (gen !== refreshGen.current) return
-      const next = new Map<string, CellDto>()
-      let i = 0
-      for (const rt of rowTuples) {
-        const rk = tupleKey(rt)
-        for (const ct of colTuples) {
-          next.set(`${rk}||${tupleKey(ct)}`, fetched[i])
-          i += 1
-        }
-      }
-      setCells(next)
-      setError(null)
-      setRefreshing(false)
-    } catch (err) {
-      if (gen !== refreshGen.current) return
-      setError(err instanceof Error ? err.message : 'Failed to read cells')
-      setRefreshing(false)
-    }
-  }, [cube, detail, rowDims, colDims, coordFor, rowTuples, colTuples])
+    // Seed the initial visible window from the top; the scroll effect widens it as
+    // the user moves. A margin is included so an immediate small scroll is covered.
+    const container = gridRef.current
+    const first = container ? Math.floor(container.scrollTop / PIVOT_ROW_H) : 0
+    const visible = container ? Math.ceil(container.clientHeight / PIVOT_ROW_H) : VIRTUAL_ROW_THRESHOLD
+    await fetchRows(first - FETCH_MARGIN, first + visible + FETCH_MARGIN, true)
+  }, [virtualizeRows, fetchRows, rowTuples.length])
 
   useEffect(() => {
     void refresh()
@@ -734,14 +845,30 @@ export default function PivotGrid({
     [cube, coordFor],
   )
 
-  /** Move focus to the editable cell input at (r, c), if one exists. */
-  const focusCell = useCallback((r: number, c: number) => {
-    const target = gridRef.current?.querySelector<HTMLInputElement>(
-      `input[data-r="${r}"][data-c="${c}"]`,
-    )
-    target?.focus()
-    target?.select()
-  }, [])
+  /** Move focus to the editable cell input at absolute (r, c). When virtualizing,
+   * the target row may be outside the rendered window, so scroll it into view and
+   * focus on the next frame once it has mounted; otherwise focus it directly. */
+  const focusCell = useCallback(
+    (r: number, c: number) => {
+      const grid = gridRef.current
+      const find = () =>
+        grid?.querySelector<HTMLInputElement>(`input[data-r="${r}"][data-c="${c}"]`) ?? null
+      const focus = (el: HTMLInputElement | null) => {
+        el?.focus()
+        el?.select()
+      }
+      const target = find()
+      if (target || !virtualizeRows || !grid) {
+        focus(target)
+        return
+      }
+      // Row not in the window: scroll so it lands in view, then focus once the
+      // windowed render has placed the input (a rAF is enough after the scroll).
+      grid.scrollTop = Math.max(0, r * PIVOT_ROW_H - grid.clientHeight / 2)
+      requestAnimationFrame(() => requestAnimationFrame(() => focus(find())))
+    },
+    [virtualizeRows],
+  )
 
   // Surface an initial-load failure instead of an endless loading banner; the
   // error <p> further down is unreachable while detail is null. Recoverable.
@@ -771,18 +898,48 @@ export default function PivotGrid({
   // Nested column headers: one row per column-axis level, run-length merged. Built
   // from the DISPLAYED tuples so zero-suppression collapses header spans too.
   const colHeader = computeHeaderSpans(headerTuples(displayColTuples))
-  // For each body row, the row-header cells that start a run at that row, per
-  // row-axis level (mirrors the CellsetGrid rowSpan technique).
-  const rowSpans = computeHeaderSpans(headerTuples(displayRowTuples))
+  // The visible row window [winStart, winEnd): the whole list when not virtualizing,
+  // else just the windowed slice the DOM actually renders. Everything below is
+  // computed against this window so only visible rows are built.
+  const winStart = virtualizeRows ? virtual.start : 0
+  const winEnd = virtualizeRows ? virtual.end : displayRowTuples.length
+  const windowRowTuples = virtualizeRows ? displayRowTuples.slice(winStart, winEnd) : displayRowTuples
+  // For each VISIBLE body row, the row-header cells that begin (or, for a run that
+  // started above the window, first surface) at that row, per row-axis level. A
+  // rowSpan run is clipped to the window: a run [r, r+span) intersecting the window
+  // is emitted at max(r, winStart) with its span clamped to the window, so an outer
+  // dimension's member that spans rows starting off-screen still labels the first
+  // visible row (with a correct, clipped rowSpan) instead of vanishing. Indexed by
+  // window-relative row so the render maps it alongside windowRowTuples.
+  const rowSpansAll = computeHeaderSpans(headerTuples(displayRowTuples))
   const rowHeaderAt: { dim: string; name: string; key?: string; rowSpan: number; startIndex: number }[][] =
-    displayRowTuples.map(() => [])
+    windowRowTuples.map(() => [])
   for (let level = 0; level < rowDims.length; level++) {
     let r = 0
-    for (const run of rowSpans[level] ?? []) {
-      rowHeaderAt[r].push({ dim: run.dimension, name: run.name, key: run.key, rowSpan: run.span, startIndex: r })
-      r += run.span
+    for (const run of rowSpansAll[level] ?? []) {
+      const runStart = r
+      const runEnd = r + run.span
+      r = runEnd
+      // Skip a run entirely outside the window; clip one that straddles it.
+      if (runEnd <= winStart || runStart >= winEnd) continue
+      const from = Math.max(runStart, winStart)
+      const to = Math.min(runEnd, winEnd)
+      rowHeaderAt[from - winStart].push({
+        dim: run.dimension,
+        name: run.name,
+        key: run.key,
+        rowSpan: to - from,
+        startIndex: from,
+      })
     }
   }
+  // Spacer heights so the scrollbar reflects the full row count while only the
+  // window is in the DOM: a leading <tr> of the rows above, a trailing <tr> of the
+  // rows below. Zero when not virtualizing.
+  const topSpacer = virtualizeRows ? virtual.offsetTop : 0
+  const bottomSpacer = virtualizeRows
+    ? Math.max(0, virtual.totalHeight - virtual.offsetTop - windowRowTuples.length * PIVOT_ROW_H)
+    : 0
 
   // Whether a header run's member can be drilled into within its dimension.
   const runExpandable = (dim: string, name: string) =>
@@ -878,26 +1035,15 @@ export default function PivotGrid({
           icon="◫"
           disabled={axisEmpty}
           title={axisEmpty ? 'Add a dimension to both Rows and Columns before saving a view.' : undefined}
-          onClick={() => {
-            setSaveError(null)
-            setSaveOpen(true)
-          }}
+          onClick={() => setSaveOpen(true)}
         >
           Save view
         </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          icon="∑"
-          onClick={() => {
-            setMdxText(buildMdx())
-            setMdxResult(null)
-            setMdxError(null)
-            setMdxOpen(true)
-          }}
-        >
-          Show MDX
-        </Button>
+        {showMdx ? (
+          <Button variant="ghost" size="sm" icon="∑" onClick={() => setMdxOpen(true)}>
+            Show MDX
+          </Button>
+        ) : null}
         <Button variant="ghost" size="sm" icon="↻" onClick={() => void refresh()}>
           Refresh
         </Button>
@@ -936,7 +1082,8 @@ export default function PivotGrid({
       ) : (
       <div
         className="grid-wrap"
-        ref={gridRef}
+        ref={setGridEl}
+        onScroll={virtualizeRows ? virtual.onScroll : undefined}
         aria-busy={refreshing || undefined}
         // Dim the currently-painted cells while a refresh is in flight so a user
         // never reads a previous-slice number AS the current slice's value (the
@@ -1007,11 +1154,23 @@ export default function PivotGrid({
                 </td>
               </tr>
             ) : null}
+            {/* Leading spacer: the total height of the rows above the window, so
+                the scrollbar reflects the full row count while those rows stay out
+                of the DOM. A single full-width cell keeps the column layout intact. */}
+            {topSpacer > 0 ? (
+              <tr aria-hidden="true" className="pivot__spacer">
+                <td colSpan={cornerCols + displayColTuples.length} style={{ height: topSpacer, padding: 0, border: 0 }} />
+              </tr>
+            ) : null}
             {displayRowTuples.length > 0 &&
               displayColTuples.length > 0 &&
-              displayRowTuples.map((rt, ri) => (
-              <tr key={tupleKey(rt)}>
-                {rowHeaderAt[ri].map((h, hi) => {
+              windowRowTuples.map((rt, wi) => {
+              // wi indexes the rendered window; ri is the absolute row index used
+              // for cell data-r / keyboard nav so focus moves across the full grid.
+              const ri = winStart + wi
+              return (
+              <tr key={tupleKey(rt)} style={virtualizeRows ? { height: PIVOT_ROW_H } : undefined}>
+                {rowHeaderAt[wi].map((h, hi) => {
                   const member = rt.find((m) => m.dim === h.dim)
                   const expandable = runExpandable(h.dim, h.name)
                   // Address expansion by the occurrence's drill-path key (not its
@@ -1055,18 +1214,25 @@ export default function PivotGrid({
                       cell={cell}
                       r={ri}
                       c={ci}
-                      rowName={rt.map((m) => m.name).join(' / ')}
-                      colName={ct.map((m) => m.name).join(' / ')}
+                      rowTuple={rt}
+                      colTuple={ct}
                       spreadMode={spreadMode}
-                      onCommit={(next) => void commit(rt, ct, cell?.value ?? '', next)}
-                      onSpread={(next) => void spread(rt, ct, next)}
+                      onCommit={commit}
+                      onSpread={spread}
                       onNav={focusCell}
-                      onDrill={() => void drillInto(rt, ct)}
+                      onDrill={drillInto}
                     />
                   )
                 })}
               </tr>
-            ))}
+              )
+            })}
+            {/* Trailing spacer: the total height of the rows below the window. */}
+            {bottomSpacer > 0 ? (
+              <tr aria-hidden="true" className="pivot__spacer">
+                <td colSpan={cornerCols + displayColTuples.length} style={{ height: bottomSpacer, padding: 0, border: 0 }} />
+              </tr>
+            ) : null}
           </tbody>
         </table>
       </div>
@@ -1116,137 +1282,224 @@ export default function PivotGrid({
           />
         </Dialog>
       ) : null}
-      <Dialog
+      <SaveViewDialog
         open={saveOpen}
         onOpenChange={setSaveOpen}
-        title="Save view"
-        description="Save the current rows, columns, filters, and member sets as a reusable view."
-        size="sm"
-      >
-        <div className="pw-form">
-          <label className="field">
-            <span className="field__label">View name</span>
-            <input
-              value={saveName}
-              placeholder="e.g. Q1 by region"
-              onChange={(e) => setSaveName(e.target.value)}
-            />
-          </label>
-          <label className="field">
-            <span className="field__label">Who can see it</span>
-            <Select
-              value={saveVis}
-              onValueChange={(v) => setSaveVis(v as Visibility)}
-              options={[
-                { value: 'private', label: 'Only me' },
-                { value: 'public', label: 'Everyone' },
-              ]}
-              ariaLabel="View visibility"
-            />
-          </label>
-          {suppressRows || suppressCols ? (
-            // Zero-suppression is set from the grid toolbar (a live toggle); the
-            // saved view simply captures whatever is active now.
-            <p className="muted" role="note">
-              This view will be saved with zero-suppression on for{' '}
-              {suppressRows && suppressCols
-                ? 'rows and columns'
-                : suppressRows
-                  ? 'rows'
-                  : 'columns'}
-              .
-            </p>
-          ) : null}
-          {saveError ? (
-            <p className="error" role="alert">
-              {saveError}
-            </p>
-          ) : null}
-          <div className="pw-form__actions">
-            <Button variant="ghost" size="sm" onClick={() => setSaveOpen(false)}>
-              Cancel
-            </Button>
-            <Button size="sm" disabled={saveBusy} onClick={() => void saveView()}>
-              Save view
-            </Button>
-          </div>
-        </div>
-      </Dialog>
+        suppressRows={suppressRows}
+        suppressCols={suppressCols}
+        onSave={createSavedView}
+      />
 
-      <Dialog
-        open={mdxOpen}
-        onOpenChange={setMdxOpen}
-        title="MDX for this view"
-        description="The query the current layout generates. Edit it and Run to execute against this cube."
-        size="lg"
-      >
-        <textarea
-          className="mdx-preview"
-          style={{ width: '100%', resize: 'vertical' }}
-          value={mdxText}
-          onChange={(e) => setMdxText(e.target.value)}
-          spellCheck={false}
-          aria-label="MDX query"
-          rows={8}
-        />
-        {mdxError ? (
-          <p className="error" role="alert">
-            {mdxError}
-          </p>
-        ) : null}
-        <div className="pw-form__actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void navigator.clipboard?.writeText(mdxText)}
-          >
-            Copy
-          </Button>
-          <Button
-            size="sm"
-            disabled={mdxBusy}
-            onClick={() => {
-              setMdxBusy(true)
-              executeMdx(cube, mdxText)
-                .then((cs) => {
-                  setMdxResult(cs)
-                  setMdxError(null)
-                })
-                .catch((e) => {
-                  setMdxResult(null)
-                  setMdxError(e instanceof Error ? e.message : 'Could not run the query')
-                })
-                .finally(() => setMdxBusy(false))
-            }}
-          >
-            {mdxBusy ? 'Running...' : 'Run'}
-          </Button>
-          <Button variant="ghost" size="sm" onClick={() => setMdxOpen(false)}>
-            Close
-          </Button>
-        </div>
-        {mdxResult ? (
-          <CellsetGrid
-            cube={cube}
-            cellset={mdxResult}
-            onChanged={() => {
-              executeMdx(cube, mdxText)
-                .then((cs) => setMdxResult(cs))
-                .catch(() => {})
-            }}
-          />
-        ) : null}
-      </Dialog>
+      {mdxOpen ? (
+        <MdxDialog cube={cube} initialMdx={buildMdx} onClose={() => setMdxOpen(false)} />
+      ) : null}
     </div>
   )
 }
 
-function CellView({
+// The "Save view" dialog, split out of PivotGrid so its controlled name field and
+// visibility select hold their OWN state: a keystroke here re-renders only this
+// small dialog, never the (potentially several-thousand-cell) grid body. `onSave`
+// persists the current layout (owned by the parent) and rejects on failure so the
+// error surfaces inline.
+const SaveViewDialog = memo(function SaveViewDialog({
+  open,
+  onOpenChange,
+  suppressRows,
+  suppressCols,
+  onSave,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  suppressRows: boolean
+  suppressCols: boolean
+  onSave: (name: string, visibility: Visibility) => Promise<void>
+}) {
+  const [name, setName] = useState('')
+  const [visibility, setVisibility] = useState<Visibility>('private')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Reset the form each time the dialog opens so a prior attempt's name/error does
+  // not linger on reopen.
+  useEffect(() => {
+    if (open) {
+      setName('')
+      setError(null)
+      setBusy(false)
+    }
+  }, [open])
+
+  const save = async () => {
+    if (name.trim() === '') {
+      setError('Name the view before saving.')
+      return
+    }
+    setBusy(true)
+    try {
+      await onSave(name.trim(), visibility)
+      onOpenChange(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save the view')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Save view"
+      description="Save the current rows, columns, filters, and member sets as a reusable view."
+      size="sm"
+    >
+      <div className="pw-form">
+        <label className="field">
+          <span className="field__label">View name</span>
+          <input
+            value={name}
+            placeholder="e.g. Q1 by region"
+            onChange={(e) => setName(e.target.value)}
+          />
+        </label>
+        <label className="field">
+          <span className="field__label">Who can see it</span>
+          <Select
+            value={visibility}
+            onValueChange={(v) => setVisibility(v as Visibility)}
+            options={[
+              { value: 'private', label: 'Only me' },
+              { value: 'public', label: 'Everyone' },
+            ]}
+            ariaLabel="View visibility"
+          />
+        </label>
+        {suppressRows || suppressCols ? (
+          // Zero-suppression is set from the grid toolbar (a live toggle); the
+          // saved view simply captures whatever is active now.
+          <p className="muted" role="note">
+            This view will be saved with zero-suppression on for{' '}
+            {suppressRows && suppressCols
+              ? 'rows and columns'
+              : suppressRows
+                ? 'rows'
+                : 'columns'}
+            .
+          </p>
+        ) : null}
+        {error ? (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <div className="pw-form__actions">
+          <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button size="sm" disabled={busy} onClick={() => void save()}>
+            Save view
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  )
+})
+
+// The "Show MDX" dialog, split out of PivotGrid so its editable query textarea and
+// executed result hold their OWN state - typing in the textarea re-renders only
+// this dialog, not the grid. Mounted only while open (the parent gates it), so the
+// initial text is built once from the current layout via `initialMdx`.
+const MdxDialog = memo(function MdxDialog({
+  cube,
+  initialMdx,
+  onClose,
+}: {
+  cube: string
+  initialMdx: () => string
+  onClose: () => void
+}) {
+  const [text, setText] = useState(() => initialMdx())
+  const [result, setResult] = useState<CellsetDto | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const runMdx = () => {
+    setBusy(true)
+    executeMdx(cube, text)
+      .then((cs) => {
+        setResult(cs)
+        setError(null)
+      })
+      .catch((e) => {
+        setResult(null)
+        setError(e instanceof Error ? e.message : 'Could not run the query')
+      })
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose()
+      }}
+      title="MDX for this view"
+      description="The query the current layout generates. Edit it and Run to execute against this cube."
+      size="lg"
+    >
+      <textarea
+        className="mdx-preview"
+        style={{ width: '100%', resize: 'vertical' }}
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        spellCheck={false}
+        aria-label="MDX query"
+        rows={8}
+      />
+      {error ? (
+        <p className="error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      <div className="pw-form__actions">
+        <Button variant="ghost" size="sm" onClick={() => void navigator.clipboard?.writeText(text)}>
+          Copy
+        </Button>
+        <Button size="sm" disabled={busy} onClick={runMdx}>
+          {busy ? 'Running...' : 'Run'}
+        </Button>
+        <Button variant="ghost" size="sm" onClick={onClose}>
+          Close
+        </Button>
+      </div>
+      {result ? (
+        <CellsetGrid
+          cube={cube}
+          cellset={result}
+          onChanged={() => {
+            executeMdx(cube, text)
+              .then((cs) => setResult(cs))
+              .catch(() => {})
+          }}
+        />
+      ) : null}
+    </Dialog>
+  )
+})
+
+// Memoized so a PivotGrid state change unrelated to this cell (e.g. a keystroke
+// in the Save-view name input or the MDX dialog textarea, both state in the
+// parent) does not re-render every cell. All props are render-stable: rowTuple /
+// colTuple come from memoized axis tuples, the four callbacks are useCallback'd
+// in the parent, and `cell` only changes on an actual data refresh. The callbacks
+// take the tuples (rather than a per-cell closure) precisely to stay stable.
+const CellView = memo(function CellView({
   cell,
   r,
   c,
-  rowName,
-  colName,
+  rowTuple,
+  colTuple,
   spreadMode,
   onCommit,
   onSpread,
@@ -1256,14 +1509,16 @@ function CellView({
   cell: CellDto | undefined
   r: number
   c: number
-  rowName: string
-  colName: string
+  rowTuple: Tuple
+  colTuple: Tuple
   spreadMode: 'off' | SpreadMethod
-  onCommit: (next: string) => void
-  onSpread: (next: string) => void
+  onCommit: (rowTuple: Tuple, colTuple: Tuple, previous: string, next: string) => void
+  onSpread: (rowTuple: Tuple, colTuple: Tuple, typed: string) => void
   onNav: (r: number, c: number) => void
-  onDrill: () => void
+  onDrill: (rowTuple: Tuple, colTuple: Tuple) => void
 }) {
+  const rowName = rowTuple.map((m) => m.name).join(' / ')
+  const colName = colTuple.map((m) => m.name).join(' / ')
   const cellLabel = `${rowName} ${colName}`
   if (!cell || !cell.editable) {
     // With spreading on, a calculated (total) cell accepts a value to distribute
@@ -1282,7 +1537,7 @@ function CellView({
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault()
-                onSpread(e.currentTarget.value)
+                onSpread(rowTuple, colTuple, e.currentTarget.value)
                 e.currentTarget.value = ''
               } else if (e.key === 'Escape') {
                 e.currentTarget.value = ''
@@ -1290,7 +1545,7 @@ function CellView({
               }
             }}
             onBlur={(e) => {
-              if (e.currentTarget.value.trim() !== '') onSpread(e.currentTarget.value)
+              if (e.currentTarget.value.trim() !== '') onSpread(rowTuple, colTuple, e.currentTarget.value)
               e.currentTarget.value = ''
             }}
           />
@@ -1304,7 +1559,7 @@ function CellView({
         title="Calculated value. Click to see how it is calculated."
       >
         {hasValue ? (
-          <button type="button" className="cell-drill" onClick={onDrill}>
+          <button type="button" className="cell-drill" onClick={() => onDrill(rowTuple, colTuple)}>
             {cell?.value}
           </button>
         ) : (
@@ -1339,8 +1594,8 @@ function CellView({
             e.currentTarget.blur()
           }
         }}
-        onBlur={(e) => onCommit(e.currentTarget.value.trim())}
+        onBlur={(e) => onCommit(rowTuple, colTuple, cell.value ?? '', e.currentTarget.value.trim())}
       />
     </td>
   )
-}
+})

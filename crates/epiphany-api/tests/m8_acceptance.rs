@@ -20,7 +20,10 @@ use axum::Router;
 use epiphany_api::{
     build_router, AppState, CalcFactory, RunLedger, RunRecord, RunState, Scheduler, SessionStore,
 };
-use epiphany_core::{Cube, Dimension, Flow, Job, Trigger};
+use epiphany_core::{
+    Connection, ConnectionSpec, Cube, Dimension, Flow, FlowInput, FlowInputBinding, Job, SqlSpec,
+    SqlSslMode, Trigger,
+};
 use epiphany_determinism::{IdGen, ManualClock};
 use epiphany_engine::Engine;
 use epiphany_mdx::MdxEvaluator;
@@ -360,4 +363,107 @@ fn a_scheduled_write_survives_a_store_reopen() {
     stores.insert("Sales".to_string(), store);
     let reopened = Engine::from_stores(stores, Arc::new(IdGen::default()));
     assert_eq!(north_sales(&reopened), 42 * 10_000);
+}
+
+/// An automation store whose `load` flow (owned by `owner`) declares a GLOBAL
+/// connection input `conn` and whose `nightly` job runs it; the global SQL
+/// connection `conn` exists so only the authorization gate can stop the fetch.
+fn automation_with_global_input(name: &str, owner: &str) -> AutomationStore {
+    let dir = scratch(&format!("auto-conn-{name}"));
+    let mut store = AutomationStore::open(dir).unwrap();
+    store
+        .define_connection(Connection {
+            name: "conn".to_string(),
+            spec: ConnectionSpec::Sql(SqlSpec {
+                engine: epiphany_core::SqlEngine::Postgres,
+                host: "db.internal".to_string(),
+                port: 5432,
+                database: "app".to_string(),
+                user: "svc".to_string(),
+                password_secret: None,
+                query: "SELECT 1".to_string(),
+                ssl_mode: SqlSslMode::VerifyFull,
+                timeout_ms: 30_000,
+            }),
+        })
+        .unwrap();
+    store
+        .define_flow(Flow {
+            name: "load".to_string(),
+            source: LOAD_FLOW.to_string(),
+            owner: Some(owner.to_string()),
+            default_cube: Some("Sales".to_string()),
+            inputs: vec![FlowInput {
+                name: "conn".to_string(),
+                binding: FlowInputBinding::Global,
+            }],
+        })
+        .unwrap();
+    store
+        .define_job(Job {
+            name: "nightly".to_string(),
+            steps: vec!["load".to_string()],
+            trigger: Trigger::Interval { every_millis: 1000 },
+            enabled: true,
+        })
+        .unwrap();
+    store
+}
+
+/// A scheduled run of a flow that reads a GLOBAL connection must require the flow
+/// OWNER to hold `Connection:Read` (ADR-0035): a flow must not launder connection
+/// output to a principal who lacks it. The gate fires before any fetch, so a
+/// `modeler` owner without the grant gets a run recorded as `Failed` with an
+/// access error, while an admin owner (all access) gets past the gate.
+/// (Regression: the scheduler resolved inputs without this owner gate.)
+#[test]
+fn scheduled_run_requires_owner_connection_read_for_global_inputs() {
+    // --- modeler (no Connection:Read): the run fails at the authorization gate.
+    let dir = scratch("sched-conn-denied");
+    let engine = engine_with_cube(&dir);
+    let mut sec = SecurityStore::with_admin("admin", "pw", true);
+    sec.create_user("modeler", "pw", false).unwrap();
+    let st = state(
+        engine.clone(),
+        Arc::new(ManualClock::new(1000)),
+        RunLedger::in_memory(),
+        automation_with_global_input("denied", "modeler"),
+    );
+    *st.security.lock().unwrap() = sec;
+
+    assert_eq!(Scheduler::new(st.clone()).tick(), 1);
+    let runs = st.runs.lock().unwrap();
+    let last = runs.runs_for_job("", "nightly");
+    assert_eq!(last.last().unwrap().state, RunState::Failed);
+    // The failure is the connection-read denial (fail-closed), and the cell was
+    // never written because no input was fetched.
+    assert_eq!(north_sales(&engine), 0);
+    let err = &last.last().unwrap().error;
+    assert!(
+        err.to_lowercase().contains("connection") || err.to_lowercase().contains("access"),
+        "expected a Connection:Read denial, got: {err}"
+    );
+    drop(runs);
+
+    // --- admin owner (all access): the gate passes; the run gets past authz to
+    // input resolution (and fails later for a different reason: the SQL connector
+    // is disabled in this test build), proving the gate is what blocked the
+    // modeler. The error must NOT be the access denial.
+    let dir2 = scratch("sched-conn-allowed");
+    let engine2 = engine_with_cube(&dir2);
+    let st2 = state(
+        engine2,
+        Arc::new(ManualClock::new(1000)),
+        RunLedger::in_memory(),
+        automation_with_global_input("allowed", "admin"),
+    );
+    assert_eq!(Scheduler::new(st2.clone()).tick(), 1);
+    let runs2 = st2.runs.lock().unwrap();
+    let last2 = runs2.runs_for_job("", "nightly");
+    assert_eq!(last2.last().unwrap().state, RunState::Failed);
+    let err2 = last2.last().unwrap().error.to_lowercase();
+    assert!(
+        err2.contains("sql") || err2.contains("connector") || err2.contains("disabled"),
+        "admin should pass the authz gate and fail at the connector, got: {err2}"
+    );
 }

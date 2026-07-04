@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 const AUDIT_MAGIC: [u8; 6] = *b"EPIAUD";
 const AUDIT_VERSION: u16 = 1;
 const HEADER_LEN: u64 = 8;
+/// Extension of the durable high-water sequence side file (e.g. `audit.seq`),
+/// beside the audit log. It persists the next sequence number to issue so it is
+/// never reused across a zero-record recovery (a torn tail or corrupt header that
+/// leaves the log empty). See [`seq_path`] / [`read_high_water`] / [`persist_high_water`].
+const SEQ_EXTENSION: &str = "seq";
 
 /// A security-relevant or model-changing action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,33 +187,62 @@ impl AuditLog {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let existing = if path.exists() {
-            replay(&fs::read(&path)?)
+        let raw = if path.exists() {
+            Some(fs::read(&path)?)
         } else {
             None
         };
+        let existing = raw.as_deref().and_then(replay);
+        // A pre-existing, non-empty file whose header does not parse (`replay`
+        // returned `None`) is about to be re-initialized. The audit stream is
+        // non-reconstructible compliance data (ADR-0010), so preserve the damaged
+        // bytes to a sibling file rather than destroying them in place; recovery
+        // stays non-gating. A torn *tail* (header parses, some frames fail) is a
+        // different case the ADR explicitly allows discarding, and is handled by
+        // the `Some(_)` arm below.
+        if existing.is_none() {
+            if let Some(bytes) = raw.as_deref() {
+                if !bytes.is_empty() {
+                    preserve_corrupt(&path, bytes)?;
+                }
+            }
+        }
         let mut opts = OpenOptions::new();
         opts.read(true).write(true).create(true).truncate(false);
         crate::set_owner_only(&mut opts); // owner-only from creation (ADR-0017)
         let mut file = opts.open(&path)?;
         crate::restrict_to_owner(&path)?; // normalize a pre-existing file too
+
+        // The durable high-water: the next sequence number ever promised on disk.
+        // Seeding from it means a zero-record recovery (a torn tail or corrupt
+        // header that leaves no surviving records, so `record_next` is 0) still
+        // continues strictly past the previous high-water instead of reissuing used
+        // sequence numbers. Missing/corrupt side file -> `None`, so recovery falls
+        // back to the surviving-records max and never panics (stays non-gating).
+        let high_water = read_high_water(&path);
         let (records, next_seq) = match existing {
             Some((records, good_len)) => {
                 // Drop a torn tail, then position at the end for new appends.
                 file.set_len(good_len)?;
                 file.seek(SeekFrom::End(0))?;
-                let next = records.iter().map(|r| r.seq).max().map_or(0, |m| m + 1);
-                (records, next)
+                let record_next = records.iter().map(|r| r.seq).max().map_or(0, |m| m + 1);
+                (records, record_next.max(high_water.unwrap_or(0)))
             }
             None => {
-                // New, or a missing/corrupt header: reset to a clean header.
+                // New, or a missing/corrupt header: reset to a clean header. A new
+                // log has no records (`record_next` = 0), but a surviving high-water
+                // from a prior life still forbids reusing an old sequence number.
                 file.set_len(0)?;
                 file.seek(SeekFrom::Start(0))?;
                 file.write_all(&header())?;
                 file.sync_data()?;
-                (Vec::new(), 0)
+                (Vec::new(), high_water.unwrap_or(0))
             }
         };
+        // Re-persist the seed so the side file exists (or is repaired) and is at
+        // least as large as `next_seq` before the first append. Best-effort like the
+        // rest of recovery: a side-file write failure must not gate startup.
+        persist_high_water(&path, next_seq);
         let mut log = AuditLog {
             file: Some(file),
             path: Some(path),
@@ -260,6 +294,15 @@ impl AuditLog {
         let seq = record.seq;
         self.records.push(record);
         self.next_seq += 1;
+        // Advance the durable high-water so a later zero-record recovery cannot
+        // reissue this (or any earlier) sequence number. Persisted after the record
+        // is fsync'd, and itself fsync'd, so on recovery the next sequence continues
+        // strictly past `seq`. Best-effort: a side-file write failure does not fail
+        // the append (the record is already durable, and the surviving-records max
+        // still forbids reuse in the common non-empty case).
+        if let Some(path) = &self.path {
+            persist_high_water(path, self.next_seq);
+        }
         self.enforce_retention()?;
         Ok(seq)
     }
@@ -334,11 +377,70 @@ impl AuditLog {
     }
 }
 
+/// Copy a corrupt/unrecognized audit file aside before it is re-initialized, so
+/// the non-reconstructible compliance bytes survive (ADR-0010). The forensic copy
+/// is written owner-only and the original is then removed, so the caller's create
+/// starts from a clean slate. The suffix is chosen deterministically (no wall
+/// clock or RNG): `audit.log.corrupt`, then `.corrupt-1`, `.corrupt-2`, ... - the
+/// first name not already taken - so repeated corrupt restarts never clobber an
+/// earlier forensic copy.
+fn preserve_corrupt(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let base = path.with_extension("log.corrupt");
+    let mut candidate = base.clone();
+    let mut n: u64 = 0;
+    while candidate.exists() {
+        n += 1;
+        candidate = base.with_extension(format!("corrupt-{n}"));
+    }
+    crate::write_owner_only(&candidate, bytes)?;
+    fs::remove_file(path)?;
+    Ok(())
+}
+
 fn header() -> [u8; 8] {
     let mut h = [0u8; 8];
     h[..6].copy_from_slice(&AUDIT_MAGIC);
     h[6..].copy_from_slice(&AUDIT_VERSION.to_le_bytes());
     h
+}
+
+/// The durable high-water side-file path beside the audit log (`audit.log` ->
+/// `audit.seq`).
+fn seq_path(path: &Path) -> PathBuf {
+    path.with_extension(SEQ_EXTENSION)
+}
+
+/// Read the persisted high-water (the next sequence number ever promised) from the
+/// side file. `None` when the side file is missing or not exactly 8 bytes, so the
+/// caller falls back to the surviving-records max - recovery stays non-gating and
+/// never panics on a corrupt/short side file.
+fn read_high_water(path: &Path) -> Option<u64> {
+    let bytes = fs::read(seq_path(path)).ok()?;
+    let arr: [u8; 8] = bytes.as_slice().try_into().ok()?;
+    Some(u64::from_le_bytes(arr))
+}
+
+/// Persist the high-water `next` to the side file, fsync'd, owner-only. Best-effort
+/// (errors are swallowed): a failure must never gate startup or fail an append -
+/// the record itself is already durable and the surviving-records max still forbids
+/// reuse in the common case; the side file only additionally covers a zero-record
+/// recovery. Written in place (an 8-byte fixed-width record is a single atomic
+/// sector write on real hardware; there is no torn-tail concern as with the log).
+fn persist_high_water(path: &Path, next: u64) {
+    let _ = write_seq_file(&seq_path(path), next);
+}
+
+/// Write the 8-byte little-endian high-water and fsync it. Separated so the
+/// best-effort caller can discard the `io::Result`.
+fn write_seq_file(seq_path: &Path, next: u64) -> io::Result<()> {
+    let mut opts = OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    crate::set_owner_only(&mut opts); // owner-only from creation (ADR-0017)
+    let mut f = opts.open(seq_path)?;
+    f.write_all(&next.to_le_bytes())?;
+    f.sync_all()?;
+    crate::restrict_to_owner(seq_path)?; // normalize a pre-existing side file too
+    Ok(())
 }
 
 /// Rewrite the audit file to exactly `records` (a compaction), crash-safely: write
@@ -552,6 +654,82 @@ mod tests {
     }
 
     #[test]
+    fn zero_record_recovery_continues_past_the_high_water_never_reusing() {
+        // S2: a torn tail (or corrupt header) that leaves NO surviving records must
+        // not reset the sequence to 0 and reissue used numbers. The durable
+        // high-water seeds recovery so the next sequence continues strictly past the
+        // previous maximum.
+        let path = scratch("high-water-torn");
+        {
+            let mut log = AuditLog::open(path.clone()).unwrap();
+            for i in 0..4 {
+                append_sample(&mut log, i, "ann", AuditAction::Login);
+            }
+            // seqs 0..=3 issued; next would be 4.
+        }
+        // Wipe the log body back to just the header, so recovery finds ZERO records
+        // (the extreme torn-tail case). Without the high-water this reset next_seq
+        // to 0; the side file must carry it forward.
+        std::fs::write(&path, header()).unwrap();
+
+        let mut log = AuditLog::open(path.clone()).unwrap();
+        assert_eq!(log.len(), 0, "no records survived the wipe");
+        let seq = log
+            .append(10, "ann", AuditAction::Login, "", "", true)
+            .unwrap();
+        assert_eq!(seq, 4, "sequence continues past the high-water, not reused");
+
+        // Also cover the corrupt-header arm: destroy the header entirely (the file
+        // is re-initialized) yet the side file still forbids reuse.
+        drop(log);
+        std::fs::write(&path, b"not an audit file").unwrap();
+        let mut log = AuditLog::open(path).unwrap();
+        assert!(log.is_empty());
+        let seq = log
+            .append(11, "ann", AuditAction::Login, "", "", true)
+            .unwrap();
+        assert_eq!(
+            seq, 5,
+            "even a corrupt-header re-init continues past the high-water"
+        );
+    }
+
+    #[test]
+    fn missing_or_corrupt_seq_side_file_falls_back_to_records_max() {
+        // The high-water is non-gating: a missing or short/corrupt side file must
+        // fall back to the surviving-records max (never a panic, never a reset that
+        // reissues a live record's sequence).
+        let path = scratch("high-water-fallback");
+        {
+            let mut log = AuditLog::open(path.clone()).unwrap();
+            for i in 0..3 {
+                append_sample(&mut log, i, "ann", AuditAction::Login);
+            }
+        }
+        // Delete the side file, and corrupt-truncate a fresh one on the next run to
+        // exercise both the missing and the short-file paths.
+        let seq_file = path.with_extension(SEQ_EXTENSION);
+        std::fs::remove_file(&seq_file).unwrap();
+        {
+            // Records survive here, so the max (2) + 1 = 3 seeds next_seq.
+            let mut log = AuditLog::open(path.clone()).unwrap();
+            assert_eq!(log.len(), 3);
+            let seq = log
+                .append(9, "ann", AuditAction::Login, "", "", true)
+                .unwrap();
+            assert_eq!(seq, 3, "fell back to records max + 1 with no side file");
+        }
+        // A truncated (non-8-byte) side file is treated as absent.
+        std::fs::write(&seq_file, b"xx").unwrap();
+        let log = AuditLog::open(path).unwrap();
+        assert_eq!(
+            log.len(),
+            4,
+            "recovery still succeeds with a corrupt side file"
+        );
+    }
+
+    #[test]
     fn corrupt_header_reinitializes_without_error() {
         let path = scratch("corrupt-header");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -563,6 +741,33 @@ mod tests {
             .unwrap();
         let log = AuditLog::open(path).unwrap();
         assert_eq!(log.len(), 1);
+    }
+
+    #[test]
+    fn corrupt_header_preserves_the_damaged_file_before_reinitializing() {
+        let path = scratch("corrupt-preserve");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let damaged = b"not an audit file at all";
+        std::fs::write(&path, damaged).unwrap();
+
+        // Recovery is non-gating and re-initializes a clean, empty log...
+        let log = AuditLog::open(path.clone()).unwrap();
+        assert!(log.is_empty());
+
+        // ...but the original bytes are preserved to a sibling file, not destroyed.
+        let corrupt = path.with_extension("log.corrupt");
+        assert!(corrupt.exists(), "the damaged file is copied aside");
+        assert_eq!(std::fs::read(&corrupt).unwrap(), damaged);
+
+        // A second corrupt restart does not clobber the first forensic copy; it
+        // picks the next deterministic name.
+        drop(log);
+        std::fs::write(&path, b"garbage again").unwrap();
+        let _ = AuditLog::open(path.clone()).unwrap();
+        assert_eq!(std::fs::read(&corrupt).unwrap(), damaged);
+        let corrupt1 = path.with_extension("log.corrupt-1");
+        assert!(corrupt1.exists());
+        assert_eq!(std::fs::read(&corrupt1).unwrap(), b"garbage again");
     }
 
     #[test]

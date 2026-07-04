@@ -14,20 +14,20 @@ use axum::Json;
 use epiphany_core::{
     execute_view, resolve_subset, Cellset, Cube, Sandbox, Subset, SubsetKind, View, Visibility,
 };
-use epiphany_engine::ReadSnapshot;
+use epiphany_engine::{Engine, ReadSnapshot};
 use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef, Principal};
 
 use crate::auth::AuthPrincipal;
 use crate::authz::{audit, element_mask, require_cube_access};
+use crate::calc_factory::RuleCoverage;
 use crate::dto::{
     AxisMemberDto, AxisSpecBody, AxisSpecDto, CellsetCellDto, CellsetDto, ContextEntryDto,
     MdxPreviewRequest, MdxQueryRequest, MemberDto, MembersResponse, SubsetBody, SubsetDto,
     SubsetListResponse, SuppressedDto, ViewBody, ViewDto, ViewListResponse,
 };
 use crate::resolve::kind_str;
-use crate::routes::{map_batch_error, snapshot};
+use crate::routes::{blocking_commit, snapshot};
 use crate::sandbox_routes::{resolve_sandbox, SandboxSelector};
-use crate::ws::ChangeEvent;
 use crate::{ApiError, AppState};
 
 // ---- shared helpers ----
@@ -40,6 +40,103 @@ fn ensure_dimension(cube: &Cube, dim: &str) -> Result<(), ApiError> {
             "UNKNOWN_DIMENSION",
             format!("unknown dimension '{dim}' in cube '{}'", cube.name()),
         ))
+    }
+}
+
+/// The `(cube name, current version)` of every OTHER cube the target cube's rules
+/// read across cubes, for the view-cache key (item 1: cross-cube staleness).
+///
+/// A rule like `Sales.Revenue = Units * FX!Rate` reads cube `FX`; a write to `FX`
+/// bumps `FX`'s version, not `Sales`', so keying only on `Sales`' version would
+/// serve the pre-write `FX` value indefinitely (there is no TTL). The referenced
+/// cube NAMES are carried on the parsed rule AST (`CellRef.cube = Some(name)`), so
+/// parsing the target's own rule source recovers them WITHOUT compiling every
+/// cube's rules (the expensive `PinnedRegistry` build) -- the same parse the
+/// resolver does for the target cube on a miss, and cheap on a hit. A cube named by
+/// a rule that no longer exists (or one that fails to resolve) is skipped for the
+/// version lookup: it cannot contribute a value, and the target read itself will
+/// surface the compile error. The result is deterministic (the key normalizes
+/// order); duplicates are harmless.
+///
+/// This parses on every cellset read (hit or miss). Rule sources are small, so the
+/// cost is negligible next to executing (or the resolver's own compile on a miss);
+/// a per-(cube, version) memo would remove even that, and is a clean follow-on if a
+/// profile ever shows it.
+fn cross_cube_dep_versions(snap: &ReadSnapshot, engine: &Engine) -> Vec<(String, u64)> {
+    let source = &snap.rules().source;
+    if source.trim().is_empty() {
+        return Vec::new();
+    }
+    let doc = match epiphany_calc::rules::parse(source) {
+        Ok(doc) => doc,
+        // A source that no longer parses has no analyzable dependency set; the read
+        // path fails loud on it anyway (fail-loud rule drop). Treat as no deps.
+        Err(_) => return Vec::new(),
+    };
+    let target = snap.cube().name();
+    let mut names: Vec<String> = Vec::new();
+    for rule in &doc.rules {
+        collect_ref_cubes(&rule.formula, target, &mut names);
+    }
+    names.sort();
+    names.dedup();
+    names
+        .into_iter()
+        .filter_map(|name| engine.version(&name).map(|v| (name, v)))
+        .collect()
+}
+
+/// Collect the cube names of cross-cube cell references in a rule formula
+/// (`CellRef.cube == Some(name)` for a cube other than `target`). Walks the AST;
+/// same-cube references (`cube == None`) and references to `target` are ignored.
+fn collect_ref_cubes(expr: &epiphany_calc::rules::Expr, target: &str, out: &mut Vec<String>) {
+    use epiphany_calc::rules::{Condition, Expr, FuncArg};
+    match expr {
+        Expr::Cell(cell) => {
+            if let Some(cube) = &cell.cube {
+                if cube != target {
+                    out.push(cube.clone());
+                }
+            }
+        }
+        Expr::Neg(inner) => collect_ref_cubes(inner, target, out),
+        Expr::Bin { left, right, .. } => {
+            collect_ref_cubes(left, target, out);
+            collect_ref_cubes(right, target, out);
+        }
+        Expr::If {
+            cond,
+            then,
+            otherwise,
+        } => {
+            collect_cond_cubes(cond, target, out);
+            collect_ref_cubes(then, target, out);
+            if let Some(o) = otherwise {
+                collect_ref_cubes(o, target, out);
+            }
+        }
+        Expr::Func(call) => {
+            for arg in &call.args {
+                if let FuncArg::Expr(e) = arg {
+                    collect_ref_cubes(e, target, out);
+                }
+            }
+        }
+        Expr::Number(_) | Expr::Str(_) => {}
+    }
+    // A condition can only appear inside `If`; walk it there.
+    fn collect_cond_cubes(cond: &Condition, target: &str, out: &mut Vec<String>) {
+        match cond {
+            Condition::And(a, b) | Condition::Or(a, b) => {
+                collect_cond_cubes(a, target, out);
+                collect_cond_cubes(b, target, out);
+            }
+            Condition::Not(c) => collect_cond_cubes(c, target, out),
+            Condition::Compare { left, op: _, right } => {
+                collect_ref_cubes(left, target, out);
+                collect_ref_cubes(right, target, out);
+            }
+        }
     }
 }
 
@@ -170,10 +267,12 @@ pub(crate) async fn create_subset(
     )?;
     // Validate it resolves (static members / dynamic MDX) before persisting.
     resolve_subset(snap.cube(), &subset, state.evaluator())?;
-    let outcome = state
-        .engine
-        .define_subset(&cube, None, subset.clone())
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, subset_c) = (cube.clone(), subset.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.define_subset(&cube_c, None, subset_c)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -181,10 +280,9 @@ pub(crate) async fn create_subset(
         Some(&ObjectRef::in_cube(ObjectKind::Subset, &cube, &subset.name)),
         true,
     );
-    let _ = state.events.send(ChangeEvent::ObjectsChanged {
-        cube: cube.clone(),
-        version: outcome.version,
-    });
+    // A1: the commit-ordered change feed emits the change from inside the engine
+    // commit (cube-read-filtered per subscriber); the handler no longer sends it.
+    let _ = outcome.version;
     Ok((StatusCode::CREATED, Json(subset_dto(&subset))))
 }
 
@@ -228,21 +326,25 @@ pub(crate) async fn replace_subset(
     Path((cube, dim, name)): Path<(String, String, String)>,
     Json(body): Json<SubsetBody>,
 ) -> Result<Json<SubsetDto>, ApiError> {
-    let snap = snapshot(&state, &cube)?;
-    let existing = snap
-        .subset(&dim, &name)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_SUBSET", "no such subset"))?;
+    // Authorize BEFORE any existence probe so an unauthorized caller cannot
+    // distinguish 404 (no such subset) from 403, and use the visibility-filtered
+    // lookup so a private subset a caller cannot see 404s uniformly rather than
+    // leaking its existence via a 403 ownership error (matches the GET path).
     require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    let snap = snapshot(&state, &cube)?;
+    let existing = visible_subset(&snap, &auth.principal, &dim, &name)?;
     if !can_modify(&auth.principal, &existing.owner) {
         return Err(forbidden());
     }
     // Preserve the original owner across an edit.
     let subset = subset_from_body(name, dim.clone(), existing.owner.clone(), &body)?;
     resolve_subset(snap.cube(), &subset, state.evaluator())?;
-    let outcome = state
-        .engine
-        .define_subset(&cube, None, subset.clone())
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, subset_c) = (cube.clone(), subset.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.define_subset(&cube_c, None, subset_c)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -250,10 +352,9 @@ pub(crate) async fn replace_subset(
         Some(&ObjectRef::in_cube(ObjectKind::Subset, &cube, &subset.name)),
         true,
     );
-    let _ = state.events.send(ChangeEvent::ObjectsChanged {
-        cube: cube.clone(),
-        version: outcome.version,
-    });
+    // A1: the commit-ordered change feed emits the change from inside the engine
+    // commit (cube-read-filtered per subscriber); the handler no longer sends it.
+    let _ = outcome.version;
     Ok(Json(subset_dto(&subset)))
 }
 
@@ -263,18 +364,20 @@ pub(crate) async fn delete_subset(
     State(state): State<AppState>,
     Path((cube, dim, name)): Path<(String, String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let snap = snapshot(&state, &cube)?;
-    let existing = snap
-        .subset(&dim, &name)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_SUBSET", "no such subset"))?;
+    // Authorize before the existence probe, and hide an invisible subset behind a
+    // uniform 404 (see `replace_subset`).
     require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    let snap = snapshot(&state, &cube)?;
+    let existing = visible_subset(&snap, &auth.principal, &dim, &name)?;
     if !can_modify(&auth.principal, &existing.owner) {
         return Err(forbidden());
     }
-    let outcome = state
-        .engine
-        .delete_subset(&cube, None, &dim, &name)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, dim_c, name_c) = (cube.clone(), dim.clone(), name.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.delete_subset(&cube_c, None, &dim_c, &name_c)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -282,10 +385,9 @@ pub(crate) async fn delete_subset(
         Some(&ObjectRef::in_cube(ObjectKind::Subset, &cube, &name)),
         true,
     );
-    let _ = state.events.send(ChangeEvent::ObjectsChanged {
-        cube,
-        version: outcome.version,
-    });
+    // A1: the commit-ordered change feed emits the change from inside the engine
+    // commit (cube-read-filtered per subscriber); the handler no longer sends it.
+    let _ = outcome.version;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -495,10 +597,12 @@ pub(crate) async fn create_view(
         Some(auth.principal.username.clone()),
         &body,
     )?;
-    let outcome = state
-        .engine
-        .define_view(&cube, None, view.clone())
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, view_c) = (cube.clone(), view.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.define_view(&cube_c, None, view_c)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -506,10 +610,9 @@ pub(crate) async fn create_view(
         Some(&ObjectRef::in_cube(ObjectKind::View, &cube, &view.name)),
         true,
     );
-    let _ = state.events.send(ChangeEvent::ObjectsChanged {
-        cube: cube.clone(),
-        version: outcome.version,
-    });
+    // A1: the commit-ordered change feed emits the change from inside the engine
+    // commit (cube-read-filtered per subscriber); the handler no longer sends it.
+    let _ = outcome.version;
     Ok((StatusCode::CREATED, Json(view_dto(&view))))
 }
 
@@ -550,19 +653,21 @@ pub(crate) async fn replace_view(
     Path((cube, name)): Path<(String, String)>,
     Json(body): Json<ViewBody>,
 ) -> Result<Json<ViewDto>, ApiError> {
-    let snap = snapshot(&state, &cube)?;
-    let existing = snap
-        .view(&name)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_VIEW", "no such view"))?;
+    // Authorize before the existence probe, and hide an invisible view behind a
+    // uniform 404 (see `replace_subset`).
     require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    let snap = snapshot(&state, &cube)?;
+    let existing = visible_view(&snap, &auth.principal, &name)?;
     if !can_modify(&auth.principal, &existing.owner) {
         return Err(forbidden());
     }
     let view = view_from_body(name, cube.clone(), existing.owner.clone(), &body)?;
-    let outcome = state
-        .engine
-        .define_view(&cube, None, view.clone())
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, view_c) = (cube.clone(), view.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.define_view(&cube_c, None, view_c)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -570,10 +675,9 @@ pub(crate) async fn replace_view(
         Some(&ObjectRef::in_cube(ObjectKind::View, &cube, &view.name)),
         true,
     );
-    let _ = state.events.send(ChangeEvent::ObjectsChanged {
-        cube: cube.clone(),
-        version: outcome.version,
-    });
+    // A1: the commit-ordered change feed emits the change from inside the engine
+    // commit (cube-read-filtered per subscriber); the handler no longer sends it.
+    let _ = outcome.version;
     Ok(Json(view_dto(&view)))
 }
 
@@ -583,18 +687,20 @@ pub(crate) async fn delete_view(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let snap = snapshot(&state, &cube)?;
-    let existing = snap
-        .view(&name)
-        .ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "UNKNOWN_VIEW", "no such view"))?;
+    // Authorize before the existence probe, and hide an invisible view behind a
+    // uniform 404 (see `replace_subset`).
     require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    let snap = snapshot(&state, &cube)?;
+    let existing = visible_view(&snap, &auth.principal, &name)?;
     if !can_modify(&auth.principal, &existing.owner) {
         return Err(forbidden());
     }
-    let outcome = state
-        .engine
-        .delete_view(&cube, None, &name)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, name_c) = (cube.clone(), name.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.delete_view(&cube_c, None, &name_c)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -602,10 +708,9 @@ pub(crate) async fn delete_view(
         Some(&ObjectRef::in_cube(ObjectKind::View, &cube, &name)),
         true,
     );
-    let _ = state.events.send(ChangeEvent::ObjectsChanged {
-        cube,
-        version: outcome.version,
-    });
+    // A1: the commit-ordered change feed emits the change from inside the engine
+    // commit (cube-read-filtered per subscriber); the handler no longer sends it.
+    let _ = outcome.version;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -631,10 +736,14 @@ pub(crate) async fn execute_saved_view(
     let mask = element_mask(&state, &auth, &snap);
     // Read-through the view cache (ADR-0028). The resolver (which compiles every
     // cube's rules) is built lazily inside the closure, so a cache hit skips it.
+    // Cross-cube rule dependencies are part of the key: a write to a referenced
+    // cube must invalidate this entry even though the target's version is unchanged.
+    let dep_versions = cross_cube_dep_versions(&snap, &state.engine);
     let cellset = state.view_cache.get_or_compute(
         crate::view_cache::ViewRead {
             cube: &cube,
             version: snap.version(),
+            dep_versions,
             view,
             sandbox,
             mask: mask.as_ref(),
@@ -642,15 +751,29 @@ pub(crate) async fn execute_saved_view(
         },
         || {
             let resolver = state.cells.resolver_with(&snap, sandbox, mask.as_ref());
-            snap.model()
-                .execute(view, &*resolver, state.evaluator(), mask.as_ref())
+            // Resolve axis subsets through the visibility filter (ADR-0015): a
+            // private subset the caller cannot see is treated as unknown so its
+            // membership never leaks through the cellset's tuples.
+            execute_view(
+                snap.cube(),
+                view,
+                &*resolver,
+                &visible_subset_lookup(&snap, &auth.principal),
+                state.evaluator(),
+                mask.as_ref(),
+            )
         },
     )?;
+    // Rule coverage drives the per-cell `editable` flag (ADR-0040) so the grid
+    // renders rule-calculated cells read-only, matching the write path. Cheap
+    // no-op for a cube with no rules; not part of the cached cellset.
+    let coverage = RuleCoverage::build(&state.engine, &snap);
     Ok(Json(cellset_dto(
         snap.cube(),
         &cellset,
         snap.version(),
         sandbox,
+        &coverage,
     )))
 }
 
@@ -706,10 +829,14 @@ fn execute_adhoc_view(
         .as_deref()
         .and_then(|n| snap.model().sandbox(n));
     let mask = element_mask(state, auth, snap);
+    // Cross-cube rule dependencies join the key so a write to a referenced cube
+    // invalidates this ad-hoc entry (item 1), same as the saved-view path.
+    let dep_versions = cross_cube_dep_versions(snap, &state.engine);
     let cellset = state.view_cache.get_or_compute(
         crate::view_cache::ViewRead {
             cube,
             version: snap.version(),
+            dep_versions,
             view,
             sandbox,
             mask: mask.as_ref(),
@@ -717,22 +844,43 @@ fn execute_adhoc_view(
         },
         || {
             let resolver = state.cells.resolver_with(snap, sandbox, mask.as_ref());
+            // A private subset the caller cannot see is treated as unknown so its
+            // membership never leaks through an ad-hoc view's tuples (ADR-0015).
             execute_view(
                 snap.cube(),
                 view,
                 &*resolver,
-                &|d, n| snap.subset(d, n),
+                &visible_subset_lookup(snap, &auth.principal),
                 state.evaluator(),
                 mask.as_ref(),
             )
         },
     )?;
+    // Per-cell `editable` reflects rule coverage (ADR-0040), same as the saved
+    // path; a no-rules cube pays nothing.
+    let coverage = RuleCoverage::build(&state.engine, snap);
     Ok(Json(cellset_dto(
         snap.cube(),
         &cellset,
         snap.version(),
         sandbox,
+        &coverage,
     )))
+}
+
+/// A subset-resolving closure for the execute paths that hides subsets the caller
+/// may not see: a private subset owned by another user resolves to `None` (an
+/// `UnknownSubset` at the call site), so an ad-hoc or saved view cannot enumerate
+/// its membership through the resulting tuples (ADR-0015). Mirrors the visibility
+/// gate the direct subset endpoints enforce via [`visible_subset`].
+fn visible_subset_lookup<'a>(
+    snap: &'a ReadSnapshot,
+    principal: &'a Principal,
+) -> impl Fn(&str, &str) -> Option<&'a Subset> + 'a {
+    move |dim: &str, name: &str| {
+        snap.subset(dim, name)
+            .filter(|s| can_read(principal, &s.owner, s.visibility))
+    }
 }
 
 /// Lower a parsed MDX [`Query`](epiphany_mdx::Query) onto `cube` into a core
@@ -905,42 +1053,122 @@ fn forbidden() -> ApiError {
     )
 }
 
-/// Reconstruct a cell's full coordinate (as element indices) from its row tuple,
-/// column tuple, and the context, for checking against a sandbox's overrides.
-/// `None` if any member does not resolve.
-fn cell_coord_indices(
-    cube: &Cube,
-    row_dims: &[String],
-    row_tuple: &[String],
-    col_dims: &[String],
-    col_tuple: &[String],
-    context: &[(String, String)],
-) -> Option<Vec<u32>> {
-    let name_for = |dim: &str| -> Option<&str> {
-        if let Some(p) = row_dims.iter().position(|d| d == dim) {
-            return row_tuple.get(p).map(String::as_str);
-        }
-        if let Some(p) = col_dims.iter().position(|d| d == dim) {
-            return col_tuple.get(p).map(String::as_str);
-        }
-        context
-            .iter()
-            .find(|(d, _)| d == dim)
-            .map(|(_, m)| m.as_str())
+/// Precompute the `overlaid` flag for every cell of the grid (row-major, indexed
+/// by ordinal): true when a cell's exact leaf coordinate is a what-if override in
+/// `sandbox`. Absent a sandbox, or if the cube position of an axis dimension
+/// cannot be found, every flag is `false`.
+///
+/// Resolution is O(R + C), not O(R x C): the cube position of each axis dimension
+/// and the context contribution are computed once; each row tuple and each column
+/// tuple is resolved to element indices once; then each cell merges its row and
+/// column halves into a reused scratch coordinate (name-then-alias via
+/// `Dimension::resolve`, matching execution) for a single `BTreeMap` membership
+/// check, with no per-cell allocation.
+fn overlaid_grid(cube: &Cube, cs: &Cellset, sandbox: Option<&Sandbox>) -> Vec<bool> {
+    let Some(sb) = sandbox else {
+        return vec![false; cs.cells.len()];
     };
-    let mut coord = Vec::with_capacity(cube.rank());
-    for d in cube.dimensions() {
-        coord.push(d.index_of(name_for(d.name())?)?);
-    }
-    Some(coord)
+    // A cell is overlaid iff its exact leaf is a what-if override (ADR-0014).
+    cell_coord_flags(cube, cs, |coord| sb.cells.contains_key(coord))
 }
 
-fn cellset_dto(cube: &Cube, cs: &Cellset, version: u64, sandbox: Option<&Sandbox>) -> CellsetDto {
+/// Resolve each cell's full element coordinate (context + row tuple + column
+/// tuple) once per row/column — O(R + C) resolutions, not O(R x C) — and test it
+/// with `hit`, returning a per-cell flag grid. A cell whose context/tuple fails to
+/// resolve is `false`. Shared by the overlaid-flag grid and the rule-coverage grid
+/// (ADR-0040) so both compute the same coordinates the same cheap way.
+fn cell_coord_flags(cube: &Cube, cs: &Cellset, mut hit: impl FnMut(&[u32]) -> bool) -> Vec<bool> {
+    // The cube position each axis/context dimension writes into the coordinate.
+    let pos_of = |dim: &str| cube.dimensions().iter().position(|d| d.name() == dim);
+    let Some(row_pos) = cs
+        .row_dimensions
+        .iter()
+        .map(|d| pos_of(d))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return vec![false; cs.cells.len()];
+    };
+    let Some(col_pos) = cs
+        .column_dimensions
+        .iter()
+        .map(|d| pos_of(d))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return vec![false; cs.cells.len()];
+    };
+
+    // The base coordinate carries the context (resolved once); row/col slots are
+    // overwritten per cell. If any context member fails to resolve, no cell can be
+    // an exact override, so every flag is false.
+    let mut base = vec![0u32; cube.rank()];
+    for (dim, member) in &cs.context {
+        let Some(p) = pos_of(dim) else {
+            return vec![false; cs.cells.len()];
+        };
+        let Some(idx) = cube.dimension(p).resolve(member) else {
+            return vec![false; cs.cells.len()];
+        };
+        base[p] = idx;
+    }
+
+    // Resolve each row tuple and each column tuple to element indices once. A
+    // tuple that fails to resolve yields `None` and its cells are never flagged.
+    let resolve_tuples = |tuples: &[Vec<String>], positions: &[usize]| -> Vec<Option<Vec<u32>>> {
+        tuples
+            .iter()
+            .map(|tuple| {
+                tuple
+                    .iter()
+                    .enumerate()
+                    .map(|(k, name)| cube.dimension(positions[k]).resolve(name))
+                    .collect::<Option<Vec<u32>>>()
+            })
+            .collect()
+    };
+    let row_idx = resolve_tuples(&cs.row_tuples, &row_pos);
+    let col_idx = resolve_tuples(&cs.column_tuples, &col_pos);
+
+    let ncols = cs.column_tuples.len().max(1);
+    let mut flags = vec![false; cs.cells.len()];
+    let mut scratch = base.clone();
+    for (r, row) in row_idx.iter().enumerate() {
+        let Some(row) = row else { continue };
+        // Fill this row's slots once; column slots are patched per cell below.
+        scratch.copy_from_slice(&base);
+        for (k, &idx) in row.iter().enumerate() {
+            scratch[row_pos[k]] = idx;
+        }
+        for (c, col) in col_idx.iter().enumerate() {
+            let ordinal = r * ncols + c;
+            if ordinal >= flags.len() {
+                continue;
+            }
+            let Some(col) = col else { continue };
+            for (k, &idx) in col.iter().enumerate() {
+                scratch[col_pos[k]] = idx;
+            }
+            flags[ordinal] = hit(scratch.as_slice());
+        }
+    }
+    flags
+}
+
+fn cellset_dto(
+    cube: &Cube,
+    cs: &Cellset,
+    version: u64,
+    sandbox: Option<&Sandbox>,
+    coverage: &RuleCoverage,
+) -> CellsetDto {
+    // Resolve member names name-then-alias (`Dimension::resolve`), matching the
+    // resolution `execute_view` uses at execution time: a context or axis member
+    // pinned by its alias must map to the same element here, or editability and the
+    // overlaid marker are silently wrong for an alias-addressed cell.
     let leaf_of = |dim_name: &str, member: &str| -> bool {
         cube.dimensions()
             .iter()
             .find(|d| d.name() == dim_name)
-            .and_then(|d| d.index_of(member).and_then(|i| d.element(i).ok()))
+            .and_then(|d| d.resolve(member).and_then(|i| d.element(i).ok()))
             .map(|el| el.kind.is_leaf())
             .unwrap_or(false)
     };
@@ -953,7 +1181,7 @@ fn cellset_dto(cube: &Cube, cs: &Cellset, version: u64, sandbox: Option<&Sandbox
                     .dimensions()
                     .iter()
                     .find(|d| d.name() == dims[k])
-                    .and_then(|d| d.index_of(name).and_then(|i| d.element(i).ok()))
+                    .and_then(|d| d.resolve(name).and_then(|i| d.element(i).ok()))
                     .map(|el| kind_str(el.kind))
                     .unwrap_or("numeric");
                 AxisMemberDto {
@@ -967,8 +1195,26 @@ fn cellset_dto(cube: &Cube, cs: &Cellset, version: u64, sandbox: Option<&Sandbox
     let tuple_leaf = |dims: &[String], tuple: &[String]| {
         tuple.iter().enumerate().all(|(k, m)| leaf_of(&dims[k], m))
     };
+    // Whether a member is a String-kind element (name-then-alias, matching
+    // execution): a cell whose context/row/column tuple contains one is a string
+    // cell and renders `kind:"string"` even when unpopulated, never a numeric zero.
+    let string_of = |dim_name: &str, member: &str| -> bool {
+        cube.dimensions()
+            .iter()
+            .find(|d| d.name() == dim_name)
+            .and_then(|d| d.resolve(member).and_then(|i| d.element(i).ok()))
+            .map(|el| el.kind.is_string())
+            .unwrap_or(false)
+    };
+    let tuple_string = |dims: &[String], tuple: &[String]| {
+        tuple
+            .iter()
+            .enumerate()
+            .any(|(k, m)| string_of(&dims[k], m))
+    };
 
     let context_leaf = cs.context.iter().all(|(d, m)| leaf_of(d, m));
+    let context_string = cs.context.iter().any(|(d, m)| string_of(d, m));
     let row_leaf: Vec<bool> = cs
         .row_tuples
         .iter()
@@ -979,6 +1225,33 @@ fn cellset_dto(cube: &Cube, cs: &Cellset, version: u64, sandbox: Option<&Sandbox
         .iter()
         .map(|t| tuple_leaf(&cs.column_dimensions, t))
         .collect();
+    let row_string: Vec<bool> = cs
+        .row_tuples
+        .iter()
+        .map(|t| tuple_string(&cs.row_dimensions, t))
+        .collect();
+    let col_string: Vec<bool> = cs
+        .column_tuples
+        .iter()
+        .map(|t| tuple_string(&cs.column_dimensions, t))
+        .collect();
+
+    // Precompute the per-cell `overlaid` flags in O(R + C) coordinate
+    // resolutions instead of O(R x C): the same row tuple is otherwise re-resolved
+    // once per column and vice versa. Each half-coordinate (context + one row
+    // tuple, and one column tuple) is resolved once, then merged per cell into a
+    // reused scratch buffer with no per-cell allocation (ADR-0014: only the exact
+    // overridden leaf is flagged). Absent a sandbox every cell is `false`.
+    let overlaid_flags = overlaid_grid(cube, cs, sandbox);
+    // Rule-covered leaves render read-only (ADR-0040) so the `editable` flag the
+    // client reads matches what the write path accepts. Computed only when the
+    // cube actually has rules (a no-rules cube keeps the pure leaf-ness flag and
+    // pays nothing), reusing the same O(R + C) coordinate walk as `overlaid`.
+    let covered_flags = if coverage.has_rules() {
+        cell_coord_flags(cube, cs, |coord| coverage.covers(cube, coord))
+    } else {
+        Vec::new()
+    };
 
     let ncols = cs.column_tuples.len().max(1);
     let cells = cs
@@ -988,32 +1261,60 @@ fn cellset_dto(cube: &Cube, cs: &Cellset, version: u64, sandbox: Option<&Sandbox
         .map(|(ordinal, value)| {
             let r = ordinal / ncols;
             let c = ordinal % ncols;
-            // Flag a cell whose exact leaf is a what-if override in the active
-            // sandbox (a consolidation that rolled one up is not flagged).
-            let overlaid = sandbox.is_some_and(|sb| {
-                cs.row_tuples
-                    .get(r)
-                    .zip(cs.column_tuples.get(c))
-                    .and_then(|(rt, ct)| {
-                        cell_coord_indices(
-                            cube,
-                            &cs.row_dimensions,
-                            rt,
-                            &cs.column_dimensions,
-                            ct,
-                            &cs.context,
-                        )
-                    })
-                    .is_some_and(|ix| sb.cells.contains_key(&ix))
-            });
-            CellsetCellDto {
-                value: Some(value.to_string()),
-                kind: "numeric",
-                editable: context_leaf
-                    && row_leaf.get(r).copied().unwrap_or(false)
-                    && col_leaf.get(c).copied().unwrap_or(false),
-                ordinal,
-                overlaid,
+            let overlaid = overlaid_flags.get(ordinal).copied().unwrap_or(false);
+            let leaf_editable = context_leaf
+                && row_leaf.get(r).copied().unwrap_or(false)
+                && col_leaf.get(c).copied().unwrap_or(false);
+            // The string and error channels are parallel to `cells` (core
+            // `Cellset`): a populated string renders as `kind:"string"` with its
+            // text (never a fabricated numeric zero), and a per-cell error renders
+            // as `kind:"error"` with the message so one failing cell does not blank
+            // the grid. An error takes precedence over a value; a string element is
+            // never editable through the numeric write path.
+            if let Some(err) = cs.cell_errors.get(ordinal).and_then(|e| e.clone()) {
+                CellsetCellDto {
+                    value: None,
+                    kind: "error",
+                    editable: false,
+                    ordinal,
+                    overlaid,
+                    error: Some(err),
+                }
+            } else if let Some(text) = cs.cell_strings.get(ordinal).and_then(|s| s.clone()) {
+                CellsetCellDto {
+                    value: Some(text),
+                    kind: "string",
+                    editable: false,
+                    ordinal,
+                    overlaid,
+                    error: None,
+                }
+            } else if context_string
+                || row_string.get(r).copied().unwrap_or(false)
+                || col_string.get(c).copied().unwrap_or(false)
+            {
+                // An unpopulated string cell: text `null`, still `kind:"string"`
+                // (not a numeric zero) and not numerically editable.
+                CellsetCellDto {
+                    value: None,
+                    kind: "string",
+                    editable: false,
+                    ordinal,
+                    overlaid,
+                    error: None,
+                }
+            } else {
+                // A rule-covered leaf (ADR-0040) is read-only: the rule computes
+                // it, so a stored write would be shadowed on the next read.
+                let covered = covered_flags.get(ordinal).copied().unwrap_or(false);
+                CellsetCellDto {
+                    value: Some(value.to_string()),
+                    kind: "numeric",
+                    editable: leaf_editable && !covered,
+                    ordinal,
+                    overlaid,
+                    error: None,
+                }
             }
         })
         .collect();
@@ -1052,7 +1353,54 @@ fn cellset_dto(cube: &Cube, cs: &Cellset, version: u64, sandbox: Option<&Sandbox
 #[cfg(test)]
 mod tests {
     use super::*;
-    use epiphany_core::{AxisSpec, Cube, Dimension};
+    use epiphany_core::{AttributeKind, AttributeValue, AxisSpec, Cube, Dimension, Fixed};
+
+    /// `cellset_dto` must resolve context/member names name-then-alias, matching
+    /// execution: a cell whose context pins a leaf by its ALIAS must still be
+    /// `editable` and, under a sandbox override, `overlaid`. Before the fix these
+    /// used `index_of` (name-only), so an alias-addressed context silently made the
+    /// whole grid read-only and dropped the what-if marker.
+    #[test]
+    fn cellset_dto_resolves_context_alias_for_editable_and_overlaid() {
+        let mut region = Dimension::new("Region");
+        let north = region.add_leaf("North");
+        region.add_attribute("Alias", AttributeKind::Alias);
+        region
+            .set_attribute(north, "Alias", AttributeValue::Text("N.A.".into()))
+            .unwrap();
+        let mut measure = Dimension::new("Measure");
+        let sales = measure.add_leaf("Sales");
+        let cube = Cube::new("Sales", vec![region, measure]).unwrap();
+
+        // A 1x1 cellset: Measure/Sales on rows, Region pinned by its ALIAS in the
+        // context (a single empty column tuple = one column).
+        let cs = Cellset {
+            row_dimensions: vec!["Measure".into()],
+            column_dimensions: vec![],
+            row_tuples: vec![vec!["Sales".into()]],
+            column_tuples: vec![vec![]],
+            context: vec![("Region".into(), "N.A.".into())],
+            cells: vec![Fixed::from(7)],
+            cell_strings: vec![None],
+            cell_errors: vec![None],
+            suppressed_row_tuples: vec![],
+            suppressed_column_tuples: vec![],
+        };
+
+        // No sandbox: the alias-addressed context still resolves to a leaf, so the
+        // cell is editable (was false before the fix).
+        let dto = cellset_dto(&cube, &cs, 1, None, &RuleCoverage::none());
+        assert!(dto.cells[0].editable);
+        assert!(!dto.cells[0].overlaid);
+
+        // With a sandbox override on (North, Sales), the alias-addressed cell is
+        // flagged overlaid (was false before the fix).
+        let mut sb = Sandbox::new("wi", "ann", 1);
+        sb.cells.insert(vec![north, sales], Fixed::from(9));
+        let dto = cellset_dto(&cube, &cs, 1, Some(&sb), &RuleCoverage::none());
+        assert!(dto.cells[0].overlaid);
+        assert!(dto.cells[0].editable);
+    }
 
     /// A 3-dimension cube (`Region`, `Product`, `Measure`) for lowering tests.
     fn cube() -> Cube {

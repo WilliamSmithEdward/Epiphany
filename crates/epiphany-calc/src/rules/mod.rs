@@ -11,7 +11,7 @@ mod parser;
 
 pub use ast::{
     Area, ArithOp, BuiltinFunc, CellRef, CmpOp, Condition, DimOverride, DimSelector, Expr, FuncArg,
-    FuncCall, Literal, MemberExpr, Rule, RuleDoc, SelectorKind,
+    FuncCall, Literal, MemberExpr, Rule, RuleDoc, Scope, SelectorKind,
 };
 pub use error::{ParseErrorKind, RuleParseError};
 pub use lexer::Span;

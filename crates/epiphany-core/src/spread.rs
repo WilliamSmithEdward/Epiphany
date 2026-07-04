@@ -13,7 +13,7 @@
 //! back to the entered value. Determinism (ADR-0009): leaves are enumerated in a
 //! fixed order and the remainder is allocated in that same order.
 
-use crate::{Cube, Fixed, QueryError};
+use crate::{Cube, Fixed, ModelError, QueryError};
 
 /// How an entered value is distributed across the contributing leaves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,6 +42,10 @@ pub enum SpreadError {
         /// The cap that was exceeded.
         cap: usize,
     },
+    /// Every contributing leaf was excluded (e.g. all rule-covered, ADR-0040), so
+    /// there is nowhere to place the value. Distinct from an empty target (a
+    /// consolidation with no leaves), which is a silent no-op.
+    AllExcluded,
     /// Reading a current leaf value (for proportional spreading) failed.
     Read(QueryError),
 }
@@ -52,13 +56,33 @@ pub const MAX_SPREAD_LEAVES: usize = 200_000;
 /// Expand `target` (element indices in dimension order, possibly consolidated)
 /// into leaf writes that distribute `value` by `method`. `read_leaf` reads a
 /// leaf's current value and is consulted only by [`SpreadMethod::Proportional`].
+///
+/// `exclude` drops contributing leaves *before* the value is distributed, so the
+/// leaves that remain still sum back to `value` exactly. The API uses it to skip
+/// rule-covered leaves (ADR-0040), which cannot hold a stored value. If exclusion
+/// removes every leaf of a non-empty target, the spread is
+/// [`SpreadError::AllExcluded`] (nowhere to put the value) rather than a silent
+/// no-op. Pass `&|_| false` for no exclusion.
 pub fn spread_leaves(
     cube: &Cube,
     target: &[u32],
     value: Fixed,
     method: SpreadMethod,
     read_leaf: &dyn Fn(&[u32]) -> Result<Fixed, QueryError>,
+    exclude: &dyn Fn(&[u32]) -> bool,
 ) -> Result<Vec<(Vec<u32>, Fixed)>, SpreadError> {
+    // Validate the coordinate rank up front (like every other coordinate-taking
+    // entry point): an over-long target would otherwise index past the cube's
+    // dimensions and panic, and an under-long one would silently produce
+    // short-rank writes.
+    if target.len() != cube.rank() {
+        return Err(SpreadError::Read(QueryError::Model(
+            ModelError::RankMismatch {
+                expected: cube.rank(),
+                got: target.len(),
+            },
+        )));
+    }
     // Per-dimension contributing leaves (sorted by index via leaf_weights). A
     // non-unit weight anywhere means no distribution preserves the total.
     let mut per_dim: Vec<Vec<u32>> = Vec::with_capacity(target.len());
@@ -107,6 +131,15 @@ pub fn spread_leaves(
         }
     }
 
+    // Drop excluded leaves (e.g. rule-covered, ADR-0040) before distributing, so
+    // the kept leaves still sum to `value` exactly. `count > 0` here (every
+    // per-dim list is non-empty), so an emptied set means everything was excluded
+    // and there is nowhere to place the value.
+    coords.retain(|c| !exclude(c));
+    if coords.is_empty() {
+        return Err(SpreadError::AllExcluded);
+    }
+
     let total = value.to_scaled();
     let scaled: Vec<i64> = match method {
         SpreadMethod::Repeat => vec![total; coords.len()],
@@ -145,17 +178,26 @@ fn distribute_equal(total: i64, n: usize) -> Vec<i64> {
 
 /// Split `total` (scaled) in proportion to `weights`; floor each share, then
 /// allocate the leftover deterministically so the result sums to `total` exactly.
-/// Falls back to an even split when the weights sum to zero.
+/// Falls back to an even split when the weights sum to zero, and likewise when a
+/// proportional share cannot be represented (weights that nearly cancel make
+/// `total * w / sum` exceed the `i64` range): no proportional distribution
+/// exists there, and the even split keeps the writes exact.
 fn distribute_proportional(total: i64, weights: &[i64]) -> Vec<i64> {
     let sum: i128 = weights.iter().map(|&w| w as i128).sum();
     if sum == 0 {
         return distribute_equal(total, weights.len());
     }
     let t = total as i128;
-    let mut out: Vec<i64> = weights
-        .iter()
-        .map(|&w| ((t * w as i128) / sum) as i64)
-        .collect();
+    let mut out: Vec<i64> = Vec::with_capacity(weights.len());
+    for &w in weights {
+        // i128 cannot overflow here (|t| and |w| are at most 2^63, so |t * w| is
+        // at most 2^126), but the share itself can exceed i64 when `sum` is far
+        // smaller than the individual weights.
+        match i64::try_from((t * w as i128) / sum) {
+            Ok(share) => out.push(share),
+            Err(_) => return distribute_equal(total, weights.len()),
+        }
+    }
     let allocated: i128 = out.iter().map(|&x| x as i128).sum();
     // Each truncated share is within one unit of its exact value, so the leftover
     // magnitude is strictly less than the leaf count.
@@ -210,6 +252,10 @@ mod tests {
         panic!("read_leaf must not be called for this method")
     }
 
+    fn no_exclude(_: &[u32]) -> bool {
+        false
+    }
+
     fn sum(writes: &[(Vec<u32>, Fixed)]) -> i64 {
         writes.iter().map(|(_, v)| v.to_scaled()).sum()
     }
@@ -225,6 +271,7 @@ mod tests {
             Fixed::from(100),
             SpreadMethod::Equal,
             &never_read,
+            &no_exclude,
         )
         .unwrap();
         assert_eq!(writes.len(), 3);
@@ -245,6 +292,7 @@ mod tests {
             Fixed::from(7),
             SpreadMethod::Repeat,
             &never_read,
+            &no_exclude,
         )
         .unwrap();
         assert!(rep.iter().all(|(_, v)| *v == Fixed::from(7)));
@@ -254,6 +302,7 @@ mod tests {
             Fixed::from(7),
             SpreadMethod::Clear,
             &never_read,
+            &no_exclude,
         )
         .unwrap();
         assert!(clr.iter().all(|(_, v)| v.is_zero()));
@@ -276,6 +325,7 @@ mod tests {
             Fixed::from(100),
             SpreadMethod::Proportional,
             &|x| cells.value(x),
+            &no_exclude,
         )
         .unwrap();
         assert_eq!(sum(&writes), Fixed::from(100).to_scaled());
@@ -296,6 +346,7 @@ mod tests {
             Fixed::from(100),
             SpreadMethod::Proportional,
             &|x| cells.value(x),
+            &no_exclude,
         )
         .unwrap();
         assert_eq!(sum(&writes), Fixed::from(100).to_scaled());
@@ -313,6 +364,7 @@ mod tests {
             Fixed::from(100),
             SpreadMethod::Equal,
             &never_read,
+            &no_exclude,
         )
         .unwrap_err();
         assert_eq!(err, SpreadError::WeightedConsolidation);
@@ -328,10 +380,98 @@ mod tests {
             Fixed::from(42),
             SpreadMethod::Equal,
             &never_read,
+            &no_exclude,
         )
         .unwrap();
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].1, Fixed::from(42));
+    }
+
+    #[test]
+    fn rank_mismatch_is_an_error_not_a_panic() {
+        // Every other coordinate-taking entry point validates rank; spreading
+        // must too — an over-long target used to index past the dimensions and
+        // panic, and an under-long one silently produced short-rank writes.
+        let c = cube(); // rank 2
+        for target in [vec![0u32], vec![0u32, 0, 0]] {
+            let err = spread_leaves(
+                &c,
+                &target,
+                Fixed::from(1),
+                SpreadMethod::Equal,
+                &never_read,
+                &no_exclude,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    SpreadError::Read(QueryError::Model(crate::ModelError::RankMismatch {
+                        expected: 2,
+                        ..
+                    }))
+                ),
+                "rank {} must be rejected, got {err:?}",
+                target.len()
+            );
+        }
+    }
+
+    #[test]
+    fn proportional_with_unrepresentable_shares_falls_back_to_equal() {
+        // Weights that nearly cancel: sum = 1 scaled unit, so a proportional
+        // share would be total * w — far outside i64. The old cast truncated
+        // bits and wrote garbage that no longer summed to the total; now the
+        // split falls back to Equal (like the zero-sum case) and stays exact.
+        let big = i64::MAX;
+        let weights = [big, -(big - 1)];
+        let total = 100;
+        let out = distribute_proportional(total, &weights);
+        assert_eq!(out, distribute_equal(total, weights.len()));
+        assert_eq!(out.iter().sum::<i64>(), total, "the total is preserved");
+    }
+
+    #[test]
+    fn excluded_leaves_are_dropped_and_the_kept_leaves_sum_to_the_total() {
+        // Exclude East/Sales (ADR-0040 rule-covered): the entered 100 must spread
+        // across only North and South and still sum to 100 exactly, not leak a
+        // third into an excluded leaf.
+        let c = cube();
+        let east = idx(&c, 0, "East");
+        let sales = idx(&c, 1, "Sales");
+        let target = vec![idx(&c, 0, "Total"), sales];
+        let writes = spread_leaves(
+            &c,
+            &target,
+            Fixed::from(100),
+            SpreadMethod::Equal,
+            &never_read,
+            &|coord| coord == [east, sales],
+        )
+        .unwrap();
+        assert_eq!(writes.len(), 2, "the excluded leaf is not written");
+        assert!(writes
+            .iter()
+            .all(|(coord, _)| coord.as_slice() != [east, sales]));
+        assert_eq!(sum(&writes), Fixed::from(100).to_scaled());
+    }
+
+    #[test]
+    fn excluding_every_leaf_is_an_error_not_a_silent_noop() {
+        // All three Sales leaves excluded: there is nowhere to place the value, so
+        // the spread must fail loudly (ADR-0040), distinct from an empty target.
+        let c = cube();
+        let target = vec![idx(&c, 0, "Total"), idx(&c, 1, "Sales")];
+        let err = spread_leaves(
+            &c,
+            &target,
+            Fixed::from(100),
+            SpreadMethod::Equal,
+            &never_read,
+            &|_| true,
+        )
+        .unwrap_err();
+        assert_eq!(err, SpreadError::AllExcluded);
     }
 
     #[test]

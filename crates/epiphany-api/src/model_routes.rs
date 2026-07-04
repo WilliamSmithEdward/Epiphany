@@ -19,7 +19,7 @@ use epiphany_security::{AccessLevel, AuditAction, ObjectKind, ObjectRef};
 
 use crate::auth::AuthPrincipal;
 use crate::authz::{audit, deny_if_element_restricted, require_kind_access, require_manage_cubes};
-use crate::routes::{broadcast, broadcast_with_version, map_batch_error, snapshot};
+use crate::routes::{blocking_commit, snapshot};
 use crate::{ApiError, AppState};
 
 // ---- request bodies ----
@@ -374,10 +374,12 @@ pub(crate) async fn create_cube(
         }
     }
 
-    let outcome = state
-        .engine
-        .create_cube_with_refs(&body.name, &dims)
-        .map_err(map_batch_error)?;
+    // Run the create (writer lock + fsync) off the async workers (A2).
+    let name_for_commit = body.name.clone();
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.create_cube_with_refs(&name_for_commit, &dims)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -385,7 +387,8 @@ pub(crate) async fn create_cube(
         Some(&ObjectRef::cube(&body.name)),
         true,
     );
-    broadcast(&state, &body.name);
+    // A1: the commit-ordered change feed emits the change from inside the engine
+    // commit; the handler no longer broadcasts.
     Ok(Json(CommitDto {
         version: outcome.version,
         elements_added: None,
@@ -447,10 +450,12 @@ pub(crate) async fn add_elements(
         }
     }
 
-    let (outcome, added) = state
-        .engine
-        .define_elements(&cube, None, &elements, &edges)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let cube_for_commit = cube.clone();
+    let (outcome, added) = blocking_commit(&state.engine, move |engine| {
+        engine.define_elements(&cube_for_commit, None, &elements, &edges)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -458,7 +463,7 @@ pub(crate) async fn add_elements(
         Some(&ObjectRef::cube(&cube)),
         true,
     );
-    broadcast(&state, &cube);
+    // A1: emitted by the commit-ordered change feed inside the engine commit.
     Ok(Json(CommitDto {
         version: outcome.version,
         elements_added: Some(added),
@@ -484,10 +489,12 @@ pub(crate) async fn define_attribute(
     validate_name("attribute", &attribute)?;
     let kind = parse_attribute_kind(&body.kind)?;
 
-    let outcome = state
-        .engine
-        .define_attribute(&cube, None, &dimension, &attribute, kind)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, dim_c, attr_c) = (cube.clone(), dimension.clone(), attribute.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.define_attribute(&cube_c, None, &dim_c, &attr_c, kind)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -499,7 +506,7 @@ pub(crate) async fn define_attribute(
         )),
         true,
     );
-    broadcast(&state, &cube);
+    // A1: emitted by the commit-ordered change feed inside the engine commit.
     Ok(Json(CommitDto {
         version: outcome.version,
         elements_added: None,
@@ -568,10 +575,12 @@ pub(crate) async fn set_attribute_values(
     }
     drop(snap);
 
-    let outcome = state
-        .engine
-        .set_attribute_values(&cube, None, &dimension, &attribute, &values)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, dim_c, attr_c) = (cube.clone(), dimension.clone(), attribute.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.set_attribute_values(&cube_c, None, &dim_c, &attr_c, &values)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -583,7 +592,7 @@ pub(crate) async fn set_attribute_values(
         )),
         true,
     );
-    broadcast(&state, &cube);
+    // A1: emitted by the commit-ordered change feed inside the engine commit.
     Ok(Json(CommitDto {
         version: outcome.version,
         elements_added: None,
@@ -606,23 +615,51 @@ pub(crate) async fn edit_cube_dimension(
     Path((cube, dimension)): Path<(String, String)>,
     Json(body): Json<DimensionEditBody>,
 ) -> Result<Json<CommitDto>, ApiError> {
+    // If the dimension is registry-backed for this cube, `edit_dimension` fans the
+    // edit out to EVERY referencing cube (each remaps its own stored cells). A
+    // cube-local `Dimension:Write` (which a single-cube `Cube:Admin` also confers)
+    // must not authorize destroying members and cell values in other cubes the
+    // caller holds no access to. So a registry-backed edit is gated exactly like
+    // the id-route `POST /dimensions/{id}/edit`: global `Dimension:Write`, plus a
+    // data-dropping edit denies a caller element-restricted on ANY referencing
+    // cube (the union, fail-closed). A cube-owned (non-registry) dimension keeps
+    // the cube-scoped gate.
+    let backing = state.engine.dimension_backing(&cube, &dimension);
+    let scope = if backing.is_some() {
+        None // global Dimension:Write
+    } else {
+        Some(cube.as_str())
+    };
     require_kind_access(
         &state,
         &auth,
         ObjectKind::Dimension,
-        Some(&cube),
+        scope,
         AccessLevel::Write,
     )?;
     // A data-dropping edit (delete/convert) must not be reachable by a caller with
-    // any element restriction on this cube; mirrors the rule/flow/promote gates.
+    // any element restriction on the affected cube(s); mirrors the rule/flow/
+    // promote gates. For a registry-backed dimension that is every referencing
+    // cube (the same union the id-route enforces); otherwise just this cube.
     if body.touches_element_data() {
-        deny_if_element_restricted(&state, &auth, &snapshot(&state, &cube)?)?;
+        if let Some(id) = backing {
+            for ref_cube in state.engine.dimension_registry().referencing(id) {
+                if let Some(snap) = state.engine.snapshot(&ref_cube) {
+                    deny_if_element_restricted(&state, &auth, &snap)?;
+                }
+            }
+        } else {
+            deny_if_element_restricted(&state, &auth, &snapshot(&state, &cube)?)?;
+        }
     }
     let edit = body.into_edit()?;
-    let outcome = state
-        .engine
-        .edit_dimension(&cube, &dimension, &edit)
-        .map_err(map_batch_error)?;
+    // Run the edit + cell remap (writer lock + fsync, fanned across referencing
+    // cubes) off the async workers (A2).
+    let (cube_c, dim_c) = (cube.clone(), dimension.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.edit_dimension(&cube_c, &dim_c, &edit)
+    })
+    .await?;
     audit(
         &state,
         &auth.principal.username,
@@ -634,7 +671,8 @@ pub(crate) async fn edit_cube_dimension(
         )),
         true,
     );
-    broadcast_with_version(&state, &cube, outcome.version);
+    // A1: emitted by the commit-ordered change feed inside the engine commit (the
+    // fan-out to each referencing cube fires the observer per cube).
     Ok(Json(CommitDto {
         version: outcome.version,
         elements_added: None,

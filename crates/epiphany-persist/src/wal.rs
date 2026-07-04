@@ -72,6 +72,13 @@ impl std::fmt::Display for WalError {
 pub(crate) struct Replay {
     pub records: Vec<Record>,
     pub good_len: u64,
+    /// True when the scan stopped at a bad frame BUT at least one well-formed frame
+    /// follows it. An append-only log written by this crate only ever tears at the
+    /// tail (a failed append truncates back and poisons the store, [`crate::store`]),
+    /// so a bad frame with intact frames after it is not a torn tail: it is genuine
+    /// mid-log corruption (bit rot, a bad sector). Recovery preserves the file
+    /// instead of silently truncating those acknowledged records away.
+    pub corrupt_with_valid_tail: bool,
 }
 
 /// The 8-byte file header: magic then little-endian version.
@@ -141,20 +148,27 @@ pub(crate) fn replay(bytes: &[u8]) -> Result<Replay, WalError> {
     // committed (and `good` advanced past them) once BatchEnd is read intact, so
     // a batch torn by a crash before its end marker is discarded whole.
     let mut batch: Option<Vec<Record>> = None;
+    // Where the scan stopped on a bad/torn frame (None if it ran cleanly to EOF).
+    let mut break_pos: Option<usize> = None;
     while pos + 4 <= bytes.len() {
         let len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
         let frame_end = pos + 4 + len + 4;
         if frame_end > bytes.len() {
-            break; // torn: payload + crc run past the file end
+            break_pos = Some(pos); // torn: payload + crc run past the file end
+            break;
         }
         let payload = &bytes[pos + 4..pos + 4 + len];
         let crc = u32::from_le_bytes(bytes[pos + 4 + len..frame_end].try_into().unwrap());
         if crc32(payload) != crc {
-            break; // torn or corrupt trailing record
+            break_pos = Some(pos); // torn or corrupt record
+            break;
         }
         let record = match decode(payload) {
             Some(record) => record,
-            None => break, // unknown op: treat as a corrupt tail
+            None => {
+                break_pos = Some(pos); // unknown op: corrupt
+                break;
+            }
         };
         match record {
             Record::BatchBegin { .. } => batch = Some(Vec::new()),
@@ -163,7 +177,10 @@ pub(crate) fn replay(bytes: &[u8]) -> Result<Replay, WalError> {
                     records.extend(buffered);
                     good = frame_end as u64; // the whole batch is now durable
                 }
-                None => break, // an end marker with no begin: corrupt
+                None => {
+                    break_pos = Some(pos); // an end marker with no begin: corrupt
+                    break;
+                }
             },
             cell => match &mut batch {
                 Some(buffered) => buffered.push(cell),
@@ -177,10 +194,43 @@ pub(crate) fn replay(bytes: &[u8]) -> Result<Replay, WalError> {
     }
     // An unterminated batch (torn before BatchEnd) is dropped: its buffered
     // records are never committed and `good` stays before its BatchBegin.
+    //
+    // If the scan broke on a bad frame, check whether any well-formed frame follows
+    // it. A tail-only tear leaves nothing intact after the break; an intact frame
+    // after the break means the bad frame is mid-log corruption, not a tear.
+    let corrupt_with_valid_tail = match break_pos {
+        Some(bp) => has_intact_frame_after(bytes, bp),
+        None => false,
+    };
     Ok(Replay {
         records,
         good_len: good,
+        corrupt_with_valid_tail,
     })
+}
+
+/// Scan from just after the byte at `break_pos` for any single well-formed frame
+/// (length in range, CRC valid, decodable op). Used only to classify a break as a
+/// torn tail vs. mid-log corruption, so it does not need to interpret batch
+/// structure; one intact frame anywhere after the break is enough to prove the
+/// bytes past the break are not merely a torn trailing write.
+fn has_intact_frame_after(bytes: &[u8], break_pos: usize) -> bool {
+    // Start one byte past the break so a self-referential match at break_pos itself
+    // (which we already rejected) is not re-counted.
+    let mut pos = break_pos + 1;
+    while pos + 4 <= bytes.len() {
+        let len = u32::from_le_bytes(bytes[pos..pos + 4].try_into().unwrap()) as usize;
+        let frame_end = pos + 4 + len + 4;
+        if frame_end <= bytes.len() {
+            let payload = &bytes[pos + 4..pos + 4 + len];
+            let crc = u32::from_le_bytes(bytes[pos + 4 + len..frame_end].try_into().unwrap());
+            if crc32(payload) == crc && decode(payload).is_some() {
+                return true;
+            }
+        }
+        pos += 1;
+    }
+    false
 }
 
 /// Append a coordinate as `[rank u16][rank x u32]` (little-endian).
@@ -359,6 +409,10 @@ mod tests {
         let replay = replay(&bytes).unwrap();
         assert_eq!(replay.records, vec![good]);
         assert_eq!(replay.good_len as usize, good_len);
+        assert!(
+            !replay.corrupt_with_valid_tail,
+            "a torn tail has no intact frame after the break"
+        );
     }
 
     #[test]
@@ -374,6 +428,48 @@ mod tests {
         let replay = replay(&bytes).unwrap();
         assert!(replay.records.is_empty());
         assert_eq!(replay.good_len, WAL_HEADER_LEN);
+        assert!(!replay.corrupt_with_valid_tail, "nothing follows the break");
+    }
+
+    #[test]
+    fn mid_log_corruption_with_intact_tail_is_flagged() {
+        // A bad frame with well-formed frames AFTER it is mid-log corruption, not a
+        // torn tail: replay must flag it so recovery preserves the file rather than
+        // silently truncating the acknowledged records that follow.
+        let mut bytes = header().to_vec();
+        let a = Record::SetLeaf {
+            coord: vec![0],
+            value: Fixed::from(1),
+        };
+        bytes.extend_from_slice(&encode(&a));
+        let good_len = bytes.len();
+        // A corrupt frame (flipped CRC) in the middle...
+        let mut bad = encode(&Record::SetLeaf {
+            coord: vec![1],
+            value: Fixed::from(2),
+        });
+        let last = bad.len() - 1;
+        bad[last] ^= 0xFF;
+        bytes.extend_from_slice(&bad);
+        // ...followed by two more intact frames (acknowledged writes after the rot).
+        bytes.extend_from_slice(&encode(&Record::SetLeaf {
+            coord: vec![2],
+            value: Fixed::from(3),
+        }));
+        bytes.extend_from_slice(&encode(&Record::SetLeaf {
+            coord: vec![3],
+            value: Fixed::from(4),
+        }));
+
+        let replay = replay(&bytes).unwrap();
+        // The scan still stops at the first bad frame (the durable prefix is a).
+        assert_eq!(replay.records, vec![a]);
+        assert_eq!(replay.good_len as usize, good_len);
+        // But it is classified as corruption, not a torn tail.
+        assert!(
+            replay.corrupt_with_valid_tail,
+            "intact frames after the bad frame prove mid-log corruption"
+        );
     }
 
     #[test]

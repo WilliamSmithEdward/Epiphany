@@ -117,3 +117,15 @@ a thin REST client that reuses this web UI inside a WebView2 task pane.
   ADR-backed increments; the UI for the Data Models section depends on the former.
 - Realized incrementally (W0 foundation through W5 onboarding) on the project's
   build-review-release cadence, so each step ships green.
+
+## Implementation status note (2026-07-02)
+
+The design system, tokens, dark mode, accessibility, and the workspace surfaces
+are in place, but the **persona-gated shell is deferred**, not yet built. Gating
+tree roots, palette create-commands, and the "Show MDX" affordance on a persona
+must be derived from the caller's grant lattice (any dimension/rule/flow write
+grant ⇒ modeler; admin object grants ⇒ admin; otherwise business), not from an
+`isAdmin`-only flag — a partial admin-only gate would wrongly hide MDX/rules/flows
+from non-admin modelers who legitimately need them. Follow-up: derive persona from
+`listGrants` and gate accordingly. Recorded here per this ADR's request that a
+deliberate deferral be captured in its status.

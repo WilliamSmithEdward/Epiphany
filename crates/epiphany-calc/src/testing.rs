@@ -49,6 +49,13 @@ pub enum TestRunError {
     Parse(RuleParseError),
     /// The model's rules did not compile.
     Compile(CompileError),
+    /// The model's rules reference another cube, which the test runner cannot
+    /// resolve: tests evaluate against this model's cube alone, while production
+    /// compiles the same source against the full cube registry.
+    CrossCube {
+        /// The referenced cube's name.
+        cube: String,
+    },
     /// A test coordinate or fixture was invalid.
     Model(ModelError),
     /// A rule failed to evaluate during a test.
@@ -62,6 +69,12 @@ impl fmt::Display for TestRunError {
         match self {
             TestRunError::Parse(e) => write!(f, "rule parse error: {e}"),
             TestRunError::Compile(e) => write!(f, "rule compile error: {e}"),
+            TestRunError::CrossCube { cube } => write!(
+                f,
+                "the rules reference cube '{cube}', which rule tests cannot reach: \
+                 tests run against this model's cube alone, so cross-cube rules are \
+                 not testable yet"
+            ),
             TestRunError::Model(e) => write!(f, "{e}"),
             TestRunError::Calc(e) => write!(f, "{e}"),
             TestRunError::BadCoord(m) => write!(f, "invalid test coordinate: {m}"),
@@ -133,7 +146,18 @@ fn resolve_coord(cube: &Cube, coord: &BTreeMap<String, String>) -> Result<Vec<u3
 /// evaluation error is a [`TestRunError`].
 pub fn run_rule_tests(model: &Model) -> Result<Vec<TestOutcome>, TestRunError> {
     let doc = parse(&model.rules.source)?;
-    let compiled = compile(&model.cube, &SingleCube::new(&model.cube), &doc, 0)?;
+    let compiled = match compile(&model.cube, &SingleCube::new(&model.cube), &doc, 0) {
+        Ok(c) => c,
+        // The production engine compiles the same source against the full cube
+        // registry, so an unknown cube here usually means a legitimate
+        // cross-cube reference the single-cube test runner cannot resolve.
+        // Report that limitation precisely, not an "unknown cube" that reads as
+        // if the rules were broken.
+        Err(CompileError::UnknownCube { name, .. }) => {
+            return Err(TestRunError::CrossCube { cube: name })
+        }
+        Err(e) => return Err(TestRunError::Compile(e)),
+    };
 
     let mut outcomes = Vec::with_capacity(model.tests.len());
     for test in model.tests.values() {
@@ -288,5 +312,21 @@ mod tests {
             run_rule_tests(&model),
             Err(TestRunError::Compile(_))
         ));
+    }
+
+    #[test]
+    fn a_cross_cube_rule_reports_the_single_cube_limitation() {
+        // The same source compiles in production (the FX cube exists in the
+        // server registry), so the failure must name the runner's single-cube
+        // limitation rather than read like a broken rule.
+        let model = pnl_model("['Measure':'Margin'] = 'FX'!['Pair':'EUR'];");
+        match run_rule_tests(&model) {
+            Err(TestRunError::CrossCube { cube }) => {
+                assert_eq!(cube, "FX");
+                let msg = TestRunError::CrossCube { cube }.to_string();
+                assert!(msg.contains("cross-cube"), "explains the limitation: {msg}");
+            }
+            other => panic!("expected the cross-cube error, got {other:?}"),
+        }
     }
 }
