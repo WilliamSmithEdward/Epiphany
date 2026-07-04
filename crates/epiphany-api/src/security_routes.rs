@@ -540,6 +540,40 @@ pub(crate) async fn put_element_acl(
     require_admin(&state, &auth)?;
     let level = parse_level(&body.level)?;
     let subject = parse_subject(&body.subject_kind, &body.subject)?;
+    // Validate-on-grant (ADR-0015 decision 6): element security is a RESTRICTION
+    // list looked up by exact, case-sensitive `(cube, dimension, element)` keys, so
+    // a typo'd target ("north" vs "North") would store a dangling ACL that never
+    // matches — the member stays fully readable while the admin believes it is
+    // restricted (fail-OPEN). Resolve the cube snapshot, the dimension by name, and
+    // the element by its exact primary name before writing, and 404/422 on any
+    // miss. A revoke (`level = none`) is exempt so a stale ACL can still be cleaned
+    // up after the underlying member is deleted.
+    if level != AccessLevel::None {
+        let snap = state
+            .engine
+            .snapshot(&body.cube)
+            .ok_or_else(|| ApiError::not_found(format!("unknown cube '{}'", body.cube)))?;
+        let dim = snap
+            .cube()
+            .dimensions()
+            .iter()
+            .find(|d| d.name() == body.dimension)
+            .ok_or_else(|| {
+                ApiError::unprocessable(
+                    "UNKNOWN_DIMENSION",
+                    format!("cube '{}' has no dimension '{}'", body.cube, body.dimension),
+                )
+            })?;
+        if dim.index_of(&body.element).is_none() {
+            return Err(ApiError::unprocessable(
+                "UNKNOWN_ELEMENT",
+                format!(
+                    "dimension '{}' has no element '{}' (element ACLs match by exact name)",
+                    body.dimension, body.element
+                ),
+            ));
+        }
+    }
     state
         .security
         .lock()

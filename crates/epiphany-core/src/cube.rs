@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::Arc;
 
 use crate::{AttributeKind, AttributeValue, Dimension, ElementKind, Fixed, ModelError};
 
@@ -165,12 +166,17 @@ impl<'a, V> Iterator for Entries<'a, V> {
 ///
 /// Each distinct string is stored once and referenced by a compact id, so a cell
 /// costs one `u32` id, not a heap allocation per cell, and repeated text (status
-/// codes, labels) is shared. The pool grows monotonically; ids are assigned in
-/// insertion order, which is deterministic.
+/// codes, labels) is shared. The id table and the reverse-lookup map share one
+/// allocation per string (`Arc<str>`), so the text itself is never duplicated.
+/// The pool grows monotonically by DEFAULT (ADR-0006): an id whose last cell is
+/// overwritten or cleared is orphaned until the model is reloaded, which rebuilds
+/// the pool from live cells. [`Cube::compact_string_pool`] is the opt-in pass that
+/// reclaims those orphans in place without a reload. Ids are assigned in insertion
+/// order, which is deterministic (and compaction preserves that order).
 #[derive(Clone, Debug, Default)]
 struct StringPool {
-    by_id: Vec<Box<str>>,
-    ids: HashMap<Box<str>, u32, FxBuildHasher>,
+    by_id: Vec<Arc<str>>,
+    ids: HashMap<Arc<str>, u32, FxBuildHasher>,
 }
 
 impl StringPool {
@@ -179,14 +185,45 @@ impl StringPool {
             return id;
         }
         let id = self.by_id.len() as u32;
-        let boxed: Box<str> = value.into();
-        self.by_id.push(boxed.clone());
-        self.ids.insert(boxed, id);
+        let shared: Arc<str> = Arc::from(value);
+        self.by_id.push(shared.clone());
+        self.ids.insert(shared, id);
         id
     }
 
     fn get(&self, id: u32) -> &str {
         &self.by_id[id as usize]
+    }
+
+    /// Rebuild the pool keeping only the ids in `live`, returning an old-id ->
+    /// new-id remap table (indexed by old id; a dropped id maps to `u32::MAX`).
+    ///
+    /// New ids are assigned in ASCENDING OLD-ID order — i.e. original insertion
+    /// order, since ids are handed out sequentially by [`intern`](Self::intern) —
+    /// so the result is deterministic and independent of the `live` set's or the
+    /// reverse-map's hash iteration order. Text is moved, never re-cloned (the
+    /// `Arc<str>` is shared with the reverse map). A no-op-shaped pool (every id
+    /// live) still rebuilds, but the identity remap it returns lets the caller skip
+    /// the store rewrite.
+    fn compact(&mut self, live: &HashSet<u32>) -> Vec<u32> {
+        let old_len = self.by_id.len();
+        let mut remap = vec![u32::MAX; old_len];
+        let mut by_id: Vec<Arc<str>> = Vec::with_capacity(live.len());
+        let mut ids: HashMap<Arc<str>, u32, FxBuildHasher> = HashMap::default();
+        // Walk old ids in ascending order so new ids preserve insertion order.
+        for old in 0..old_len as u32 {
+            if !live.contains(&old) {
+                continue;
+            }
+            let new = by_id.len() as u32;
+            remap[old as usize] = new;
+            let shared = self.by_id[old as usize].clone();
+            ids.insert(shared.clone(), new);
+            by_id.push(shared);
+        }
+        self.by_id = by_id;
+        self.ids = ids;
+        remap
     }
 }
 
@@ -286,6 +323,31 @@ pub enum Position {
     After(String),
 }
 
+/// One write in a batch to be validated by [`Cube::validate_batch`]: a numeric
+/// leaf value or a string cell value at a coordinate (element indices, in
+/// dimension order). The read-only counterpart of the durability layer's write
+/// record, so a caller (e.g. `epiphany-persist`) can pre-check a whole batch
+/// against the live cube without cloning it, then apply through the mutating
+/// [`Cube::set_leaf`] / [`Cube::set_string`] on success. The value is carried so
+/// the borrow is cheap; validation only inspects the coordinate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BatchWrite<'a> {
+    /// A numeric leaf write (validated like [`Cube::set_leaf`]).
+    Leaf {
+        /// The target coordinate (element indices, dimension order).
+        coord: &'a [u32],
+        /// The value to write (only the coordinate is validated).
+        value: Fixed,
+    },
+    /// A string cell write (validated like [`Cube::set_string`]).
+    Str {
+        /// The target coordinate (element indices, dimension order).
+        coord: &'a [u32],
+        /// The value to write (only the coordinate is validated).
+        value: &'a str,
+    },
+}
+
 /// A request to add one weighted consolidation edge to a named dimension.
 /// Idempotent: an edge that already exists is a no-op.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -364,14 +426,27 @@ impl Cube {
         cube.extend_schema(&elements, &edges)?;
         // Apply attribute defs + values after the element/edge schema exists, so a
         // cube materialized from a registry dimension keeps its attributes
-        // (ADR-0024/0033). define_attribute/set_attribute_values validate and are
-        // transactional per dimension.
+        // (ADR-0024/0033). Values are applied directly to the dimension in
+        // declaration order (no per-value staging clone, which made large member
+        // tables quadratic): build itself is atomic, since any error discards the
+        // whole half-built cube.
         for d in dims {
             for (attr, kind) in &d.attributes {
                 cube.define_attribute(&d.name, attr, *kind)?;
             }
+            if d.attribute_values.is_empty() {
+                continue;
+            }
+            let di = cube.dimension_index(&d.name)?;
+            let dim = &mut cube.dimensions[di];
             for (element, attr, value) in &d.attribute_values {
-                cube.set_attribute_values(&d.name, attr, &[(element.clone(), value.clone())])?;
+                let idx = dim
+                    .index_of(element)
+                    .ok_or_else(|| ModelError::ElementNotFound {
+                        dimension: d.name.clone(),
+                        element: element.clone(),
+                    })?;
+                dim.set_attribute(idx, attr, value.clone())?;
             }
         }
         Ok(cube)
@@ -425,17 +500,20 @@ impl Cube {
     /// the runtime "build dimension elements" capability flows use; it never
     /// removes or reorders elements (which would invalidate stored coordinates).
     ///
-    /// Transactional: the change is staged on a clone and only swapped in if every
-    /// element and edge applies cleanly, so a rejected change (unknown dimension,
-    /// element-kind or edge-weight conflict, a cycle) leaves the cube untouched.
+    /// Transactional: the change is staged on a clone of the dimensions (the cell
+    /// stores are untouched by growth, so they are not cloned) and only swapped in
+    /// if every element and edge applies cleanly, so a rejected change (unknown
+    /// dimension, element-kind or edge-weight conflict, a cycle) leaves the cube
+    /// untouched. The stores are re-packed only if a dimension's bit-width grew.
     pub fn extend_schema(
         &mut self,
         elements: &[ElementSpec],
         edges: &[EdgeSpec],
     ) -> Result<usize, ModelError> {
-        let mut next = self.clone();
-        let added = next.apply_growth(elements, edges)?;
-        *self = next;
+        let mut next_dims = self.dimensions.clone();
+        let added = Self::apply_growth(&self.name, &mut next_dims, elements, edges)?;
+        self.dimensions = next_dims;
+        self.relayout();
         Ok(added)
     }
 
@@ -816,12 +894,16 @@ impl Cube {
         Ok(())
     }
 
-    /// Re-type or clear an element's stored cells after its kind changed (no index
-    /// change). Numeric<->string moves the value to the matching store when it
-    /// transfers cleanly and clears it otherwise; any change to or from
-    /// consolidated clears the element's stored cells (a consolidation is computed,
-    /// and a fresh leaf/string starts empty). Operates on cells whose component
-    /// for `d` equals `element`.
+    /// Clear an element's stored cells that its kind change invalidated (no index
+    /// change). Values are never converted between the numeric and string stores:
+    /// numeric -> string clears the element's numeric cells (a number has no
+    /// faithful text form); string -> numeric clears only the string cells that no
+    /// longer address ANY string element (one whose other components include a
+    /// string element is still a valid string coordinate and is kept, ADR-0036);
+    /// any change to consolidated clears the element's stored cells (a
+    /// consolidation is computed, and a fresh leaf/string starts empty). Operates
+    /// on cells whose component for `d` equals `element`; runs after the dimension
+    /// edit is staged, so kind checks see the new kinds.
     fn retype_cells_for_kind(
         &mut self,
         d: usize,
@@ -837,8 +919,11 @@ impl Cube {
                 self.drop_cells_for_element(d, element, true, false);
             }
             (Str, Leaf) => {
-                // String leaf -> numeric: text has no numeric value, so clear it.
-                self.drop_cells_for_element(d, element, false, true);
+                // String leaf -> numeric: a string cell needs at least one string
+                // component, so drop only cells for which the converted element was
+                // the SOLE string component; one that still addresses another
+                // string element remains a valid string coordinate and is kept.
+                self.drop_sole_string_cells(d, element);
             }
             (Leaf, Consolidated) | (Str, Consolidated) => {
                 // A consolidation holds no stored value of its own.
@@ -848,6 +933,34 @@ impl Cube {
             // none), and leaf<->leaf or string<->string keeps its cells.
             _ => {}
         }
+    }
+
+    /// Drop string cells whose component for dimension `d` equals `element` AND
+    /// whose remaining components include no string element (the converted element
+    /// was their sole string typing). Used when a string leaf becomes numeric; the
+    /// dimension already carries the new kind, so "another string component" is
+    /// judged against the post-edit kinds. No index change, so the layout is
+    /// untouched.
+    fn drop_sole_string_cells(&mut self, d: usize, element: u32) {
+        // Pre-compute each dimension's string-element flags so the rebuild closure
+        // does not re-borrow `self.dimensions` while the stores are rebuilt.
+        let string_flags: Vec<Vec<bool>> = self
+            .dimensions
+            .iter()
+            .map(|dim| {
+                dim.iter_elements()
+                    .map(|el| el.kind == ElementKind::String)
+                    .collect()
+            })
+            .collect();
+        let layout = self.layout.clone();
+        self.rebuild_stores(layout, false, true, |coord| {
+            coord[d] != element
+                || coord
+                    .iter()
+                    .enumerate()
+                    .any(|(d2, &idx)| d2 != d && string_flags[d2][idx as usize])
+        });
     }
 
     /// Drop stored cells whose component for dimension `d` equals `element`, from
@@ -915,17 +1028,27 @@ impl Cube {
         Ok(())
     }
 
-    /// Apply element/edge additions in place (not transactional; callers go
-    /// through [`extend_schema`](Self::extend_schema), which stages on a clone).
+    /// Apply element/edge additions to `dimensions` in place (not transactional;
+    /// callers go through [`extend_schema`](Self::extend_schema), which stages on
+    /// a clone of the dimensions). `cube` names the cube for error reporting.
     fn apply_growth(
-        &mut self,
+        cube: &str,
+        dimensions: &mut [Dimension],
         elements: &[ElementSpec],
         edges: &[EdgeSpec],
     ) -> Result<usize, ModelError> {
+        let dimension_index = |dims: &[Dimension], name: &str| -> Result<usize, ModelError> {
+            dims.iter()
+                .position(|d| d.name() == name)
+                .ok_or_else(|| ModelError::UnknownDimension {
+                    cube: cube.to_string(),
+                    dimension: name.to_string(),
+                })
+        };
         let mut added = 0;
         for spec in elements {
-            let d = self.dimension_index(&spec.dimension)?;
-            let dim = &mut self.dimensions[d];
+            let d = dimension_index(dimensions, &spec.dimension)?;
+            let dim = &mut dimensions[d];
             match dim.index_of(&spec.name) {
                 Some(existing) => {
                     if dim.element(existing)?.kind != spec.kind {
@@ -946,8 +1069,8 @@ impl Cube {
             }
         }
         for edge in edges {
-            let d = self.dimension_index(&edge.dimension)?;
-            let dim = &mut self.dimensions[d];
+            let d = dimension_index(dimensions, &edge.dimension)?;
+            let dim = &mut dimensions[d];
             let parent = dim
                 .index_of(&edge.parent)
                 .ok_or_else(|| ModelError::ElementNotFound {
@@ -962,12 +1085,9 @@ impl Cube {
                 })?;
             // Idempotent: an edge that already exists is a no-op, but re-declaring
             // it with a different weight is a conflict (silently keeping the old
-            // weight would corrupt rollups).
-            if let Some(&(_, _, w)) = dim
-                .edges()
-                .iter()
-                .find(|&&(p, c, _)| p == parent && c == child)
-            {
+            // weight would corrupt rollups). Checked against the parent's own edge
+            // list, not a materialization of every edge in the dimension.
+            if let Some(w) = dim.child_weight(parent, child)? {
                 if w != edge.weight {
                     return Err(ModelError::EdgeWeightConflict {
                         dimension: edge.dimension.clone(),
@@ -979,7 +1099,6 @@ impl Cube {
             }
             dim.add_child(parent, child, edge.weight)?;
         }
-        self.relayout();
         Ok(added)
     }
 
@@ -1017,7 +1136,72 @@ impl Cube {
         self.string_cells.len()
     }
 
+    /// The number of distinct strings currently interned (live or orphaned). This
+    /// only ever grows as new text is written, until [`compact_string_pool`](Self::compact_string_pool)
+    /// reclaims the orphans (ADR-0006 makes monotonic growth the default). Exposed
+    /// so a checkpoint can decide whether the pool has drifted far enough past the
+    /// live [`string_cell_count`](Self::string_cell_count) to be worth compacting.
+    pub fn string_pool_len(&self) -> usize {
+        self.string_pool.by_id.len()
+    }
+
+    /// Compact the string interner (C1), reclaiming ids orphaned by overwrites,
+    /// clears, and kind conversions, and remapping the string cell store to the
+    /// rebuilt ids. Returns the number of orphaned strings dropped.
+    ///
+    /// The pool grows monotonically by default (ADR-0006): an id whose last cell
+    /// is overwritten or cleared is never reclaimed in the hot write path, so a
+    /// churn-heavy string measure accretes dead entries until the model is
+    /// reloaded (which rebuilds the pool from live cells). This is the opt-in
+    /// pass — run at a checkpoint, or when [`string_pool_len`](Self::string_pool_len)
+    /// has drifted well past [`string_cell_count`](Self::string_cell_count) — that
+    /// rebuilds the pool in place, dropping every string no live cell references.
+    ///
+    /// Deterministic and lossless for live data: surviving strings are re-numbered
+    /// in ascending old-id (original insertion) order, independent of hash
+    /// iteration, and every live string cell still reads byte-identically
+    /// afterwards (its id is remapped, its text unchanged). A pool with no orphans
+    /// is left exactly as-is (returns 0 without rewriting the store).
+    pub fn compact_string_pool(&mut self) -> usize {
+        let before = self.string_pool.by_id.len();
+        // The live ids: every id currently referenced by a string cell. Collected
+        // from the store (order-independent; it is a set).
+        let rank = self.rank();
+        let live: HashSet<u32> = self
+            .string_cells
+            .entries(&self.layout, rank)
+            .map(|(_, &id)| id)
+            .collect();
+        if live.len() == before {
+            // No orphans: nothing to reclaim, and no store rewrite needed.
+            return 0;
+        }
+        let remap = self.string_pool.compact(&live);
+        // Remap every stored string cell's id through the compaction table. The
+        // layout and coordinates are unchanged (only the value ids move), so this
+        // rebuilds the string store under the SAME layout. Every stored id is live
+        // (it came from a cell), so it never maps to u32::MAX here.
+        let layout = self.layout.clone();
+        let collected: Vec<(Vec<u32>, u32)> = self
+            .string_cells
+            .entries(&layout, rank)
+            .map(|(coord, &id)| (coord, remap[id as usize]))
+            .collect();
+        let mut rebuilt = CellStore::new(layout.narrow);
+        for (coord, new_id) in collected {
+            rebuilt.put(&layout, &coord, new_id);
+        }
+        self.string_cells = rebuilt;
+        before - self.string_pool.by_id.len()
+    }
+
     /// Iterate populated numeric leaf cells as `(coordinate, value)`.
+    ///
+    /// The iteration order is UNSPECIFIED (hash-map order, dependent on the
+    /// write/remove history): any observable output derived from it — canonical
+    /// text, wire bytes, diffs — must sort by coordinate first, as the
+    /// serializer does. The set of entries is deterministic; only the order is
+    /// not.
     pub fn cell_entries(&self) -> impl Iterator<Item = (Vec<u32>, Fixed)> + '_ {
         self.cells
             .entries(&self.layout, self.rank())
@@ -1025,6 +1209,10 @@ impl Cube {
     }
 
     /// Iterate populated string cells as `(coordinate, value)`.
+    ///
+    /// The iteration order is UNSPECIFIED, exactly as for
+    /// [`cell_entries`](Self::cell_entries): sort by coordinate before any
+    /// observable output.
     pub fn string_cell_entries(&self) -> impl Iterator<Item = (Vec<u32>, &str)> + '_ {
         let pool = &self.string_pool;
         self.string_cells
@@ -1045,10 +1233,12 @@ impl Cube {
         Ok(())
     }
 
-    /// Write a numeric value to a leaf cell. Every coordinate element must be a
-    /// numeric leaf. Writing [`Fixed::ZERO`] clears the cell, keeping the store
-    /// sparse.
-    pub fn set_leaf(&mut self, coord: &[u32], value: Fixed) -> Result<(), ModelError> {
+    /// Validate a numeric leaf write WITHOUT mutating: the coordinate's rank and
+    /// element indices are in range ([`check_coord`](Self::check_coord)) and every
+    /// component is a numeric leaf. Returns exactly the errors [`set_leaf`](Self::set_leaf)
+    /// would raise before it stores, so a caller can pre-check a batch against the
+    /// live cube without cloning it (see [`validate_batch`](Self::validate_batch)).
+    fn check_leaf_write(&self, coord: &[u32]) -> Result<(), ModelError> {
         self.check_coord(coord)?;
         for (d, &idx) in coord.iter().enumerate() {
             let element = self.dimensions[d].element(idx)?;
@@ -1068,6 +1258,14 @@ impl Cube {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Write a numeric value to a leaf cell. Every coordinate element must be a
+    /// numeric leaf. Writing [`Fixed::ZERO`] clears the cell, keeping the store
+    /// sparse.
+    pub fn set_leaf(&mut self, coord: &[u32], value: Fixed) -> Result<(), ModelError> {
+        self.check_leaf_write(coord)?;
         if value.is_zero() {
             self.cells.clear(&self.layout, coord);
         } else {
@@ -1090,10 +1288,24 @@ impl Cube {
             .unwrap_or(Fixed::ZERO)
     }
 
-    /// Write a string value to a string cell. Every coordinate element must be a
-    /// leaf, and at least one must be a string element. Writing an empty string
-    /// clears the cell.
-    pub fn set_string(&mut self, coord: &[u32], value: &str) -> Result<(), ModelError> {
+    /// Whether every component of `coord` is a numeric leaf (the direct-lookup
+    /// fast path of the consolidating reads). Allocation-free: it only inspects
+    /// element kinds.
+    fn all_numeric_leaf(&self, coord: &[u32]) -> Result<bool, ModelError> {
+        for (d, &idx) in coord.iter().enumerate() {
+            if self.dimensions[d].element(idx)?.kind != ElementKind::Leaf {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Validate a string-cell write WITHOUT mutating: the coordinate's rank and
+    /// element indices are in range, no component is consolidated, and at least
+    /// one is a string element. Returns exactly the errors [`set_string`](Self::set_string)
+    /// would raise before it stores, so [`validate_batch`](Self::validate_batch)
+    /// can pre-check a mixed batch without cloning the cube.
+    fn check_string_write(&self, coord: &[u32]) -> Result<(), ModelError> {
         self.check_coord(coord)?;
         let mut addresses_string = false;
         for (d, &idx) in coord.iter().enumerate() {
@@ -1114,11 +1326,48 @@ impl Cube {
                 cube: self.name.clone(),
             });
         }
+        Ok(())
+    }
+
+    /// Write a string value to a string cell. Every coordinate element must be a
+    /// leaf, and at least one must be a string element. Writing an empty string
+    /// clears the cell.
+    pub fn set_string(&mut self, coord: &[u32], value: &str) -> Result<(), ModelError> {
+        self.check_string_write(coord)?;
         if value.is_empty() {
             self.string_cells.clear(&self.layout, coord);
         } else {
             let id = self.string_pool.intern(value);
             self.string_cells.put(&self.layout, coord, id);
+        }
+        Ok(())
+    }
+
+    /// Validate a batch of writes read-only: check each write's coordinate rank,
+    /// leaf-ness, and string/numeric kind WITHOUT mutating or cloning the cube.
+    ///
+    /// Returns `Ok(())` iff every write would apply cleanly through
+    /// [`set_leaf`](Self::set_leaf) / [`set_string`](Self::set_string); on the
+    /// first offending write it returns `Err((index, error))` with that write's
+    /// position and the exact [`ModelError`] the mutating trial-apply would raise.
+    /// This lets `epiphany-persist` stop cloning the whole cube just to validate a
+    /// batch: a write batch is order-sensitive only in which failure is reported
+    /// first, and this scans left to right exactly as a trial-apply would, so the
+    /// reported `(index, error)` is identical to applying to a throwaway clone and
+    /// aborting on the first rejection.
+    ///
+    /// It is a pure pre-check: because a write never *invalidates* a later write's
+    /// coordinate (cell writes change values, not the schema), validating against
+    /// the live cube gives the same verdict as validating against a clone that has
+    /// the earlier writes already applied. Deterministic (no allocation of a
+    /// clone, no iteration over cell storage; only per-coordinate element lookups).
+    pub fn validate_batch(&self, writes: &[BatchWrite]) -> Result<(), (usize, ModelError)> {
+        for (index, write) in writes.iter().enumerate() {
+            let checked = match write {
+                BatchWrite::Leaf { coord, .. } => self.check_leaf_write(coord),
+                BatchWrite::Str { coord, .. } => self.check_string_write(coord),
+            };
+            checked.map_err(|e| (index, e))?;
         }
         Ok(())
     }
@@ -1140,18 +1389,16 @@ impl Cube {
     pub fn get(&self, coord: &[u32]) -> Result<Fixed, ModelError> {
         self.check_coord(coord)?;
 
-        let mut per_dim: Vec<HashMap<u32, i64>> = Vec::with_capacity(self.rank());
-        let mut all_leaf = true;
-        for (d, &idx) in coord.iter().enumerate() {
-            if self.dimensions[d].element(idx)?.kind != ElementKind::Leaf {
-                all_leaf = false;
-            }
-            per_dim.push(self.dimensions[d].leaf_weights(idx)?.into_iter().collect());
+        // Fast path: a pure numeric-leaf cell is a direct lookup. Checked before
+        // any per-dimension weight structure is built, so the hottest read (a
+        // leaf cell in view execution) allocates nothing.
+        if self.all_numeric_leaf(coord)? {
+            return Ok(self.leaf_value(coord));
         }
 
-        // Fast path: a pure numeric-leaf cell is a direct lookup.
-        if all_leaf {
-            return Ok(self.leaf_value(coord));
+        let mut per_dim: Vec<HashMap<u32, i64>> = Vec::with_capacity(self.rank());
+        for (d, &idx) in coord.iter().enumerate() {
+            per_dim.push(self.dimensions[d].leaf_weights(idx)?.into_iter().collect());
         }
 
         // Sparse consolidation: include each populated cell whose every component
@@ -1200,24 +1447,28 @@ impl Cube {
     {
         self.check_coord(coord).map_err(E::from)?;
 
-        let mut per_dim: Vec<Vec<(u32, i64)>> = Vec::with_capacity(self.rank());
-        let mut all_leaf = true;
-        for (d, &idx) in coord.iter().enumerate() {
-            if self.dimensions[d].element(idx).map_err(E::from)?.kind != ElementKind::Leaf {
-                all_leaf = false;
-            }
-            per_dim.push(self.dimensions[d].leaf_weights(idx).map_err(E::from)?);
+        // Fast path: a pure leaf coordinate is a single source lookup, with no
+        // per-dimension weight allocation.
+        if self.all_numeric_leaf(coord).map_err(E::from)? {
+            return leaf_value(coord);
         }
 
-        // Fast path: a pure leaf coordinate is a single source lookup.
-        if all_leaf {
-            return leaf_value(coord);
+        let mut per_dim: Vec<Vec<(u32, i64)>> = Vec::with_capacity(self.rank());
+        for (d, &idx) in coord.iter().enumerate() {
+            per_dim.push(self.dimensions[d].leaf_weights(idx).map_err(E::from)?);
         }
 
         // Dense enumeration of the contributing leaf coordinates: a mixed-radix
         // walk over the per-dimension weighted-leaf lists. Any empty list (a
-        // net-zero rollup) means no contributing leaves.
-        let total: usize = per_dim.iter().map(|w| w.len()).product();
+        // net-zero rollup) means no contributing leaves. The combo count is
+        // checked: a leaf space too large to even count is reported as overflow
+        // rather than wrapping into a silently wrong (smaller) enumeration.
+        let mut total: usize = 1;
+        for weights in &per_dim {
+            total = total
+                .checked_mul(weights.len())
+                .ok_or_else(|| E::from(ModelError::Overflow))?;
+        }
         if total == 0 {
             return Ok(Fixed::ZERO);
         }
@@ -1254,6 +1505,17 @@ impl Cube {
     /// under-counts (which feeder validation flags), and the dense path is always
     /// the correct fallback. The sum is order-independent (i128), so the result
     /// is deterministic regardless of iteration order.
+    ///
+    /// Overflow parity with the dense path: [`consolidate_with`](Self::consolidate_with)
+    /// reports [`ModelError::Overflow`] for a consolidation whose contributing leaf
+    /// space is too large to even *count* in `usize` (a checked product of the
+    /// per-dimension weighted-leaf list lengths), before summing anything. This
+    /// method applies the identical check and returns the same error, so a caller
+    /// that routes reads through the sparse path only when it is byte-identical to
+    /// the dense path sees the same `Ok`/`Err` on every coordinate, not just the
+    /// same value on the `Ok` ones. The sparse scan itself never enumerates that
+    /// space (it visits only stored ∪ fed cells), so the check is purely to keep
+    /// the two paths' error behavior identical.
     pub fn consolidate_fed<E, F>(
         &self,
         coord: &[u32],
@@ -1266,12 +1528,14 @@ impl Cube {
     {
         self.check_coord(coord).map_err(E::from)?;
 
+        // Fast path: a pure leaf coordinate is a single source lookup, with no
+        // per-dimension weight allocation.
+        if self.all_numeric_leaf(coord).map_err(E::from)? {
+            return leaf_value(coord);
+        }
+
         let mut per_dim: Vec<HashMap<u32, i64>> = Vec::with_capacity(self.rank());
-        let mut all_leaf = true;
         for (d, &idx) in coord.iter().enumerate() {
-            if self.dimensions[d].element(idx).map_err(E::from)?.kind != ElementKind::Leaf {
-                all_leaf = false;
-            }
             per_dim.push(
                 self.dimensions[d]
                     .leaf_weights(idx)
@@ -1280,8 +1544,21 @@ impl Cube {
                     .collect(),
             );
         }
-        if all_leaf {
-            return leaf_value(coord);
+
+        // Overflow parity with `consolidate_with`: it fails with `Overflow` when
+        // the dense combo count (the product of the per-dimension weighted-leaf
+        // list lengths) exceeds `usize`, before summing. Mirror that exactly so the
+        // sparse path returns the same error on an uncountable leaf space rather
+        // than silently succeeding. An empty list (a net-zero rollup) makes the
+        // product zero, which — as in the dense path — means no contributing leaves.
+        let mut total: usize = 1;
+        for weights in &per_dim {
+            total = total
+                .checked_mul(weights.len())
+                .ok_or_else(|| E::from(ModelError::Overflow))?;
+        }
+        if total == 0 {
+            return Ok(Fixed::ZERO);
         }
 
         let mut seen: HashSet<Box<[u32]>> = HashSet::new();
@@ -1891,6 +2168,92 @@ mod tests {
     }
 
     #[test]
+    fn compact_string_pool_reclaims_orphans_and_preserves_live_cells() {
+        let (mut cube, north, south, _sales, comment) = string_cube();
+        // Churn: write many distinct values into the two string cells, orphaning
+        // every superseded string, then leave a known final value in each.
+        for i in 0..50 {
+            cube.set_string(&[north, comment], &format!("n{i}"))
+                .unwrap();
+            cube.set_string(&[south, comment], &format!("s{i}"))
+                .unwrap();
+        }
+        cube.set_string(&[north, comment], "north-final").unwrap();
+        cube.set_string(&[south, comment], "south-final").unwrap();
+        // Clearing a cell orphans its last string too.
+        cube.set_string(&[south, comment], "").unwrap();
+
+        // The pool has accreted far past the live cell count (monotonic growth).
+        assert!(
+            cube.string_pool_len() > cube.string_cell_count(),
+            "orphans accumulated before compaction"
+        );
+        let live_before = cube.string_cell_count();
+        assert_eq!(live_before, 1, "only North/Comment is still populated");
+
+        let dropped = cube.compact_string_pool();
+        assert!(dropped > 0, "compaction reclaimed orphaned strings");
+        // The pool now holds exactly the live strings (here, just one).
+        assert_eq!(cube.string_pool_len(), live_before);
+        assert_eq!(cube.string_cell_count(), live_before);
+        // The surviving live cell still reads byte-identically.
+        assert_eq!(
+            cube.get_string(&[north, comment]).unwrap(),
+            Some("north-final")
+        );
+        assert_eq!(cube.get_string(&[south, comment]).unwrap(), None);
+
+        // Idempotent: a second compaction finds no orphans and drops nothing.
+        assert_eq!(cube.compact_string_pool(), 0);
+        assert_eq!(cube.string_pool_len(), live_before);
+        // A fresh write after compaction still interns and reads correctly.
+        cube.set_string(&[south, comment], "reused").unwrap();
+        assert_eq!(cube.get_string(&[south, comment]).unwrap(), Some("reused"));
+        assert_eq!(
+            cube.get_string(&[north, comment]).unwrap(),
+            Some("north-final"),
+            "the other live cell is unaffected by the post-compaction write"
+        );
+    }
+
+    #[test]
+    fn compact_string_pool_is_deterministic_and_round_trips_canonically() {
+        // Build a cube whose string cells reference several live strings out of a
+        // churned pool, then compact and confirm the model still round-trips
+        // through canonical text (no dangling ids), identically across two runs.
+        let build = || {
+            let mut a = Dimension::new("A");
+            let e = a.add_string("E");
+            let f = a.add_string("F");
+            let g = a.add_string("G");
+            let cube = Cube::new("C", vec![a]).unwrap();
+            let mut cube = cube;
+            // Orphan-generating churn, then distinct finals for each live cell.
+            for i in 0..20 {
+                cube.set_string(&[e], &format!("x{i}")).unwrap();
+            }
+            cube.set_string(&[e], "alpha").unwrap();
+            cube.set_string(&[f], "beta").unwrap();
+            cube.set_string(&[g], "gamma").unwrap();
+            cube.compact_string_pool();
+            cube
+        };
+        let a = build();
+        let b = build();
+        // Determinism: identical interner state and identical canonical text.
+        assert_eq!(a.to_model_text().unwrap(), b.to_model_text().unwrap());
+        // Round-trips: reload after compaction reads every live cell back.
+        let text = a.to_model_text().unwrap();
+        let reloaded = Cube::from_model_text(&text).unwrap();
+        let e = reloaded.dimension(0).index_of("E").unwrap();
+        let f = reloaded.dimension(0).index_of("F").unwrap();
+        let g = reloaded.dimension(0).index_of("G").unwrap();
+        assert_eq!(reloaded.get_string(&[e]).unwrap(), Some("alpha"));
+        assert_eq!(reloaded.get_string(&[f]).unwrap(), Some("beta"));
+        assert_eq!(reloaded.get_string(&[g]).unwrap(), Some("gamma"));
+    }
+
+    #[test]
     fn numeric_write_to_string_leaf_is_rejected() {
         let (mut cube, north, _south, _sales, comment) = string_cube();
         assert!(matches!(
@@ -1920,6 +2283,122 @@ mod tests {
         assert_eq!(cube.get(&[region_total, sales]).unwrap(), fix(150));
         // A numeric read over the string measure is zero (no numeric cells there).
         assert_eq!(cube.get(&[region_total, comment]).unwrap(), Fixed::ZERO);
+    }
+
+    #[test]
+    fn validate_batch_matches_the_mutating_trial_apply() {
+        // A Region x Measure cube: Region has a Total consolidation; Measure has a
+        // numeric Sales leaf and a string Comment leaf. This gives every rejection
+        // path: a consolidated coordinate, a numeric write to a string leaf, a
+        // string write with no string component, and a rank mismatch.
+        let (mut cube, north, south, sales, comment) = string_cube();
+        cube.set_leaf(&[north, sales], fix(1)).unwrap();
+        let total = cube.dimension(0).index_of("Total").unwrap();
+
+        // Coordinates are hoisted into bindings so each `BatchWrite` borrow lives
+        // as long as the batch that holds it.
+        let c_north_sales = [north, sales];
+        let c_south_sales = [south, sales];
+        let c_north_comment = [north, comment];
+        let c_total_sales = [total, sales];
+        let c_north = [north];
+
+        // A wholly-valid mixed batch validates clean AND applies clean on a clone.
+        let good = vec![
+            BatchWrite::Leaf {
+                coord: &c_north_sales,
+                value: fix(10),
+            },
+            BatchWrite::Leaf {
+                coord: &c_south_sales,
+                value: Fixed::ZERO, // a clearing write is still valid
+            },
+            BatchWrite::Str {
+                coord: &c_north_comment,
+                value: "ok",
+            },
+        ];
+        assert_eq!(cube.validate_batch(&good), Ok(()));
+        // Parity: applying the same batch to a clone succeeds at the same indices.
+        let mut trial = cube.clone();
+        for w in &good {
+            match w {
+                BatchWrite::Leaf { coord, value } => trial.set_leaf(coord, *value).unwrap(),
+                BatchWrite::Str { coord, value } => trial.set_string(coord, value).unwrap(),
+            }
+        }
+
+        // Each invalid batch reports the SAME (index, error) the trial-apply hits.
+        let cases: Vec<(Vec<BatchWrite>, usize)> = vec![
+            // Index 1: numeric write to the string Comment leaf -> CellTypeMismatch.
+            (
+                vec![
+                    BatchWrite::Leaf {
+                        coord: &c_south_sales,
+                        value: fix(2),
+                    },
+                    BatchWrite::Leaf {
+                        coord: &c_north_comment,
+                        value: fix(3),
+                    },
+                ],
+                1,
+            ),
+            // Index 0: write to a consolidated coordinate -> WriteToNonLeaf.
+            (
+                vec![BatchWrite::Leaf {
+                    coord: &c_total_sales,
+                    value: fix(4),
+                }],
+                0,
+            ),
+            // Index 0: string write with no string component -> StringCellRequiresStringElement.
+            (
+                vec![BatchWrite::Str {
+                    coord: &c_north_sales,
+                    value: "x",
+                }],
+                0,
+            ),
+            // Index 0: wrong rank -> RankMismatch.
+            (
+                vec![BatchWrite::Leaf {
+                    coord: &c_north,
+                    value: fix(5),
+                }],
+                0,
+            ),
+        ];
+        for (batch, want_index) in cases {
+            let via_validate = cube.validate_batch(&batch).unwrap_err();
+            assert_eq!(
+                via_validate.0, want_index,
+                "reports the first offending index"
+            );
+            // Parity: a throwaway-clone trial-apply aborts at the same index with
+            // the same error.
+            let mut trial = cube.clone();
+            let mut trial_err = None;
+            for (i, w) in batch.iter().enumerate() {
+                let applied = match w {
+                    BatchWrite::Leaf { coord, value } => trial.set_leaf(coord, *value),
+                    BatchWrite::Str { coord, value } => trial.set_string(coord, value),
+                };
+                if let Err(e) = applied {
+                    trial_err = Some((i, e));
+                    break;
+                }
+            }
+            assert_eq!(
+                Some(via_validate),
+                trial_err,
+                "validate_batch matches the mutating path exactly"
+            );
+        }
+
+        // validate_batch did not mutate the cube (no cell added for South).
+        assert_eq!(cube.get_leaf(&[south, sales]).unwrap(), Fixed::ZERO);
+        assert_eq!(cube.cell_count(), 1);
     }
 
     #[test]
@@ -2322,6 +2801,118 @@ mod tests {
         cube.set_element_kind("Measure", "Sales", ElementKind::Leaf)
             .unwrap();
         assert_eq!(cube.get_string(&[north, sales]).unwrap(), None);
+    }
+
+    #[test]
+    fn string_to_numeric_keeps_cells_with_another_string_component() {
+        // Dim A: E (string), F (leaf). Dim B: Comment (string), X (leaf).
+        // A string cell needs at least one string component, so converting E to a
+        // numeric leaf must drop ONLY the cells for which E was the sole string
+        // component; a cell that still addresses Comment stays valid and is kept.
+        let mut a = Dimension::new("A");
+        let e = a.add_string("E");
+        let f = a.add_leaf("F");
+        let mut b = Dimension::new("B");
+        let comment = b.add_string("Comment");
+        let x = b.add_leaf("X");
+        let mut cube = Cube::new("C", vec![a, b]).unwrap();
+        cube.set_string(&[e, comment], "both").unwrap(); // E and Comment are strings
+        cube.set_string(&[e, x], "sole").unwrap(); // E is the sole string
+        cube.set_string(&[f, comment], "other").unwrap(); // Comment only
+
+        cube.set_element_kind("A", "E", ElementKind::Leaf).unwrap();
+
+        // The sole-string cell is gone; the two still-valid cells survive.
+        assert_eq!(cube.get_string(&[e, x]).unwrap(), None, "sole-E cleared");
+        assert_eq!(cube.get_string(&[e, comment]).unwrap(), Some("both"));
+        assert_eq!(cube.get_string(&[f, comment]).unwrap(), Some("other"));
+        assert_eq!(cube.string_cell_count(), 2);
+        // E is now a numeric leaf and holds numbers.
+        cube.set_leaf(&[e, x], fix(5)).unwrap();
+        assert_eq!(cube.get_leaf(&[e, x]).unwrap(), fix(5));
+        // The kept cells still round-trip through canonical text (no orphans).
+        let text = cube.to_model_text().unwrap();
+        let reloaded = Cube::from_model_text(&text).unwrap();
+        assert_eq!(reloaded.get_string(&[e, comment]).unwrap(), Some("both"));
+    }
+
+    #[test]
+    fn consolidate_with_reports_overflow_for_an_uncountable_leaf_space() {
+        // Eight dimensions of 256 leaves each: the dense combo count is 256^8 =
+        // 2^64, one past usize::MAX, so the count itself overflows. The checked
+        // product must surface that as ModelError::Overflow instead of wrapping
+        // into a silently wrong (smaller) enumeration.
+        let mut dims = Vec::new();
+        let mut coord = Vec::new();
+        for i in 0..8 {
+            let (d, total, _leaves) = sum_dim(&format!("D{i}"), 256);
+            dims.push(d);
+            coord.push(total);
+        }
+        let cube = Cube::new("Huge", dims).unwrap();
+        let err = cube
+            .consolidate_with::<ModelError, _>(&coord, |_| Ok(Fixed::ZERO))
+            .unwrap_err();
+        assert_eq!(err, ModelError::Overflow);
+    }
+
+    #[test]
+    fn consolidate_fed_reports_overflow_exactly_like_consolidate_with() {
+        // Overflow parity (the sparse path must match the dense path's Ok/Err, not
+        // just its value): the same uncountable 256^8 == 2^64 leaf space that makes
+        // `consolidate_with` report Overflow must make `consolidate_fed` report it
+        // too, even though the sparse scan never enumerates that space. Without the
+        // parity guard, sparse would silently succeed where dense errors — a
+        // behavior divergence at a coordinate the completeness gate might call safe.
+        let mut dims = Vec::new();
+        let mut coord = Vec::new();
+        for i in 0..8 {
+            let (d, total, _leaves) = sum_dim(&format!("D{i}"), 256);
+            dims.push(d);
+            coord.push(total);
+        }
+        let cube = Cube::new("Huge", dims).unwrap();
+        let fed: Vec<Box<[u32]>> = Vec::new();
+        let err = cube
+            .consolidate_fed::<ModelError, _>(&coord, &fed, |_| Ok(Fixed::ZERO))
+            .unwrap_err();
+        assert_eq!(err, ModelError::Overflow);
+    }
+
+    #[test]
+    fn consolidate_fed_with_empty_fed_equals_consolidate_with_over_stored_cells() {
+        // With NO rules (empty fed set) the sparse union scan is exactly "sum the
+        // stored cells", which must equal the dense enumeration at every coordinate.
+        // This is the trivially-safe no-rules case the completeness gate admits, and
+        // it must be byte-identical for a weighted, multi-leaf hierarchy.
+        let (region, region_total, r) = sum_dim("Region", 4);
+        let (period, period_total, p) = sum_dim("Period", 3);
+        let mut cube = Cube::new("Sales", vec![region, period]).unwrap();
+        let mut rng = DeterministicRng::new(2024);
+        for &ri in &r {
+            for &pi in &p {
+                if rng.next_u64().is_multiple_of(2) {
+                    let v = Fixed::from_scaled((rng.next_u64() % 1000) as i64);
+                    cube.set_leaf(&[ri, pi], v).unwrap();
+                }
+            }
+        }
+        let fed: Vec<Box<[u32]>> = Vec::new();
+        let rlen = cube.dimension(0).len();
+        let plen = cube.dimension(1).len();
+        for ri in 0..rlen {
+            for pi in 0..plen {
+                let c = [ri, pi];
+                let dense = cube
+                    .consolidate_with::<ModelError, _>(&c, |lc| Ok(cube.leaf_value(lc)))
+                    .unwrap();
+                let sparse = cube
+                    .consolidate_fed::<ModelError, _>(&c, &fed, |lc| Ok(cube.leaf_value(lc)))
+                    .unwrap();
+                assert_eq!(dense, sparse, "mismatch at {c:?}");
+            }
+        }
+        let _ = (region_total, period_total);
     }
 
     #[test]

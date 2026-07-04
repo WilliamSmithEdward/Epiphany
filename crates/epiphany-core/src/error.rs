@@ -27,6 +27,9 @@ pub enum ModelError {
     ParentNotConsolidated { dimension: String, element: String },
     /// Fixed-point arithmetic overflowed the representable range.
     Overflow,
+    /// A query addressed more cells than the execution cap allows (the count may
+    /// be saturated when the true product is even larger).
+    CellsetTooLarge { cells: usize, cap: usize },
     /// A cube must have at least one dimension.
     EmptyCube,
     /// A numeric value could not be parsed from text.
@@ -112,6 +115,10 @@ impl fmt::Display for ModelError {
                 "element '{element}' in dimension '{dimension}' is not consolidated and cannot have children"
             ),
             ModelError::Overflow => write!(f, "fixed-point arithmetic overflow"),
+            ModelError::CellsetTooLarge { cells, cap } => write!(
+                f,
+                "the query addresses {cells} cells, exceeding the {cap}-cell limit; reduce the axis member counts"
+            ),
             ModelError::EmptyCube => write!(f, "a cube must have at least one dimension"),
             ModelError::InvalidNumber { text } => write!(f, "invalid number: '{text}'"),
             ModelError::AttributeNotFound {

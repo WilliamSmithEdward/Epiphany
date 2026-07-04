@@ -66,7 +66,12 @@ fn compile_area(target: &Cube, area: &Area) -> Result<CompiledArea, CompileError
         let set = resolve_selector(target.dimension(dim_pos), &sel.kind, sel.span)?;
         per_dim[dim_pos] = DimPredicate::OneOf(set);
     }
-    Ok(CompiledArea { per_dim })
+    // The scope marker (ADR-0041) only redefines what an unconstrained (`Any`)
+    // dimension matches: `C:` -> consolidated members, unmarked / `N:` -> leaves.
+    Ok(CompiledArea {
+        per_dim,
+        consolidated: area.scope.targets_consolidated(),
+    })
 }
 
 /// Resolve an area selector to a sorted, de-duplicated set of element indices.
@@ -521,6 +526,47 @@ mod tests {
         let total = cube.dimension(0).resolve("Total").unwrap();
         let margin = cube.dimension(1).resolve("Margin").unwrap();
         assert!(m.rules[0].area.matches(&cube, &[total, margin]));
+    }
+
+    #[test]
+    fn c_scope_marker_compiles_to_consolidated_and_flips_which_members_any_matches() {
+        // A C: marked area (ADR-0041): the unconstrained Region dimension matches
+        // CONSOLIDATED members (Total) instead of leaves (North). This is the
+        // inverse of the default, and it is what lets a C: rule fire at the total.
+        let cube = sales();
+        let m = compile_one(
+            &cube,
+            "C:['Measure':'Margin'] = value['Measure':'Sales'] / value['Measure':'Cost'];",
+        )
+        .unwrap();
+        let area = &m.rules[0].area;
+        assert!(area.consolidated, "C: compiles to a consolidated area");
+        let north = cube.dimension(0).resolve("North").unwrap();
+        let total = cube.dimension(0).resolve("Total").unwrap();
+        let margin = cube.dimension(1).resolve("Margin").unwrap();
+        // Region=Any under C: matches the consolidation (Total) but NOT the leaf.
+        assert!(
+            area.matches(&cube, &[total, margin]),
+            "C: matches the consolidated coordinate"
+        );
+        assert!(
+            !area.matches(&cube, &[north, margin]),
+            "C: does NOT match a leaf coordinate (the inverse of the default)"
+        );
+
+        // An UNMARKED (and an N:) area is leaf-only, unchanged: `consolidated` is
+        // false and it matches the leaf, not the total. Proves backward compat at
+        // the compile layer.
+        for src in [
+            "['Measure':'Margin'] = value['Measure':'Sales'];",
+            "N:['Measure':'Margin'] = value['Measure':'Sales'];",
+        ] {
+            let m = compile_one(&cube, src).unwrap();
+            let area = &m.rules[0].area;
+            assert!(!area.consolidated, "unmarked / N: is leaf-only: {src}");
+            assert!(area.matches(&cube, &[north, margin]));
+            assert!(!area.matches(&cube, &[total, margin]));
+        }
     }
 
     #[test]

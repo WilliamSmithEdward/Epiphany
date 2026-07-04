@@ -71,6 +71,9 @@ enum Prev {
     Op,
     /// A keyword that is followed by an expression (`return`, `typeof`, ...).
     KeywordExpr,
+    /// An arrow `=>`: a following `{` opens the arrow's block body (not an object
+    /// literal), while a following `/` is still a regex (expression position).
+    Arrow,
 }
 
 struct Stripper {
@@ -158,6 +161,13 @@ impl Stripper {
                 '@' => {
                     return Err(self.error_at(self.i, "decorators are not supported in flows"));
                 }
+                '=' if self.peek(1) == Some('>') => {
+                    // An arrow: the following `{` is the arrow's block body, not an
+                    // object literal, so type annotations inside it get stripped.
+                    self.prev = Prev::Arrow;
+                    self.i += 2;
+                }
+                '<' if self.prev == Prev::Value => self.handle_lt()?,
                 _ => {
                     // Any other operator/punctuation puts us in expression
                     // position (so a following `{` is an object, `/` is a regex).
@@ -250,12 +260,56 @@ impl Stripper {
                 self.i += 2;
                 continue;
             }
-            if depth > 0 && c == '}' {
-                depth -= 1;
+            // Inside an interpolation, skip nested strings, templates, and comments
+            // whole so a `}` or backtick within them does not desync the depth
+            // counter (which would end the template early and mis-lex the tail).
+            if depth > 0 {
+                match c {
+                    '}' => {
+                        depth -= 1;
+                        self.i += 1;
+                        continue;
+                    }
+                    '\'' | '"' => {
+                        self.skip_interp_string(c);
+                        continue;
+                    }
+                    '`' => {
+                        self.skip_template(); // nested template literal
+                        continue;
+                    }
+                    '/' if self.peek(1) == Some('/') => {
+                        self.skip_line_comment();
+                        continue;
+                    }
+                    '/' if self.peek(1) == Some('*') => {
+                        self.skip_block_comment();
+                        continue;
+                    }
+                    _ => {}
+                }
             }
             self.i += 1;
         }
         self.prev = Prev::Value;
+    }
+
+    /// Skip a `'`/`"` string starting at `self.i` (advancing past the closing
+    /// quote), used while scanning inside a template interpolation. Unlike
+    /// [`skip_string`] it does not touch `self.prev`.
+    fn skip_interp_string(&mut self, quote: char) {
+        self.i += 1;
+        while self.i < self.src.len() {
+            let c = self.src[self.i];
+            if c == '\\' {
+                self.i += 2;
+                continue;
+            }
+            self.i += 1;
+            if c == quote {
+                break;
+            }
+        }
     }
 
     fn skip_regex(&mut self) {
@@ -597,6 +651,32 @@ impl Stripper {
         }
         // No generics to strip; rewind so the name/params parse normally.
         self.i = save;
+    }
+
+    /// A `<` after a value. In JavaScript this is the less-than operator, but in
+    /// TypeScript it may open a call-site type-argument list (`parse<number>(x)`,
+    /// `arr.map<Row>(f)`) that the runtime cannot interpret: JS re-parses it as a
+    /// relational chain and either evaluates to a boolean (silently wrong logic) or
+    /// throws at an unrelated spot. The stripper handles generics only on
+    /// `function NAME<...>(` declarations, so here we fail loud rather than let a
+    /// type-argument list corrupt the flow. A `<...>` that balances and is
+    /// immediately followed by `(` or a template literal is treated as such a list;
+    /// anything else is left as the ordinary operator.
+    fn handle_lt(&mut self) -> Result<(), StripError> {
+        if let Some(end) = self.scan_angle_balanced_from(self.i) {
+            let k = self.skip_trivia(end);
+            if matches!(self.src.get(k), Some('(') | Some('`')) {
+                return Err(self.error_at(
+                    self.i,
+                    "call-site generic type arguments are not supported in flows \
+                     (drop the `<...>`; type inference does not need it at runtime)",
+                ));
+            }
+        }
+        // An ordinary less-than operator: expression position follows.
+        self.prev = Prev::Op;
+        self.i += 1;
+        Ok(())
     }
 
     fn handle_question(&mut self) {
@@ -1052,6 +1132,55 @@ mod tests {
         check(
             "function f(): A.B<C> { return x; }",
             "function f() { return x; }",
+        );
+    }
+
+    #[test]
+    fn strips_annotations_inside_arrow_block_bodies() {
+        // An arrow's `{ ... }` block body is a block, not an object literal, so
+        // annotations inside it must be stripped (the most common TS callback idiom).
+        check(
+            "const f = (x) => { const y: number = x; return y; };",
+            "const f = (x) => { const y = x; return y; };",
+        );
+        check(
+            "ctx.input().forEach((r) => { const v: number = Number(r.Value); use(v); });",
+            "ctx.input().forEach((r) => { const v = Number(r.Value); use(v); });",
+        );
+        // A concise arrow body returning an object literal (parenthesized) is still
+        // an object literal: its colon-keys survive.
+        check(
+            "const g = (x) => ({ a: 1, b: x });",
+            "const g = (x) => ({ a: 1, b: x });",
+        );
+    }
+
+    #[test]
+    fn rejects_call_site_generic_arguments() {
+        // Call-site type arguments would re-parse as a comparison chain (silently
+        // wrong or a baffling ReferenceError); the stripper fails loud instead.
+        assert!(strip_types("const n = parse<number>(x);").is_err());
+        assert!(strip_types("ctx.input().map<Row>(f);").is_err());
+        // Tagged-template call site.
+        assert!(strip_types("tag<Row>`x`;").is_err());
+        // A genuine less-than comparison (not followed by `(`/template) is untouched.
+        check("const b = a < c;", "const b = a < c;");
+        check("if (a < b) { f(); }", "if (a < b) { f(); }");
+    }
+
+    #[test]
+    fn template_interpolation_with_braces_and_backticks_in_strings() {
+        // A `}` or backtick inside a string inside `${...}` must not desync the
+        // template scanner; the annotation on the following statement still strips.
+        let out = strip_types("const s = `x${ \"}\" + \"`\" }y`;\nconst z: number = 1;").unwrap();
+        // The template is preserved byte-for-byte (never mis-lexed).
+        assert!(out.contains("const s = `x${ \"}\" + \"`\" }y`;"), "{out:?}");
+        // The annotation on the following statement is stripped (blanked to spaces,
+        // so compare whitespace-insensitively).
+        assert!(!out.contains(": number"), "annotation stripped: {out:?}");
+        assert_eq!(
+            nows(&out),
+            nows("const s = `x${\"}\"+\"`\"}y`;const z = 1;")
         );
     }
 

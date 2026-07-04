@@ -369,7 +369,11 @@ pub struct AxisMemberDto {
 
 /// One cell value in a cellset (row-major; `ordinal` is its flat index).
 /// `overlaid` is true when the value is a what-if override from the active
-/// sandbox (ADR-0014).
+/// sandbox (ADR-0014). `kind` is `numeric`, `string`, or `error`: a `string` cell
+/// carries its text in `value` (never a fabricated numeric zero) and is not
+/// editable; an `error` cell carries the per-cell evaluation failure in `error`
+/// (its `value` is null), so a single DivByZero/Overflow/Cycle degrades to a marker
+/// on that cell instead of blanking the whole cellset.
 #[derive(Debug, Serialize)]
 pub struct CellsetCellDto {
     pub value: Option<String>,
@@ -377,6 +381,9 @@ pub struct CellsetCellDto {
     pub editable: bool,
     pub ordinal: usize,
     pub overlaid: bool,
+    /// The per-cell error message when `kind == "error"`; omitted otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// How many tuples zero-suppression removed.

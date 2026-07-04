@@ -78,6 +78,10 @@ export interface MeResponse {
   username: string
   is_admin: boolean
   must_change_password: boolean
+  /** The caller's OWN effective persona (server-derived from their grants,
+   * self-only): 'business' | 'modeler' | 'admin'. Drives the shell's progressive
+   * disclosure (ADR-0020). Authoritative — do not re-derive on the client. */
+  persona: Persona
 }
 
 export interface BatchResult {
@@ -117,6 +121,24 @@ export class ApiError extends Error {
   }
 }
 
+/** Per-request options threaded through the read path (ADR-0020 performance
+ * mandate). `signal` lets a caller abort a superseded / unmounted request so a
+ * stale response can never clobber newer state and abandoned server work is
+ * freed; a live multi-user tool whose grids refetch on every WebSocket event
+ * accumulates such requests otherwise. Write helpers stay signal-free (a commit
+ * in flight should complete). */
+export interface RequestOptions {
+  signal?: AbortSignal
+}
+
+/** True for the DOMException a fetch throws when its AbortSignal fires. Callers
+ * that abort a superseded request in an effect cleanup use this to swallow the
+ * rejection silently (a cancel is not an error the user should see) rather than
+ * painting an error banner for a request they themselves cancelled. */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
+}
+
 /** The standard request headers: bearer auth (when signed in), the active
  * sandbox, and a JSON content-type when a body is sent. Shared so every request
  * path attaches auth the same way. */
@@ -128,14 +150,43 @@ function authHeaders(hasBody: boolean): Record<string, string> {
   return headers
 }
 
+// An app-level handler notified once whenever a session-expired 401 is seen, so
+// the shell can return to the Login screen immediately rather than leaving a
+// zombie UI whose every panel shows a local "session expired" error. Set by
+// App.tsx; a module-level slot (not an event target) keeps the client
+// framework-free and avoids leaking listeners.
+let onSessionExpired: (() => void) | null = null
+
+/** Register (or clear, with null) the app-level session-expired handler. Called
+ * on the first session-expired 401 of a dead session so the app can re-show the
+ * Login screen in place. */
+export function setSessionExpiredHandler(handler: (() => void) | null): void {
+  onSessionExpired = handler
+}
+
 /** Clear the in-memory token and throw the uniform expired-session error. Called
- * on any 401 so every request path reports session expiry identically. */
+ * on any 401 so every request path reports session expiry identically; also
+ * notifies the app-level handler so the shell can re-show Login in place. */
 function throwSessionExpired(): never {
   setToken(null)
+  onSessionExpired?.()
   throw new ApiError('Your session has expired. Please sign in again.', 401)
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+// Auth endpoints where a 401 is a credential rejection (wrong password, wrong
+// current password), NOT an expired session: mapping those to "session expired"
+// would both hide the server's accurate message on the sign-in and
+// change-password forms and wrongly clear a still-valid in-memory token. These
+// fall through to the normal error-envelope parsing so the server's message
+// surfaces (login/changePassword throw a plain ApiError with the real reason).
+const AUTH_ENDPOINTS = new Set(['/api/v1/auth/login', '/api/v1/auth/password'])
+
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  opts?: RequestOptions,
+): Promise<T> {
   const response = await fetch(path, {
     method,
     headers: authHeaders(body !== undefined),
@@ -145,8 +196,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     // token is gone) and documents that we never want 'omit'.
     credentials: 'same-origin',
     body: body === undefined ? undefined : JSON.stringify(body),
+    // When supplied, aborting the signal rejects this fetch with an AbortError
+    // (see isAbortError); callers wire it to an AbortController cancelled in an
+    // effect cleanup so a superseded read cannot land its response.
+    signal: opts?.signal,
   })
-  if (response.status === 401) throwSessionExpired()
+  if (response.status === 401 && !AUTH_ENDPOINTS.has(path)) throwSessionExpired()
   if (!response.ok) {
     let message = `Request failed (${response.status})`
     try {
@@ -208,15 +263,20 @@ export async function listCubes(): Promise<CubeSummary[]> {
   return result.cubes
 }
 
-export async function getCube(cube: string): Promise<CubeDetail> {
-  return request<CubeDetail>('GET', `/api/v1/cubes/${encodeURIComponent(cube)}`)
+export async function getCube(cube: string, opts?: RequestOptions): Promise<CubeDetail> {
+  return request<CubeDetail>('GET', `/api/v1/cubes/${encodeURIComponent(cube)}`, undefined, opts)
 }
 
-export async function readCells(cube: string, coords: Coord[]): Promise<CellDto[]> {
+export async function readCells(
+  cube: string,
+  coords: Coord[],
+  opts?: RequestOptions,
+): Promise<CellDto[]> {
   const result = await request<{ cells: CellDto[] }>(
     'POST',
     `/api/v1/cubes/${encodeURIComponent(cube)}/cells/read`,
     { coords },
+    opts,
   )
   return result.cells
 }
@@ -242,12 +302,19 @@ export async function spreadCells(
   })
 }
 
+/** Atomically write multiple cells. When `baseVersion` is given it is sent as
+ * `base_version`, enabling the server's optimistic-concurrency check: the commit
+ * is rejected with 409 if the cube moved on since that version (callers hold it
+ * as CellsetDto.version), so a concurrent edit is detected rather than silently
+ * last-writer-wins. Omit it to force the write unconditionally. */
 export async function batchWrite(
   cube: string,
   writes: { coord: Coord; value: string }[],
+  baseVersion?: number,
 ): Promise<BatchResult> {
   return request<BatchResult>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/cells/batch`, {
     writes,
+    ...(baseVersion !== undefined ? { base_version: baseVersion } : {}),
   })
 }
 
@@ -422,10 +489,18 @@ export async function previewSubset(cube: string, dim: string, def: SubsetDef): 
   return result.members
 }
 
-export async function previewMdx(cube: string, dim: string, mdx: string): Promise<MemberDto[]> {
-  const result = await request<{ members: MemberDto[] }>('POST', `${dimBase(cube, dim)}/mdx/preview`, {
-    mdx,
-  })
+export async function previewMdx(
+  cube: string,
+  dim: string,
+  mdx: string,
+  opts?: RequestOptions,
+): Promise<MemberDto[]> {
+  const result = await request<{ members: MemberDto[] }>(
+    'POST',
+    `${dimBase(cube, dim)}/mdx/preview`,
+    { mdx },
+    opts,
+  )
   return result.members
 }
 
@@ -457,22 +532,36 @@ export async function deleteView(cube: string, name: string): Promise<void> {
   return request<void>('DELETE', `/api/v1/cubes/${encodeURIComponent(cube)}/views/${encodeURIComponent(name)}`)
 }
 
-export async function executeView(cube: string, name: string): Promise<CellsetDto> {
+export async function executeView(
+  cube: string,
+  name: string,
+  opts?: RequestOptions,
+): Promise<CellsetDto> {
   return request<CellsetDto>(
     'POST',
     `/api/v1/cubes/${encodeURIComponent(cube)}/views/${encodeURIComponent(name)}/execute`,
+    undefined,
+    opts,
   )
 }
 
-export async function executeAdhoc(cube: string, def: ViewDef): Promise<CellsetDto> {
-  return request<CellsetDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/cellset`, def)
+export async function executeAdhoc(
+  cube: string,
+  def: ViewDef,
+  opts?: RequestOptions,
+): Promise<CellsetDto> {
+  return request<CellsetDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/cellset`, def, opts)
 }
 
 /** Execute a full MDX `SELECT` query (`SELECT <axis> ON COLUMNS, <axis> ON ROWS
  * FROM [cube] [WHERE (...)]`) and return the resulting cellset. A parse or
  * validation failure surfaces as an `ApiError` carrying the server's message. */
-export async function executeMdx(cube: string, mdx: string): Promise<CellsetDto> {
-  return request<CellsetDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/mdx`, { mdx })
+export async function executeMdx(
+  cube: string,
+  mdx: string,
+  opts?: RequestOptions,
+): Promise<CellsetDto> {
+  return request<CellsetDto>('POST', `/api/v1/cubes/${encodeURIComponent(cube)}/mdx`, { mdx }, opts)
 }
 
 // ---- rules, explain, feeders, and rule tests (Phase 4) ----
@@ -1292,6 +1381,43 @@ export async function listGrants(): Promise<GrantDto[]> {
 /** Set (or, with level `none`, revoke) a per-kind grant for a user or group. */
 export async function setGrant(grant: GrantDto): Promise<void> {
   return request<void>('PUT', '/api/v1/acl/grants', grant)
+}
+
+/** The shell a user sees (ADR-0020 progressive disclosure). Ordered by breadth:
+ * `business` (Views / data-entry only) < `modeler` (Dimensions, Rules, Flows,
+ * the full model tree, and raw-MDX affordances) < `admin` (modeler shell plus the
+ * Administration surface). Derived from the grant lattice, not `is_admin` alone,
+ * so a non-admin modeler is never denied MDX/rules/flows they legitimately hold a
+ * grant for. */
+export type Persona = 'business' | 'modeler' | 'admin'
+
+/** The object kinds whose WRITE grant marks a user as a modeler (they author the
+ * model itself), per ADR-0020: any dimension/rule/flow write grant ⇒ modeler. */
+const MODELER_KINDS: ReadonlySet<GrantKind> = new Set<GrantKind>(['dimension', 'rule', 'flow'])
+
+/**
+ * Resolve a user's persona from the modular grant lattice (ADR-0020). A caller
+ * holding admin on ANY object kind - or flagged `is_admin` - is an admin; a
+ * caller with a write (or admin) grant on any dimension, rule, or flow is a
+ * modeler; otherwise a business user. `grants` is the set of grants that apply to
+ * THIS caller (already narrowed to the user and their groups); passing the raw
+ * global list would over-promote everyone, so callers must pre-filter.
+ *
+ * NOTE (deliberate fail-open): `GET /api/v1/acl/grants` is admin-only server-side
+ * (`require_admin`), and `auth/me` exposes no per-caller capability set, so a
+ * non-admin's own grants are NOT enumerable from the browser. Callers therefore
+ * pass `[]` for a non-admin and rely on `fallback` (see CubeApp), which defaults a
+ * non-admin to `modeler` rather than `business`: ADR-0020 is explicit that wrongly
+ * hiding MDX/rules/flows from a non-admin modeler is the failure to avoid. A true
+ * business shell for a non-admin needs a server-provided effective-capability
+ * signal (a follow-up), at which point this function computes it directly. */
+export function personaFromGrants(grants: readonly GrantDto[], isAdmin: boolean): Persona {
+  if (isAdmin) return 'admin'
+  if (grants.some((g) => g.level === 'admin')) return 'admin'
+  if (grants.some((g) => MODELER_KINDS.has(g.kind) && (g.level === 'write' || g.level === 'admin'))) {
+    return 'modeler'
+  }
+  return 'business'
 }
 
 /** Audit-query filters; omitted fields are not constrained. */

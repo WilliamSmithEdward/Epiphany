@@ -97,6 +97,22 @@ impl SessionStore {
         }
     }
 
+    /// Whether a token is still valid at `now` WITHOUT recording activity: it
+    /// exists and has neither hit its absolute TTL nor gone idle past the window.
+    /// Unlike [`lookup`](Self::lookup) this does not slide the idle window, so a
+    /// long-lived stream (the WebSocket pump) can re-validate a session on every
+    /// delivered event without an unrelated user's write keeping the subscriber's
+    /// session alive. Does not prune; a truly expired session is still dropped by
+    /// the next `lookup`.
+    pub fn is_valid(&self, token: &str, now: u64) -> bool {
+        self.sessions.get(token).is_some_and(|s| {
+            now < s.expires_at
+                && self
+                    .idle_millis
+                    .is_none_or(|idle| now.saturating_sub(s.last_seen) <= idle)
+        })
+    }
+
     /// Revoke a token (logout). A no-op if the token is unknown.
     pub fn revoke(&mut self, token: &str) {
         self.sessions.remove(token);
@@ -177,6 +193,36 @@ mod tests {
         let t = store.create(principal("ann"), 0);
         // No activity for a long time, but no idle window configured: still valid.
         assert!(store.lookup(&t, 999_999).is_some());
+    }
+
+    #[test]
+    fn is_valid_checks_expiry_without_sliding_the_idle_window() {
+        let mut store = SessionStore::new(1_000_000).with_idle_timeout(Some(1000));
+        let t = store.create(principal("ann"), 0);
+        // Valid within the idle window, and re-checking does NOT record activity...
+        assert!(store.is_valid(&t, 500));
+        assert!(store.is_valid(&t, 900));
+        // ...so at 1001 the session has still gone idle (last_seen stayed 0), unlike
+        // `lookup`, which would have slid the window forward on each call.
+        assert!(!store.is_valid(&t, 1001));
+        // A revoked token is not valid.
+        let t2 = store.create(principal("bob"), 0);
+        store.revoke(&t2);
+        assert!(!store.is_valid(&t2, 1));
+        // An unknown token is not valid.
+        assert!(!store.is_valid("nope", 1));
+    }
+
+    #[test]
+    fn is_valid_honors_the_absolute_ttl() {
+        let store_at = |now: u64| {
+            let mut s = SessionStore::new(1000);
+            let t = s.create(principal("ann"), 0);
+            (s, t, now)
+        };
+        let (s, t, _) = store_at(0);
+        assert!(s.is_valid(&t, 999));
+        assert!(!s.is_valid(&t, 1000)); // hit the hard cap
     }
 
     #[test]

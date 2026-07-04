@@ -21,6 +21,12 @@ impl ElementKind {
     pub fn is_leaf(self) -> bool {
         matches!(self, ElementKind::Leaf | ElementKind::String)
     }
+
+    /// Whether this element is a string leaf (S): its cell holds text, so a cellset
+    /// tuple addressing it reads the string channel rather than a numeric value.
+    pub fn is_string(self) -> bool {
+        matches!(self, ElementKind::String)
+    }
 }
 
 /// An element of a dimension.
@@ -143,7 +149,14 @@ impl Dimension {
     }
 
     /// All consolidation edges as `(parent, child, weight)`, sorted canonically
-    /// by `(parent, child)` for deterministic, diff-friendly output.
+    /// by `(parent, child)` for deterministic, diff-friendly display output.
+    ///
+    /// The sort DISCARDS each parent's edge-declaration order, which is
+    /// semantic: it breaks equal-depth diamond ties in
+    /// [`leaf_weights`](Self::leaf_weights) (ADR-0039). Anything that rebuilds a
+    /// dimension — serialization, registry materialization — must use
+    /// [`child_edges`](Self::child_edges) so the declaration order survives the
+    /// round trip; this accessor is for listing/display only.
     pub fn edges(&self) -> Vec<(u32, u32, i64)> {
         let mut out = Vec::new();
         for (parent, edges) in self.children.iter().enumerate() {
@@ -153,6 +166,31 @@ impl Dimension {
         }
         out.sort_by_key(|&(parent, child, _)| (parent, child));
         out
+    }
+
+    /// The weighted child edges of `element` as `(child, weight)`, in
+    /// edge-declaration order — the order that breaks equal-depth diamond ties
+    /// in [`leaf_weights`](Self::leaf_weights) (ADR-0039). Empty for a leaf or a
+    /// childless consolidation. Rejects an out-of-range index.
+    pub fn child_edges(&self, element: u32) -> Result<Vec<(u32, i64)>, ModelError> {
+        self.element(element)?;
+        Ok(self.children[element as usize]
+            .iter()
+            .map(|e| (e.child, e.weight))
+            .collect())
+    }
+
+    /// The weight of the `parent -> child` edge, or `None` when no such edge
+    /// exists. O(children of parent): used by idempotency checks instead of
+    /// materializing and sorting every edge in the dimension. Rejects an
+    /// out-of-range index.
+    pub fn child_weight(&self, parent: u32, child: u32) -> Result<Option<i64>, ModelError> {
+        self.element(parent)?;
+        self.element(child)?;
+        Ok(self.children[parent as usize]
+            .iter()
+            .find(|e| e.child == child)
+            .map(|e| e.weight))
     }
 
     /// Define an attribute (idempotent by name; returns its index).
@@ -231,7 +269,28 @@ impl Dimension {
                     });
                 if let Some(prev) = prev_alias {
                     if prev != *alias && self.alias_to_element.get(&prev) == Some(&element) {
-                        self.alias_to_element.remove(&prev);
+                        // Keep the mapping when ANOTHER Alias attribute of this
+                        // element still carries the same text (a legal state, since
+                        // uniqueness only rejects other elements). Removing it would
+                        // diverge from reindex_names / reload, which rebuild the
+                        // reverse index from attribute values and would make the
+                        // text resolvable again — an ordering the determinism
+                        // contract forbids. The `any` is order-independent, so the
+                        // unordered attr_values iteration is not observable.
+                        let still_held = self
+                            .attr_values
+                            .get(element as usize)
+                            .is_some_and(|values| {
+                                values.iter().any(|(&other_attr, value)| {
+                                    other_attr != attr_index
+                                        && self.attributes[other_attr as usize].kind
+                                            == AttributeKind::Alias
+                                        && matches!(value, AttributeValue::Text(text) if *text == prev)
+                                })
+                            });
+                        if !still_held {
+                            self.alias_to_element.remove(&prev);
+                        }
                     }
                 }
                 self.alias_to_element.insert(alias.clone(), element);
@@ -893,6 +952,72 @@ mod tests {
         d.set_attribute(eu, "Alias", AttributeValue::Text("Foo".into()))
             .unwrap();
         assert_eq!(d.resolve("Foo"), Some(eu));
+    }
+
+    #[test]
+    fn reassigning_one_of_two_equal_aliases_keeps_the_text_resolvable() {
+        // NA holds the SAME text under two alias attributes (legal: uniqueness
+        // only rejects other elements). Reassigning one of them must keep the
+        // text resolving through the other — matching what reindex_names and a
+        // save/load rebuild produce — so resolution does not flip across an
+        // unrelated structural edit or a restart.
+        let mut d = Dimension::new("Region");
+        let na = d.add_leaf("NA");
+        d.add_attribute("Alias1", AttributeKind::Alias);
+        d.add_attribute("Alias2", AttributeKind::Alias);
+        d.set_attribute(na, "Alias1", AttributeValue::Text("Foo".into()))
+            .unwrap();
+        d.set_attribute(na, "Alias2", AttributeValue::Text("Foo".into()))
+            .unwrap();
+        d.set_attribute(na, "Alias1", AttributeValue::Text("Bar".into()))
+            .unwrap();
+        assert_eq!(d.resolve("Bar"), Some(na));
+        assert_eq!(
+            d.resolve("Foo"),
+            Some(na),
+            "Alias2 still carries Foo, so it must keep resolving"
+        );
+        // And the in-memory index agrees with a full rebuild (what a reorder or a
+        // reload would produce).
+        d.reorder(&["NA".into()]).unwrap();
+        assert_eq!(d.resolve("Foo"), Some(d.index_of("NA").unwrap()));
+
+        // Dropping the LAST attribute carrying the text frees it for another
+        // element, exactly as before.
+        d.set_attribute(na, "Alias2", AttributeValue::Text("Baz".into()))
+            .unwrap();
+        assert_eq!(d.resolve("Foo"), None, "no attribute carries Foo now");
+        let eu = d.add_leaf("EU");
+        d.set_attribute(eu, "Alias1", AttributeValue::Text("Foo".into()))
+            .unwrap();
+        assert_eq!(d.resolve("Foo"), Some(eu));
+    }
+
+    #[test]
+    fn child_edges_and_child_weight_report_declaration_order() {
+        let mut d = Dimension::new("Region");
+        let east = d.add_leaf("East");
+        let west = d.add_leaf("West");
+        let total = d.add_consolidated("Total");
+        // Declared West before East, deliberately out of index order.
+        d.add_child(total, west, -2).unwrap();
+        d.add_child(total, east, 3).unwrap();
+        assert_eq!(
+            d.child_edges(total).unwrap(),
+            vec![(west, -2), (east, 3)],
+            "declaration order, not index order"
+        );
+        assert_eq!(
+            d.child_edges(east).unwrap(),
+            Vec::<(u32, i64)>::new(),
+            "a leaf has none"
+        );
+        assert_eq!(d.child_weight(total, west).unwrap(), Some(-2));
+        assert_eq!(d.child_weight(total, east).unwrap(), Some(3));
+        assert_eq!(d.child_weight(total, total).unwrap(), None);
+        assert!(d.child_weight(99, east).is_err(), "out of range rejected");
+        // edges() stays the sorted display listing.
+        assert_eq!(d.edges(), vec![(total, east, 3), (total, west, -2)]);
     }
 
     #[test]

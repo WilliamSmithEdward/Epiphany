@@ -37,6 +37,9 @@ fn margin_cube() -> Cube {
     measure.add_leaf("Sales");
     measure.add_leaf("Cost");
     measure.add_leaf("Margin");
+    // A string measure so element security can be exercised on the string-read path
+    // too (A3): `Note` carries a text cell, addressed like any other coordinate.
+    measure.add_string("Note");
     Cube::new("Sales", vec![region, measure]).unwrap()
 }
 
@@ -518,4 +521,51 @@ async fn explain_of_a_denied_cell_is_403() {
         explain(&h.app, &ann, "North", "Sales").await,
         StatusCode::OK
     );
+}
+
+/// A3: a denied STRING cell is 403, through the same element deny mask as the
+/// numeric path. The production resolver's `string_value` now delegates to calc's
+/// masked `CalcView::string_value` (one masking implementation), so a string read
+/// of a denied member is refused exactly as a numeric read is. Admin writes a text
+/// value at the restricted member; `bob` (permitted) reads it, `ann` (denied) 403s.
+#[tokio::test]
+async fn direct_read_of_a_denied_string_cell_is_403() {
+    let h = harness("string-denied");
+    restrict_south_to_bob(&h.security);
+    let admin = login(&h.app, "admin").await;
+    let ann = login(&h.app, "ann").await;
+    let bob = login(&h.app, "bob").await;
+
+    // Admin (bypasses element security) writes a text cell at the restricted member.
+    assert_eq!(
+        write(&h.app, &admin, "South", "Note", "confidential").await,
+        StatusCode::OK
+    );
+
+    // bob may read South, so the string cell reads back for him (kind=string).
+    let (status, body) = read(&h.app, &bob, "South", "Note").await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "bob may read the permitted string cell"
+    );
+    assert_eq!(body["cells"][0]["kind"], "string");
+    assert_eq!(body["cells"][0]["value"], "confidential");
+
+    // ann is denied South, so the SAME string read is 403 (masked string path).
+    let (status, _) = read(&h.app, &ann, "South", "Note").await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a denied member's string cell is refused like its numeric cells"
+    );
+
+    // A string cell at a permitted member still reads for ann (no over-blocking).
+    assert_eq!(
+        write(&h.app, &admin, "North", "Note", "public").await,
+        StatusCode::OK
+    );
+    let (status, body) = read(&h.app, &ann, "North", "Note").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cells"][0]["value"], "public");
 }

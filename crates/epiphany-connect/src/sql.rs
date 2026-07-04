@@ -16,11 +16,7 @@ use std::time::Duration;
 use epiphany_core::{SqlEngine, SqlSpec};
 use epiphany_flow::{Row, MAX_CSV_ROWS};
 
-use crate::ConnectError;
-
-/// Default connect/query timeout when the spec leaves it unset (the REST layer
-/// coerces an unset value to this, so 0 only arises from a hand-edited model).
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+use crate::{ConnectError, DEFAULT_TIMEOUT_MS};
 
 /// Run a SQL connection's query and return its rows. `password`, if set, is the
 /// secret value the API resolved from the secret store (this layer never reads
@@ -148,22 +144,22 @@ mod postgres {
         let work = async {
             match spec.ssl_mode {
                 SqlSslMode::Disable => {
-                    let (client, conn) = config
+                    let (mut client, conn) = config
                         .connect(tokio_postgres::NoTls)
                         .await
                         .map_err(sql_err)?;
                     drive(conn);
-                    run(&client, &spec.query, cap).await
+                    run(&mut client, &spec.query, cap).await
                 }
                 SqlSslMode::Require => {
-                    let (client, conn) = config.connect(tls(false)?).await.map_err(sql_err)?;
+                    let (mut client, conn) = config.connect(tls(false)?).await.map_err(sql_err)?;
                     drive(conn);
-                    run(&client, &spec.query, cap).await
+                    run(&mut client, &spec.query, cap).await
                 }
                 SqlSslMode::VerifyFull => {
-                    let (client, conn) = config.connect(tls(true)?).await.map_err(sql_err)?;
+                    let (mut client, conn) = config.connect(tls(true)?).await.map_err(sql_err)?;
                     drive(conn);
-                    run(&client, &spec.query, cap).await
+                    run(&mut client, &spec.query, cap).await
                 }
             }
         };
@@ -184,11 +180,21 @@ mod postgres {
     }
 
     async fn run(
-        client: &tokio_postgres::Client,
+        client: &mut tokio_postgres::Client,
         sql: &str,
         cap: usize,
     ) -> Result<Vec<Row>, ConnectError> {
-        let rows = client.query(sql, &[]).await.map_err(sql_err)?;
+        // Bound the fetch at the protocol level so the row cap is a real memory
+        // bound: a portal with `max_rows = cap + 1` makes the server send at most
+        // cap+1 rows, so `SELECT * FROM huge_table` cannot pull the whole table
+        // into the heap before the cap check (the OOM the cap exists to prevent).
+        // Requesting cap+1 lets us still detect and reject an over-cap result.
+        // A transaction is required to hold a portal; it is read-only here and
+        // rolled back on drop (no commit needed for a SELECT).
+        let max_rows = i32::try_from(cap.saturating_add(1)).unwrap_or(i32::MAX);
+        let tx = client.transaction().await.map_err(sql_err)?;
+        let portal = tx.bind(sql, &[]).await.map_err(sql_err)?;
+        let rows = tx.query_portal(&portal, max_rows).await.map_err(sql_err)?;
         if rows.len() > cap {
             return Err(ConnectError::Sql(format!(
                 "the query returned more than {cap} rows"
@@ -345,23 +351,37 @@ mod mysql {
 
         let work = async {
             let mut conn = Conn::new(opts).await.map_err(sql_err)?;
-            let rows: Vec<mysql_async::Row> = conn.query(&spec.query).await.map_err(sql_err)?;
+            // Map rows as they stream in and keep at most cap+1 of them, so the
+            // heap holds a bounded number of rows instead of first collecting the
+            // whole result set into a Vec and only then checking the cap (the OOM
+            // the cap exists to prevent on `SELECT * FROM huge_table`). `for_each`
+            // cannot break early, so past the cap we stop mapping/retaining and
+            // just count, then reject; the socket drain is bounded by the timeout.
+            let mut out: Vec<Row> = Vec::new();
+            let mut total: usize = 0;
+            conn.query_iter(&spec.query)
+                .await
+                .map_err(sql_err)?
+                .for_each(|row| {
+                    total += 1;
+                    if total <= cap + 1 {
+                        let cols = row.columns_ref();
+                        let mut mapped: Row = Vec::with_capacity(cols.len());
+                        for (i, col) in cols.iter().enumerate() {
+                            let value = row.as_ref(i).map(cell).unwrap_or_default();
+                            mapped.push((col.name_str().to_string(), value));
+                        }
+                        out.push(mapped);
+                    }
+                })
+                .await
+                .map_err(sql_err)?;
             // Best-effort close; an error here does not invalidate the rows read.
             let _ = conn.disconnect().await;
-            if rows.len() > cap {
+            if total > cap {
                 return Err(ConnectError::Sql(format!(
                     "the query returned more than {cap} rows"
                 )));
-            }
-            let mut out = Vec::with_capacity(rows.len());
-            for row in &rows {
-                let cols = row.columns_ref();
-                let mut mapped: Row = Vec::with_capacity(cols.len());
-                for (i, col) in cols.iter().enumerate() {
-                    let value = row.as_ref(i).map(cell).unwrap_or_default();
-                    mapped.push((col.name_str().to_string(), value));
-                }
-                out.push(mapped);
             }
             Ok(out)
         };

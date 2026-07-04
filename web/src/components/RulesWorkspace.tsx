@@ -93,14 +93,23 @@ export default function RulesWorkspace({
       setPreview({ ok: true })
       return
     }
+    // Generation guard: ignore a response for source that is no longer current,
+    // so a slower older validation cannot overwrite a newer verdict and gate the
+    // Save button (disabled on preview.ok === false) against stale source.
+    let live = true
     const handle = setTimeout(() => {
       previewRules(cube, source)
-        .then(setPreview)
-        .catch((err: unknown) =>
-          setPreview({ ok: false, message: err instanceof Error ? err.message : 'Invalid' }),
-        )
+        .then((p) => {
+          if (live) setPreview(p)
+        })
+        .catch((err: unknown) => {
+          if (live) setPreview({ ok: false, message: err instanceof Error ? err.message : 'Invalid' })
+        })
     }, 300)
-    return () => clearTimeout(handle)
+    return () => {
+      live = false
+      clearTimeout(handle)
+    }
   }, [cube, source])
 
   const dirty = source !== saved
@@ -203,7 +212,7 @@ export default function RulesWorkspace({
       </section>
 
       <FeederPanel cube={cube} reloadSignal={reloadSignal} />
-      {detail ? <ExplainPanel cube={cube} detail={detail} reloadSignal={reloadSignal} /> : null}
+      {detail ? <ExplainPanel cube={cube} detail={detail} /> : null}
       <TestPanel cube={cube} reloadSignal={reloadSignal} />
     </div>
   )
@@ -299,11 +308,9 @@ function FeederPanel({ cube, reloadSignal }: { cube: string; reloadSignal: numbe
 function ExplainPanel({
   cube,
   detail,
-  reloadSignal,
 }: {
   cube: string
   detail: CubeDetail
-  reloadSignal: number
 }) {
   const initial = useMemo(() => {
     const coord: Coord = {}
@@ -316,12 +323,22 @@ function ExplainPanel({
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  // Reset the picker when the cube (and thus its dimensions) changes.
+  // Reset the picker only when the CUBE changes (its dimensions differ), not on
+  // every live reloadSignal bump. The parent recreates `detail` (and thus the
+  // `initial` object) on every remote cells/objects change, so keying this on
+  // `initial`/reloadSignal wiped the modeler's picked coordinate and open trace
+  // on any data entry anywhere - the explain workflow was unusable on an active
+  // multi-user server. Keying on `cube` (a stable primitive) fixes that; the
+  // dimension picker's own value falls back to the first element when a coord
+  // entry no longer resolves, so a mid-session model change stays safe.
   useEffect(() => {
     setCoord(initial)
     setTrace(null)
     setError(null)
-  }, [initial, reloadSignal])
+    // Intentionally keyed on `cube` only (not `initial`, which is a fresh object
+    // on every reload): reset on cube change, preserve state across live reloads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cube])
 
   async function explain() {
     setLoading(true)

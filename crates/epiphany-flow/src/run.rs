@@ -32,7 +32,18 @@
 //! `Date` is removed and `Math.random` throws (a flow re-run on the same input is
 //! byte-identical; ADR-0009). `ctx.now()` returns the injected clock. There is no
 //! filesystem or network access (the host exposes only the API above). A bounded
-//! loop-iteration and recursion budget caps runaway scripts deterministically.
+//! loop-iteration and recursion budget caps runaway *interpreter* loops and
+//! recursion deterministically, and the staged-change and log budgets bound the
+//! memory the runner itself accumulates.
+//!
+//! These budgets are NOT a hard CPU/memory isolation boundary: boa's
+//! loop-iteration limit counts interpreter loop constructs only, so native
+//! builtins remain unmetered (`'a'.repeat(2**30)` allocates without tripping the
+//! loop budget, and a catastrophically backtracking regex pins a CPU with zero
+//! loop iterations). Because epiphany holds the whole model in this process, a
+//! hostile or buggy flow is still a data-plane DoS risk. A hard CPU/RSS/wall-clock
+//! bound needs a watchdog-supervised worker at the composition root (out of this
+//! crate's scope; see the flow-runner isolation follow-up).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -53,6 +64,13 @@ const RECURSION_LIMIT: usize = 800;
 /// accumulate, so a flow cannot exhaust memory by staging unboundedly (which
 /// would make the outcome depend on available RAM). Exceeding it throws.
 const MAX_STAGED: usize = 5_000_000;
+/// Cap on the number of `ctx.log(...)` lines a run may accumulate: like
+/// [`MAX_STAGED`], logs are held in memory until the run ends, so an unbounded
+/// `ctx.log` in a loop is a memory-exhaustion path. Exceeding it throws.
+const MAX_LOG_LINES: usize = 100_000;
+/// Cap on the total bytes across all `ctx.log(...)` lines, so a run cannot exhaust
+/// memory with a few very large log lines (e.g. `ctx.log('a'.repeat(2**30))`).
+const MAX_LOG_BYTES: usize = 4 * 1024 * 1024;
 
 fn over_budget(s: &FlowState) -> bool {
     s.staged > MAX_STAGED
@@ -260,6 +278,8 @@ struct FlowState {
     /// Running total of staged items (for the budget check).
     staged: usize,
     logs: Vec<String>,
+    /// Running total of bytes across all `logs` lines (for the log budget).
+    log_bytes: usize,
     rows_read: usize,
 }
 
@@ -310,6 +330,7 @@ pub fn run_flow(
         dimensions: BTreeMap::new(),
         staged: 0,
         logs: Vec::new(),
+        log_bytes: 0,
         rows_read,
     };
     FLOW.with(|cell| *cell.borrow_mut() = Some(state));
@@ -521,9 +542,25 @@ fn host_now(_t: &JsValue, _a: &[JsValue], _c: &mut Context) -> JsResult<JsValue>
     Ok(JsValue::from(with_flow(|s| s.now_millis as f64)))
 }
 
+fn log_budget_error() -> boa_engine::JsError {
+    JsNativeError::error()
+        .with_message("flow exceeded the log budget")
+        .into()
+}
+
 fn host_log(_t: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
     let msg = arg_string(args, 0, ctx)?;
-    with_flow(|s| s.logs.push(msg));
+    // Logs accumulate in memory for the run's whole lifetime; bound both the line
+    // count and total bytes so a `ctx.log` in a loop (or one huge line) cannot
+    // exhaust memory, mirroring the MAX_STAGED backstop.
+    let over = with_flow(|s| {
+        s.log_bytes += msg.len();
+        s.logs.push(msg);
+        s.logs.len() > MAX_LOG_LINES || s.log_bytes > MAX_LOG_BYTES
+    });
+    if over {
+        return Err(log_budget_error());
+    }
     Ok(JsValue::undefined())
 }
 
@@ -824,8 +861,18 @@ fn dedup_specs(outcome: &mut FlowOutcome) {
         c.elements
             .retain(|e| seen_el.insert((e.dimension.clone(), e.name.clone(), e.kind)));
         let mut seen_edge = std::collections::HashSet::new();
-        c.edges
-            .retain(|e| seen_edge.insert((e.dimension.clone(), e.parent.clone(), e.child.clone())));
+        // Include weight in the key: true duplicates still collapse, but the same
+        // (dimension, parent, child) staged with a *different* weight survives to
+        // core's apply_growth, which raises EdgeWeightConflict rather than letting
+        // a silently-kept first weight corrupt rollups (mirrors element `kind`).
+        c.edges.retain(|e| {
+            seen_edge.insert((
+                e.dimension.clone(),
+                e.parent.clone(),
+                e.child.clone(),
+                e.weight,
+            ))
+        });
     }
     for d in outcome.dimensions.values_mut() {
         let mut seen_el = std::collections::HashSet::new();
@@ -833,7 +880,7 @@ fn dedup_specs(outcome: &mut FlowOutcome) {
             .retain(|e| seen_el.insert((e.name.clone(), e.kind)));
         let mut seen_edge = std::collections::HashSet::new();
         d.edges
-            .retain(|e| seen_edge.insert((e.parent.clone(), e.child.clone())));
+            .retain(|e| seen_edge.insert((e.parent.clone(), e.child.clone(), e.weight)));
     }
 }
 
@@ -847,7 +894,23 @@ var __inputs = JSON.parse(__host.inputsJson());
 var __inputNames = Object.keys(__inputs);
 var __params = JSON.parse(__host.paramsJson());
 var __cubes = JSON.parse(__host.cubeNamesJson());
-function __cell(coord, value) { return { coord: coord, value: String(value) }; }
+// Coerce a coordinate's member values to strings (a JS number like `2024` would
+// otherwise stay a JSON number and be dropped host-side, silently losing the
+// dimension). A null/undefined member is a mistake, not an empty string: throw
+// loudly rather than stage a coordinate missing a dimension.
+function __coord(coord) {
+  var out = {};
+  for (var dim in coord) {
+    if (!Object.prototype.hasOwnProperty.call(coord, dim)) { continue; }
+    var m = coord[dim];
+    if (m === null || m === undefined) {
+      throw new Error('coordinate member for dimension ' + dim + ' is null or undefined');
+    }
+    out[dim] = String(m);
+  }
+  return out;
+}
+function __cell(coord, value) { return { coord: __coord(coord), value: String(value) }; }
 function __w(weight) { return (weight === undefined ? 1 : weight); }
 // A cube-scoped handle (ADR-0035): element/edge/cell ops stage against the cube;
 // reads go through the live, principal-masked host reader.
@@ -872,8 +935,8 @@ function __cubeHandle(cube) {
     writeCells: function (arr) {
       __host.cubeWriteCellsJson(cube, JSON.stringify(arr.map(function (c) { return __cell(c.coord, c.value); })));
     },
-    readCell: function (coord) { return __host.cubeReadCellJson(cube, JSON.stringify(coord)); },
-    readText: function (coord) { return __host.cubeReadTextJson(cube, JSON.stringify(coord)); },
+    readCell: function (coord) { return __host.cubeReadCellJson(cube, JSON.stringify(__coord(coord))); },
+    readText: function (coord) { return __host.cubeReadTextJson(cube, JSON.stringify(__coord(coord))); },
     members: function (dim) { return JSON.parse(__host.cubeMembersJson(cube, String(dim))); },
     property: function (key) { return __host.cubePropertyJson(cube, String(key)); }
   };
@@ -917,7 +980,12 @@ var ctx = {
     return __inputs[key];
   },
   sources: function () { return __inputNames.slice(); },
-  param: function (name) { return __params[name]; },
+  param: function (name) {
+    var key = String(name);
+    // Own-property guard (mirrors input()): an unset param is undefined, never an
+    // inherited Object.prototype member like `toString`.
+    return Object.prototype.hasOwnProperty.call(__params, key) ? __params[key] : undefined;
+  },
   cubes: function () { return __cubes.slice(); },
   cube: function (name) { return __cubeHandle(String(name)); },
   dimension: function (name) { return __dimHandle(String(name)); },
@@ -1182,6 +1250,86 @@ function rows(ctx) {
         fn cube_property(&self, _cube: &str, key: &str) -> Result<Option<String>, FlowReadError> {
             Ok((key == "description").then(|| "the sales cube".to_string()))
         }
+    }
+
+    #[test]
+    fn numeric_coordinate_members_are_coerced_not_dropped() {
+        // A numeric coord member (`Year: 2024`) must be coerced to its string form,
+        // not silently dropped (which would lose the dimension and skip the cell).
+        let src = "\
+function rows(ctx) {
+  ctx.cube('Sales').writeCell({ Year: 2024, Region: 'North' }, 5);
+}";
+        let out = run(src, "A\n1\n").unwrap();
+        let f = out.cubes.get("Sales").expect("Sales target");
+        assert_eq!(f.cells.len(), 1);
+        assert_eq!(f.cells[0].coord.get("Year"), Some(&"2024".to_string()));
+        assert_eq!(f.cells[0].coord.get("Region"), Some(&"North".to_string()));
+    }
+
+    #[test]
+    fn null_coordinate_member_throws() {
+        // A null/undefined member is a mistake, not an empty string: fail loud.
+        let src = "function rows(ctx) { ctx.cube('Sales').writeCell({ Region: null }, 1); }";
+        let err = run(src, "A\n1\n").unwrap_err();
+        assert!(err.to_string().contains("null or undefined"), "{err}");
+    }
+
+    #[test]
+    fn conflicting_edge_weights_are_not_deduped_away() {
+        // The same (dimension, parent, child) staged with different weights must
+        // both survive dedup so core's apply_growth can raise EdgeWeightConflict.
+        let src = "\
+function schema(ctx) {
+  ctx.addChild('Region', 'Total', 'North', 1);
+  ctx.addChild('Region', 'Total', 'North', -1);
+}";
+        let out = run(src, "").unwrap();
+        let s = sales(&out);
+        assert_eq!(s.edges.len(), 2, "conflicting weights preserved");
+        // A true duplicate (same weight) still collapses.
+        let src2 = "\
+function schema(ctx) {
+  ctx.addChild('Region', 'Total', 'North', 1);
+  ctx.addChild('Region', 'Total', 'North', 1);
+}";
+        let out2 = run(src2, "").unwrap();
+        assert_eq!(sales(&out2).edges.len(), 1, "true duplicate collapses");
+    }
+
+    #[test]
+    fn param_does_not_read_through_prototype_chain() {
+        // An unset param must be undefined, not an inherited Object.prototype member.
+        let src = "\
+function rows(ctx) {
+  ctx.log('toString ' + (ctx.param('toString') === undefined));
+  ctx.log('set ' + ctx.param('mode'));
+}";
+        let mut params = BTreeMap::new();
+        params.insert("mode".to_string(), "fast".to_string());
+        let rows = parse_csv("A\n1\n").unwrap();
+        let mut inputs = BTreeMap::new();
+        inputs.insert("data".to_string(), rows);
+        let out = run_flow(
+            src,
+            Some("Sales"),
+            &["Sales".to_string()],
+            inputs,
+            &params,
+            0,
+            Box::new(NullReader),
+        )
+        .unwrap();
+        assert_eq!(out.report.logs[0], "toString true");
+        assert_eq!(out.report.logs[1], "set fast");
+    }
+
+    #[test]
+    fn log_budget_stops_a_runaway_logger() {
+        // Unbounded ctx.log lines would exhaust memory; the log budget throws.
+        let src = "function rows(ctx) { for (let i = 0; i < 200000; i++) { ctx.log('x'); } }";
+        let err = run(src, "A\n1\n").unwrap_err();
+        assert!(err.to_string().contains("log budget"), "{err}");
     }
 
     #[test]

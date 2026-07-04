@@ -5,17 +5,19 @@
 //! the dimension immutably, so it is safe to run over an MVCC read snapshot.
 //!
 //! Determinism: every ordering comes from a deterministic core primitive -
-//! `iter_elements` is definition order, `edges()` is sorted by `(parent,
-//! child)`, and `Order` uses a key sort with the input position as a stable
-//! tie-break. The `Descendants` de-duplication uses a `HashSet` purely for the
-//! visited skip-check; emission order is the sorted-edge pre-order DFS, never
-//! the set's iteration order.
+//! `iter_elements` is definition order, `children_of` is authored
+//! (edge-declaration) rollup order, and `Order` uses a key sort with the input
+//! position as a stable tie-break. The `Descendants` de-duplication uses a
+//! `HashSet` purely for the visited skip-check; emission order is the
+//! authored-order pre-order DFS, never the set's iteration order. The DFS is
+//! iterative with an explicit work stack and a depth backstop, so a deep
+//! consolidation chain returns a clean error instead of overflowing the stack.
 //!
 //! Crossjoin (`a * b`) is parsed but rejected here: a tuple set is not a valid
 //! single-dimension member set. Tuple nesting is handled by the view layer
 //! (Phase 3D), which crossjoins per-dimension subsets itself.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 
 use epiphany_core::{AttributeValue, Dimension, Fixed, ModelError};
@@ -53,6 +55,15 @@ pub enum MdxEvalError {
     },
     /// A crossjoin / tuple set appeared where a single-dimension set is required.
     TupleSetNotAllowed,
+    /// A `Descendants` traversal exceeded the consolidation-depth backstop
+    /// (a pathologically deep parent-child chain), stopped before it could
+    /// exhaust the thread stack.
+    TooDeep {
+        /// The dimension being evaluated.
+        dimension: String,
+        /// The depth limit that was exceeded.
+        limit: u32,
+    },
     /// An underlying core model error (e.g. an invalid numeric literal).
     Core(ModelError),
 }
@@ -78,6 +89,10 @@ impl fmt::Display for MdxEvalError {
             MdxEvalError::TupleSetNotAllowed => write!(
                 f,
                 "a crossjoin (tuple) set cannot be used where a single-dimension member set is required"
+            ),
+            MdxEvalError::TooDeep { dimension, limit } => write!(
+                f,
+                "consolidation depth in dimension '{dimension}' exceeds the maximum of {limit}"
             ),
             MdxEvalError::Core(e) => write!(f, "{e}"),
         }
@@ -114,17 +129,20 @@ fn eval_set(expr: &SetExpr, dim: &Dimension) -> Result<Vec<u32>, MdxEvalError> {
         }
         SetExpr::Children(r) => {
             let parent = resolve_member(dim, r)?;
-            Ok(children_of(dim, parent))
+            children_of(dim, parent)
         }
         SetExpr::Descendants(r) => {
             let root = resolve_member(dim, r)?;
-            Ok(descendants_of(dim, root))
+            descendants_of(dim, root)
         }
         SetExpr::Filter(set, pred) => {
             let base = eval_set(set, dim)?;
             let mut out = Vec::new();
             for element in base {
-                if eval_predicate(dim, element, pred)? {
+                // SQL-style filtering: a member is kept only when the predicate
+                // is definitely true; both false and unknown (a missing
+                // attribute) exclude it.
+                if eval_predicate(dim, element, pred)? == Truth::True {
                     out.push(element);
                 }
             }
@@ -138,15 +156,14 @@ fn eval_set(expr: &SetExpr, dim: &Dimension) -> Result<Vec<u32>, MdxEvalError> {
     }
 }
 
-/// Resolve a member reference to an element index, validating the dimension
-/// qualifier (the first segment of a `[Dim].[Member]` path) if present.
+/// Resolve a member reference to an element index. A two-segment
+/// `[Dim].[Member]` path validates its first segment against the dimension; a
+/// bare `[Member]` resolves directly. Paths deeper than two segments (an
+/// intermediate-ancestor scope like `[Region].[Total].[North]`) are not part of
+/// the implemented subset and are rejected rather than silently resolving only
+/// the last segment.
 fn resolve_member(dim: &Dimension, r: &MemberRef) -> Result<u32, MdxEvalError> {
-    if r.path.len() >= 2 && r.path[0] != dim.name() {
-        return Err(MdxEvalError::DimensionMismatch {
-            expected: dim.name().to_string(),
-            found: r.path[0].clone(),
-        });
-    }
+    check_dimension_qualifier(dim, r)?;
     let name = r.name();
     dim.resolve(name)
         .ok_or_else(|| MdxEvalError::UnknownMember {
@@ -155,57 +172,90 @@ fn resolve_member(dim: &Dimension, r: &MemberRef) -> Result<u32, MdxEvalError> {
         })
 }
 
-/// Validate that a `.Members` reference names the dimension being evaluated.
+/// Validate that a `.Members` reference names the dimension being evaluated,
+/// applying the same first-segment / path-length rule as [`resolve_member`] so
+/// the two spellings agree (`[Dim].Members` vs `[Dim].[Member]`).
 fn dimension_ref(dim: &Dimension, r: &MemberRef) -> Result<(), MdxEvalError> {
-    let named = r.name();
-    if named != dim.name() {
+    check_dimension_qualifier(dim, r)?;
+    let name = r.name();
+    if name != dim.name() {
         return Err(MdxEvalError::DimensionMismatch {
             expected: dim.name().to_string(),
-            found: named.to_string(),
+            found: name.to_string(),
         });
     }
     Ok(())
 }
 
-/// The immediate children of `parent`, in edge-sorted (child-index) order.
-fn children_of(dim: &Dimension, parent: u32) -> Vec<u32> {
-    let kids: Vec<u32> = dim
-        .edges()
-        .into_iter()
-        .filter(|&(p, _, _)| p == parent)
-        .map(|(_, child, _)| child)
-        .collect();
-    dedup(kids)
+/// Shared path shape / dimension-qualifier check for member and `.Members`
+/// references. A two-segment path must be qualified by this dimension; a path
+/// with more than two segments names an unsupported intermediate-ancestor scope
+/// and is reported as a mismatch on the offending qualifier.
+fn check_dimension_qualifier(dim: &Dimension, r: &MemberRef) -> Result<(), MdxEvalError> {
+    if r.path.len() > 2 {
+        return Err(MdxEvalError::DimensionMismatch {
+            expected: dim.name().to_string(),
+            found: r.path[..r.path.len() - 1].join("."),
+        });
+    }
+    if r.path.len() == 2 && r.path[0] != dim.name() {
+        return Err(MdxEvalError::DimensionMismatch {
+            expected: dim.name().to_string(),
+            found: r.path[0].clone(),
+        });
+    }
+    Ok(())
 }
 
-/// The member and all of its descendants, as a sorted-edge pre-order DFS,
+/// The immediate children of `parent`, in the dimension's authored
+/// (edge-declaration) rollup order. `children_of` on core reads the per-parent
+/// edge list directly, so this avoids materializing and sorting the whole edge
+/// set. The authored order is deterministic and matches MDX/TM1 `.Children`
+/// hierarchy-order semantics.
+fn children_of(dim: &Dimension, parent: u32) -> Result<Vec<u32>, MdxEvalError> {
+    Ok(dedup(dim.children_of(parent)?))
+}
+
+/// Maximum consolidation-chain depth a single `Descendants` traversal will
+/// follow before returning a clean evaluation error. A stack/loop backstop, not
+/// a real modelling limit: authored hierarchies nest a handful of levels, far
+/// below this. Deliberately a constant (not env-configurable), mirroring the
+/// parser's [`MAX_PARSE_DEPTH`](crate::parser). Guards against a pathological
+/// deep parent-child chain (buildable via the dimension-editing API / an ETL
+/// import) whose recursion would otherwise abort the process.
+const MAX_DESCENDANTS_DEPTH: u32 = 4096;
+
+/// The member and all of its descendants, as an authored-order pre-order DFS,
 /// de-duplicated by first visit (safe under alternate rollups).
-fn descendants_of(dim: &Dimension, root: u32) -> Vec<u32> {
-    let mut adjacency: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
-    for (parent, child, _) in dim.edges() {
-        adjacency.entry(parent).or_default().push(child);
-    }
+///
+/// Iterative with an explicit work stack (mirroring `Dimension::reaches`), so a
+/// deep consolidation chain cannot overflow the thread stack. A depth budget
+/// ([`MAX_DESCENDANTS_DEPTH`]) is a second backstop that returns a clean
+/// [`MdxEvalError::TooDeep`] rather than allocating without bound.
+fn descendants_of(dim: &Dimension, root: u32) -> Result<Vec<u32>, MdxEvalError> {
     let mut seen = HashSet::new();
     let mut out = Vec::new();
-    collect_descendants(&adjacency, root, &mut seen, &mut out);
-    out
-}
-
-fn collect_descendants(
-    adjacency: &BTreeMap<u32, Vec<u32>>,
-    node: u32,
-    seen: &mut HashSet<u32>,
-    out: &mut Vec<u32>,
-) {
-    if !seen.insert(node) {
-        return;
-    }
-    out.push(node);
-    if let Some(children) = adjacency.get(&node) {
-        for &child in children {
-            collect_descendants(adjacency, child, seen, out);
+    // Each frame carries the node and its depth from `root` (root is depth 0).
+    let mut stack: Vec<(u32, u32)> = vec![(root, 0)];
+    while let Some((node, depth)) = stack.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        if depth > MAX_DESCENDANTS_DEPTH {
+            return Err(MdxEvalError::TooDeep {
+                dimension: dim.name().to_string(),
+                limit: MAX_DESCENDANTS_DEPTH,
+            });
+        }
+        out.push(node);
+        // Push children in reverse so the authored order is emitted left-to-right
+        // (LIFO stack), matching the previous recursive pre-order DFS.
+        let children = dim.children_of(node)?;
+        for &child in children.iter().rev() {
+            stack.push((child, depth + 1));
         }
     }
+    Ok(out)
 }
 
 /// A total-ordered sort key. Missing values sort before any present value; a
@@ -264,21 +314,70 @@ enum Val {
     Num(Fixed),
 }
 
-fn eval_predicate(dim: &Dimension, element: u32, pred: &Predicate) -> Result<bool, MdxEvalError> {
+/// Three-valued predicate result (SQL NULL semantics). A comparison touching a
+/// missing attribute is `Unknown`, not `False`, so that `NOT`/`AND`/`OR`
+/// propagate it correctly and the two spellings of "not equal"
+/// (`x <> "y"` and `NOT x = "y"`) agree: both leave a missing-attribute member
+/// out of a `Filter`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Truth {
+    True,
+    False,
+    Unknown,
+}
+
+impl Truth {
+    fn from_bool(b: bool) -> Self {
+        if b {
+            Truth::True
+        } else {
+            Truth::False
+        }
+    }
+
+    /// Kleene negation: `NOT Unknown` is `Unknown`.
+    fn not(self) -> Self {
+        match self {
+            Truth::True => Truth::False,
+            Truth::False => Truth::True,
+            Truth::Unknown => Truth::Unknown,
+        }
+    }
+
+    /// Kleene conjunction.
+    fn and(self, other: Self) -> Self {
+        match (self, other) {
+            (Truth::False, _) | (_, Truth::False) => Truth::False,
+            (Truth::True, Truth::True) => Truth::True,
+            _ => Truth::Unknown,
+        }
+    }
+
+    /// Kleene disjunction.
+    fn or(self, other: Self) -> Self {
+        match (self, other) {
+            (Truth::True, _) | (_, Truth::True) => Truth::True,
+            (Truth::False, Truth::False) => Truth::False,
+            _ => Truth::Unknown,
+        }
+    }
+}
+
+fn eval_predicate(dim: &Dimension, element: u32, pred: &Predicate) -> Result<Truth, MdxEvalError> {
     match pred {
         // Both sides are evaluated eagerly so that an ill-typed branch reports a
         // deterministic error regardless of the other branch's truth value.
         Predicate::And(l, r) => {
             let a = eval_predicate(dim, element, l)?;
             let b = eval_predicate(dim, element, r)?;
-            Ok(a && b)
+            Ok(a.and(b))
         }
         Predicate::Or(l, r) => {
             let a = eval_predicate(dim, element, l)?;
             let b = eval_predicate(dim, element, r)?;
-            Ok(a || b)
+            Ok(a.or(b))
         }
-        Predicate::Not(p) => Ok(!eval_predicate(dim, element, p)?),
+        Predicate::Not(p) => Ok(eval_predicate(dim, element, p)?.not()),
         Predicate::Compare { left, op, right } => {
             let l = eval_operand(dim, element, left)?;
             let r = eval_operand(dim, element, right)?;
@@ -307,13 +406,14 @@ fn eval_operand(dim: &Dimension, element: u32, operand: &Operand) -> Result<Val,
     }
 }
 
-fn compare_vals(l: &Val, r: &Val, op: CmpOp) -> Result<bool, MdxEvalError> {
+fn compare_vals(l: &Val, r: &Val, op: CmpOp) -> Result<Truth, MdxEvalError> {
     match (l, r) {
-        // A missing attribute makes the comparison false (the member is filtered
-        // out), as with SQL NULL semantics.
-        (Val::Missing, _) | (_, Val::Missing) => Ok(false),
-        (Val::Text(a), Val::Text(b)) => Ok(apply_op(a.as_str(), b.as_str(), op)),
-        (Val::Num(a), Val::Num(b)) => Ok(apply_op(a, b, op)),
+        // A missing attribute yields `Unknown` (SQL NULL semantics): the result
+        // propagates through NOT/AND/OR unchanged, and a bare comparison on a
+        // missing value leaves the member out of a `Filter`.
+        (Val::Missing, _) | (_, Val::Missing) => Ok(Truth::Unknown),
+        (Val::Text(a), Val::Text(b)) => Ok(Truth::from_bool(apply_op(a.as_str(), b.as_str(), op))),
+        (Val::Num(a), Val::Num(b)) => Ok(Truth::from_bool(apply_op(a, b, op))),
         _ => Err(MdxEvalError::TypeMismatch {
             detail: "cannot compare a text value with a numeric value".to_string(),
         }),
@@ -398,7 +498,7 @@ mod tests {
     }
 
     #[test]
-    fn children_is_edge_sorted() {
+    fn children_is_authored_order() {
         let d = region();
         assert_eq!(
             eval_names("[Region].[Total].Children", &d),
@@ -407,6 +507,32 @@ mod tests {
         assert_eq!(
             eval_names("[Region].[Coastal].Children", &d),
             vec!["North", "East"]
+        );
+    }
+
+    /// `.Children` follows the authored (edge-declaration) rollup order, not the
+    /// element-creation index order. `Q` is created before its children, and its
+    /// children are attached in a deliberately non-index order.
+    #[test]
+    fn children_preserve_authored_rollup_order() {
+        let mut d = Dimension::new("Cal");
+        let q = d.add_consolidated("Q"); // index 0
+        let jan = d.add_leaf("Jan"); // 1
+        let feb = d.add_leaf("Feb"); // 2
+        let mar = d.add_leaf("Mar"); // 3
+                                     // Attach out of index order: Mar, Jan, Feb.
+        d.add_child(q, mar, 1).unwrap();
+        d.add_child(q, jan, 1).unwrap();
+        d.add_child(q, feb, 1).unwrap();
+        assert_eq!(
+            eval_names("[Cal].[Q].Children", &d),
+            vec!["Mar", "Jan", "Feb"],
+            "children must follow authored rollup order, not element index"
+        );
+        assert_eq!(
+            eval_names("Descendants([Cal].[Q])", &d),
+            vec!["Q", "Mar", "Jan", "Feb"],
+            "descendants pre-order must follow authored rollup order"
         );
     }
 
@@ -546,5 +672,99 @@ mod tests {
         assert_eq!(a, b, "same expression must evaluate identically");
         let unique: HashSet<u32> = a.iter().copied().collect();
         assert_eq!(unique.len(), a.len(), "descendants must not repeat");
+    }
+
+    /// A pathologically deep parent-child chain must return a clean `TooDeep`
+    /// error instead of overflowing the thread stack (the recursion guard).
+    #[test]
+    fn descendants_on_deep_chain_errors_cleanly() {
+        let mut d = Dimension::new("Chain");
+        // A linear consolidation chain far deeper than MAX_DESCENDANTS_DEPTH.
+        let depth = (MAX_DESCENDANTS_DEPTH as usize) + 10;
+        let mut prev = d.add_consolidated("n0");
+        for i in 1..depth {
+            let node = if i + 1 == depth {
+                d.add_leaf(format!("n{i}"))
+            } else {
+                d.add_consolidated(format!("n{i}"))
+            };
+            d.add_child(prev, node, 1).unwrap();
+            prev = node;
+        }
+        let expr = parse("Descendants([Chain].[n0])").unwrap();
+        let err = evaluate(&expr, &d).unwrap_err();
+        assert!(
+            matches!(err, MdxEvalError::TooDeep { .. }),
+            "deep chain must error cleanly, got {err:?}"
+        );
+    }
+
+    /// A chain right at the depth limit still evaluates successfully (the guard
+    /// only trips past the backstop, so legitimate hierarchies are unaffected).
+    #[test]
+    fn descendants_within_depth_budget_succeeds() {
+        let mut d = Dimension::new("Chain");
+        let depth = 200usize; // well within MAX_DESCENDANTS_DEPTH
+        let mut prev = d.add_consolidated("n0");
+        for i in 1..depth {
+            let node = if i + 1 == depth {
+                d.add_leaf(format!("n{i}"))
+            } else {
+                d.add_consolidated(format!("n{i}"))
+            };
+            d.add_child(prev, node, 1).unwrap();
+            prev = node;
+        }
+        let expr = parse("Descendants([Chain].[n0])").unwrap();
+        let got = evaluate(&expr, &d).unwrap();
+        assert_eq!(got.len(), depth, "every node on the chain is visited once");
+    }
+
+    /// `<>` and `NOT =` must agree on members whose attribute is missing:
+    /// consolidations have no `Code`, so both spellings must EXCLUDE them
+    /// (SQL three-valued logic: a comparison on a missing value is unknown).
+    #[test]
+    fn ne_and_not_eq_agree_on_missing_attribute() {
+        let d = region();
+        let ne = eval_names(
+            "Filter([Region].Members, Properties(\"Code\") <> \"N\")",
+            &d,
+        );
+        let not_eq = eval_names(
+            "Filter([Region].Members, NOT Properties(\"Code\") = \"N\")",
+            &d,
+        );
+        // South and East have a Code that is not "N"; North's is "N";
+        // Total/Coastal/All have no Code, so both forms drop them.
+        assert_eq!(ne, vec!["South", "East"]);
+        assert_eq!(
+            ne, not_eq,
+            "`<>` and `NOT =` must agree on missing-attribute members"
+        );
+    }
+
+    /// A path deeper than `[Dim].[Member]` names an unsupported
+    /// intermediate-ancestor scope and is rejected rather than silently
+    /// resolving only the last segment.
+    #[test]
+    fn deep_member_path_is_rejected() {
+        let d = region();
+        let err = evaluate(&parse("[Region].[Total].[North]").unwrap(), &d).unwrap_err();
+        assert!(
+            matches!(err, MdxEvalError::DimensionMismatch { .. }),
+            "a 3-segment member path must be rejected, got {err:?}"
+        );
+    }
+
+    /// `dimension_ref` (`.Members`) applies the same first-segment rule as a
+    /// member reference: a wrong dimension qualifier is a mismatch.
+    #[test]
+    fn members_wrong_dimension_qualifier_is_rejected() {
+        let d = region();
+        let err = evaluate(&parse("[Bogus].[Region].Members").unwrap(), &d).unwrap_err();
+        assert!(
+            matches!(err, MdxEvalError::DimensionMismatch { .. }),
+            "a wrong .Members qualifier must be rejected, got {err:?}"
+        );
     }
 }

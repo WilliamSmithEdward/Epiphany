@@ -11,7 +11,7 @@ use std::sync::Arc;
 use epiphany_core::{extract_legacy_automation, Automation};
 use epiphany_determinism::IdGen;
 use epiphany_engine::Engine;
-use epiphany_persist::{slug, write_automation, AutomationStore, Store};
+use epiphany_persist::{read_commit_watermark, slug, write_automation, AutomationStore, Store};
 
 use crate::demo;
 
@@ -58,12 +58,24 @@ pub fn load_or_init(data_dir: &Path) -> Result<Engine, Box<dyn std::error::Error
         tracing::info!("materialized the bundled demo model");
     }
 
+    // Seed the commit-version counter past the durable high-water mark (E1) so
+    // versions strictly INCREASE across restarts. Commit versions are minted from
+    // this shared `IdGen`, which otherwise restarts at 1 each boot; reissuing a
+    // number a prior run used would let an optimistic-CAS `base_version` or a
+    // sandbox/view-cache key alias a different commit across a restart (an ABA
+    // hazard). The high-water file lives in the data dir and is advanced (fsynced)
+    // by every commit; `+1` starts strictly above the last version ever published.
+    let watermark = read_commit_watermark(data_dir);
+    let ids = Arc::new(IdGen::starting_at(watermark.saturating_add(1)));
+
     // Tell the engine where to create new cube stores so runtime cube creation
-    // (ADR-0021) persists under the same layout it boots from, and where the
+    // (ADR-0021) persists under the same layout it boots from, where the
     // shared-dimension registry lives so dimension-library mutations are durable
-    // and referencing cubes reconcile forward on restart (ADR-0024).
-    Ok(Engine::from_stores(stores, Arc::new(IdGen::default()))
+    // and referencing cubes reconcile forward on restart (ADR-0024), and where to
+    // keep the commit high-water current (E1).
+    Ok(Engine::from_stores(stores, ids)
         .with_cubes_dir(cubes_dir)
+        .with_commit_watermark_dir(data_dir.to_path_buf())
         .with_dimensions_dir(data_dir.join("dimensions")))
 }
 
@@ -103,12 +115,18 @@ fn migrate_cube_dirs(cubes_dir: &Path) {
         }
     };
 
-    // Collect first so the rename does not perturb the directory iterator.
-    let dirs: Vec<std::path::PathBuf> = entries
+    // Collect first so the rename does not perturb the directory iterator, and
+    // sort (matching `load_or_init`) so a slug/case collision between two legacy
+    // folders is decided by the lexicographically-first folder on every platform
+    // and run — `read_dir` order is unspecified and filesystem-dependent, so an
+    // unsorted iteration would let a durable, boot-time layout decision (which
+    // folder wins the canonical slug) vary for identical on-disk inputs.
+    let mut dirs: Vec<std::path::PathBuf> = entries
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.join("snapshot.model").is_file())
         .collect();
+    dirs.sort();
 
     for path in dirs {
         let folder = match path.file_name().and_then(|n| n.to_str()) {

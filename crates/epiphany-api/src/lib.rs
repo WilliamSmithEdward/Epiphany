@@ -215,6 +215,18 @@ async fn security_headers(mut response: Response) -> Response {
 /// Build the application router. Used by both the server binary and tests, so
 /// what is tested is what is served.
 pub fn build_router(state: AppState) -> Router {
+    // Install the commit-ordered change feed (A1): the engine invokes this observer
+    // from inside each commit (under the cube's writer lock, after publish), so
+    // WebSocket subscribers see change events in commit/version order and never
+    // ahead of the commit that caused them. The observer slot is SHARED across the
+    // engine's clones, so registering it on this handle also covers the clones the
+    // composition root already made (the scheduler, the resolver factory), and it is
+    // the single emitter — the write handlers no longer send change events directly.
+    let feed = ws::ChangeFeed::new(state.events.clone());
+    let state = AppState {
+        engine: state.engine.with_commit_observer(feed),
+        ..state
+    };
     // Protected routes require a valid session via the AuthPrincipal extractor.
     let protected = Router::new()
         .route(

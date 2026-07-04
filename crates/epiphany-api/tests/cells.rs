@@ -330,6 +330,11 @@ async fn openapi_is_public_and_documents_the_routes() {
 
 #[tokio::test]
 async fn write_broadcasts_a_change_event() {
+    // A1: change events are now emitted by the commit-ordered feed (the engine's
+    // CommitObserver), from inside the commit, in version order. The event carries
+    // the cube and its new commit version; it does NOT carry coordinates (the wire
+    // strips them anyway — clients refetch on any event), and a BASE write carries
+    // no sandbox. Subscribing to the raw channel here sees the pre-strip event.
     let app_state = state("ws-event");
     let mut rx = app_state.events.subscribe();
     let app = build_router(app_state);
@@ -345,11 +350,57 @@ async fn write_broadcasts_a_change_event() {
     .await;
     assert_eq!(s, StatusCode::OK);
 
-    // The committed write broadcast one cells_changed event with the leaf coord.
+    // Exactly one cells_changed for the committed cube, in commit order.
     let event = rx.recv().await.unwrap();
     let json = serde_json::to_value(&event).unwrap();
     assert_eq!(json["type"], "cells_changed");
     assert_eq!(json["cube"], "Sales");
-    assert_eq!(json["coords"][0]["Region"], "North");
-    assert_eq!(json["coords"][0]["Measure"], "Actual");
+    assert!(
+        json["version"].as_u64().unwrap() > 0,
+        "carries the commit version"
+    );
+    // A base write is not tagged with a sandbox, so a sandbox key is absent.
+    assert!(
+        json.get("sandbox").is_none(),
+        "base write carries no sandbox"
+    );
+    // Coordinates are intentionally not carried by the commit-ordered feed.
+    assert!(
+        json["coords"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true),
+        "the feed carries no coordinates (clients refetch)"
+    );
+}
+
+/// A1: two commits to the same cube produce change events in strictly increasing
+/// version order, since the commit observer fires in-commit under the writer lock.
+#[tokio::test]
+async fn change_events_are_in_commit_version_order() {
+    let app_state = state("ws-order");
+    let mut rx = app_state.events.subscribe();
+    let app = build_router(app_state);
+    let t = token(&app).await;
+
+    for value in ["1", "2"] {
+        let (s, _) = call(
+            &app,
+            "PUT",
+            "/api/v1/cubes/Sales/cell",
+            &t,
+            Some(json!({ "coord": { "Region": "North", "Measure": "Actual" }, "value": value })),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK);
+    }
+
+    let first = serde_json::to_value(rx.recv().await.unwrap()).unwrap();
+    let second = serde_json::to_value(rx.recv().await.unwrap()).unwrap();
+    let v1 = first["version"].as_u64().unwrap();
+    let v2 = second["version"].as_u64().unwrap();
+    assert!(
+        v1 < v2,
+        "events arrive in strictly increasing commit-version order ({v1} then {v2})"
+    );
 }

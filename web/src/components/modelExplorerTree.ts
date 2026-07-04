@@ -16,6 +16,7 @@ import {
   listSchedules,
   listViews,
   type DimensionDto,
+  type Persona,
   type SharedDimensionSummary,
 } from '../api/client'
 import { buildElementTree, type TreeNode } from '../model/tree'
@@ -177,7 +178,7 @@ const CUBE_DIM_MENU: NodeMenuItem[] = [
   { action: 'manage-sets', label: 'Manage sets...' },
 ]
 
-export async function cubeChildren(cube: string): Promise<Node[]> {
+export async function cubeChildren(cube: string, persona: Persona): Promise<Node[]> {
   const detail = await getCube(cube)
   const dims: Node = {
     id: `cube:${cube}/dims`,
@@ -229,20 +230,25 @@ export async function cubeChildren(cube: string): Promise<Node[]> {
     menu: [{ action: 'open-rules', label: 'Edit rules & feeders' }],
     actionCtx: { cube },
   }
-  return [dims, views, rules]
+  // A business user's cube shows only its Views (the data-entry / analysis
+  // surface); the Dimensions structure and Rules & feeders are modeler machinery,
+  // hidden from that persona (ADR-0020). Modelers and admins see all three.
+  return persona === 'business' ? [views] : [dims, views, rules]
 }
 
-export function cubeNode(name: string): Node {
+export function cubeNode(name: string, persona: Persona): Node {
   return {
     id: `cube:${name}`,
     label: name,
     icon: '▤',
     selection: { kind: 'cube', cube: name },
-    // A superset of the actions its child nodes expose, so the cube row offers
-    // a direct path to its structure (consistency / recognition over recall).
-    menu: [{ action: 'open-model', label: 'Edit dimensions...' }],
+    // A superset of the actions its child nodes expose, so the cube row offers a
+    // direct path to its structure (consistency / recognition over recall). The
+    // "Edit dimensions" verb is modeler machinery, so a business user's cube row
+    // carries no menu (its only child is Views).
+    menu: persona === 'business' ? undefined : [{ action: 'open-model', label: 'Edit dimensions...' }],
     actionCtx: { cube: name },
-    loader: () => cubeChildren(name),
+    loader: () => cubeChildren(name, persona),
   }
 }
 
@@ -400,8 +406,15 @@ export async function dimensionNamespace(): Promise<Node[]> {
   return [...registry.map(registryNode), ...embedded]
 }
 
-/** The static top-level roots (resource-type grouping). */
-export function rootNodes(isAdmin: boolean): Node[] {
+/** The static top-level roots (resource-type grouping), gated by persona
+ * (ADR-0020 progressive disclosure). A business user sees only Cubes - the entry
+ * to their Views and data entry - with no model-authoring chrome; the "New cube"
+ * verb is admin-only. A modeler additionally sees the Dimensions, Flows, and
+ * Schedules roots (the calculation/automation machinery). An admin also sees
+ * Connections (server-global operator config, ADR-0035); Administration itself is
+ * a top-bar button into its own view (see CubeApp), not a tree root. */
+export function rootNodes(persona: Persona): Node[] {
+  const isAdmin = persona === 'admin'
   const roots: Node[] = [
     {
       id: 'root:cubes',
@@ -409,41 +422,48 @@ export function rootNodes(isAdmin: boolean): Node[] {
       icon: '▤',
       menu: isAdmin ? [{ action: 'new-cube', label: 'New cube...' }] : undefined,
       actionCtx: {},
-      loader: async () => (await listCubes()).map((c) => cubeNode(c.name)),
-    },
-    {
-      id: 'root:dimensions',
-      label: 'Dimensions',
-      icon: '⬡',
-      menu: [{ action: 'register-dimension', label: 'New dimension...' }],
-      actionCtx: {},
-      // Global dimension namespace (ADR-0031): one list = the registry (global)
-      // dimensions plus every cube's embedded-only dimensions, presented
-      // together with no shared/local distinction. A registry-backed cube
-      // dimension carries an id and is shown once via its registry entry; an
-      // embedded-only one (no id) is shown with its cube as provenance and opens
-      // that cube's model editor.
-      loader: dimensionNamespace,
-    },
-    {
-      id: 'root:flows',
-      label: 'Flows',
-      icon: '⇄',
-      menu: [{ action: 'new-flow', label: 'New flow...' }],
-      actionCtx: {},
-      // Flows are server-global (ADR-0035): listed directly, no cube layer.
-      loader: flowNodes,
-    },
-    {
-      id: 'root:schedules',
-      label: 'Schedules',
-      icon: '⏱',
-      menu: [{ action: 'new-schedule', label: 'New schedule...' }],
-      actionCtx: {},
-      // Schedules are server-global (ADR-0035): listed directly, no cube layer.
-      loader: scheduleNodes,
+      loader: async () => (await listCubes()).map((c) => cubeNode(c.name, persona)),
     },
   ]
+  // Dimensions, Flows, and Schedules are model-authoring surfaces: shown to
+  // modelers and admins, hidden from a business user whose shell is Views + data
+  // entry only. A business user never sees (nor can create) these object kinds.
+  if (persona !== 'business') {
+    roots.push(
+      {
+        id: 'root:dimensions',
+        label: 'Dimensions',
+        icon: '⬡',
+        menu: [{ action: 'register-dimension', label: 'New dimension...' }],
+        actionCtx: {},
+        // Global dimension namespace (ADR-0031): one list = the registry (global)
+        // dimensions plus every cube's embedded-only dimensions, presented
+        // together with no shared/local distinction. A registry-backed cube
+        // dimension carries an id and is shown once via its registry entry; an
+        // embedded-only one (no id) is shown with its cube as provenance and opens
+        // that cube's model editor.
+        loader: dimensionNamespace,
+      },
+      {
+        id: 'root:flows',
+        label: 'Flows',
+        icon: '⇄',
+        menu: [{ action: 'new-flow', label: 'New flow...' }],
+        actionCtx: {},
+        // Flows are server-global (ADR-0035): listed directly, no cube layer.
+        loader: flowNodes,
+      },
+      {
+        id: 'root:schedules',
+        label: 'Schedules',
+        icon: '⏱',
+        menu: [{ action: 'new-schedule', label: 'New schedule...' }],
+        actionCtx: {},
+        // Schedules are server-global (ADR-0035): listed directly, no cube layer.
+        loader: scheduleNodes,
+      },
+    )
+  }
   // Connections are server-global operator configuration (ADR-0035); the root
   // is admin-only (the non-admin tree never shows connector internals).
   if (isAdmin) {

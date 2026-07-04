@@ -57,12 +57,19 @@ public sealed class ConfiguratorForm : Form
     {
         try
         {
-            await _web.EnsureCoreWebView2Async();
+            // WebView2's default user-data folder is created next to the host
+            // process (EXCEL.EXE, under Program Files), which a non-elevated user
+            // cannot write - so pass an explicit folder under %LOCALAPPDATA%.
+            var userDataFolder = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "Epiphany", "WebView2");
+            var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+            await _web.EnsureCoreWebView2Async(env);
             _web.CoreWebView2.WebMessageReceived += OnWebMessage;
         }
         catch (Exception e)
         {
-            _statusLabel.Text = "Could not start the embedded browser (WebView2 runtime missing?): " + e.Message;
+            _statusLabel.Text = "Could not start the embedded browser (is the WebView2 runtime installed?): " + e.Message;
         }
     }
 
@@ -70,6 +77,20 @@ public sealed class ConfiguratorForm : Form
     {
         var url = _urlBox.Text.Trim().TrimEnd('/');
         if (url.Length == 0) return;
+
+        // Warn before sending the bearer token in cleartext over http to a
+        // non-loopback host. Loopback (localhost/127.0.0.1) http is fine for dev.
+        if (Uri.TryCreate(url, UriKind.Absolute, out var parsed)
+            && string.Equals(parsed.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+            && !parsed.IsLoopback)
+        {
+            var proceed = MessageBox.Show(
+                "This is an http:// address, so your sign-in token would travel unencrypted over the network. Use https:// unless this is a trusted local network.\n\nConnect anyway?",
+                "Epiphany", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (proceed != DialogResult.Yes)
+                return;
+        }
+
         _baseUrl = url;
         try
         {
@@ -97,15 +118,17 @@ public sealed class ConfiguratorForm : Form
         string? token = null;
         try
         {
-            // The page may post a JSON envelope { type: "epiphany-auth", token }
-            // or a bare token string; accept either.
+            // Accept ONLY the typed auth envelope { type: "epiphany-auth", token }.
+            // A bare-string fallback would let any same-origin script (analytics,
+            // an unrelated feature) overwrite the stored credential with garbage.
             var json = e.WebMessageAsJson;
             using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind == JsonValueKind.String)
-                token = doc.RootElement.GetString();
-            else if (doc.RootElement.TryGetProperty("type", out var t)
-                     && t.GetString() == "epiphany-auth"
-                     && doc.RootElement.TryGetProperty("token", out var tok))
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("type", out var t)
+                && t.ValueKind == JsonValueKind.String
+                && t.GetString() == "epiphany-auth"
+                && doc.RootElement.TryGetProperty("token", out var tok)
+                && tok.ValueKind == JsonValueKind.String)
                 token = tok.GetString();
         }
         catch

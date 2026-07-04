@@ -31,7 +31,7 @@ use std::collections::HashSet;
 
 use crate::rules::ast::{
     Area, ArithOp, BuiltinFunc, CellRef, CmpOp, Condition, DimOverride, DimSelector, Expr, FuncArg,
-    FuncCall, Literal, MemberExpr, Rule, RuleDoc, SelectorKind,
+    FuncCall, Literal, MemberExpr, Rule, RuleDoc, Scope, SelectorKind,
 };
 use crate::rules::error::{ParseErrorKind, RuleParseError};
 use crate::rules::lexer::{lex, Span, Tok, Token};
@@ -187,6 +187,7 @@ impl Parser {
     }
 
     fn parse_area(&mut self) -> Result<Area, RuleParseError> {
+        let scope = self.parse_scope_marker();
         self.expect(&Tok::LBracket, "`[` to open an area")?;
         let mut selectors = Vec::new();
         let mut seen = HashSet::new();
@@ -214,7 +215,36 @@ impl Parser {
             }
         }
         self.expect(&Tok::RBracket, "`,` or `]`")?;
-        Ok(Area { selectors })
+        Ok(Area { scope, selectors })
+    }
+
+    /// Consume an optional leading scope marker (ADR-0041): `N:` (leaf) or `C:`
+    /// (consolidated) before the area's `[`. The marker is a bare `N`/`C` word
+    /// (case-insensitive) immediately followed by `:`; anything else leaves the
+    /// position untouched and yields [`Scope::Unmarked`] so an unmarked area (and
+    /// every existing rule) parses exactly as before. A `C`/`N` word NOT followed
+    /// by `:` is not a marker and is left for `[` to reject as usual.
+    fn parse_scope_marker(&mut self) -> Scope {
+        let marker = match self.peek() {
+            Some(Tok::Word(w)) if self.peek2_is(&Tok::Colon) => {
+                if w.eq_ignore_ascii_case("n") {
+                    Some(Scope::Leaf)
+                } else if w.eq_ignore_ascii_case("c") {
+                    Some(Scope::Consolidated)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        match marker {
+            Some(scope) => {
+                self.bump(); // the N/C word
+                self.bump(); // the ':'
+                scope
+            }
+            None => Scope::Unmarked,
+        }
     }
 
     fn parse_selector(&mut self) -> Result<SelectorKind, RuleParseError> {
@@ -656,10 +686,10 @@ mod tests {
         let out = canon("['M':'x'] = IF value > 0 AND value < 10 THEN value ELSE 0;");
         assert_eq!(
             out,
-            "['M': 'x'] = IF value > 0 AND value < 10 THEN value ELSE 0;"
+            "['M': 'x'] = (IF value > 0 AND value < 10 THEN value ELSE 0);"
         );
         let no_else = canon("['M':'x'] = IF NOT value = 0 THEN 1;");
-        assert_eq!(no_else, "['M': 'x'] = IF NOT value = 0 THEN 1;");
+        assert_eq!(no_else, "['M': 'x'] = (IF NOT value = 0 THEN 1);");
     }
 
     #[test]
@@ -726,6 +756,16 @@ mod tests {
             "['M':'x'] = 'FX'!['Cur':'USD'] with ('Region'->'Country');",
             "['M':{children of 'Total'}] = Attr('M','Code');",
             "['M':'x'] = -(value + 1) * value['M': !'alias'];",
+            // IF as a binary operand and a nested dangling-else: the canonical
+            // Display must round-trip without moving the trailing operator/branch.
+            "['M':'x'] = (IF value > 0 THEN 1 ELSE 2) + 3;",
+            "['M':'x'] = IF value > 0 THEN (IF value > 5 THEN 1) ELSE 2;",
+            // Scope markers (ADR-0041): C:/N: must survive Display -> parse, and an
+            // authored N: must not silently drop to unmarked (nor an unmarked area
+            // gain a marker).
+            "C:['M':'Ratio'] = value['M':'A'] / value['M':'B'];",
+            "N:['M':'Margin'] = value['M':'Sales'] - value['M':'Cost'];",
+            "C:['Region':'Total', 'M':'Ratio'] = value['M':'A'] / value['M':'B'];",
         ];
         for src in corpus {
             let once = parse(src).unwrap().to_string();
@@ -734,6 +774,81 @@ mod tests {
                 .to_string();
             assert_eq!(once, twice, "round-trip not stable for `{src}`");
         }
+    }
+
+    #[test]
+    fn scope_marker_parses_and_round_trips_byte_for_byte() {
+        // A C: marker prints as `C:`, an N: marker as `N:`, and an unmarked area
+        // prints NOTHING — so an unmarked rule (every rule that exists today) is
+        // byte-identical before and after the canonical printer, and an authored
+        // marker survives Display -> parse -> Display unchanged (ADR-0041).
+        let c = parse("C:['M':'Ratio'] = value['M':'A'] / value['M':'B'];")
+            .unwrap()
+            .to_string();
+        assert_eq!(c, "C:['M': 'Ratio'] = (value['M': 'A'] / value['M': 'B']);");
+        assert_eq!(
+            parse(&c).unwrap().to_string(),
+            c,
+            "C: is a Display fixed point"
+        );
+
+        let n = parse("N:['M':'Margin'] = value['M':'Sales'];")
+            .unwrap()
+            .to_string();
+        assert_eq!(n, "N:['M': 'Margin'] = value['M': 'Sales'];");
+        assert_eq!(
+            parse(&n).unwrap().to_string(),
+            n,
+            "N: is a Display fixed point"
+        );
+
+        // No marker -> prints no marker (backward compatibility): the leading `[`
+        // is unchanged, and the round trip is byte-identical.
+        let bare = parse("['M':'Margin'] = value['M':'Sales'];")
+            .unwrap()
+            .to_string();
+        assert_eq!(bare, "['M': 'Margin'] = value['M': 'Sales'];");
+        assert!(!bare.starts_with('N') && !bare.starts_with('C'));
+
+        // The marker is case-insensitive like every other keyword, and normalizes
+        // to the canonical upper-case form on print.
+        assert_eq!(
+            parse("c:['M':'Ratio'] = value['M':'A'] / value['M':'B'];")
+                .unwrap()
+                .to_string(),
+            c,
+        );
+    }
+
+    #[test]
+    fn a_bare_c_or_n_word_without_a_colon_is_not_a_scope_marker() {
+        // `C`/`N` are ordinary words; only immediately before `:` and the area's
+        // `[` are they markers. A `C` not followed by `:` must NOT be swallowed —
+        // here it is (correctly) rejected because an area must open with `[`.
+        assert!(parse("C = 1;").is_err(), "a bare C is not a valid area");
+        // And an unrelated dimension NAMED with a leading letter is unaffected: the
+        // marker is a bare single letter `C`/`N`, not any word starting with one.
+        let ok = parse("['Country':'US'] = 1;").unwrap().to_string();
+        assert_eq!(ok, "['Country': 'US'] = 1;");
+    }
+
+    #[test]
+    fn if_in_binary_position_round_trips_without_changing_semantics() {
+        // A bare `IF` operand would let its trailing branch absorb the following
+        // `+ 3` on re-parse (value flips 4 -> 1 when the condition holds). The
+        // canonical Display parenthesizes `IF`, so it round-trips exactly.
+        let src = "['M':'x'] = (IF value > 0 THEN 1 ELSE 2) + 3;";
+        let once = parse(src).unwrap().to_string();
+        assert_eq!(once, "['M': 'x'] = ((IF value > 0 THEN 1 ELSE 2) + 3);");
+        let twice = parse(&once).unwrap().to_string();
+        assert_eq!(once, twice, "IF-in-binary Display must be idempotent");
+
+        // Nested/dangling-else: the inner else-less IF must not absorb the outer
+        // ELSE on re-parse.
+        let nested = "['M':'x'] = IF value > 0 THEN (IF value > 5 THEN 1) ELSE 2;";
+        let once_n = parse(nested).unwrap().to_string();
+        let twice_n = parse(&once_n).unwrap().to_string();
+        assert_eq!(once_n, twice_n, "nested dangling-else must be idempotent");
     }
 
     #[test]

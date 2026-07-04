@@ -120,6 +120,13 @@ export default function MemberTable({
   // changes, so a stored index would go stale; a path is resolved against the
   // CURRENT `rows` at shift-click time so the range matches what the user sees.
   const lastClicked = useRef<string | null>(null)
+  // Whether the shift key was held on the checkbox's click. A native checkbox
+  // click fires `click` (which carries shiftKey) then `change`; handling
+  // selection in BOTH double-fires and the plain-toggle change wins, discarding
+  // the range. So onClick only records the modifier here and onChange performs
+  // the single selection, consulting (and clearing) it - exactly one
+  // onSelectedChange per gesture.
+  const shiftOnClick = useRef(false)
   const columnsRef = useRef<HTMLDivElement | null>(null)
 
   // Re-show all attribute columns when the edited dimension changes, so each
@@ -298,8 +305,11 @@ export default function MemberTable({
       setSortDir('asc')
     }
   }
-  const ariaSort = (key: string): 'ascending' | 'descending' | 'none' =>
-    sortKey === key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'
+  // Apply aria-sort only to the single sorted header; omit the attribute on
+  // unsorted columns (return undefined) rather than setting aria-sort="none",
+  // per docs/UI_UX_GUIDELINES.md ("Make sorting obvious, accessible...").
+  const ariaSort = (key: string): 'ascending' | 'descending' | undefined =>
+    sortKey === key ? (sortDir === 'asc' ? 'ascending' : 'descending') : undefined
   const sortMark = (key: string) => (sortKey === key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '')
 
   const toggleAttr = (name: string) =>
@@ -589,8 +599,14 @@ export default function MemberTable({
           ))}
         </div>
 
-        <div className="mtable__body" style={{ height: virtual.totalHeight }}>
-          <div style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
+        {/* role="presentation" on the two virtualization wrappers: a role=table
+            must own its rows, so an interposed generic div breaks the
+            row/columnheader association in the a11y tree (ADR-0032). These divs
+            are pure layout (scroll sizer + translateY offset), so presentation
+            removes them from the a11y tree, restoring the head-row -> body-row
+            structure. */}
+        <div className="mtable__body" role="presentation" style={{ height: virtual.totalHeight }}>
+          <div role="presentation" style={{ transform: `translateY(${virtual.offsetTop}px)` }}>
             {rows.length === 0 ? (
               <p className="mtable__empty muted">
                 {filtering
@@ -618,9 +634,16 @@ export default function MemberTable({
                           type="checkbox"
                           aria-label={`Select ${r.name}`}
                           checked={!!isSel}
-                          onChange={() => onRowSelect(r.path, r.name, false)}
+                          // onClick fires before onChange and carries the
+                          // modifier; record it, then let onChange do the single
+                          // selection so exactly one onSelectedChange fires.
                           onClick={(e) => {
-                            if (e.shiftKey) onRowSelect(r.path, r.name, true)
+                            shiftOnClick.current = e.shiftKey
+                          }}
+                          onChange={() => {
+                            const shift = shiftOnClick.current
+                            shiftOnClick.current = false
+                            onRowSelect(r.path, r.name, shift)
                           }}
                         />
                       </span>

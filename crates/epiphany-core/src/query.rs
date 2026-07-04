@@ -313,6 +313,14 @@ impl AxisSpec {
 /// An ordered list of axis specs; their member lists crossjoin into tuples.
 pub type Axis = Vec<AxisSpec>;
 
+/// The largest number of cells one view execution may address (rows x columns),
+/// and likewise the largest tuple count a single axis may crossjoin to. Checked
+/// from the per-spec member counts BEFORE any tuple or grid is materialized, so
+/// an oversized request is refused with a structured error
+/// ([`ModelError::CellsetTooLarge`]) instead of exhausting memory. Mirrors
+/// [`crate::MAX_SPREAD_LEAVES`] for spreading.
+pub const MAX_CELLSET_CELLS: usize = 2_000_000;
+
 /// How deep a provenance trace should recurse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ExplainDepth {
@@ -358,6 +366,14 @@ pub struct CellTrace {
     pub kind: TraceKind,
     /// The input cells consulted (empty at the depth limit or for a stored leaf).
     pub inputs: Vec<CellTrace>,
+    /// Whether this node's [`inputs`](Self::inputs) list was capped: a wide
+    /// consolidation whose contributing inputs exceed the explain breadth cap
+    /// reports only the first (in sorted coordinate order) and sets this flag, so
+    /// a client can render "and N more" rather than believing the list is
+    /// complete. Default `false`; a stored leaf and a fully-listed node leave it
+    /// clear. The reported [`value`](Self::value) is always the exact, untruncated
+    /// total regardless of this flag.
+    pub inputs_truncated: bool,
 }
 
 /// A saved query: rows, columns, a context (slicer), and independent
@@ -403,8 +419,24 @@ pub struct Cellset {
     pub column_tuples: Vec<Vec<String>>,
     /// The echoed context (dimension, member).
     pub context: Vec<(String, String)>,
-    /// Cell values, row-major: `cells[r * column_tuples.len() + c]`.
+    /// Cell values, row-major: `cells[r * column_tuples.len() + c]`. A string cell
+    /// (see [`cell_strings`](Self::cell_strings)) and an errored cell
+    /// (see [`cell_errors`](Self::cell_errors)) both carry `Fixed::ZERO` here; the
+    /// two parallel channels below distinguish them from a genuine numeric zero.
     pub cells: Vec<Fixed>,
+    /// The per-cell string channel, parallel to [`cells`](Self::cells): `Some(text)`
+    /// where the cell's coordinate addresses a String element with a stored value,
+    /// `None` for a numeric cell (or an unpopulated / errored string cell). Lets the
+    /// presentation layer render `kind:"string"` rather than a fabricated numeric
+    /// zero, and a populated string counts as non-zero for zero-suppression.
+    pub cell_strings: Vec<Option<String>>,
+    /// The per-cell error channel, parallel to [`cells`](Self::cells): `Some(message)`
+    /// where evaluating that one cell failed with a *per-cell* error (DivByZero,
+    /// Overflow, Cycle, or an underlying model error). A single such error degrades
+    /// to a marker on its own cell instead of aborting the whole cellset; structural
+    /// errors (unknown member, coverage), a cube-wide rule-compile failure, and an
+    /// element-security denial stay hard and are still returned as `Err`.
+    pub cell_errors: Vec<Option<String>>,
     /// Row tuples removed by zero-suppression, in original order.
     pub suppressed_row_tuples: Vec<Vec<String>>,
     /// Column tuples removed by zero-suppression, in original order.
@@ -577,11 +609,51 @@ pub fn execute_view_with<'a>(
     // irrelevant, and the within-cell reduction order is unchanged.
     let nrows = row_tuples_idx.len();
     let ncols = column_tuples_idx.len();
-    let total = nrows * ncols;
+    // Each axis is already capped by resolve_axis; this bounds their product (the
+    // dense grid) before it is allocated.
+    let total = nrows.saturating_mul(ncols);
+    if total > MAX_CELLSET_CELLS {
+        return Err(QueryError::Model(ModelError::CellsetTooLarge {
+            cells: total,
+            cap: MAX_CELLSET_CELLS,
+        }));
+    }
 
-    // Compute one cell's full coordinate into `scratch` and read its value. Reads
+    // Whether an axis tuple (or the context) addresses a String-kind element, so a
+    // cell reads its string channel instead of a numeric value. Precomputed per
+    // tuple (O(R + C)) rather than per cell: a cell is a string cell iff its
+    // context, its row tuple, or its column tuple contains a String element.
+    let has_string = |tuples: &[Vec<u32>], ci: &[usize]| -> Vec<bool> {
+        tuples
+            .iter()
+            .map(|t| {
+                t.iter().enumerate().any(|(k, &idx)| {
+                    cube.dimension(ci[k])
+                        .element(idx)
+                        .map(|e| e.kind.is_string())
+                        .unwrap_or(false)
+                })
+            })
+            .collect()
+    };
+    let ctx_string = view.context.iter().any(|(dim_name, member)| {
+        let ci = dim_index[dim_name.as_str()];
+        cube.dimension(ci)
+            .resolve(member)
+            .and_then(|idx| cube.dimension(ci).element(idx).ok())
+            .map(|e| e.kind.is_string())
+            .unwrap_or(false)
+    });
+    let row_string = has_string(&row_tuples_idx, &row_ci);
+    let col_string = has_string(&column_tuples_idx, &col_ci);
+
+    // Compute one cell's full coordinate into `scratch` and read it. A string cell
+    // reads the string channel; a numeric cell reads the value. A per-cell
+    // evaluation failure (DivByZero/Overflow/Cycle/model) degrades to a marker on
+    // that cell rather than aborting the whole cellset; an element-security denial
+    // and a cube-wide rule-compile failure stay hard (propagated as `Err`). Reads
     // only (no shared mutation), so it is safe to call from several threads.
-    let cell_at = |r: usize, c: usize, scratch: &mut Vec<u32>| -> Result<Fixed, QueryError> {
+    let cell_at = |r: usize, c: usize, scratch: &mut Vec<u32>| -> Result<CellOut, QueryError> {
         scratch.clear();
         scratch.extend_from_slice(&base_coord);
         for (k, &idx) in row_tuples_idx[r].iter().enumerate() {
@@ -590,10 +662,23 @@ pub fn execute_view_with<'a>(
         for (k, &idx) in column_tuples_idx[c].iter().enumerate() {
             scratch[col_ci[k]] = idx;
         }
-        cells.value(scratch)
+        let is_string = ctx_string || row_string[r] || col_string[c];
+        if is_string {
+            match cells.string_value(scratch) {
+                Ok(s) => Ok(CellOut::string(s)),
+                Err(e) if is_hard_cell_error(&e) => Err(e),
+                Err(e) => Ok(CellOut::error(e.to_string())),
+            }
+        } else {
+            match cells.value(scratch) {
+                Ok(v) => Ok(CellOut::numeric(v)),
+                Err(e) if is_hard_cell_error(&e) => Err(e),
+                Err(e) => Ok(CellOut::error(e.to_string())),
+            }
+        }
     };
 
-    let grid: Vec<Fixed> = match par.workers_for(total) {
+    let grid: Vec<CellOut> = match par.workers_for(total) {
         workers if workers > 1 => fill_grid_parallel(nrows, ncols, workers, &cell_at)?,
         _ => {
             let mut grid = Vec::with_capacity(total);
@@ -606,30 +691,37 @@ pub fn execute_view_with<'a>(
             grid
         }
     };
-    let at = |r: usize, c: usize| grid[r * ncols + c];
+    let at = |r: usize, c: usize| &grid[r * ncols + c];
 
     // Zero-suppression, each axis independent (the two flags compose): drop
-    // all-zero rows first (judged across every column), then drop all-zero
-    // columns judged across the SURVIVING rows. Only meaningful when both axes
-    // are non-empty (otherwise there are no cells).
+    // all-blank rows first (judged across every column), then drop all-blank
+    // columns judged across the SURVIVING rows. A populated string cell and an
+    // errored cell are NOT blank (a string value and an error must never be
+    // silently suppressed). Only meaningful when both axes are non-empty.
     let have_cells = nrows > 0 && ncols > 0;
     let suppress_rows = view.suppress_zero_rows && have_cells;
     let (keep_rows, supp_rows): (Vec<usize>, Vec<usize>) = if suppress_rows {
-        (0..nrows).partition(|&r| (0..ncols).any(|c| !at(r, c).is_zero()))
+        (0..nrows).partition(|&r| (0..ncols).any(|c| !at(r, c).is_blank()))
     } else {
         ((0..nrows).collect(), Vec::new())
     };
     let suppress_cols = view.suppress_zero_columns && have_cells && !keep_rows.is_empty();
     let (keep_cols, supp_cols): (Vec<usize>, Vec<usize>) = if suppress_cols {
-        (0..ncols).partition(|&c| keep_rows.iter().any(|&r| !at(r, c).is_zero()))
+        (0..ncols).partition(|&c| keep_rows.iter().any(|&r| !at(r, c).is_blank()))
     } else {
         ((0..ncols).collect(), Vec::new())
     };
 
-    let mut cells = Vec::with_capacity(keep_rows.len() * keep_cols.len());
+    let surviving = keep_rows.len() * keep_cols.len();
+    let mut cells = Vec::with_capacity(surviving);
+    let mut cell_strings = Vec::with_capacity(surviving);
+    let mut cell_errors = Vec::with_capacity(surviving);
     for &r in &keep_rows {
         for &c in &keep_cols {
-            cells.push(at(r, c));
+            let cell = at(r, c);
+            cells.push(cell.value);
+            cell_strings.push(cell.string.clone());
+            cell_errors.push(cell.error.clone());
         }
     }
 
@@ -655,7 +747,67 @@ pub fn execute_view_with<'a>(
         column_dimensions,
         context: view.context.clone(),
         cells,
+        cell_strings,
+        cell_errors,
     })
+}
+
+/// One computed cell of the value grid: its numeric value, an optional string
+/// value (for a String-kind coordinate), and an optional per-cell error message.
+/// A string cell and an errored cell both carry `Fixed::ZERO` in `value`; the
+/// `string`/`error` fields distinguish them from a genuine numeric zero.
+struct CellOut {
+    value: Fixed,
+    string: Option<String>,
+    error: Option<String>,
+}
+
+impl CellOut {
+    fn numeric(value: Fixed) -> Self {
+        Self {
+            value,
+            string: None,
+            error: None,
+        }
+    }
+
+    fn string(string: Option<String>) -> Self {
+        Self {
+            value: Fixed::ZERO,
+            string,
+            error: None,
+        }
+    }
+
+    fn error(message: String) -> Self {
+        Self {
+            value: Fixed::ZERO,
+            string: None,
+            error: Some(message),
+        }
+    }
+
+    /// Whether this cell is blank for zero-suppression: a numeric zero with no
+    /// string value and no error. A populated string and an error are never blank.
+    fn is_blank(&self) -> bool {
+        self.error.is_none() && self.string.is_none() && self.value.is_zero()
+    }
+}
+
+/// Whether a per-cell read error must stay HARD (abort the whole cellset) rather
+/// than degrade to a per-cell marker. An element-security denial
+/// ([`QueryError::AccessDenied`]) stays hard so a masked cellset never renders a
+/// marker where a denied value sits, and a cube-wide rule-compile failure
+/// ([`QueryError::Calc`] whose message is the `rules fail to compile` signature)
+/// stays hard so a broken-rules cube errors loudly rather than filling the grid
+/// with identical markers. Every other error (DivByZero, Overflow, Cycle, an
+/// underlying model error) is genuinely per-cell and degrades.
+fn is_hard_cell_error(err: &QueryError) -> bool {
+    match err {
+        QueryError::AccessDenied => true,
+        QueryError::Calc { message } => message.contains("rules fail to compile"),
+        _ => false,
+    }
 }
 
 /// Fill the dense `nrows x ncols` value grid (row-major) across `workers` scoped
@@ -672,12 +824,14 @@ fn fill_grid_parallel<F>(
     ncols: usize,
     workers: usize,
     cell_at: &F,
-) -> Result<Vec<Fixed>, QueryError>
+) -> Result<Vec<CellOut>, QueryError>
 where
-    F: Fn(usize, usize, &mut Vec<u32>) -> Result<Fixed, QueryError> + Sync,
+    F: Fn(usize, usize, &mut Vec<u32>) -> Result<CellOut, QueryError> + Sync,
 {
     let total = nrows * ncols;
-    let mut grid = vec![Fixed::ZERO; total];
+    // Pre-size with a blank per slot; each worker overwrites only the slots in its
+    // own band, so the assembled grid is order-independent (determinism).
+    let mut grid: Vec<CellOut> = (0..total).map(|_| CellOut::numeric(Fixed::ZERO)).collect();
     let rows_per = nrows.div_ceil(workers);
     let band_cells = (rows_per * ncols).max(1);
 
@@ -777,6 +931,132 @@ pub fn validate_view(model: &Model, view: &View) -> Result<(), QueryError> {
     Ok(())
 }
 
+/// Where within a saved object a (dimension, member) name is referenced, so a
+/// delete dry-run can surface — or later prune — the dangling name refs that
+/// deleting the member would leave behind. Enumerated by
+/// [`references_to_member`].
+///
+/// A [`Subset`]'s dynamic (MDX) source is opaque here (mirroring
+/// [`validate_subset`], which does not resolve it), so a dynamic subset is never
+/// reported: its member references live in the MDX text and are the MDX layer's
+/// to inspect. An [`AxisSpec::Subset`] on a view references a *subset by name*,
+/// not the member directly, so the member is reached transitively through that
+/// subset's own reference — it is deliberately not double-reported on the view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemberRef {
+    /// A static subset lists the member in its member set.
+    SubsetMember {
+        /// The subset's dimension.
+        dimension: String,
+        /// The subset name.
+        subset: String,
+    },
+    /// A view names the member in its context (slicer).
+    ViewContext {
+        /// The view name.
+        view: String,
+    },
+    /// A view's row or column axis lists the member in an inline member list
+    /// ([`AxisSpec::Members`]).
+    ViewAxisMember {
+        /// The view name.
+        view: String,
+        /// Whether the reference is on the row axis (`true`) or column axis.
+        rows: bool,
+    },
+    /// A rule test names the member in a fixture or assertion cell coordinate.
+    RuleTestCell {
+        /// The rule test name.
+        test: String,
+        /// Whether the reference is in a fixture (`true`) or an assertion.
+        fixture: bool,
+    },
+}
+
+/// Enumerate every reference to a `(dimension, member)` name across the model's
+/// saved subsets, views, and rule tests (C2), so a delete dry-run can report the
+/// dangling name refs deleting the member would create.
+///
+/// This is the read-only reference query that complements the write-side
+/// [`validate_view`] / [`validate_subset`] (which detect *unknown* names): those
+/// answer "would this definition resolve?", this answers "who names this member?"
+/// before it is removed. Only saved-object references are enumerated; the cube's
+/// own stored cells are remapped by [`Cube::delete_element`] and are not name
+/// refs. Nothing is mutated.
+///
+/// Determinism: results are appended in a fixed order — subsets, then views, then
+/// rule tests — each iterated in the model's `BTreeMap` key order (already
+/// sorted), and axis/cell references in source order within an object. A static
+/// subset is reported once even if it lists the member several times; a view or
+/// test that references the member in several places is reported once per
+/// distinct site (context vs. an axis, fixture vs. assertion), each at most once.
+pub fn references_to_member(model: &Model, dimension: &str, member: &str) -> Vec<MemberRef> {
+    let mut out = Vec::new();
+
+    // Static subsets of this dimension that list the member. A dynamic subset's
+    // MDX is opaque here (as in `validate_subset`), so it is not inspected.
+    for ((subset_dim, subset_name), subset) in &model.subsets {
+        if subset_dim != dimension {
+            continue;
+        }
+        if let SubsetKind::Static { members } = &subset.kind {
+            if members.iter().any(|m| m == member) {
+                out.push(MemberRef::SubsetMember {
+                    dimension: subset_dim.clone(),
+                    subset: subset_name.clone(),
+                });
+            }
+        }
+    }
+
+    // Views: the context slicer and inline axis member lists. An `AxisSpec::Subset`
+    // references a subset by name (reached through that subset's own reference
+    // above), not the member directly, so it is not reported here.
+    for (view_name, view) in &model.views {
+        if view
+            .context
+            .iter()
+            .any(|(d, m)| d == dimension && m == member)
+        {
+            out.push(MemberRef::ViewContext {
+                view: view_name.clone(),
+            });
+        }
+        for (rows, axis) in [(true, &view.rows), (false, &view.columns)] {
+            let hit = axis.iter().any(|spec| match spec {
+                AxisSpec::Members {
+                    dimension: d,
+                    members,
+                } => d == dimension && members.iter().any(|m| m == member),
+                AxisSpec::Subset { .. } => false,
+            });
+            if hit {
+                out.push(MemberRef::ViewAxisMember {
+                    view: view_name.clone(),
+                    rows,
+                });
+            }
+        }
+    }
+
+    // Rule tests: fixture and assertion cell coordinates (dimension -> member).
+    for (test_name, test) in &model.tests {
+        for (fixture, cells) in [(true, &test.fixtures), (false, &test.assertions)] {
+            let hit = cells
+                .iter()
+                .any(|cell| cell.coord.get(dimension).is_some_and(|m| m == member));
+            if hit {
+                out.push(MemberRef::RuleTestCell {
+                    test: test_name.clone(),
+                    fixture,
+                });
+            }
+        }
+    }
+
+    out
+}
+
 /// Validate that every cube dimension is placed on exactly one axis or context,
 /// and that no axis/context names a dimension the cube lacks.
 fn validate_coverage(cube: &Cube, view: &View) -> Result<(), QueryError> {
@@ -848,6 +1128,23 @@ fn resolve_axis<'a>(
         };
         dimensions.push(spec.dimension().to_string());
         per_spec.push(indices);
+    }
+    // Cap the tuple count BEFORE materializing the crossjoin. The running
+    // product is checked per list so an oversized prefix is refused before
+    // `crossjoin` would have built it (its accumulator grows list by list); an
+    // empty list means zero tuples, which is always fine.
+    let mut tuple_count: usize = 1;
+    for list in &per_spec {
+        tuple_count = tuple_count.saturating_mul(list.len());
+        if tuple_count > MAX_CELLSET_CELLS {
+            return Err(QueryError::Model(ModelError::CellsetTooLarge {
+                cells: tuple_count,
+                cap: MAX_CELLSET_CELLS,
+            }));
+        }
+        if tuple_count == 0 {
+            break;
+        }
     }
     Ok((dimensions, crossjoin(&per_spec)))
 }
@@ -1331,8 +1628,12 @@ impl Model {
     // op only remaps the cube's cells; these wrappers run the same op on the cube
     // and then remap every sandbox by reconstructing the index permutation from
     // member names (members are uniquely named, and the edits preserve name order
-    // apart from the change). Index-stable edits (reparent/add-child/set-kind) need
-    // no remap, so they stay on `cube` directly.
+    // apart from the change). The kind-affecting edits (set-kind, and reparent/
+    // add-child when they convert a leaf parent) are index-stable but not
+    // WRITABILITY-stable: their wrappers instead prune overrides the edit made
+    // unwritable, mirroring how the cube drops its own stored cells — a stale
+    // override is invisible on read (the overlay is consulted only at leaf
+    // coordinates) yet would poison a later sandbox commit wholesale.
 
     /// Reorder a dimension's members (see [`Cube::reorder_elements`]) and remap
     /// every sandbox override so each what-if value follows its member.
@@ -1384,6 +1685,131 @@ impl Model {
             self.remap_sandboxes_for_dimension(d, &to_new);
         }
         Ok(())
+    }
+
+    /// Convert a member's kind (see [`Cube::set_element_kind`]) and drop sandbox
+    /// overrides the conversion made unwritable, mirroring how the cube re-types
+    /// its own stored cells: a conversion to consolidated drops the member's
+    /// numeric and string overrides; numeric -> string drops its numeric
+    /// overrides; string -> numeric drops the string overrides for which it was
+    /// the sole string component. Without the pruning, a stale override —
+    /// invisible on read, since the overlay is consulted only at leaf
+    /// coordinates — would make a later commit of the whole sandbox fail.
+    pub fn set_element_kind(
+        &mut self,
+        dimension: &str,
+        element: &str,
+        kind: ElementKind,
+    ) -> Result<(), ModelError> {
+        let d = self.dimension_index(dimension);
+        let previous = d.and_then(|d| {
+            let dim = self.cube.dimension(d);
+            let idx = dim.index_of(element)?;
+            Some((idx, dim.element(idx).ok()?.kind))
+        });
+        self.cube.set_element_kind(dimension, element, kind)?;
+        if let (Some(d), Some((idx, previous))) = (d, previous) {
+            use ElementKind::{Consolidated, Leaf, String as Str};
+            match (previous, kind) {
+                (Leaf, Str) => self.prune_sandbox_overrides(d, idx, true, false),
+                (Str, Leaf) => self.prune_sandbox_sole_string_overrides(d, idx),
+                (Leaf, Consolidated) | (Str, Consolidated) => {
+                    self.prune_sandbox_overrides(d, idx, true, true)
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Reparent a member (see [`Cube::reparent_element`]) and, when the new
+    /// parent was a leaf that the edit converted to a consolidation, drop the
+    /// sandbox overrides stored against it (mirroring the cube dropping the
+    /// parent's own stored cells).
+    pub fn reparent_element(
+        &mut self,
+        dimension: &str,
+        child: &str,
+        new_parent: Option<&str>,
+        weight: i64,
+    ) -> Result<(), ModelError> {
+        let converted = self.leaf_parent_index(dimension, new_parent);
+        self.cube
+            .reparent_element(dimension, child, new_parent, weight)?;
+        if let Some((d, parent_idx)) = converted {
+            self.prune_sandbox_overrides(d, parent_idx, true, true);
+        }
+        Ok(())
+    }
+
+    /// Add a member to a consolidation additively (see
+    /// [`Cube::add_child_element`]) and, when the parent was a leaf that the edit
+    /// converted to a consolidation, drop the sandbox overrides stored against it
+    /// (mirroring the cube dropping the parent's own stored cells).
+    pub fn add_child_element(
+        &mut self,
+        dimension: &str,
+        parent: &str,
+        child: &str,
+        weight: i64,
+    ) -> Result<(), ModelError> {
+        let converted = self.leaf_parent_index(dimension, Some(parent));
+        self.cube
+            .add_child_element(dimension, parent, child, weight)?;
+        if let Some((d, parent_idx)) = converted {
+            self.prune_sandbox_overrides(d, parent_idx, true, true);
+        }
+        Ok(())
+    }
+
+    /// `(dimension index, element index)` of `parent` when it currently is a
+    /// numeric or string leaf (so a child-gaining edit will convert it), or
+    /// `None` when it is absent, already consolidated, or unresolvable — the
+    /// cases where the following cube op either fails or converts nothing.
+    fn leaf_parent_index(&self, dimension: &str, parent: Option<&str>) -> Option<(usize, u32)> {
+        let d = self.dimension_index(dimension)?;
+        let dim = self.cube.dimension(d);
+        let idx = dim.index_of(parent?)?;
+        match dim.element(idx).ok()?.kind {
+            ElementKind::Leaf | ElementKind::String => Some((d, idx)),
+            ElementKind::Consolidated => None,
+        }
+    }
+
+    /// Drop every sandbox override whose component for dimension `d` equals
+    /// `element`, from the numeric and/or string override maps (the mirror of the
+    /// cube's own unconditional cell drop for a kind change). Deterministic:
+    /// `BTreeMap::retain` visits keys in order and the predicate is
+    /// order-independent.
+    fn prune_sandbox_overrides(&mut self, d: usize, element: u32, numeric: bool, strings: bool) {
+        for sandbox in self.sandboxes.values_mut() {
+            if numeric {
+                sandbox.cells.retain(|coord, _| coord[d] != element);
+            }
+            if strings {
+                sandbox.string_cells.retain(|coord, _| coord[d] != element);
+            }
+        }
+    }
+
+    /// Drop string sandbox overrides for which `element` (dimension `d`) was the
+    /// SOLE string component; one that still addresses another string element
+    /// (judged against the post-edit kinds) stays a valid string coordinate and
+    /// is kept — the mirror of the cube's own string -> numeric re-type rule.
+    fn prune_sandbox_sole_string_overrides(&mut self, d: usize, element: u32) {
+        let cube = &self.cube;
+        for sandbox in self.sandboxes.values_mut() {
+            sandbox.string_cells.retain(|coord, _| {
+                coord[d] != element
+                    || coord.iter().enumerate().any(|(d2, &idx)| {
+                        d2 != d
+                            && cube
+                                .dimension(d2)
+                                .element(idx)
+                                .is_ok_and(|el| el.kind == ElementKind::String)
+                    })
+            });
+        }
     }
 
     /// The index of a dimension by name, or `None` if there is no such dimension.
@@ -1545,6 +1971,136 @@ mod tests {
                 members: members.iter().map(|s| s.to_string()).collect(),
             },
         }
+    }
+
+    #[test]
+    fn references_to_member_enumerates_across_saved_objects() {
+        // A model where "North" (in Region) is referenced by: a static subset, a
+        // view context, a view row-axis inline list, a view that reaches it only
+        // via an AxisSpec::Subset (NOT reported directly), and a rule test.
+        let mut model = Model::new(region_cube());
+        // Subset S lists North; subset OnlySouth does not.
+        model.subsets.insert(
+            ("Region".into(), "S".into()),
+            static_subset(&["North", "Total"]),
+        );
+        model.subsets.insert(
+            ("Region".into(), "OnlySouth".into()),
+            Subset {
+                name: "OnlySouth".into(),
+                dimension: "Region".into(),
+                owner: None,
+                visibility: Visibility::Public,
+                kind: SubsetKind::Static {
+                    members: vec!["South".into()],
+                },
+            },
+        );
+        // View V1: North in context, and North in a row inline member list.
+        model.views.insert(
+            "V1".into(),
+            View {
+                name: "V1".into(),
+                cube: "Sales".into(),
+                owner: None,
+                visibility: Visibility::Public,
+                rows: vec![AxisSpec::Members {
+                    dimension: "Region".into(),
+                    members: vec!["North".into(), "South".into()],
+                }],
+                columns: vec![],
+                context: vec![("Region".into(), "North".into())],
+                suppress_zero_rows: false,
+                suppress_zero_columns: false,
+            },
+        );
+        // View V2 reaches North only through subset S on an axis: it must NOT be
+        // reported as a direct member reference of V2 (the subset carries it).
+        model.views.insert(
+            "V2".into(),
+            View {
+                name: "V2".into(),
+                cube: "Sales".into(),
+                owner: None,
+                visibility: Visibility::Public,
+                rows: vec![AxisSpec::Subset {
+                    dimension: "Region".into(),
+                    subset: "S".into(),
+                }],
+                columns: vec![],
+                context: vec![],
+                suppress_zero_rows: false,
+                suppress_zero_columns: false,
+            },
+        );
+        // Rule test T: North in a fixture coordinate (not an assertion).
+        let mut coord = BTreeMap::new();
+        coord.insert("Region".to_string(), "North".to_string());
+        model.tests.insert(
+            "T".into(),
+            RuleTest {
+                name: "T".into(),
+                fixtures: vec![TestCell {
+                    coord,
+                    value: "1".into(),
+                }],
+                assertions: vec![],
+            },
+        );
+
+        let refs = references_to_member(&model, "Region", "North");
+        assert_eq!(
+            refs,
+            vec![
+                MemberRef::SubsetMember {
+                    dimension: "Region".into(),
+                    subset: "S".into(),
+                },
+                MemberRef::ViewContext { view: "V1".into() },
+                MemberRef::ViewAxisMember {
+                    view: "V1".into(),
+                    rows: true,
+                },
+                MemberRef::RuleTestCell {
+                    test: "T".into(),
+                    fixture: true,
+                },
+            ],
+            "enumerates every direct reference in a deterministic order; the \
+             subset-referencing view V2 is not double-reported"
+        );
+
+        // A member no saved object names yields no references.
+        assert!(references_to_member(&model, "Region", "South")
+            .iter()
+            .all(|r| !matches!(r, MemberRef::ViewContext { .. })));
+        // And an entirely unreferenced member is empty.
+        let mut bare = Model::new(region_cube());
+        bare.subsets.insert(
+            ("Region".into(), "S".into()),
+            static_subset(&["South", "Total"]),
+        );
+        assert!(references_to_member(&bare, "Region", "North").is_empty());
+    }
+
+    #[test]
+    fn references_to_member_ignores_dynamic_subset_mdx() {
+        // A dynamic subset's MDX is opaque (like validate_subset), so even MDX
+        // that mentions the member by name is not reported by this enumeration.
+        let mut model = Model::new(region_cube());
+        model.subsets.insert(
+            ("Region".into(), "D".into()),
+            Subset {
+                name: "D".into(),
+                dimension: "Region".into(),
+                owner: None,
+                visibility: Visibility::Public,
+                kind: SubsetKind::Dynamic {
+                    mdx: "{ [Region].[North] }".into(),
+                },
+            },
+        );
+        assert!(references_to_member(&model, "Region", "North").is_empty());
     }
 
     #[test]
@@ -2138,5 +2694,404 @@ mod tests {
         assert!(cs.row_tuples.is_empty());
         assert!(cs.cells.is_empty());
         assert_eq!(cs.column_tuples, vec![vec!["Sales"]]);
+    }
+
+    /// A dimension with `n` leaves named `{name}0..{name}{n-1}`, plus the member
+    /// name list selecting all of them.
+    fn wide_dim(name: &str, n: usize) -> (Dimension, Vec<String>) {
+        let mut d = Dimension::new(name);
+        let names: Vec<String> = (0..n).map(|i| format!("{name}{i}")).collect();
+        for member in &names {
+            d.add_leaf(member.clone());
+        }
+        (d, names)
+    }
+
+    #[test]
+    fn oversized_axis_is_refused_before_materializing_tuples() {
+        // Three 130-member specs on one axis crossjoin to 130^3 = 2,197,000
+        // tuples, past MAX_CELLSET_CELLS; the request must be refused with a
+        // structured error before any tuple is built.
+        let (a, a_names) = wide_dim("A", 130);
+        let (b, b_names) = wide_dim("B", 130);
+        let (c, c_names) = wide_dim("C", 130);
+        let mut m = Dimension::new("M");
+        m.add_leaf("only");
+        let cube = Cube::new("Big", vec![a, b, c, m]).unwrap();
+        let v = View {
+            name: "V".into(),
+            cube: "Big".into(),
+            owner: None,
+            visibility: Visibility::Public,
+            rows: vec![
+                AxisSpec::Members {
+                    dimension: "A".into(),
+                    members: a_names,
+                },
+                AxisSpec::Members {
+                    dimension: "B".into(),
+                    members: b_names,
+                },
+                AxisSpec::Members {
+                    dimension: "C".into(),
+                    members: c_names,
+                },
+            ],
+            columns: vec![members("M", &["only"])],
+            context: Vec::new(),
+            suppress_zero_rows: false,
+            suppress_zero_columns: false,
+        };
+        let err = execute_view(
+            &cube,
+            &v,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                QueryError::Model(ModelError::CellsetTooLarge {
+                    cells: 2_197_000,
+                    cap: MAX_CELLSET_CELLS,
+                })
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn oversized_grid_is_refused_before_allocation() {
+        // Each axis is under the cap alone (1,500 tuples), but the dense grid
+        // would be 2,250,000 cells; the product check must refuse it.
+        let (a, a_names) = wide_dim("A", 1500);
+        let (b, b_names) = wide_dim("B", 1500);
+        let cube = Cube::new("Big", vec![a, b]).unwrap();
+        let v = View {
+            name: "V".into(),
+            cube: "Big".into(),
+            owner: None,
+            visibility: Visibility::Public,
+            rows: vec![AxisSpec::Members {
+                dimension: "A".into(),
+                members: a_names,
+            }],
+            columns: vec![AxisSpec::Members {
+                dimension: "B".into(),
+                members: b_names,
+            }],
+            context: Vec::new(),
+            suppress_zero_rows: false,
+            suppress_zero_columns: false,
+        };
+        let err = execute_view(
+            &cube,
+            &v,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                QueryError::Model(ModelError::CellsetTooLarge {
+                    cells: 2_250_000,
+                    cap: MAX_CELLSET_CELLS,
+                })
+            ),
+            "got {err:?}"
+        );
+    }
+
+    // ---- sandbox override pruning for kind-affecting edits ----
+
+    /// A 1-D model: Region(North, South, East leaves; Total = N+S+E) with one
+    /// sandbox holding numeric overrides on North and South.
+    fn sandbox_model() -> Model {
+        let mut region = Dimension::new("Region");
+        let north = region.add_leaf("North");
+        let south = region.add_leaf("South");
+        let east = region.add_leaf("East");
+        let total = region.add_consolidated("Total");
+        region.add_child(total, north, 1).unwrap();
+        region.add_child(total, south, 1).unwrap();
+        region.add_child(total, east, 1).unwrap();
+        let cube = Cube::new("Sales", vec![region]).unwrap();
+        let mut model = Model::new(cube);
+        let mut sb = Sandbox::new("what-if", "alice", 1);
+        sb.cells.insert(vec![north], Fixed::from(10));
+        sb.cells.insert(vec![south], Fixed::from(20));
+        model.sandboxes.insert(sb.name.clone(), sb);
+        model
+    }
+
+    fn override_coords(model: &Model) -> Vec<Vec<u32>> {
+        model.sandboxes["what-if"].cells.keys().cloned().collect()
+    }
+
+    #[test]
+    fn set_element_kind_prunes_sandbox_overrides_on_the_converted_member() {
+        // Converting North to a consolidation drops its stored cells; the
+        // sandbox override addressing it must go too, or committing the sandbox
+        // later fails wholesale on a write to a non-leaf.
+        let mut model = sandbox_model();
+        model
+            .set_element_kind("Region", "North", ElementKind::Consolidated)
+            .unwrap();
+        let south = model.cube.dimension(0).index_of("South").unwrap();
+        assert_eq!(
+            override_coords(&model),
+            vec![vec![south]],
+            "only the untouched South override survives"
+        );
+
+        // Numeric -> string clears the numeric override the same way.
+        let mut model = sandbox_model();
+        model
+            .set_element_kind("Region", "South", ElementKind::String)
+            .unwrap();
+        let north = model.cube.dimension(0).index_of("North").unwrap();
+        assert_eq!(override_coords(&model), vec![vec![north]]);
+    }
+
+    #[test]
+    fn reparent_and_add_child_prune_overrides_on_a_converted_leaf_parent() {
+        // Parenting East under South converts leaf South to a consolidation
+        // (dropping its stored cell); the sandbox override on South must follow.
+        let mut model = sandbox_model();
+        model
+            .reparent_element("Region", "East", Some("South"), 1)
+            .unwrap();
+        let north = model.cube.dimension(0).index_of("North").unwrap();
+        assert_eq!(override_coords(&model), vec![vec![north]]);
+
+        // add_child_element converts the same way.
+        let mut model = sandbox_model();
+        model
+            .add_child_element("Region", "North", "East", 1)
+            .unwrap();
+        let south = model.cube.dimension(0).index_of("South").unwrap();
+        assert_eq!(override_coords(&model), vec![vec![south]]);
+
+        // A rejected edit (cycle) prunes nothing.
+        let mut model = sandbox_model();
+        assert!(model
+            .reparent_element("Region", "Total", Some("North"), 1)
+            .is_err());
+        assert_eq!(model.sandboxes["what-if"].cells.len(), 2);
+    }
+
+    #[test]
+    fn string_to_numeric_keeps_sandbox_string_overrides_with_another_string_component() {
+        // Mirrors the cube's own sole-string-component rule: converting E to a
+        // numeric leaf drops the override for which E was the only string
+        // component, and keeps the one still addressing the Comment string.
+        let mut a = Dimension::new("A");
+        let e = a.add_string("E");
+        a.add_leaf("F");
+        let mut b = Dimension::new("B");
+        let comment = b.add_string("Comment");
+        let x = b.add_leaf("X");
+        let cube = Cube::new("C", vec![a, b]).unwrap();
+        let mut model = Model::new(cube);
+        let mut sb = Sandbox::new("what-if", "alice", 1);
+        sb.string_cells.insert(vec![e, comment], "both".into());
+        sb.string_cells.insert(vec![e, x], "sole".into());
+        model.sandboxes.insert(sb.name.clone(), sb);
+
+        model.set_element_kind("A", "E", ElementKind::Leaf).unwrap();
+        let sb = &model.sandboxes["what-if"];
+        assert_eq!(sb.string_cell(&[e, comment]), Some("both"), "kept");
+        assert_eq!(sb.string_cell(&[e, x]), None, "sole-E override dropped");
+    }
+
+    // ---- string channel and per-cell error degradation (pass 3b) ----
+
+    /// Region(North) x Measure(Sales numeric, Note string). Note carries text.
+    fn string_cube() -> Cube {
+        let mut region = Dimension::new("Region");
+        let north = region.add_leaf("North");
+        let mut measure = Dimension::new("Measure");
+        let sales = measure.add_leaf("Sales");
+        let note = measure.add_string("Note");
+        let mut cube = Cube::new("C", vec![region, measure]).unwrap();
+        cube.set_leaf(&[north, sales], Fixed::from(0)).unwrap();
+        cube.set_string(&[north, note], "hi").unwrap();
+        cube
+    }
+
+    /// A cellset over a String-kind coordinate populates the string channel (with
+    /// its text) and leaves the numeric channel zero, so presentation can render it
+    /// as a string rather than a fabricated numeric zero. A populated string is NOT
+    /// blank, so it survives zero-suppression.
+    #[test]
+    fn string_cell_populates_the_string_channel_and_is_not_blank() {
+        let cube = string_cube();
+        let v = view_named_cube(
+            "C",
+            vec![members("Measure", &["Sales", "Note"])],
+            vec![members("Region", &["North"])],
+        );
+        let cs = execute_view(
+            &cube,
+            &v,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap();
+        // Two cells: (Sales, North) numeric 0, (Note, North) string "hi".
+        assert_eq!(
+            cs.cells,
+            fixed(&[0, 0]),
+            "the numeric channel is zero for both"
+        );
+        assert_eq!(
+            cs.cell_strings,
+            vec![None, Some("hi".to_string())],
+            "only the string cell carries text"
+        );
+        assert_eq!(cs.cell_errors, vec![None, None], "no per-cell errors");
+
+        // With zero-suppression, the all-zero Sales row is dropped but the populated
+        // string Note row survives (a string is non-zero content).
+        let vs = view_named_cube_supp(
+            "C",
+            vec![members("Measure", &["Sales", "Note"])],
+            vec![members("Region", &["North"])],
+            true,
+        );
+        let cs = execute_view(
+            &cube,
+            &vs,
+            &StoredCells(&cube),
+            &no_subsets,
+            &NoSetEvaluator,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            cs.row_tuples,
+            vec![vec!["Note"]],
+            "the populated string row survives zero-suppression; the zero row is dropped"
+        );
+    }
+
+    /// A resolver double that returns a chosen `QueryError` for one specific
+    /// coordinate and delegates every other read to stored values. Used to prove
+    /// per-cell error degradation without a rule engine.
+    struct FailingAt<'a> {
+        inner: StoredCells<'a>,
+        fail_coord: Vec<u32>,
+        error: QueryError,
+    }
+
+    impl CellResolver for FailingAt<'_> {
+        fn value(&self, coord: &[u32]) -> Result<Fixed, QueryError> {
+            if coord == self.fail_coord.as_slice() {
+                Err(self.error.clone())
+            } else {
+                self.inner.value(coord)
+            }
+        }
+        fn string_value(&self, coord: &[u32]) -> Result<Option<String>, QueryError> {
+            self.inner.string_value(coord)
+        }
+    }
+
+    /// A single per-cell evaluation error (here `DivByZero`, carried as
+    /// `QueryError::Calc`) degrades to a marker on THAT cell (recorded in
+    /// `cell_errors`, numeric channel zero) instead of aborting the whole cellset;
+    /// the other, healthy cells still return their values. Structural errors and an
+    /// access denial remain hard (covered separately).
+    #[test]
+    fn one_failing_cell_degrades_to_a_marker_not_a_whole_cellset_error() {
+        let cube = sales_cube();
+        // Fail exactly at North/Widget/Sales; every other cell computes normally.
+        let north = cube.dimension(0).resolve("North").unwrap();
+        let widget = cube.dimension(1).resolve("Widget").unwrap();
+        let sales = cube.dimension(2).resolve("Sales").unwrap();
+        let resolver = FailingAt {
+            inner: StoredCells(&cube),
+            fail_coord: vec![north, widget, sales],
+            error: QueryError::Calc {
+                message: "division by zero in a rule".into(),
+            },
+        };
+        let v = view(
+            vec![members("Region", &["North", "South"])],
+            vec![members("Measure", &["Sales", "Cost"])],
+            &[("Product", "Widget")],
+            false,
+        );
+        let cs = execute_view(&cube, &v, &resolver, &no_subsets, &NoSetEvaluator, None)
+            .expect("a single per-cell error must not abort the whole cellset");
+        // Grid order: rows North,South x cols Sales,Cost.
+        //   [0] North/Sales -> errored marker
+        //   [1] North/Cost  -> 60
+        //   [2] South/Sales -> 200
+        //   [3] South/Cost  -> 150
+        assert_eq!(
+            cs.cell_errors[0].as_deref(),
+            Some("division by zero in a rule")
+        );
+        assert_eq!(cs.cells[0], Fixed::ZERO, "the errored cell's value is zero");
+        assert_eq!(cs.cell_errors[1], None);
+        assert_eq!(
+            cs.cells[1],
+            Fixed::from(60),
+            "a healthy cell keeps its value"
+        );
+        assert_eq!(cs.cells[2], Fixed::from(200));
+        assert_eq!(cs.cells[3], Fixed::from(150));
+    }
+
+    /// An element-security denial on one cell stays HARD (the whole read errors),
+    /// so a masked cellset never renders a marker where a denied value sits.
+    #[test]
+    fn a_per_cell_access_denial_stays_hard() {
+        let cube = sales_cube();
+        let north = cube.dimension(0).resolve("North").unwrap();
+        let widget = cube.dimension(1).resolve("Widget").unwrap();
+        let cost = cube.dimension(2).resolve("Cost").unwrap();
+        let resolver = FailingAt {
+            inner: StoredCells(&cube),
+            fail_coord: vec![north, widget, cost],
+            error: QueryError::AccessDenied,
+        };
+        let v = view(
+            vec![members("Region", &["North", "South"])],
+            vec![members("Measure", &["Sales", "Cost"])],
+            &[("Product", "Widget")],
+            false,
+        );
+        let err = execute_view(&cube, &v, &resolver, &no_subsets, &NoSetEvaluator, None)
+            .expect_err("an access denial must stay hard, not degrade to a marker");
+        assert_eq!(err, QueryError::AccessDenied);
+    }
+
+    /// A view over `cube` with the given axes and no context/suppression.
+    fn view_named_cube(cube: &str, rows: Axis, columns: Axis) -> View {
+        view_named_cube_supp(cube, rows, columns, false)
+    }
+
+    fn view_named_cube_supp(cube: &str, rows: Axis, columns: Axis, suppress_rows: bool) -> View {
+        View {
+            name: "V".into(),
+            cube: cube.into(),
+            owner: None,
+            visibility: Visibility::Public,
+            rows,
+            columns,
+            context: Vec::new(),
+            suppress_zero_rows: suppress_rows,
+            suppress_zero_columns: false,
+        }
     }
 }

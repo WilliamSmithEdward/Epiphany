@@ -114,9 +114,20 @@ export default function FlowsWorkspace({
       setDetail(null)
       return
     }
+    // Cancel like the neighboring effects: picking cube A (slow) then B (fast)
+    // must not leave detail = A while importCube = B, which would offer A's
+    // dimensions for mapping against B and then fail the import.
+    let live = true
     getCube(importCube)
-      .then(setDetail)
-      .catch(() => setDetail(null))
+      .then((d) => {
+        if (live) setDetail(d)
+      })
+      .catch(() => {
+        if (live) setDetail(null)
+      })
+    return () => {
+      live = false
+    }
   }, [importCube, reloadSignal])
 
   // Open the flow the navigator (tree) asked for, or a blank form for "New flow".
@@ -212,14 +223,22 @@ export default function FlowsWorkspace({
       setPreview({ ok: true })
       return
     }
+    // Generation guard: ignore a response for source that is no longer current,
+    // so a slower older validation cannot overwrite a newer verdict.
+    let live = true
     const handle = setTimeout(() => {
       previewFlow(source)
-        .then(setPreview)
-        .catch((e: unknown) =>
-          setPreview({ ok: false, message: e instanceof Error ? e.message : 'Invalid' }),
-        )
+        .then((p) => {
+          if (live) setPreview(p)
+        })
+        .catch((e: unknown) => {
+          if (live) setPreview({ ok: false, message: e instanceof Error ? e.message : 'Invalid' })
+        })
     }, 300)
-    return () => clearTimeout(handle)
+    return () => {
+      live = false
+      clearTimeout(handle)
+    }
   }, [source])
 
   const inputsJson = useMemo(() => JSON.stringify(inputs), [inputs])

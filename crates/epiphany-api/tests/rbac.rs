@@ -358,6 +358,87 @@ async fn flow_run_cannot_exceed_runners_data_access() {
     );
 }
 
+// A flow that reads a Sales cell and surfaces the value via ctx.log. It performs
+// NO writes, so `authorize_outcome` (which gates writes) passes trivially - the
+// only thing that can stop the read is the flow reader's cube-read gate.
+const READING_FLOW: &str = "function rows(ctx) { \
+    var v = ctx.cube('Sales').readCell({ Region: 'North', Measure: 'Amount' }); \
+    ctx.log('read=' + v); \
+}\n";
+
+#[tokio::test]
+async fn flow_reads_are_gated_by_the_runners_cube_read() {
+    // A flow read through `ctx.cube(name)` is authorized as the runner (ADR-0035):
+    // a `Flow:Write` holder without `Cube:Read` on the target cube cannot read its
+    // cells through a flow (the flow-as-privilege-escalation path). Regression for
+    // "flow reads bypass cube-level security".
+    let app = app("flowread");
+    let admin = login(&app, "admin").await;
+    let fa = login(&app, "fa").await; // Flow:Write, NO cube grant at all
+    let power = login(&app, "power").await; // Flow:Write AND Cube:Write on Sales
+
+    // Seed a value the flow will try to read.
+    assert_eq!(
+        send(
+            &app,
+            "PUT",
+            "/api/v1/cubes/Sales/cell",
+            &admin,
+            Some(json!({ "coord": { "Region": "North", "Measure": "Amount" }, "value": "42" })),
+        )
+        .await,
+        StatusCode::OK
+    );
+    let reading = json!({ "name": "r", "source": READING_FLOW, "default_cube": "Sales" });
+    assert_eq!(
+        send(&app, "PUT", "/api/v1/flows/rflow", &admin, Some(reading)).await,
+        StatusCode::OK
+    );
+
+    // The flow author has Flow:Write but NO Cube:Read on Sales: the read is denied,
+    // aborting the run (an uncaught access-denied surfaces as 422). Crucially it is
+    // NOT a 200 that would have leaked the cell value in the run log.
+    let (status, body) = send_body(
+        &app,
+        "POST",
+        "/api/v1/flows/rflow/run",
+        &fa,
+        Some(json!({ "input": "" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a Flow:Write-only user cannot read an ungranted cube via a flow"
+    );
+    // The value never appears (no logs surfaced on the error path).
+    assert!(
+        !body.to_string().contains("42"),
+        "the denied cell value must not leak in the response"
+    );
+
+    // The power user CAN read (they hold Cube:Write on Sales, which implies Read),
+    // and the run succeeds with the value in the log.
+    let (status, body) = send_body(
+        &app,
+        "POST",
+        "/api/v1/flows/rflow/run",
+        &power,
+        Some(json!({ "input": "" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a Cube:Read holder may read via a flow"
+    );
+    let logs = body["logs"].as_array().expect("logs array");
+    assert!(
+        logs.iter().any(|l| l.as_str() == Some("read=42")),
+        "the value is read and logged for an authorized runner, got {logs:?}"
+    );
+}
+
 /// As [`send`], but also returns the parsed response body, for the run-as-owner
 /// job-kick test (which inspects the returned run record's state).
 async fn send_body(
@@ -494,4 +575,61 @@ async fn global_cube_admin_creates_cubes_below_server_admin() {
         .await,
         StatusCode::FORBIDDEN
     );
+}
+
+/// GET /auth/me and return the self-reported `persona` string.
+async fn me_persona(app: &Router, token: &str) -> String {
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/v1/auth/me")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice::<Value>(&bytes).unwrap()["persona"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Persona signal (ADR-0020, major-64): `/auth/me` reports each caller's OWN
+/// effective persona so the web shell can gate modeler/admin chrome for non-admins
+/// WITHOUT the admin-only `/acl/grants` list. A data-entry / no-grant user sees
+/// `business`; a Flow/Rule/Dimension-write holder sees `modeler`; a server admin or
+/// global cube-manager sees `admin`. Self-only: each token reports only itself.
+#[tokio::test]
+async fn auth_me_reports_the_callers_own_persona() {
+    let app = app("persona");
+
+    // Server admin -> admin.
+    let admin = login(&app, "admin").await;
+    assert_eq!(me_persona(&app, &admin).await, "admin");
+
+    // Global Cube:Admin (can create/delete cubes) -> admin, without server-admin.
+    let mgr = login(&app, "mgr").await;
+    assert_eq!(me_persona(&app, &mgr).await, "admin");
+
+    // Flow:Write -> modeler (the review's "any dimension/rule/flow write" rule).
+    let fa = login(&app, "fa").await;
+    assert_eq!(me_persona(&app, &fa).await, "modeler");
+    // Flow:Write + Cube:Write is still a modeler.
+    let power = login(&app, "power").await;
+    assert_eq!(me_persona(&app, &power).await, "modeler");
+
+    // Cube:Write ONLY (data entry) -> business: no modeler chrome.
+    let de = login(&app, "de").await;
+    assert_eq!(me_persona(&app, &de).await, "business");
+    // No grants at all -> business.
+    let nobody = login(&app, "nobody").await;
+    assert_eq!(me_persona(&app, &nobody).await, "business");
+    // Job:Write is not a modeling kind (Rules/Flows/Dimensions), so a job author
+    // without a modeling-write grant is still business.
+    let jobber = login(&app, "jobber").await;
+    assert_eq!(me_persona(&app, &jobber).await, "business");
 }

@@ -3,7 +3,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use epiphany_core::QueryError;
+use epiphany_core::{ModelError, QueryError};
 use serde::Serialize;
 
 /// An API error rendered as `{"error": {"code", "message", "details"?}}`.
@@ -80,6 +80,17 @@ impl ApiError {
         )
     }
 
+    /// 503 Service Unavailable (the server could not complete the request in time,
+    /// e.g. a flow run that exceeded its wall-clock deadline, F1). The message is
+    /// client-safe (no internal cause; RG-12).
+    pub fn service_unavailable(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "SERVICE_UNAVAILABLE",
+            message,
+        )
+    }
+
     /// The HTTP status this error renders as.
     pub fn status_code(&self) -> StatusCode {
         self.status
@@ -122,6 +133,13 @@ impl From<QueryError> for ApiError {
                 "FORBIDDEN",
                 "you do not have access to this cell",
             ),
+            // A cellset whose axis crossjoin exceeds the execution cap
+            // (`MAX_CELLSET_CELLS`) is refused before it is materialized, so a
+            // reader cannot OOM the server with a large-crossjoin view; give it a
+            // distinct, actionable code rather than the generic MODEL_ERROR.
+            QueryError::Model(ModelError::CellsetTooLarge { .. }) => {
+                ApiError::unprocessable("CELLSET_TOO_LARGE", message)
+            }
             QueryError::Model(_) => ApiError::unprocessable("MODEL_ERROR", message),
         }
     }

@@ -17,8 +17,9 @@ use std::collections::HashMap;
 use epiphany_core::{CellResolver, ElementMask, QueryError};
 use epiphany_engine::ReadSnapshot;
 use epiphany_flow::{FlowCell, FlowReadError, FlowReader};
+use epiphany_security::AccessLevel;
 
-use crate::authz::{element_mask_for, is_admin};
+use crate::authz::{cube_level, element_mask_for, is_admin};
 use crate::dto::CoordMap;
 use crate::resolve::resolve;
 use crate::AppState;
@@ -62,6 +63,19 @@ impl ApiFlowReader {
         f: impl FnOnce(&CubeView) -> Result<R, FlowReadError>,
     ) -> Result<R, FlowReadError> {
         if !self.cache.borrow().contains_key(cube) {
+            // A flow run is never a privilege-escalation path (ADR-0023/0035): a
+            // read through `ctx.cube(name)` must be one the run principal could do
+            // by hand, so require `Cube:Read` on this cube before capturing any
+            // view. Element masks alone do not cover this: most cubes are protected
+            // by cube-level grants, not element ACLs, so without this gate a
+            // `Flow:Write` holder could read every cube on the server. Fail-closed
+            // and existence-hiding, exactly as the direct read path's
+            // `require_cube_access` is: an ungranted cube (or unknown principal)
+            // resolves to `None` and is denied without disclosing whether it
+            // exists. An admin's `cube_access` bypasses to `Admin`.
+            if cube_level(&self.state, &self.username, cube) < AccessLevel::Read {
+                return Err(FlowReadError::AccessDenied);
+            }
             let snapshot = self
                 .state
                 .engine

@@ -9,6 +9,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react'
+import type { Persona } from '../api/client'
 import {
   collectLoaders,
   cssEscape,
@@ -31,18 +32,21 @@ export type { ActionContext, NodeAction, Selection } from './modelExplorerTree'
 export default function ModelExplorer({
   selection,
   onSelect,
-  isAdmin,
+  persona,
   reloadSignal,
   onAction,
 }: {
   selection: Selection | null
   onSelect: (s: Selection) => void
-  isAdmin: boolean
+  /** The caller's persona, which selects the tree roots (ADR-0020): a business
+   * user sees only Cubes; a modeler also sees Dimensions/Flows/Schedules; an
+   * admin also sees Connections. */
+  persona: Persona
   reloadSignal: number
   /** Dispatch a context-menu action; the context names the affected object. */
   onAction?: (action: NodeAction, ctx: ActionContext) => void
 }) {
-  const roots = useMemo(() => rootNodes(isAdmin), [isAdmin])
+  const roots = useMemo(() => rootNodes(persona), [persona])
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['root:cubes']))
   const [childrenById, setChildren] = useState<Record<string, Node[]>>({})
   const [loading, setLoading] = useState<Set<string>>(() => new Set())

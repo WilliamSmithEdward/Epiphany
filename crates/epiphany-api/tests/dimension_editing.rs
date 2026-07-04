@@ -788,3 +788,120 @@ async fn read_product(app: &Router, cube: &str, token: &str, product: &str) -> S
         .map(str::to_string)
         .unwrap_or_default()
 }
+
+/// A cube-scoped dimension edit on a REGISTRY-backed dimension fans out to every
+/// referencing cube, so it must be gated exactly like the id-route
+/// (`POST /dimensions/{id}/edit`): global `Dimension:Write`. A caller holding only
+/// cube-scoped rights on ONE referencing cube (a single-cube `Cube:Admin`, which
+/// confers `Dimension:Write` within that cube) must NOT be able to destroy members
+/// and cell values in the OTHER referencing cubes they hold no access to. Regression
+/// for the cube-scoped-dimension-edit privilege escalation.
+#[tokio::test]
+async fn cube_scoped_edit_of_a_registry_dimension_requires_global_dimension_write() {
+    let dir = data_dir("registry-cube-scope");
+    let app = build_app(&dir);
+    let admin = login(&app, "admin").await;
+    let writer = login(&app, "writer").await; // global Dimension:Write + Cube:Admin
+
+    // Register a shared Product dimension and reference it from two cubes.
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/api/v1/dimensions",
+        &writer,
+        Some(json!({
+            "name": "Product",
+            "elements": [
+                { "name": "Widget", "kind": "numeric" },
+                { "name": "Gadget", "kind": "numeric" }
+            ],
+            "edges": []
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let product_id = body["id"].as_u64().unwrap();
+    for cube in ["CubeA", "CubeB"] {
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/api/v1/cubes",
+            &writer,
+            Some(json!({
+                "name": cube,
+                "dimensions": [
+                    { "ref": product_id },
+                    { "name": "Measure", "elements": [{ "name": "Amount", "kind": "numeric" }] }
+                ]
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create {cube}");
+    }
+    // Seed a value in CubeB so a delete there would destroy real data.
+    write_product(&app, "CubeB", &admin, "Widget", "9").await;
+
+    // A user with only cube-scoped Cube:Admin on CubeA: this confers Dimension:Write
+    // WITHIN CubeA, but nothing on CubeB. Create them and grant via REST.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/users",
+        &admin,
+        Some(json!({ "username": "cubea_admin", "password": "pw" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let (status, _) = call(
+        &app,
+        "PUT",
+        "/api/v1/acl/grants",
+        &admin,
+        Some(json!({
+            "subject_kind": "user", "subject": "cubea_admin",
+            "scope": "cube", "cube": "CubeA", "kind": "cube", "level": "admin"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let cubea_admin = login(&app, "cubea_admin").await;
+
+    // Sanity: the same op through the CUBE-EMBEDDED path on a cube they admin would
+    // pass the gate, but Product is registry-backed, so the cube-scoped edit must be
+    // rejected as 403 (they lack GLOBAL Dimension:Write). Without the fix this
+    // deletes Widget in BOTH CubeA and CubeB.
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/CubeA/dimensions/Product/edit",
+        &cubea_admin,
+        Some(json!({ "op": "delete", "element": "Widget" })),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "cube-scoped edit of a registry dimension needs global Dimension:Write"
+    );
+    // The data in the other cube is untouched.
+    assert_eq!(read_product(&app, "CubeB", &admin, "Widget").await, "9");
+
+    // A holder of GLOBAL Dimension:Write (writer) can perform the same edit; it
+    // fans out to both cubes (Widget is a childless leaf, so delete is allowed).
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/api/v1/cubes/CubeA/dimensions/Product/edit",
+        &writer,
+        Some(json!({ "op": "delete", "element": "Widget" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "global Dimension:Write may edit");
+    // Now Widget is gone from CubeB too (the fan-out applied).
+    let (_, detail) = call(&app, "GET", "/api/v1/cubes/CubeB", &admin, None).await;
+    assert_eq!(
+        member_names(cube_dimension(&detail, "Product")),
+        vec!["Gadget".to_string()],
+        "delete fanned out to CubeB"
+    );
+}

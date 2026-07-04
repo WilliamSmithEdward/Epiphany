@@ -44,23 +44,29 @@ impl SharedDimension {
     /// A `DimensionDef` capturing this dimension's current elements, edges, and
     /// attributes (defs + values), so a cube can materialize a faithful copy of it
     /// at attach time, attributes included (ADR-0024 v1, ADR-0033 follow-up).
+    ///
+    /// Edges are emitted per parent in **edge-declaration order** (via
+    /// [`Dimension::child_edges`]), not the sorted [`Dimension::edges`] listing:
+    /// declaration order is semantic — it breaks equal-depth diamond ties in
+    /// `leaf_weights` (ADR-0039) — so a materialized copy must preserve it or its
+    /// rollups could differ from the registry's.
     pub fn to_dimension_def(&self) -> DimensionDef {
         let d = &self.dimension;
         let elements = d
             .iter_elements()
             .map(|el| (el.name.clone(), el.kind))
             .collect();
-        let edges = d
-            .edges()
-            .into_iter()
-            .map(|(parent, child, weight)| {
-                (
-                    d.element(parent).expect("valid index").name.clone(),
+        let mut edges = Vec::new();
+        for parent in 0..d.len() {
+            let parent_name = d.element(parent).expect("valid index").name.clone();
+            for (child, weight) in d.child_edges(parent).expect("valid index") {
+                edges.push((
+                    parent_name.clone(),
                     d.element(child).expect("valid index").name.clone(),
                     weight,
-                )
-            })
-            .collect();
+                ));
+            }
+        }
         let attributes = d
             .attribute_defs()
             .iter()
@@ -135,11 +141,7 @@ impl SharedDimension {
                     dimension: name.clone(),
                     element: edge.child.clone(),
                 })?;
-            if let Some(&(_, _, w)) = next
-                .edges()
-                .iter()
-                .find(|&&(p, c, _)| p == parent && c == child)
-            {
+            if let Some(w) = next.child_weight(parent, child)? {
                 if w != edge.weight {
                     return Err(ModelError::EdgeWeightConflict {
                         dimension: name.clone(),
@@ -496,6 +498,54 @@ mod tests {
             .unwrap();
         assert_eq!(grown.generation, 1);
         assert_eq!(grown.dimension.edges().len(), 2);
+    }
+
+    #[test]
+    fn to_dimension_def_preserves_edge_declaration_order() {
+        // Equal-depth diamond: X rolls up to Total via both A and B, and the tie
+        // is broken by edge-declaration order under Total (ADR-0039). Total's
+        // edges are declared B-then-A, the reverse of their index order, so a
+        // def built from the sorted `edges()` listing (the old path) would
+        // rebuild a dimension whose rollup weight for X differs from the
+        // registry's.
+        let mut d = Dimension::new("Region");
+        let x = d.add_leaf("X");
+        let a = d.add_consolidated("A");
+        let b = d.add_consolidated("B");
+        let total = d.add_consolidated("Total");
+        d.add_child(total, b, 1).unwrap();
+        d.add_child(total, a, 1).unwrap();
+        d.add_child(a, x, 2).unwrap();
+        d.add_child(b, x, 5).unwrap();
+        // First-declared child (B) wins the equal-depth tie: X contributes 5.
+        assert_eq!(d.leaf_weights(total).unwrap(), vec![(x, 5)]);
+
+        let shared = SharedDimension::new(DimensionId(1), d);
+        let def = shared.to_dimension_def();
+        assert_eq!(
+            def.edges,
+            vec![
+                ("A".to_string(), "X".to_string(), 2),
+                ("B".to_string(), "X".to_string(), 5),
+                ("Total".to_string(), "B".to_string(), 1),
+                ("Total".to_string(), "A".to_string(), 1),
+            ],
+            "edges must be emitted per parent in declaration order, not sorted"
+        );
+
+        // Materializing the def (the same path a referencing cube uses) must
+        // reproduce the registry's rollup exactly.
+        let (els, edgs) = crate::def_to_specs(&def);
+        let rebuilt = SharedDimension::new(DimensionId(2), Dimension::new("Region"))
+            .grown(&els, &edgs)
+            .unwrap();
+        let rebuilt_total = rebuilt.dimension.index_of("Total").unwrap();
+        let rebuilt_x = rebuilt.dimension.index_of("X").unwrap();
+        assert_eq!(
+            rebuilt.dimension.leaf_weights(rebuilt_total).unwrap(),
+            vec![(rebuilt_x, 5)],
+            "a materialized copy must preserve the ADR-0039 tie-break"
+        );
     }
 
     #[test]

@@ -16,11 +16,13 @@ mod registry;
 mod slug;
 mod store;
 mod wal;
+mod watermark;
 
 pub use automation::{write_automation, AutomationStore};
 pub use registry::{load_registry, save_registry, RegistryEntry};
 pub use slug::slug;
-pub use store::{CellWrite, DimensionEdit, PersistError, Store};
+pub use store::{CellWrite, DimensionEdit, PersistError, Store, DEFAULT_WAL_CHECKPOINT_THRESHOLD};
+pub use watermark::{read_commit_watermark, write_commit_watermark};
 
 /// Stable crate identifier, reported by the server's wiring banner.
 pub const CRATE: &str = "epiphany-persist";

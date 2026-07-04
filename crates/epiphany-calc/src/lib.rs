@@ -20,9 +20,10 @@ pub use compiled::{
     AddrSlot, CCell, CCond, CExpr, CompileError, CompiledArea, CompiledModel, CompiledRule,
     DimPredicate, RuleId,
 };
-pub use eval::{CalcEngine, CalcError, CalcView, EvalRegistry, SandboxOverlay};
+pub use eval::{CalcEngine, CalcError, CalcMemo, CalcView, EvalRegistry, SandboxOverlay};
 pub use feeders::{
-    infer_feeders, validate_feeders, FeederDiagnostics, FeederIndex, FeederInference, OpaqueRule,
+    infer_feeders, safe_fed_set, validate_feeders, FedGate, FeederDiagnostics, FeederIndex,
+    FeederInference, OpaqueRule,
 };
 pub use provenance::{explain, explain_with};
 pub use registry::{CubeRegistry, SingleCube, VecRegistry};

@@ -18,7 +18,7 @@ use epiphany_security::{AccessLevel, Principal};
 
 use crate::auth::AuthPrincipal;
 use crate::authz::{require_cube_access, require_element_write_indices};
-use crate::routes::{map_batch_error, snapshot};
+use crate::routes::{blocking_commit, snapshot};
 use crate::{ApiError, AppState};
 
 /// The HTTP header naming the sandbox a data request should overlay.
@@ -109,8 +109,10 @@ pub(crate) async fn list_sandboxes(
     State(state): State<AppState>,
     Path(cube): Path<String>,
 ) -> Result<Json<SandboxList>, ApiError> {
-    let snap = snapshot(&state, &cube)?;
+    // Authorize before the snapshot lookup so an unauthorized caller cannot learn
+    // a cube's existence from a 404-vs-403 distinction (matches the read path).
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    let snap = snapshot(&state, &cube)?;
     let p = &auth.principal;
     let sandboxes = snap
         .model()
@@ -134,8 +136,8 @@ pub(crate) async fn create_sandbox(
     Path(cube): Path<String>,
     Json(body): Json<CreateSandboxBody>,
 ) -> Result<(StatusCode, Json<SandboxDto>), ApiError> {
-    let snap = snapshot(&state, &cube)?;
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    let snap = snapshot(&state, &cube)?;
     let name = body.name.trim();
     if name.is_empty() {
         return Err(ApiError::bad_request("sandbox name is required"));
@@ -145,10 +147,16 @@ pub(crate) async fn create_sandbox(
             "sandbox '{name}' already exists"
         )));
     }
-    state
-        .engine
-        .create_sandbox(&cube, None, name, &auth.principal.username)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, name_c, owner_c) = (
+        cube.clone(),
+        name.to_string(),
+        auth.principal.username.clone(),
+    );
+    blocking_commit(&state.engine, move |engine| {
+        engine.create_sandbox(&cube_c, None, &name_c, &owner_c)
+    })
+    .await?;
     let snap = snapshot(&state, &cube)?;
     let sb = snap.model().sandbox(name).ok_or_else(ApiError::internal)?;
     Ok((StatusCode::CREATED, Json(dto(sb))))
@@ -160,8 +168,8 @@ pub(crate) async fn get_sandbox(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<Json<SandboxDto>, ApiError> {
-    let snap = snapshot(&state, &cube)?;
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    let snap = snapshot(&state, &cube)?;
     let sb = authorize_sandbox(&snap, &auth.principal, &name)?;
     Ok(Json(dto(sb)))
 }
@@ -172,13 +180,15 @@ pub(crate) async fn delete_sandbox(
     State(state): State<AppState>,
     Path((cube, name)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    let snap = snapshot(&state, &cube)?;
     require_cube_access(&state, &auth, &cube, AccessLevel::Read)?;
+    let snap = snapshot(&state, &cube)?;
     authorize_sandbox(&snap, &auth.principal, &name)?;
-    state
-        .engine
-        .discard_sandbox(&cube, None, &name)
-        .map_err(map_batch_error)?;
+    // Run the commit (writer lock + fsync) off the async workers (A2).
+    let (cube_c, name_c) = (cube.clone(), name.clone());
+    blocking_commit(&state.engine, move |engine| {
+        engine.discard_sandbox(&cube_c, None, &name_c)
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -206,8 +216,8 @@ pub(crate) async fn commit_sandbox(
     Path((cube, name)): Path<(String, String)>,
     body: Option<Json<CommitBody>>,
 ) -> Result<Json<CommitResponse>, ApiError> {
-    let snap = snapshot(&state, &cube)?;
     require_cube_access(&state, &auth, &cube, AccessLevel::Write)?;
+    let snap = snapshot(&state, &cube)?;
     let sandbox = authorize_sandbox(&snap, &auth.principal, &name)?;
     let committed = sandbox.len();
     // Re-validate element-level write access against the live store (ADR-0015): a
@@ -216,10 +226,13 @@ pub(crate) async fn commit_sandbox(
     let coords: Vec<Vec<u32>> = sandbox.cells.keys().cloned().collect();
     require_element_write_indices(&state, &auth, &cube, &snap, &coords)?;
     let base = body.and_then(|Json(b)| b.base_version);
-    let outcome = state
-        .engine
-        .commit_sandbox(&cube, base, &name)
-        .map_err(map_batch_error)?;
+    // Run the sandbox->base merge (writer lock + checkpoint fsync) off the async
+    // workers (A2).
+    let (cube_c, name_c) = (cube.clone(), name.clone());
+    let outcome = blocking_commit(&state.engine, move |engine| {
+        engine.commit_sandbox(&cube_c, base, &name_c)
+    })
+    .await?;
     Ok(Json(CommitResponse {
         version: outcome.version,
         committed,
