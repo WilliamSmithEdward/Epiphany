@@ -27,7 +27,11 @@
   th, td { border: 1px solid var(--line); padding: 0; white-space: nowrap; }
   th { padding: 4px 8px; text-align: left; font-weight: 600; background: var(--shade); }
   thead th { text-align: right; }
-  td.total, td.problem { padding: 4px 8px; text-align: right; background: var(--shade); font-weight: 600; }
+  td.total, td.problem { padding: 4px 8px; text-align: right; background: var(--shade); font-weight: 600; cursor: not-allowed; }
+  td.leaf { background: color-mix(in srgb, Highlight 26%, Canvas); }
+  td.leaf:hover { background: color-mix(in srgb, Highlight 40%, Canvas); }
+  #legend { display: flex; gap: 16px; align-items: center; margin: 0; padding: 0 16px 8px; font-size: 12px; opacity: .85; }
+  #legend i { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; border: 1px solid var(--line); }
   td.problem { color: #c0392b; font-weight: 400; }
   td input { width: 9em; border: 0; padding: 4px 8px; text-align: right; background: transparent; color: inherit; }
   td input.text { text-align: left; width: 16em; }
@@ -53,6 +57,10 @@
   <div class="zone" data-zone="unused" title="Dimensions left at their top element"><b>Unused</b></div>
 </section>
 <p id="status"></p>
+<p id="legend">
+  <span><i style="background: color-mix(in srgb, Highlight 26%, Canvas)"></i>Leaf: type to write</span>
+  <span><i style="background: var(--shade)"></i>Consolidation: calculated, read-only</span>
+</p>
 <main><table id="grid"></table></main>
 <script>
 const MOST_CELLS = 20000;
@@ -247,14 +255,14 @@ async function render() {
 function cellNode(cell, result) {
   if (result.error) return make('td', { className: 'problem', textContent: result.error.code, title: result.error.message });
   const shown = cell.text ? result.value : result.value === 0 ? '' : result.value.toLocaleString(undefined, { maximumFractionDigits: 6 });
-  if (!cell.editable) return make('td', { className: 'total', textContent: shown });
+  if (!cell.editable) return make('td', { className: 'total', textContent: shown, title: 'Consolidation: calculated from its leaves' });
   const input = make('input', { value: cell.text ? result.value : result.value || '', className: cell.text ? 'text' : '' });
   input.onkeydown = event => { if (event.key === 'Enter') input.blur(); };
   input.onchange = () => {
     const value = cell.text ? input.value : Number(input.value.replaceAll(',', '') || 0);
     write([{ cube: cube.name, at: cell.at, value }]);
   };
-  return make('td', {}, [input]);
+  return make('td', { className: 'leaf' }, [input]);
 }
 
 async function write(cells) {
