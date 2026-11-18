@@ -53,6 +53,7 @@ struct Calculated<'a> {
     position: usize,
     name: &'a str,
     expression: &'a Expr,
+    solve_order: f64,
 }
 
 struct Evaluator<'a> {
@@ -85,14 +86,15 @@ impl Query {
             sets: HashMap::new(),
             depth: Cell::new(0),
         };
-        for (name, expression) in &self.members {
-            let [dimension, .., member] = name.as_slice() else {
+        for member in &self.members {
+            let [dimension, .., name] = member.name.as_slice() else {
                 return fail("a calculated member is named [Dimension].[Name]");
             };
             evaluator.calculated.push(Calculated {
                 position: evaluator.position(dimension)?,
-                name: member,
-                expression,
+                name,
+                expression: &member.expression,
+                solve_order: member.solve_order,
             });
         }
 
@@ -127,9 +129,8 @@ impl Query {
             .iter()
             .enumerate()
             .any(|(index, axis)| axis.ordinal != index)
-            || axes.len() > 2
         {
-            return fail("a query has COLUMNS, or COLUMNS and ROWS");
+            return fail("axes are numbered from COLUMNS without gaps or repeats");
         }
         let mut sets = Vec::new();
         for axis in &axes {
@@ -140,60 +141,99 @@ impl Query {
             sets.push(set);
         }
 
-        // With fewer than two axes, the missing ones behave as a single empty tuple.
-        let empty = vec![Tuple::new()];
-        let columns = sets.first().unwrap_or(&empty);
-        let rows = sets.get(1).unwrap_or(&empty);
-        if columns.len().saturating_mul(rows.len()) > MOST_CELLS {
-            return fail(format!("the query has more than {MOST_CELLS} cells"));
-        }
-        let mut cells = Vec::with_capacity(columns.len() * rows.len());
-        for row in rows {
-            let context = with(&context, row);
-            for column in columns {
-                cells.push(evaluator.cell(&with(&context, column))?);
+        // One cell per combination of a tuple from each axis, the first axis varying fastest.
+        let sizes: Vec<usize> = sets.iter().map(Vec::len).collect();
+        let places = Places::new(&sizes)?;
+        let mut cells = Vec::with_capacity(places.count);
+        for index in 0..places.count {
+            let mut context = context.clone();
+            for (set, place) in sets.iter().zip(places.of(index)) {
+                context = with(&context, &set[place]);
             }
+            cells.push(evaluator.cell(&context)?);
         }
 
         // NON EMPTY drops the tuples of an axis whose cells are all empty.
-        let width = columns.len();
-        let filled = |cell: &Datum| !is_empty(cell);
-        let keep_column = |c: usize| (0..rows.len()).any(|r| filled(&cells[r * width + c]));
-        let keep_row = |r: usize| (0..width).any(|c| filled(&cells[r * width + c]));
-        let non_empty = |axis: usize| axes.get(axis).is_some_and(|axis| axis.non_empty);
-        let kept_columns: Vec<usize> = (0..width)
-            .filter(|&c| !non_empty(0) || keep_column(c))
-            .collect();
-        let kept_rows: Vec<usize> = (0..rows.len())
-            .filter(|&r| !non_empty(1) || keep_row(r))
+        let mut filled: Vec<Vec<bool>> = sizes.iter().map(|&size| vec![false; size]).collect();
+        for (index, cell) in cells.iter().enumerate() {
+            for (filled, place) in filled.iter_mut().zip(places.of(index)) {
+                filled[place] |= !is_empty(cell);
+            }
+        }
+        let kept: Vec<Vec<usize>> = axes
+            .iter()
+            .zip(&filled)
+            .map(|(axis, filled)| {
+                let keep = |place: &usize| !axis.non_empty || filled[*place];
+                (0..filled.len()).filter(keep).collect()
+            })
             .collect();
 
-        let kept = [(columns, &kept_columns), (rows, &kept_rows)];
-        let axes = axes.iter().zip(kept).map(|(axis, (set, kept))| {
-            let tuple = |&index: &usize| {
-                let members = set[index].iter();
-                members
-                    .map(|&member| evaluator.describe(member, &axis.properties))
-                    .collect()
-            };
-            AxisResult {
-                tuples: kept.iter().map(tuple).collect(),
-            }
-        });
         let value = |cell: &Datum| match cell {
             Datum::Number(number) => Some(Value::Number(*number)),
             Datum::Text(text) => Some(Value::Text(text.clone())),
             _ => None,
         };
-        let cells = kept_rows
+        let kept_places = Places::new(&kept.iter().map(Vec::len).collect::<Vec<_>>())?;
+        let kept_cells = (0..kept_places.count).map(|index| {
+            let original = kept.iter().zip(kept_places.of(index)).zip(&places.strides);
+            let original = original.map(|((kept, place), stride)| kept[place] * stride);
+            value(&cells[original.sum::<usize>()])
+        });
+        let axes = axes
             .iter()
-            .flat_map(|&r| kept_columns.iter().map(move |&c| r * width + c))
-            .map(|index| value(&cells[index]));
+            .zip(&sets)
+            .zip(&kept)
+            .map(|((axis, set), kept)| {
+                let tuple = |&index: &usize| {
+                    let members = set[index].iter();
+                    members
+                        .map(|&member| evaluator.describe(member, &axis.properties))
+                        .collect()
+                };
+                AxisResult {
+                    tuples: kept.iter().map(tuple).collect(),
+                }
+            });
         Ok(QueryResult {
             cube: cube.name.clone(),
+            cells: kept_cells.collect(),
             axes: axes.collect(),
-            cells: cells.collect(),
         })
+    }
+}
+
+/// How the cells of a query are numbered: by one place on each axis, the first axis varying
+/// fastest.
+struct Places {
+    sizes: Vec<usize>,
+    /// How far apart in the numbering two neighbours on each axis are.
+    strides: Vec<usize>,
+    count: usize,
+}
+
+impl Places {
+    fn new(sizes: &[usize]) -> Evaluated<Self> {
+        let mut strides = Vec::with_capacity(sizes.len());
+        let mut count = 1usize;
+        for &size in sizes {
+            strides.push(count);
+            count = count.saturating_mul(size);
+        }
+        match count > MOST_CELLS {
+            true => fail(format!("the query has more than {MOST_CELLS} cells")),
+            false => Ok(Self {
+                sizes: sizes.to_vec(),
+                strides,
+                count,
+            }),
+        }
+    }
+
+    /// The place on each axis of the cell with a number.
+    fn of(&self, index: usize) -> impl Iterator<Item = usize> {
+        let axes = self.sizes.iter().zip(&self.strides);
+        axes.map(move |(size, stride)| index / stride % size)
     }
 }
 
@@ -359,10 +399,36 @@ impl<'a> Evaluator<'a> {
             self.evaluate(left, context)?,
             self.evaluate(right, context)?,
         );
-        if let ("*", Datum::Set(left), Datum::Set(right)) = (operator, &left, &right) {
-            return cross_join(left, right).map(Datum::Set);
+        match (operator, &left, &right) {
+            ("*", Datum::Set(left), Datum::Set(right)) => {
+                return cross_join(left, right).map(Datum::Set);
+            }
+            ("+", Datum::Set(left), Datum::Set(right)) => {
+                return union(left.clone(), right.clone(), false).map(Datum::Set);
+            }
+            // Every element from one member to the other, in the order they are declared.
+            (":", &Datum::Member(first), &Datum::Member(last)) => {
+                let (first_id, _) = self.element(first)?;
+                let (last_id, _) = self.element(last)?;
+                if first.position != last.position {
+                    return fail("a range runs between two members of one dimension");
+                }
+                let ids = first_id.min(last_id)..=first_id.max(last_id);
+                let member = |id| {
+                    vec![Member {
+                        position: first.position,
+                        id: Id::Element(id),
+                    }]
+                };
+                return Ok(Datum::Set(ids.map(member).collect()));
+            }
+            (":", ..) => return fail("a range runs between two members"),
+            _ => {}
         }
         let (left, right) = (self.scalar(left, context)?, self.scalar(right, context)?);
+        if let ("+", Datum::Text(left), Datum::Text(right)) = (operator, &left, &right) {
+            return Ok(Datum::Text(format!("{left}{right}")));
+        }
         let ordering = || compare(&left, &right);
         let equal = || match (&left, &right) {
             (Datum::Text(left), Datum::Text(right)) => left == right,
@@ -401,7 +467,201 @@ impl<'a> Evaluator<'a> {
                 false => fail(format!("{function} takes {least} to {most} arguments")),
             }
         };
+        // The value an aggregate takes from a tuple: the given expression there, or its cell.
+        let measure = |tuple: &Tuple| {
+            let context = with(context, tuple);
+            match arguments.get(1) {
+                Some(expression) => {
+                    let value = self.evaluate(expression, &context)?;
+                    self.scalar(value, &context)
+                }
+                None => self.cell(&context),
+            }
+        };
+        let all = |argument: Option<&Expr>| match flag(argument).as_deref() {
+            None => Ok(false),
+            Some("ALL") => Ok(true),
+            Some(other) => fail(format!("unknown {function} flag {other}")),
+        };
+        let whole = |argument: &Expr| Ok(self.number(argument, context)?.max(0.0) as usize);
         match function {
+            "SUM" | "AGGREGATE" | "AVG" | "MIN" | "MAX" => {
+                count(1..=2)?;
+                // As everywhere in the engine, a cell holding zero is an empty cell, so the
+                // average, least and greatest are taken over the cells that hold something.
+                let mut values = Vec::new();
+                for tuple in self.set(&arguments[0], context)? {
+                    let value = measure(&tuple)?;
+                    if !is_empty(&value) {
+                        values.push(to_number(&value)?);
+                    }
+                }
+                let total: f64 = values.iter().sum();
+                Ok(match (function, values.is_empty()) {
+                    ("SUM" | "AGGREGATE", _) => Datum::Number(total),
+                    (_, true) => Datum::Null,
+                    ("AVG", _) => Datum::Number(total / values.len() as f64),
+                    ("MIN", _) => Datum::Number(values.into_iter().fold(f64::INFINITY, f64::min)),
+                    _ => Datum::Number(values.into_iter().fold(f64::NEG_INFINITY, f64::max)),
+                })
+            }
+            "COUNT" => {
+                count(1..=2)?;
+                let set = self.set(&arguments[0], context)?;
+                let counted = match flag(arguments.get(1)).as_deref() {
+                    None | Some("INCLUDEEMPTY") => set.len(),
+                    Some("EXCLUDEEMPTY") => {
+                        let mut filled = 0;
+                        for tuple in &set {
+                            filled += usize::from(!is_empty(&self.cell(&with(context, tuple))?));
+                        }
+                        filled
+                    }
+                    Some(other) => return fail(format!("unknown COUNT flag {other}")),
+                };
+                Ok(Datum::Number(counted as f64))
+            }
+            "UNION" => {
+                count(2..=3)?;
+                let (left, right) = (
+                    self.set(&arguments[0], context)?,
+                    self.set(&arguments[1], context)?,
+                );
+                union(left, right, all(arguments.get(2))?).map(Datum::Set)
+            }
+            "EXCEPT" | "INTERSECT" => {
+                count(2..=2)?;
+                let left = distinct(self.set(&arguments[0], context)?);
+                let right: HashSet<Tuple> = self.set(&arguments[1], context)?.into_iter().collect();
+                let wanted = function == "INTERSECT";
+                let kept = left
+                    .into_iter()
+                    .filter(|tuple| right.contains(tuple) == wanted);
+                Ok(Datum::Set(kept.collect()))
+            }
+            "DISTINCT" => {
+                count(1..=1)?;
+                Ok(Datum::Set(distinct(self.set(&arguments[0], context)?)))
+            }
+            "HEAD" | "TAIL" => {
+                count(1..=2)?;
+                let mut set = self.set(&arguments[0], context)?;
+                let wanted = match arguments.get(1) {
+                    Some(argument) => whole(argument)?,
+                    None => 1,
+                };
+                let dropped = set.len().saturating_sub(wanted);
+                match function {
+                    "HEAD" => set.truncate(wanted),
+                    _ => drop(set.drain(..dropped)),
+                }
+                Ok(Datum::Set(set))
+            }
+            "SUBSET" => {
+                count(2..=3)?;
+                let set = self.set(&arguments[0], context)?;
+                let wanted = match arguments.get(2) {
+                    Some(argument) => whole(argument)?,
+                    None => usize::MAX,
+                };
+                let kept = set.into_iter().skip(whole(&arguments[1])?).take(wanted);
+                Ok(Datum::Set(kept.collect()))
+            }
+            "TOPCOUNT" | "BOTTOMCOUNT" => {
+                count(2..=3)?;
+                let mut keyed = Vec::new();
+                for tuple in self.set(&arguments[0], context)? {
+                    let value = match arguments.get(2) {
+                        Some(expression) => {
+                            let context = with(context, &tuple);
+                            let value = self.evaluate(expression, &context)?;
+                            self.scalar(value, &context)?
+                        }
+                        None => Datum::Null,
+                    };
+                    keyed.push((value, tuple));
+                }
+                // Without an expression the set keeps its order and is only cut short.
+                keyed.sort_by(|(left, _), (right, _)| match function {
+                    "TOPCOUNT" => compare(right, left),
+                    _ => compare(left, right),
+                });
+                let kept = keyed.into_iter().take(whole(&arguments[1])?);
+                Ok(Datum::Set(kept.map(|(_, tuple)| tuple).collect()))
+            }
+            "GENERATE" => {
+                count(2..=3)?;
+                let mut generated = Vec::new();
+                for tuple in self.set(&arguments[0], context)? {
+                    generated.extend(self.set(&arguments[1], &with(context, &tuple))?);
+                }
+                Ok(Datum::Set(match all(arguments.get(2))? {
+                    true => generated,
+                    false => distinct(generated),
+                }))
+            }
+            "TM1SUBSETALL" => {
+                count(1..=1)?;
+                self.method(&arguments[0], "MEMBERS", &[], context)
+            }
+            "TM1FILTERBYLEVEL" => {
+                count(2..=usize::MAX)?;
+                let mut levels = Vec::new();
+                for argument in &arguments[1..] {
+                    levels.push(self.number(argument, context)?);
+                }
+                let level = |tuple: &Tuple| self.element(tuple[0]).map(|(_, e)| f64::from(e.level));
+                let mut kept = Vec::new();
+                for tuple in self.set(&arguments[0], context)? {
+                    if levels.contains(&level(&tuple)?) {
+                        kept.push(tuple);
+                    }
+                }
+                Ok(Datum::Set(kept))
+            }
+            "TM1FILTERBYPATTERN" => {
+                count(2..=2)?;
+                let Datum::Text(pattern) = self.evaluate(&arguments[1], context)? else {
+                    return fail("TM1FILTERBYPATTERN takes a pattern in quotes");
+                };
+                let pattern: Vec<char> = key(&pattern).chars().collect();
+                let matches = |tuple: &Tuple| {
+                    let name: Vec<char> = key(self.name(tuple[0])).chars().collect();
+                    wildcard(&pattern, &name)
+                };
+                let set = self.set(&arguments[0], context)?;
+                Ok(Datum::Set(set.into_iter().filter(matches).collect()))
+            }
+            "TM1SORT" => {
+                count(1..=2)?;
+                let mut set = self.set(&arguments[0], context)?;
+                let name = |tuple: &Tuple| key(self.name(tuple[0]));
+                match flag(arguments.get(1)).as_deref() {
+                    None | Some("ASC") => set.sort_by_key(name),
+                    Some("DESC") => set.sort_by_key(|tuple| std::cmp::Reverse(name(tuple))),
+                    Some(other) => return fail(format!("unknown TM1SORT flag {other}")),
+                }
+                Ok(Datum::Set(set))
+            }
+            "ISLEAF" => {
+                count(1..=1)?;
+                let member = self.member(&arguments[0], context)?;
+                let leaf = self
+                    .element(member)
+                    .is_ok_and(|(_, e)| e.children.is_empty());
+                Ok(Datum::Bool(leaf))
+            }
+            "COALESCEEMPTY" => {
+                count(1..=usize::MAX)?;
+                for argument in arguments {
+                    let value = self.evaluate(argument, context)?;
+                    let value = self.scalar(value, context)?;
+                    if !is_empty(&value) {
+                        return Ok(value);
+                    }
+                }
+                Ok(Datum::Null)
+            }
             "CROSSJOIN" => {
                 count(2..=usize::MAX)?;
                 let mut joined = self.set(&arguments[0], context)?;
@@ -568,6 +828,54 @@ impl<'a> Evaluator<'a> {
                 let count = self.dimension(position).elements.len() as ElementId;
                 Ok(Datum::Set(
                     (0..count).map(|id| vec![one(position, id)]).collect(),
+                ))
+            }
+            ("ALLMEMBERS", &Datum::Dimension(position)) => {
+                let count = self.dimension(position).elements.len() as ElementId;
+                let elements = (0..count).map(|id| vec![one(position, id)]);
+                let calculated = self.calculated.iter().enumerate();
+                let calculated = calculated.filter(|(_, member)| member.position == position);
+                let calculated = calculated.map(|(index, _)| {
+                    vec![Member {
+                        position,
+                        id: Id::Calculated(index),
+                    }]
+                });
+                Ok(Datum::Set(elements.chain(calculated).collect()))
+            }
+            ("ALLMEMBERS", _) => fail(".ALLMEMBERS applies to a dimension"),
+            ("COUNT", Datum::Set(set)) => Ok(Datum::Number(set.len() as f64)),
+            ("ITEM", Datum::Set(_) | Datum::Tuple(_)) => {
+                let [index] = arguments else {
+                    return fail(".Item takes one position, counted from zero");
+                };
+                let index = self.number(index, context)? as usize;
+                let item = match &target {
+                    Datum::Set(set) => set.get(index).cloned().map(Datum::Tuple),
+                    Datum::Tuple(tuple) => tuple.get(index).copied().map(Datum::Member),
+                    _ => unreachable!("matched above"),
+                };
+                item.ok_or_else(|| MdxError::new(format!(".Item({index}) is past the end")))
+            }
+            ("SIBLINGS", _) => {
+                let member = member()?;
+                let (_, element) = self.element(member)?;
+                let elements = &self.dimension(member.position).elements;
+                // The children of the first parent, or for a top element the other tops.
+                let siblings: Vec<ElementId> = match element.parents.first() {
+                    Some(&parent) => {
+                        let children = elements[parent as usize].children.iter();
+                        children.map(|&(id, _)| id).collect()
+                    }
+                    None => {
+                        let tops = elements.iter().enumerate();
+                        let tops = tops.filter(|(_, element)| element.parents.is_empty());
+                        tops.map(|(id, _)| id as ElementId).collect()
+                    }
+                };
+                let siblings = siblings.into_iter();
+                Ok(Datum::Set(
+                    siblings.map(|id| vec![one(member.position, id)]).collect(),
                 ))
             }
             ("CURRENTMEMBER", &Datum::Dimension(position)) => Ok(Datum::Member(Member {
@@ -754,10 +1062,19 @@ impl<'a> Evaluator<'a> {
 
     /// The value of the cell at a context. A calculated member there is evaluated first.
     fn cell(&self, context: &Context) -> Evaluated<Datum> {
-        let calculated = context.iter().find_map(|id| match id {
+        // Of several calculated members, the one with the highest solve order is calculated
+        // last, over the results of the others; among equals, the first in the cube's order.
+        let calculated = context.iter().filter_map(|id| match id {
             Id::Calculated(index) => Some(&self.calculated[*index]),
             Id::Element(_) => None,
         });
+        let calculated =
+            calculated.reduce(
+                |chosen, other| match other.solve_order > chosen.solve_order {
+                    true => other,
+                    false => chosen,
+                },
+            );
         let Some(calculated) = calculated else {
             let at: Vec<ElementId> = context
                 .iter()
@@ -870,6 +1187,39 @@ fn to_number(datum: &Datum) -> Evaluated<f64> {
 fn same_dimensions(left: &Tuple, right: &Tuple) -> bool {
     let positions = |tuple: &Tuple| tuple.iter().map(|m| m.position).collect::<Vec<_>>();
     positions(left) == positions(right)
+}
+
+/// A set without its repeated tuples, each kept where it first appears.
+fn distinct(set: Vec<Tuple>) -> Vec<Tuple> {
+    let mut seen = HashSet::new();
+    set.into_iter()
+        .filter(|tuple| seen.insert(tuple.clone()))
+        .collect()
+}
+
+/// The left set followed by the right, without repeats unless they are asked for.
+fn union(mut left: Vec<Tuple>, right: Vec<Tuple>, repeats: bool) -> Evaluated<Vec<Tuple>> {
+    if let (Some(left), Some(right)) = (left.first(), right.first())
+        && !same_dimensions(left, right)
+    {
+        return fail("the sets of a union must have the same dimensions");
+    }
+    left.extend(right);
+    Ok(match repeats {
+        true => left,
+        false => distinct(left),
+    })
+}
+
+/// Whether text matches a pattern in which `*` stands for any run of characters and `?` for
+/// any one.
+fn wildcard(pattern: &[char], text: &[char]) -> bool {
+    match (pattern, text) {
+        ([], []) => true,
+        (['*', rest @ ..], _) => (0..=text.len()).any(|skipped| wildcard(rest, &text[skipped..])),
+        ([p, rest @ ..], [c, text @ ..]) => (*p == '?' || p == c) && wildcard(rest, text),
+        _ => false,
+    }
 }
 
 /// Every tuple of the left set joined with every tuple of the right.

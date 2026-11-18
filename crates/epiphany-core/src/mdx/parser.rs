@@ -25,7 +25,7 @@ pub(crate) enum Expr {
 #[derive(Debug)]
 pub(crate) struct Query {
     /// `WITH MEMBER name AS expression`, in order.
-    pub(super) members: Vec<(Vec<String>, Expr)>,
+    pub(super) members: Vec<MemberDef>,
     /// `WITH SET name AS expression`, in order.
     pub(super) sets: Vec<(String, Expr)>,
     pub(super) axes: Vec<Axis>,
@@ -34,14 +34,26 @@ pub(crate) struct Query {
 }
 
 #[derive(Debug)]
+pub(super) struct MemberDef {
+    pub(super) name: Vec<String>,
+    pub(super) expression: Expr,
+    /// Where a cell has several calculated members, the highest is calculated last, over
+    /// the results of the others.
+    pub(super) solve_order: f64,
+}
+
+#[derive(Debug)]
 pub(super) struct Axis {
     pub(super) non_empty: bool,
     pub(super) set: Expr,
     /// The attributes to report for each member, as dotted names.
     pub(super) properties: Vec<Vec<String>>,
-    /// Zero for columns, one for rows.
+    /// Zero for columns, one for rows, and so on.
     pub(super) ordinal: usize,
 }
+
+/// The names of the first five axes.
+const AXES: [&str; 5] = ["COLUMNS", "ROWS", "PAGES", "CHAPTERS", "SECTIONS"];
 
 /// Binary operators from loosest to tightest. `NOT` sits between `AND` and the comparisons.
 const LEVELS: [&[&str]; 5] = [
@@ -54,7 +66,11 @@ const LEVELS: [&[&str]; 5] = [
 const COMPARISONS: usize = 2;
 
 /// The words that may follow a dot without being part of a name.
-const METHODS: [&str; 10] = [
+const METHODS: [&str; 14] = [
+    "ALLMEMBERS",
+    "SIBLINGS",
+    "COUNT",
+    "ITEM",
     "MEMBERS",
     "CHILDREN",
     "PARENT",
@@ -88,7 +104,28 @@ impl Parser {
                         unreachable!("a name is a name");
                     };
                     self.expect_word("AS")?;
-                    members.push((name, self.definition()?));
+                    let expression = self.definition()?;
+                    // Properties follow as `, NAME = value`. Only the solve order matters
+                    // here; the others, such as a format, are accepted and ignored.
+                    let mut solve_order = 0.0;
+                    while self.symbol(",") {
+                        let Token::Word(property) = self.advance() else {
+                            return Err(self.error("expected a property name"));
+                        };
+                        self.expect_symbol("=")?;
+                        let value = self.unary()?;
+                        if property.eq_ignore_ascii_case("SOLVE_ORDER") {
+                            solve_order = match value {
+                                Expr::Number(number) => number,
+                                _ => return Err(self.error("SOLVE_ORDER takes a number")),
+                            };
+                        }
+                    }
+                    members.push(MemberDef {
+                        name,
+                        expression,
+                        solve_order,
+                    });
                 } else if self.word("SET") {
                     let Expr::Name(name) = self.name()? else {
                         unreachable!("a name is a name");
@@ -161,10 +198,9 @@ impl Parser {
             }
         }
         self.expect_word("ON")?;
-        let ordinal = if self.word("COLUMNS") {
-            0
-        } else if self.word("ROWS") {
-            1
+        let named = AXES.iter().position(|name| self.word(name));
+        let ordinal = if let Some(ordinal) = named {
+            ordinal
         } else {
             let wrapped = self.word("AXIS");
             if wrapped {
@@ -234,6 +270,11 @@ impl Parser {
                 false => Vec::new(),
             };
             expression = Expr::Method(Box::new(expression), method.to_uppercase(), arguments);
+        }
+        // `first : last` is the range of members from one to the other.
+        if self.symbol(":") {
+            let last = self.unary()?;
+            expression = Expr::Binary(Box::new(expression), ":", Box::new(last));
         }
         Ok(expression)
     }

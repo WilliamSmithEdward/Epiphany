@@ -424,6 +424,254 @@ fn a_query_in_a_transaction_sees_its_pending_writes() {
 }
 
 #[test]
+fn aggregates_run_over_a_set() {
+    let result = run("
+        WITH MEMBER [Account].[Sum] AS Sum([Period].[Q1].Children, [Account].[Revenue])
+             MEMBER [Account].[Avg] AS Avg([Period].[Q1].Children, [Account].[Revenue])
+             MEMBER [Account].[Min] AS Min([Period].[Q1].Children, [Account].[Revenue])
+             MEMBER [Account].[Max] AS Max([Period].[Q1].Children, [Account].[Revenue])
+             MEMBER [Account].[Count] AS Count([Period].[Q1].Children)
+             MEMBER [Account].[Size] AS [Period].[Q1].Children.Count
+             MEMBER [Account].[None] AS Avg([Period].[Q2].Children, [Account].[Revenue])
+             MEMBER [Account].[Else] AS CoalesceEmpty([Account].[Salaries], [Account].[Rent], 7)
+        SELECT {[Account].[Sum], [Account].[Avg], [Account].[Min], [Account].[Max],
+                [Account].[Count], [Account].[Size], [Account].[None], [Account].[Else]} ON COLUMNS
+        FROM [General Ledger] WHERE ([Period].[Jan], [Version].[Actual])");
+    // Revenue is 180 in January, 20 in February and nothing in March, which the average,
+    // least and greatest leave out. January has no salaries but 10 of rent.
+    assert_eq!(
+        numbers(&result),
+        [
+            Some(200.0),
+            Some(100.0),
+            Some(20.0),
+            Some(180.0),
+            Some(3.0),
+            Some(3.0),
+            None,
+            Some(10.0)
+        ]
+    );
+    assert_eq!(
+        columns(
+            "Filter([Entity].Members,
+                 Count([Period].[Q1].Children * {[Account].[Revenue]}, EXCLUDEEMPTY) > 1)"
+        ),
+        ["Total Entity", "US"]
+    );
+}
+
+#[test]
+fn sets_are_combined_and_cut() {
+    let (first, second) = (
+        "{[Period].[Jan], [Period].[Feb]}",
+        "{[Period].[Feb], [Period].[Mar]}",
+    );
+    let quarter = "[Period].[Q1].Children";
+    assert_eq!(
+        columns(&format!("Union({first}, {second})")),
+        ["Jan", "Feb", "Mar"]
+    );
+    assert_eq!(
+        columns(&format!("{first} + {second}")),
+        ["Jan", "Feb", "Mar"]
+    );
+    assert_eq!(
+        columns(&format!("Union({first}, {second}, ALL)")),
+        ["Jan", "Feb", "Feb", "Mar"]
+    );
+    assert_eq!(
+        columns(&format!("Except({quarter}, {{[Period].[Feb]}})")),
+        ["Jan", "Mar"]
+    );
+    assert_eq!(
+        columns(&format!(
+            "Intersect({quarter}, {{[Period].[Mar], [Period].[Apr]}})"
+        )),
+        ["Mar"]
+    );
+    assert_eq!(
+        columns("Distinct({[Period].[Jan], [Period].[Jan], [Period].[Feb]})"),
+        ["Jan", "Feb"]
+    );
+    assert_eq!(columns(&format!("Head({quarter})")), ["Jan"]);
+    assert_eq!(columns(&format!("Head({quarter}, 2)")), ["Jan", "Feb"]);
+    assert_eq!(columns(&format!("Tail({quarter}, 2)")), ["Feb", "Mar"]);
+    assert_eq!(columns(&format!("Subset({quarter}, 1, 1)")), ["Feb"]);
+    assert_eq!(columns(&format!("Subset({quarter}, 1)")), ["Feb", "Mar"]);
+    assert_eq!(columns(&format!("{{{quarter}.Item(1)}}")), ["Feb"]);
+    assert_eq!(
+        columns(&format!("TopCount({quarter}, 2, [Account].[Revenue])")),
+        ["Jan", "Feb"]
+    );
+    assert_eq!(
+        columns(&format!("BottomCount({quarter}, 1, [Account].[Revenue])")),
+        ["Mar"]
+    );
+    assert_eq!(
+        columns("Generate({[Period].[Q1], [Period].[Q2]}, [Period].CurrentMember.Children)"),
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]
+    );
+}
+
+#[test]
+fn ranges_siblings_and_all_members() {
+    assert_eq!(
+        columns("[Period].[Jan]:[Period].[Mar]"),
+        ["Jan", "Feb", "Mar"]
+    );
+    assert_eq!(
+        columns("{[Period].[Mar] : [Period].[Feb], [Period].[Jun]}"),
+        ["Feb", "Mar", "Jun"]
+    );
+    assert_eq!(columns("[Period].[Feb].Siblings"), ["Jan", "Feb", "Mar"]);
+    assert_eq!(columns("[Period].[H1].Siblings"), ["H1"]);
+    assert_eq!(
+        columns("Filter([Entity].Members, IsLeaf([Entity].CurrentMember))"),
+        ["US", "UK"]
+    );
+    let result = run("
+        WITH MEMBER [Entity].[Both] AS [Entity].[US] + [Entity].[UK]
+        SELECT [Entity].AllMembers ON COLUMNS FROM [General Ledger]");
+    assert_eq!(names(&result, 0), ["Total Entity", "US", "UK", "Both"]);
+}
+
+#[test]
+fn tm1_style_set_functions() {
+    assert_eq!(
+        columns("TM1FilterByLevel(TM1SubsetAll([Period]), 0)"),
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]
+    );
+    assert_eq!(
+        columns("TM1FilterByLevel([Period].Members, 1, 2)"),
+        ["H1", "Q1", "Q2"]
+    );
+    assert_eq!(
+        columns("TM1FilterByPattern([Period].Members, '*a*')"),
+        ["Jan", "Mar", "Apr", "May"]
+    );
+    assert_eq!(
+        columns("TM1FilterByPattern([Period].Members, 'q?')"),
+        ["Q1", "Q2"]
+    );
+    let months = "{[Period].[Mar], [Period].[Jan], [Period].[Feb]}";
+    assert_eq!(
+        columns(&format!("TM1Sort({months}, ASC)")),
+        ["Feb", "Jan", "Mar"]
+    );
+    assert_eq!(
+        columns(&format!("TM1Sort({months}, DESC)")),
+        ["Mar", "Jan", "Feb"]
+    );
+}
+
+#[test]
+fn a_query_may_have_more_than_two_axes() {
+    let result = run("
+        SELECT {[Entity].[US], [Entity].[UK]} ON COLUMNS,
+               {[Period].[Jan], [Period].[Feb]} ON ROWS,
+               NON EMPTY {[Account].[Product Revenue], [Account].[Salaries], [Account].[Rent]} ON PAGES
+        FROM [General Ledger] WHERE [Version].[Actual]");
+    assert_eq!(result.axes.len(), 3);
+    // Salaries are empty for the US and for January in the UK only; February in the UK has 40.
+    assert_eq!(names(&result, 2), ["Product Revenue", "Salaries", "Rent"]);
+    assert_eq!(
+        numbers(&result),
+        some(&[
+            100.0, 50.0, 20.0, 0.0, 0.0, 0.0, 0.0, 40.0, 10.0, 0.0, 0.0, 0.0
+        ])
+    );
+
+    let result = run("
+        SELECT {[Entity].[US]} ON 0, {[Period].[Jan], [Period].[Mar]} ON 1,
+               NON EMPTY {[Account].[Product Revenue], [Account].[Salaries]} ON AXIS(2)
+        FROM [General Ledger] WHERE [Version].[Actual]");
+    assert_eq!(names(&result, 2), ["Product Revenue"]);
+    assert_eq!(numbers(&result), some(&[100.0, 0.0]));
+}
+
+#[test]
+fn solve_order_decides_which_calculated_member_is_applied_last() {
+    let query = |properties: &str| {
+        format!(
+            "
+            WITH MEMBER [Account].[Share] AS [Account].[Product Revenue] / [Account].[Revenue],
+                     FORMAT_STRING = '0.0%'
+                 MEMBER [Version].[Change] AS [Version].[Actual] - [Version].[Budget]{properties}
+            SELECT {{[Account].[Share]}} ON COLUMNS FROM [General Ledger]
+            WHERE ([Entity].[US], [Period].[Jan], [Version].[Change])"
+        )
+    };
+    // US January: product revenue 100 actual and 90 budget; revenue 130 actual and 90 budget.
+    // Without a solve order the member of the earlier dimension is applied last: the share of
+    // the changes. With one, the change is applied last: the change of the shares.
+    assert_eq!(numbers(&run(&query(""))), some(&[10.0 / 40.0]));
+    assert_eq!(
+        numbers(&run(&query(", SOLVE_ORDER = 1"))),
+        some(&[100.0 / 130.0 - 1.0])
+    );
+}
+
+#[test]
+fn text_cells_are_returned_compared_and_joined() {
+    let definition = serde_json::from_value(serde_json::json!({
+        "dimensions": [
+            { "name": "Product", "elements": [
+                { "name": "A", "type": "numeric" },
+                { "name": "B", "type": "numeric" }
+            ]},
+            { "name": "Field", "elements": [
+                { "name": "Units", "type": "numeric" },
+                { "name": "Note", "type": "string" }
+            ]}
+        ],
+        "cubes": [{ "name": "Stock", "dimensions": ["Product", "Field"] }]
+    }))
+    .unwrap();
+    let mut database = Database::new(definition).unwrap();
+    let write = |at: [&str; 2], value: Value| CellWrite {
+        cube: "Stock".to_owned(),
+        at: at.map(str::to_owned).to_vec(),
+        value,
+    };
+    let writes = [
+        write(["A", "Units"], Value::Number(5.0)),
+        write(["A", "Note"], Value::Text("late".to_owned())),
+    ];
+    database.write(None, &writes).unwrap();
+
+    let result = database
+        .query(
+            None,
+            "
+            WITH MEMBER [Field].[Label] AS [Product].CurrentMember.Name + ': ' + [Field].[Note]
+            SELECT {[Field].[Units], [Field].[Note], [Field].[Label]} ON COLUMNS,
+                   [Product].Members ON ROWS
+            FROM [Stock]",
+        )
+        .unwrap();
+    let text = |text: &str| Some(Value::Text(text.to_owned()));
+    assert_eq!(
+        result.cells,
+        [
+            Some(Value::Number(5.0)),
+            text("late"),
+            text("A: late"),
+            Some(Value::Number(0.0)),
+            text(""),
+            text("B: ")
+        ]
+    );
+    assert_eq!(result.axes[0].tuples[1][0].kind, MemberType::Text);
+
+    let late = "SELECT NON EMPTY [Product].Members ON COLUMNS FROM [Stock] WHERE [Field].[Note]";
+    assert_eq!(names(&database.query(None, late).unwrap(), 0), ["A"]);
+    let filtered =
+        "SELECT Filter([Product].Members, [Field].[Note] = 'late') ON COLUMNS FROM [Stock]";
+    assert_eq!(names(&database.query(None, filtered).unwrap(), 0), ["A"]);
+}
+
+#[test]
 fn comments_are_ignored() {
     let result = run("
         -- the two entities
@@ -470,7 +718,7 @@ fn mistakes_are_reported() {
         ),
         (
             "SELECT {[Entity].[US]} ON ROWS FROM [General Ledger]",
-            "a query has COLUMNS, or COLUMNS and ROWS",
+            "axes are numbered from COLUMNS without gaps or repeats",
         ),
         (
             "SELECT [Entity] ON COLUMNS FROM [General Ledger]",

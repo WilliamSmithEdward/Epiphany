@@ -135,18 +135,26 @@ practice that means:
 - Three stages: parse to a syntax tree; bind names against the model snapshot (names,
   aliases, unique names); evaluate sets to axes of tuples, then fetch all cells in one batch.
 - Done, at `POST /mdx`:
-  - `SELECT ... ON COLUMNS [, ... ON ROWS] FROM [cube] [WHERE tuple]`, with `NON EMPTY` and
-    `[DIMENSION] PROPERTIES` on an axis. Axes may also be numbered (`ON 0`, `ON AXIS(1)`).
-  - Sets: braces, `.Members`, `.Children`, `CrossJoin` and `*`, `Filter`, `Order` (`ASC`,
-    `DESC`, `BASC`, `BDESC`), `Descendants` (distance and `SELF`, `AFTER`,
-    `SELF_AND_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and `POST`), `NonEmpty`.
+  - `SELECT ... ON COLUMNS [, ... ON ROWS [, ...]] FROM [cube] [WHERE tuple]`, with
+    `NON EMPTY` and `[DIMENSION] PROPERTIES` on an axis. Any number of axes, named
+    (`COLUMNS`, `ROWS`, `PAGES`, `CHAPTERS`, `SECTIONS`) or numbered (`ON 0`, `ON AXIS(1)`).
+  - Sets: braces, `.Members`, `.AllMembers`, `.Children`, `.Siblings`, ranges
+    (`first : last`), `CrossJoin` and `*`, `Union` and `+`, `Except`, `Intersect`,
+    `Distinct`, `Head`, `Tail`, `Subset`, `.Item`, `TopCount`, `BottomCount`, `Generate`,
+    `Filter`, `Order` (`ASC`, `DESC`, `BASC`, `BDESC`), `Descendants` (distance and
+    `SELF`, `AFTER`, `SELF_AND_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and
+    `POST`), `NonEmpty`, and `TM1SubsetAll`, `TM1FilterByLevel`, `TM1FilterByPattern`,
+    `TM1Sort`.
   - Members: `[Dimension].[Member]` by name or alias, `.Parent`, `.FirstChild`,
     `.LastChild`, `.CurrentMember`, `Ancestor`.
-  - Values: arithmetic, comparisons, `AND` / `OR` / `NOT`, `IIF`, `IsEmpty`, tuples as
-    cell references, `.Name`, `.UniqueName`, `.Value`, and `.Properties("name")` for an
-    attribute or for `MEMBER_NAME`, `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`,
-    `PARENT_UNIQUE_NAME`, `CHILDREN_CARDINALITY`.
-  - `WITH MEMBER` (calculated members, which may refer to one another) and `WITH SET`.
+  - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `NOT`, `IIF`,
+    `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`, `Aggregate`, `Avg`, `Min`, `Max`,
+    `Count` and `.Count`, tuples as cell references, `.Name`, `.UniqueName`, `.Value`,
+    and `.Properties("name")` for an attribute or for `MEMBER_NAME`,
+    `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`, `CHILDREN_CARDINALITY`.
+  - `WITH MEMBER` (calculated members, which may refer to one another, with
+    `SOLVE_ORDER`) and `WITH SET`.
+  - Numeric and text cells.
   - A query may run inside a transaction and then sees its pending writes.
 - **Decisions:**
   - A dimension the query does not mention stands at its first top element.
@@ -154,10 +162,14 @@ practice that means:
     not down from the top as in other MDX servers.
   - A value that cannot be computed, such as a division by zero, is null.
   - A member with several parents uses its first for `.Parent`, `Ancestor` and `Order`.
-  - `.Members` lists elements only, not calculated members.
-- Not done: more than two axes, aggregate functions such as `Sum` and `Count`, set
-  functions beyond those listed (`Union`, `Except`, `Head`, `TopCount`, ...), and
-  `SOLVE_ORDER`.
+  - `.Members` lists elements only, not calculated members; `.AllMembers` adds them.
+  - A cell holding zero is an empty cell, here as everywhere in the engine, so `Avg`,
+    `Min` and `Max` are taken over the cells that hold something.
+  - Where a cell has several calculated members and no `SOLVE_ORDER` separates them, the
+    one in the cube's earlier dimension is applied last.
+  - A range runs over elements in the order they are declared in the dimension.
+- Not done: functions outside the lists above (for example `Rank`, `ParallelPeriod`,
+  `StrToMember` and the VBA maths and string functions), `.Levels`, and formatting.
 
 ### 2.8 Spreading
 

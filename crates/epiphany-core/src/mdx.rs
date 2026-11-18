@@ -48,15 +48,15 @@ impl std::error::Error for MdxError {}
 
 /// The answer to a query.
 ///
-/// With columns and rows, `cells` holds one value per pair of tuples, row by row: the cell of
-/// row `r` and column `c` is at `r * columns + c`. With columns only there is one cell per
-/// column, and with no axes a single cell. A cell with no value, such as a division by zero,
-/// is null.
+/// `cells` holds one value per combination of a tuple from each axis, the first axis varying
+/// fastest. With columns and rows that is row by row: the cell of row `r` and column `c` is at
+/// `r * columns + c`. With columns only there is one cell per column, and with no axes a
+/// single cell. A cell with no value, such as a division by zero, is null.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct QueryResult {
     pub cube: String,
-    /// The columns axis, then the rows axis, as far as the query has them.
+    /// The columns axis, then the rows axis, then any further axes the query has.
     pub axes: Vec<AxisResult>,
     pub cells: Vec<Option<Value>>,
 }

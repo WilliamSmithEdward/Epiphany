@@ -1,0 +1,84 @@
+//! Times MDX queries on a random cube.
+//!
+//! Run with `cargo run --release --example bench_mdx`.
+
+#[path = "../tests/common/mod.rs"]
+mod common;
+
+use std::time::Instant;
+
+use common::{Rng, Shape, random_model};
+use epiphany_core::Value;
+use epiphany_core::database::{CellWrite, Database};
+
+const DIMENSIONS: usize = 4;
+const SHAPE: Shape = Shape {
+    leaves: 100,
+    groups: 12,
+    fan: 10,
+};
+const WRITES: usize = 200_000;
+
+fn main() {
+    let mut rng = Rng::new(1);
+    let mut database = Database::new(random_model(&mut rng, DIMENSIONS, &SHAPE)).unwrap();
+    let write = |index: usize| CellWrite {
+        cube: "C".to_owned(),
+        at: (0..DIMENSIONS)
+            .map(|_| format!("e{}", rng.below(SHAPE.leaves)))
+            .collect(),
+        value: Value::Number(1.0 + index as f64),
+    };
+    let writes: Vec<CellWrite> = (0..WRITES).map(write).collect();
+    let start = Instant::now();
+    database.write(None, &writes).unwrap();
+    println!(
+        "{:<52} {:>9.1} ms",
+        "write 200,000 cells in one batch",
+        millis(start)
+    );
+
+    let leaves = |dimension: usize| format!("TM1FilterByLevel([d{dimension}].Members, 0)");
+    let first = |dimension: usize, count: usize| format!("Head({}, {count})", leaves(dimension));
+    let queries = [
+        (
+            "10,000 leaf cells",
+            format!(
+                "SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d2].[e0], [d3].[e0])",
+                leaves(0),
+                leaves(1)
+            ),
+        ),
+        (
+            "400 cells, each totalling two dimensions",
+            format!(
+                "SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d2].[all], [d3].[all])",
+                first(0, 20),
+                first(1, 20)
+            ),
+        ),
+        (
+            "113 cells, each totalling three dimensions",
+            "SELECT [d0].Members ON COLUMNS FROM [C] WHERE ([d1].[all], [d2].[all], [d3].[all])"
+                .to_owned(),
+        ),
+        (
+            "the 10 largest of 100 totals",
+            format!(
+                "SELECT TopCount({}, 10, ([d1].[all], [d2].[all], [d3].[all])) ON COLUMNS FROM [C] WHERE ([d1].[all], [d2].[all], [d3].[all])",
+                leaves(0)
+            ),
+        ),
+    ];
+    for (label, mdx) in queries {
+        let start = Instant::now();
+        let result = database.query(None, &mdx).unwrap();
+        let took = millis(start);
+        let each = took * 1000.0 / result.cells.len() as f64;
+        println!("{label:<52} {took:>9.1} ms  {each:>9.1} us/cell");
+    }
+}
+
+fn millis(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1000.0
+}
