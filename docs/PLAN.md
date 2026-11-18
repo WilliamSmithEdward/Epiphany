@@ -29,6 +29,13 @@ thin translation layer.
 - A cube is an ordered list of dimensions and nothing else. There are no measures: a cell is
   exactly one element per dimension, which is also how DBRW-style formulas address it.
 - Element types are `numeric`, `string` and `consolidated`.
+- Attributes are declared per dimension with a type (`string`, `numeric` or `alias`) and
+  valued per element. An alias is an attribute whose values also resolve as element names.
+- **Decision (names):** names and aliases are compared ignoring case and spaces, so
+  `product revenue` finds `Product Revenue`. Two names that differ only in case or spacing
+  are duplicates.
+- **Decision (string children):** a consolidation may list string elements as children for
+  navigation; they contribute nothing to its value.
 - **Decision (cell type):** a cell is a string cell when its element in the cube's last
   dimension has type `string`, otherwise numeric. String cells never consolidate.
 

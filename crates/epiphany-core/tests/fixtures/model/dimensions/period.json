@@ -1,0 +1,42 @@
+{
+  "name": "Period",
+  "type": "standard",
+  "elements": [
+    {
+      "name": "H1",
+      "type": "consolidated",
+      "children": [
+        { "name": "Q1", "weight": 1 },
+        { "name": "Q2", "weight": 1 }
+      ]
+    },
+    {
+      "name": "Q1",
+      "type": "consolidated",
+      "children": [
+        { "name": "Jan", "weight": 1 },
+        { "name": "Feb", "weight": 1 },
+        { "name": "Mar", "weight": 1 }
+      ]
+    },
+    {
+      "name": "Q2",
+      "type": "consolidated",
+      "children": [
+        { "name": "Apr", "weight": 1 },
+        { "name": "May", "weight": 1 },
+        { "name": "Jun", "weight": 1 }
+      ]
+    },
+    { "name": "Jan", "type": "numeric", "attributes": { "Code": "M01", "Days": 31 } },
+    { "name": "Feb", "type": "numeric", "attributes": { "Code": "M02", "Days": 28 } },
+    { "name": "Mar", "type": "numeric", "attributes": { "Code": "M03", "Days": 31 } },
+    { "name": "Apr", "type": "numeric", "attributes": { "Code": "M04", "Days": 30 } },
+    { "name": "May", "type": "numeric", "attributes": { "Code": "M05", "Days": 31 } },
+    { "name": "Jun", "type": "numeric", "attributes": { "Code": "M06", "Days": 30 } }
+  ],
+  "attributes": {
+    "Code": "alias",
+    "Days": "numeric"
+  }
+}
