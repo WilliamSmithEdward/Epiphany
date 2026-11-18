@@ -18,6 +18,7 @@
   .zone > b { font-size: 12px; opacity: .7; margin-right: 4px; }
   .chip { display: inline-flex; gap: 6px; align-items: center; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--shade); cursor: grab; user-select: none; }
   .chip.dragging { opacity: .4; }
+  .grip { width: 8px; height: 12px; opacity: .55; background: radial-gradient(circle, currentColor 1.1px, transparent 1.4px) 0 0 / 4px 4px; }
   .chip select { padding: 1px 4px; }
   .chip small { opacity: .65; }
   #status { margin: 0; padding: 8px 16px; min-height: 1.4em; }
@@ -151,7 +152,7 @@ async function chooseCube() {
 }
 
 function chip(name, kind) {
-  const node = make('span', { className: 'chip', draggable: true, textContent: name });
+  const node = make('span', { className: 'chip', draggable: true }, [make('span', { className: 'grip' }), name]);
   node.dataset.name = name;
   node.ondragstart = event => {
     event.dataTransfer.setData('text/plain', name);
