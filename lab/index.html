@@ -34,6 +34,10 @@
   #legend { display: flex; gap: 16px; align-items: center; margin: 0; padding: 0 16px 8px; font-size: 12px; opacity: .85; }
   #legend i { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; border: 1px solid var(--line); }
   td.problem { color: #c0392b; font-weight: 400; }
+  .toggle { all: unset; display: inline-block; width: 16px; text-align: center; cursor: pointer; opacity: .75; }
+  .toggle:hover { opacity: 1; }
+  .spacer { display: inline-block; width: 16px; }
+  .chip button { padding: 0 5px; font-size: 12px; line-height: 16px; }
   td input { width: 9em; border: 0; padding: 4px 8px; text-align: right; background: transparent; color: inherit; }
   td input.text { text-align: left; width: 16em; }
   td input:focus { outline: 2px solid Highlight; outline-offset: -2px; }
@@ -45,6 +49,8 @@
   <label>Cube <select id="cube"></select></label>
   <button id="refresh">Refresh</button>
   <button id="fill">Fill visible leaves</button>
+  <button id="expand">Expand all</button>
+  <button id="collapse">Collapse all</button>
   <label>Transaction <output id="transaction">none</output></label>
   <button id="begin">Begin</button>
   <button id="commit">Commit</button>
@@ -95,6 +101,7 @@ const dimensions = {};    // dimension views by name, loaded on demand
 let cube;                 // the chosen cube definition
 let layout;               // { columns, rows, filters, unused }: the cube's dimension names by zone
 let slice = {};           // the chosen element of each dimension, used while it is a filter
+let unfolded = {};          // per dimension, the paths of the consolidations shown expanded
 let visible = [];         // { at, editable, text } for every cell on screen
 let transaction = null;   // the open transaction, which reads and writes then go through
 
@@ -137,6 +144,58 @@ async function end(action, done) {
 /** The element an unused dimension stands at: its first element with no parent. */
 const topElement = name => dimensions[name].elements.find(element => !element.parents.length) ?? dimensions[name].elements[0];
 
+// Hierarchies: a dimension on rows or columns is shown as a tree that can be folded
+
+/**
+ * The dimension as a tree, parents before children: one node per path from a top element,
+ * so an element with two parents appears under each. Children of a folded node are left
+ * out unless `all` is set.
+ */
+function nodes(name, all = false) {
+  const { elements } = dimensions[name];
+  const byName = new Map(elements.map(element => [element.name, element]));
+  const found = [];
+  const walk = (element, key, depth) => {
+    const parent = element.children.length > 0;
+    const isOpen = parent && (all || unfolded[name].has(key));
+    found.push({ element, key, depth, parent, open: isOpen });
+    if (isOpen) for (const child of element.children) walk(byName.get(child.name), `${key}\n${child.name}`, depth + 1);
+  };
+  for (const element of elements) if (!element.parents.length) walk(element, element.name, 0);
+  return found;
+}
+
+/** The ways to fold a whole dimension, by the name shown to the user. */
+const fold = {
+  'Expand all': name => { unfolded[name] = new Set(nodes(name, true).filter(node => node.parent).map(node => node.key)); },
+  'Expand one level': name => {
+    const closed = nodes(name).filter(node => node.parent && !node.open);
+    const depth = Math.min(...closed.map(node => node.depth));
+    for (const node of closed) if (node.depth === depth) unfolded[name].add(node.key);
+  },
+  'Collapse one level': name => {
+    const opened = nodes(name).filter(node => node.open);
+    const depth = Math.max(...opened.map(node => node.depth));
+    for (const node of opened) if (node.depth === depth) unfolded[name].delete(node.key);
+  },
+  'Collapse all': name => { unfolded[name] = new Set(); },
+};
+
+/** A row or column heading for a node, with a control to fold it if it has children. */
+function heading(name, node, indent) {
+  const toggle = node.parent
+    ? make('button', {
+        className: 'toggle',
+        textContent: node.open ? '▾' : '▸',
+        title: node.open ? 'Collapse' : 'Expand',
+        onclick: () => { unfolded[name][node.open ? 'delete' : 'add'](node.key); render(); },
+      })
+    : make('span', { className: 'spacer' });
+  const cell = make('th', {}, [toggle, node.element.name]);
+  if (indent) cell.style.paddingLeft = `${8 + 16 * node.depth}px`;
+  return cell;
+}
+
 async function chooseCube() {
   cube = model.cubes.find(c => c.name === $('cube').value);
   await Promise.all(cube.dimensions.map(dimension));
@@ -146,6 +205,7 @@ async function chooseCube() {
   for (const name of cube.dimensions) {
     const elements = dimensions[name].elements;
     slice[name] = (elements.find(element => element.type !== 'consolidated') ?? elements[0]).name;
+    fold['Expand all'](name);
   }
   showLayout();
   await render();
@@ -166,6 +226,11 @@ function chip(name, kind) {
     node.append(select);
   }
   if (kind === 'unused') node.append(make('small', { textContent: topElement(name).name }));
+  if (kind === 'rows' || kind === 'columns') {
+    const symbols = { 'Expand all': '++', 'Expand one level': '+', 'Collapse one level': '−', 'Collapse all': '−−' };
+    node.append(...Object.entries(symbols).map(([title, textContent]) =>
+      make('button', { title, textContent, onclick: () => { fold[title](name); render(`${title} on ${name}`); } })));
+  }
   return node;
 }
 
@@ -205,9 +270,9 @@ for (const zone of document.querySelectorAll('.zone')) {
 
 // Grid
 
-/** Every combination of one element from each of the named dimensions. */
+/** Every combination of one shown node from each of the named dimensions. */
 const tuples = names => names.reduce(
-  (found, name) => found.flatMap(tuple => dimensions[name].elements.map(element => [...tuple, element])),
+  (found, name) => found.flatMap(tuple => nodes(name).map(node => [...tuple, node])),
   [[]],
 );
 
@@ -234,7 +299,7 @@ async function draw(turn, reason) {
     return status(`That layout has ${(rows.length * columns.length).toLocaleString()} cells; move a dimension to the filters.`, true);
   }
   const pick = (name, row, column) =>
-    row[layout.rows.indexOf(name)] ?? column[layout.columns.indexOf(name)]
+    row[layout.rows.indexOf(name)]?.element ?? column[layout.columns.indexOf(name)]?.element
       ?? (layout.unused.includes(name) ? topElement(name) : dimensions[name].elements.find(element => element.name === slice[name]));
 
   visible = rows.flatMap(row => columns.map(column => {
@@ -250,19 +315,14 @@ async function draw(turn, reason) {
   }
   if (turn !== renders) return;
 
-  const depth = name => Math.max(...dimensions[name].elements.map(element => element.level));
   // The row dimension names sit above their labels, on the last header row only.
   const corner = named => layout.rows.length ? layout.rows.map(name => make('th', { textContent: named ? name : '' })) : [make('th')];
   const last = layout.columns.length - 1;
   const head = layout.columns.length
-    ? layout.columns.map((_, k) => make('tr', {}, [...corner(k === last), ...columns.map(column => make('th', { textContent: column[k].name }))]))
+    ? layout.columns.map((_, k) => make('tr', {}, [...corner(k === last), ...columns.map(column => heading(layout.columns[k], column[k], false))]))
     : [make('tr', {}, [...corner(true), make('th', { textContent: 'Value' })])];
   const body = rows.map((row, r) => {
-    const labels = row.map((element, k) => {
-      const label = make('th', { textContent: element.name });
-      label.style.paddingLeft = `${8 + 16 * (depth(layout.rows[k]) - element.level)}px`;
-      return label;
-    });
+    const labels = row.map((node, k) => heading(layout.rows[k], node, true));
     const cells = columns.map((_, c) => cellNode(visible[r * columns.length + c], results[r * columns.length + c]));
     return make('tr', {}, [...(labels.length ? labels : [make('th', { textContent: 'Value' })]), ...cells]);
   });
@@ -297,6 +357,8 @@ async function write(cells) {
 
 $('cube').onchange = chooseCube;
 $('refresh').onclick = () => render('Refreshed');
+$('expand').onclick = () => { cube.dimensions.forEach(fold['Expand all']); render('Expanded every dimension'); };
+$('collapse').onclick = () => { cube.dimensions.forEach(fold['Collapse all']); render('Collapsed every dimension'); };
 $('begin').onclick = begin;
 $('commit').onclick = () => end('commit', 'Committed');
 $('rollback').onclick = () => end('rollback', 'Rolled back');

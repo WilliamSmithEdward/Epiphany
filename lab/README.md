@@ -32,8 +32,13 @@ cargo run --release -p epiphany-server -- lab lab
     Several dimensions in one zone are nested.
   - **Filters** narrows the dimension to the one element you choose.
   - **Unused** leaves the dimension at its top element, usually its grand total.
-- White cells are leaves: type a value and press Enter or leave the cell to write it.
-- Shaded cells are consolidations, calculated by the server on every refresh.
+- Dimensions on columns and rows are shown as trees that fold:
+  - The arrow beside a consolidation folds or unfolds that one element.
+  - The buttons on a dimension's chip fold that dimension: `++` expands all, `+` expands
+    one level, `−` collapses one level, `−−` collapses all.
+  - **Expand all** and **Collapse all** in the top bar do so for every dimension.
+- Blue cells are leaves: type a value and press Enter or leave the cell to write it.
+- Grey cells are consolidations, calculated by the server on every refresh.
 - **Fill visible leaves** writes random numbers to every numeric leaf on screen in one batch.
 - **Begin** opens a transaction. Until you **Commit**, your writes are visible only on this
   page; open the lab in a second tab to see that others do not see them. **Roll back**
