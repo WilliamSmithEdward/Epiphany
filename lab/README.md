@@ -44,7 +44,7 @@ cargo run --release -p epiphany-server -- lab lab
     Escape abandons the change. Delete clears the selected cell.
 - Yellow cells have a change that is not final yet: either typed but not entered, or
   written inside a transaction that has not been committed.
-- Grey cells are consolidations, calculated by the server on every refresh.
+- Grey cells are consolidations, added up by the server on every refresh.
 - **Fill visible leaves** writes random numbers to every numeric leaf on screen in one batch.
 - **Begin** opens a transaction. Until you **Commit**, your writes are visible only on this
   page; open the lab in a second tab to see that others do not see them. **Roll back**
@@ -84,6 +84,15 @@ feeder:
 ```
 
 `GET /cubes/General%20Ledger/feeders/check` then lists any calculated cells the feeders miss.
+
+The grid shows where each value comes from:
+
+- Purple cells are decided by a rule. In a cube with feeders they are green when fed, and
+  purple with an orange outline when they hold a value that nothing feeds, which means the
+  totals above them leave it out. Once a cube has any feeder, every leaf rule in it needs one.
+- Right-click any cell for the details: its kind, the rule that decides it with its text,
+  what is stored beneath a rule, whether it is fed, and each feeder that feeds it with the
+  cell it was fed from.
 
 ## Data
 

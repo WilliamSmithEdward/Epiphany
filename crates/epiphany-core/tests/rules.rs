@@ -348,6 +348,61 @@ fn a_cell_that_nothing_feeds_is_left_out_and_can_be_found() {
 }
 
 #[test]
+fn a_cell_explains_how_it_comes_by_its_value() {
+    let feeder = "([Account].[Units], [Region].[North]) => [Account].[Revenue]";
+    let database = priced(json!([feeder]));
+    let explain = |at: [&str; 3]| database.explain(None, &cell("Sales", &at), true).unwrap();
+
+    // A calculated leaf that is fed, and by what.
+    let revenue = explain(["North", "Jan", "Revenue"]);
+    assert_eq!(
+        serde_json::to_value(&revenue).unwrap(),
+        json!({
+            "value": 30.0,
+            "kind": "leaf",
+            "stored": 0.0,
+            "writable": false,
+            "rule": { "number": 1, "text": REVENUE },
+            "fed": true,
+            "fed_by": [{
+                "feeder": { "number": 1, "text": feeder },
+                "from": { "cube": "Sales", "at": ["North", "Jan", "Units"] }
+            }]
+        })
+    );
+    // A calculated leaf that nothing feeds.
+    let south = explain(["South", "Jan", "Revenue"]);
+    assert_eq!(
+        (south.fed, south.fed_by.len(), south.rule.is_some()),
+        (Some(false), 0, true)
+    );
+    // A stored leaf: writable, decided by no rule.
+    let units = explain(["North", "Jan", "Units"]);
+    assert_eq!(
+        (units.writable, units.rule, units.stored, units.value),
+        (true, None, Some(Scalar::Number(10.0)), Scalar::Number(10.0))
+    );
+    // A consolidation stores nothing and is not itself fed.
+    let total = explain(["World", "Q1", "Revenue"]);
+    assert_eq!(
+        serde_json::to_value(&total).unwrap(),
+        json!({
+            "value": 50.0, "kind": "consolidated", "stored": null, "writable": false,
+            "rule": null, "fed": null, "fed_by": []
+        })
+    );
+    // In a cube that is not fed, nothing is said about feeding.
+    let unfed = priced(json!([]));
+    let revenue = unfed
+        .explain(None, &cell("Sales", &["North", "Jan", "Revenue"]), true)
+        .unwrap();
+    assert_eq!(
+        (revenue.fed, revenue.writable, revenue.value),
+        (None, false, Scalar::Number(30.0))
+    );
+}
+
+#[test]
 fn feeding_follows_new_data_and_pending_writes() {
     let mut database = priced(json!(["[Account].[Units] => [Account].[Revenue]"]));
     write(&mut database, "Sales", &["South", "Feb", "Units"], 1.0);

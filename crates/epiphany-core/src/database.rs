@@ -57,6 +57,51 @@ pub struct CellWrite {
     pub value: Scalar,
 }
 
+/// How a cell comes by its value.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Explanation {
+    pub value: Scalar,
+    pub kind: CellKind,
+    /// What is stored at the cell, for a leaf or text cell. A rule may hide it.
+    pub stored: Option<Scalar>,
+    /// Whether a value can be written to the cell: it is not consolidated and no rule covers it.
+    pub writable: bool,
+    /// The rule that gives the cell its value, if one does.
+    pub rule: Option<Statement>,
+    /// For a numeric leaf of a cube that is fed, whether the cell is fed. A calculated cell
+    /// that holds a value but is not fed is missing from the cube's consolidations.
+    pub fed: Option<bool>,
+    /// The feeders that feed the cell, when asked for.
+    pub fed_by: Vec<FedBy>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum CellKind {
+    Leaf,
+    Consolidated,
+    Text,
+}
+
+/// A rule or feeder of a cube: its place in the cube's list, counted from one, and its text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Statement {
+    pub number: usize,
+    pub text: String,
+}
+
+/// A feeder that feeds a cell, and the cell it feeds it from. The feeder belongs to the cube
+/// of that cell.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct FedBy {
+    pub feeder: Statement,
+    pub from: CellRef,
+}
+
 /// The outcome of a model update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -213,6 +258,66 @@ impl Database {
             }
         };
         Ok(cells.into_iter().map(named).collect())
+    }
+
+    /// Says how a cell comes by its value: whether it is stored, calculated by a rule or added
+    /// up, whether it is fed, and, when `feeders` is set, which feeders feed it and from
+    /// where. Finding the feeders looks at every stored and fed cell, so it is slow for many
+    /// cells at once.
+    pub fn explain(
+        &self,
+        transaction: Option<TransactionId>,
+        cell: &CellRef,
+        feeders: bool,
+    ) -> Result<Explanation, Error> {
+        let (cube, at) = self.locate(&cell.cube, &cell.at)?;
+        let reader = self.reader(transaction)?;
+        let failed = |error: MdxError| Error::Rule(error.to_string());
+        let (text, consolidated) = reader.kind(cube, &at);
+        let definition = &self.definition.cubes[cube];
+        let rule = reader.ruling(cube, &at).map_err(failed)?;
+        let rule = rule.map(|(index, _)| Statement {
+            number: index + 1,
+            text: definition.rules[index].clone(),
+        });
+        let leaf = !text && !consolidated;
+        let fed_by = match feeders && leaf {
+            true => reader.fed_by(cube, &at, 20).map_err(failed)?,
+            false => Vec::new(),
+        };
+        let fed_by = fed_by.into_iter().map(|(source, index, from)| {
+            let from = self.named(source, &from, Scalar::Number(0.0));
+            FedBy {
+                feeder: Statement {
+                    number: index + 1,
+                    text: self.definition.cubes[source].feeders[index].clone(),
+                },
+                from: CellRef {
+                    cube: from.cube,
+                    at: from.at,
+                },
+            }
+        });
+        let pending = transaction.and_then(|id| self.transactions.get(&id));
+        let stored = self.cells[cube].read_with(
+            &self.model,
+            &self.model.cubes()[cube],
+            &at,
+            pending.map_or(&Writes::default(), |pending| &pending.writes[cube]),
+        );
+        Ok(Explanation {
+            value: reader.read(cube, &at).map_err(failed)?,
+            kind: match (text, consolidated) {
+                (true, _) => CellKind::Text,
+                (_, true) => CellKind::Consolidated,
+                _ => CellKind::Leaf,
+            },
+            stored: (!consolidated).then_some(stored),
+            writable: !consolidated && self.model.cubes()[cube].rule_for_leaf(&at, text).is_none(),
+            rule,
+            fed: leaf.then(|| reader.is_fed(cube, &at)).flatten(),
+            fed_by: fed_by.collect(),
+        })
     }
 
     /// A reader of committed cells, or within a transaction of the cells it would leave.

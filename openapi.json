@@ -9,6 +9,44 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/cells/explain": {
+      "post": {
+        "summary": "Says how each cell comes by its value: stored, calculated by a rule or added up, whether\nit can be written, and whether it is fed. A cell that cannot be explained reports its own\nerror.",
+        "operationId": "explain_cells",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ExplainRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "An explanation or an error for each cell",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ExplainResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cells/read": {
       "post": {
         "summary": "Reads a batch of cells. A cell that cannot be read reports its own error.",
@@ -574,6 +612,14 @@
           }
         }
       },
+      "CellKind": {
+        "type": "string",
+        "enum": [
+          "leaf",
+          "consolidated",
+          "text"
+        ]
+      },
       "CellRef": {
         "type": "object",
         "description": "A cell addressed by cube name and one element name or alias per dimension.",
@@ -882,6 +928,149 @@
           }
         }
       },
+      "ExplainRequest": {
+        "type": "object",
+        "required": [
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CellRef"
+            }
+          },
+          "feeders": {
+            "type": "boolean",
+            "description": "Also say which feeders feed each cell and from where. This looks at every stored and\nfed cell for each cell asked about, so ask it of few cells at a time."
+          },
+          "transaction": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Explain within this transaction, seeing its pending writes.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ExplainResponse": {
+        "type": "object",
+        "required": [
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExplainResult"
+            },
+            "description": "One result per requested cell, in request order."
+          }
+        }
+      },
+      "ExplainResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "cell"
+            ],
+            "properties": {
+              "cell": {
+                "$ref": "#/components/schemas/Explanation"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "$ref": "#/components/schemas/ApiError"
+              }
+            }
+          }
+        ]
+      },
+      "Explanation": {
+        "type": "object",
+        "description": "How a cell comes by its value.",
+        "required": [
+          "value",
+          "kind",
+          "writable",
+          "fed_by"
+        ],
+        "properties": {
+          "fed": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "For a numeric leaf of a cube that is fed, whether the cell is fed. A calculated cell\nthat holds a value but is not fed is missing from the cube's consolidations."
+          },
+          "fed_by": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/FedBy"
+            },
+            "description": "The feeders that feed the cell, when asked for."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CellKind"
+          },
+          "rule": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Statement",
+                "description": "The rule that gives the cell its value, if one does."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stored": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scalar",
+                "description": "What is stored at the cell, for a leaf or text cell. A rule may hide it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "value": {
+            "$ref": "#/components/schemas/Scalar"
+          },
+          "writable": {
+            "type": "boolean",
+            "description": "Whether a value can be written to the cell: it is not consolidated and no rule covers it."
+          }
+        }
+      },
+      "FedBy": {
+        "type": "object",
+        "description": "A feeder that feeds a cell, and the cell it feeds it from. The feeder belongs to the cube\nof that cell.",
+        "required": [
+          "feeder",
+          "from"
+        ],
+        "properties": {
+          "feeder": {
+            "$ref": "#/components/schemas/Statement"
+          },
+          "from": {
+            "$ref": "#/components/schemas/CellRef"
+          }
+        }
+      },
       "FeederCheck": {
         "type": "object",
         "required": [
@@ -1164,6 +1353,23 @@
             "type": "string"
           }
         ]
+      },
+      "Statement": {
+        "type": "object",
+        "description": "A rule or feeder of a cube: its place in the cube's list, counted from one, and its text.",
+        "required": [
+          "number",
+          "text"
+        ],
+        "properties": {
+          "number": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          }
+        }
       },
       "SubsetDef": {
         "oneOf": [

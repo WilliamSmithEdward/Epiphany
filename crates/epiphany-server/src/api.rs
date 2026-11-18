@@ -12,7 +12,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    CellRef, CellWrite, Database, Error, LockMode, ModelUpdate, TransactionId,
+    CellRef, CellWrite, Database, Error, Explanation, LockMode, ModelUpdate, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{AttributeType, ChildDef, Dimension, ElementId, ElementType, ModelDef};
@@ -33,6 +33,7 @@ fn router() -> OpenApiRouter<Shared> {
         .routes(routes!(get_dimension))
         .routes(routes!(read_cells))
         .routes(routes!(write_cells))
+        .routes(routes!(explain_cells))
         .routes(routes!(query))
         .routes(routes!(run_view))
         .routes(routes!(check_feeders))
@@ -259,6 +260,31 @@ struct QueryRequest {
     mdx: String,
 }
 
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct ExplainRequest {
+    /// Explain within this transaction, seeing its pending writes.
+    transaction: Option<u64>,
+    cells: Vec<CellRef>,
+    /// Also say which feeders feed each cell and from where. This looks at every stored and
+    /// fed cell for each cell asked about, so ask it of few cells at a time.
+    #[serde(default)]
+    feeders: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+struct ExplainResponse {
+    /// One result per requested cell, in request order.
+    cells: Vec<ExplainResult>,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum ExplainResult {
+    Cell(Explanation),
+    Error(ApiError),
+}
+
 #[derive(Serialize, ToSchema)]
 struct FeederCheck {
     /// Calculated leaf cells that hold a value but are not fed.
@@ -354,6 +380,33 @@ async fn read_cells(
     };
     Json(ReadResponse {
         cells: request.cells.iter().map(read).collect(),
+    })
+}
+
+/// Says how each cell comes by its value: stored, calculated by a rule or added up, whether
+/// it can be written, and whether it is fed. A cell that cannot be explained reports its own
+/// error.
+#[utoipa::path(
+    post,
+    path = "/cells/explain",
+    request_body = ExplainRequest,
+    responses(
+        (status = OK, body = ExplainResponse, description = "An explanation or an error for each cell"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The request body is malformed")
+    )
+)]
+async fn explain_cells(
+    State(database): State<Shared>,
+    Body(request): Body<ExplainRequest>,
+) -> Json<ExplainResponse> {
+    let database = database.read().unwrap();
+    let explain =
+        |cell: &CellRef| match database.explain(request.transaction, cell, request.feeders) {
+            Ok(cell) => ExplainResult::Cell(cell),
+            Err(error) => ExplainResult::Error(error.into()),
+        };
+    Json(ExplainResponse {
+        cells: request.cells.iter().map(explain).collect(),
     })
 }
 

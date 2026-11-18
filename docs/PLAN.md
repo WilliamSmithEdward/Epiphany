@@ -147,9 +147,13 @@ practice that means:
   asks for feeders.
 - `GET /cubes/{cube}/feeders/check` lists calculated leaf cells that hold a value but are
   not fed, which is how missing feeders are found.
-- Not done: feeders whose target depends on cell values, and a way to tell from a query
-  answer that a cell is calculated (the lab shows such cells as editable and reports the
-  refusal when written).
+- `POST /cells/explain` says how each cell comes by its value: its kind, what is stored,
+  whether it can be written, the rule that decides it, whether it is fed, and on request the
+  feeders that feed it with the cell each fed it from. The lab uses it to colour cells and
+  for its right-click inspector.
+- Once any feeder feeds a cube, every leaf rule of that cube needs feeders: its
+  consolidations then count stored and fed cells only.
+- Not done: feeders whose target depends on cell values.
 
 ### 2.7 MDX
 

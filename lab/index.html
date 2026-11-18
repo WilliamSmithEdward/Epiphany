@@ -52,6 +52,12 @@
   #menu { position: fixed; z-index: 10; display: grid; padding: 4px; background: Canvas; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px rgb(0 0 0 / .35); }
   #menu button { all: unset; padding: 5px 14px; border-radius: 4px; cursor: pointer; }
   #menu button:hover { background: var(--shade); }
+  #menu.panel { gap: 4px; padding: 10px 12px; max-width: 520px; font-size: 13px; }
+  #menu.panel .where { font-weight: 600; margin-bottom: 4px; }
+  #menu.panel code { font: 12px/1.4 ui-monospace, Consolas, monospace; white-space: pre-wrap; padding: 4px 6px; background: var(--shade); border-radius: 4px; }
+  td.ruled { background: color-mix(in srgb, mediumpurple 32%, Canvas); }
+  td.fed { background: color-mix(in srgb, mediumseagreen 32%, Canvas); }
+  td.unfed { background: color-mix(in srgb, mediumpurple 32%, Canvas); box-shadow: inset 0 0 0 2px orange; }
 </style>
 </head>
 <body>
@@ -89,7 +95,11 @@
 <p id="legend">
   <span><i style="background: color-mix(in srgb, Highlight 26%, Canvas)"></i>Leaf: type to write</span>
   <span><i style="background: color-mix(in srgb, gold 60%, Canvas)"></i>Edited: not yet entered, or not yet committed</span>
-  <span><i style="background: var(--shade)"></i>Consolidation or calculation: read-only</span>
+  <span><i style="background: var(--shade)"></i>Consolidation: added up</span>
+  <span><i style="background: color-mix(in srgb, mediumpurple 32%, Canvas)"></i>Rule</span>
+  <span><i style="background: color-mix(in srgb, mediumseagreen 32%, Canvas)"></i>Rule, fed</span>
+  <span><i style="background: color-mix(in srgb, mediumpurple 32%, Canvas); box-shadow: inset 0 0 0 2px orange"></i>Rule, not fed: missing from totals</span>
+  <span>Right-click a cell to see where its value comes from</span>
 </p>
 <main><table id="grid"></table></main>
 <script>
@@ -393,7 +403,9 @@ async function run(text, { sideways = false, typed = false, reason } = {}) {
   $('query').classList.remove('invalid');
   try {
     if (typed) await adopt(result);
-    shown = { text, result, sideways };
+    const facts = await explain(result, sideways);
+    if (turn !== runs) return;
+    shown = { text, result, sideways, facts };
     draw();
   } catch (error) {
     return status(`The grid could not be drawn: ${error.message}`, true);
@@ -447,21 +459,39 @@ function heading(member, listed, indent) {
   return cell;
 }
 
-/** Draws the answer last received. */
-function draw() {
-  const { result, sideways } = shown;
+/** The tuples down the side and across the top of an answer, and the cell where each pair meets. */
+function lay(result, sideways) {
   const columns = sideways ? [[]] : result.axes[0]?.tuples ?? [[]];
   const rows = sideways ? result.axes[0].tuples : result.axes[1]?.tuples ?? [[]];
-  const listed = new Set([...columns, ...rows].flat().map(member => `${member.dimension}\n${member.name}`));
   const sliced = Object.fromEntries(result.slicer.map(member => [member.dimension, member]));
   const fixed = name => sliced[name] ?? { name: topElement(name).name, type: topElement(name).type };
-
-  visible = rows.flatMap(row => columns.map(column => {
+  const cells = rows.flatMap(row => columns.map(column => {
     const members = cube.dimensions.map(name => [...row, ...column].find(member => member.dimension === name) ?? fixed(name));
-    const text = members.at(-1).type === 'string';
-    const stored = members.every(member => member.type !== 'calculated' && (text || member.type !== 'consolidated'));
-    return { at: members.map(member => member.name), editable: stored, text };
+    // A member the query calculates is not an element, so the cell is not one the cube holds.
+    return { at: members.map(member => member.name), held: members.every(member => member.type !== 'calculated') };
   }));
+  return { columns, rows, cells };
+}
+
+/** Asks the server how each cell of an answer comes by its value. */
+async function explain(result, sideways) {
+  const { cells } = lay(result, sideways);
+  const held = cells.filter(cell => cell.held);
+  const asked = held.map(cell => ({ cube: cube.name, at: cell.at }));
+  const answers = asked.length ? (await api('POST', '/cells/explain', { transaction, cells: asked })).cells : [];
+  const facts = new Map(held.map((cell, index) => [cell, answers[index].cell ?? null]));
+  return cells.map(cell => facts.get(cell) ?? null);
+}
+
+/** Draws the answer last received. */
+function draw() {
+  const { result, sideways, facts } = shown;
+  const { columns, rows, cells } = lay(result, sideways);
+  const listed = new Set([...columns, ...rows].flat().map(member => `${member.dimension}\n${member.name}`));
+  visible = cells.map((cell, index) => {
+    const fact = facts[index];
+    return { at: cell.at, held: cell.held, fact, editable: fact?.writable ?? false, text: fact?.kind === 'text' };
+  });
 
   // The row dimension names sit above their labels, on the last header row only.
   // An axis may have no tuples at all, in which case its dimensions are not known.
@@ -488,8 +518,59 @@ function draw() {
 function cellNode(cell, value) {
   const number = typeof value === 'number';
   const shownAs = number ? (value === 0 ? '' : value.toLocaleString(undefined, { maximumFractionDigits: 6 })) : value ?? '';
-  if (!cell.editable) return make('td', { className: 'total', textContent: shownAs, title: 'Calculated from other cells' });
-  return leafNode(cell, number ? (value === 0 ? '' : String(value)) : value ?? '');
+  const node = cell.editable
+    ? leafNode(cell, number ? (value === 0 ? '' : String(value)) : value ?? '')
+    : make('td', { className: 'total', textContent: shownAs });
+  const fact = cell.fact;
+  if (!cell.editable) {
+    // A rule's cell is shown apart from a plain total, and apart again by whether it is fed.
+    // One that holds a value but is not fed is missing from the totals above it.
+    const missed = fact?.rule && fact.fed === false && value !== 0;
+    if (fact?.rule) node.classList.add(missed ? 'unfed' : fact.fed ? 'fed' : 'ruled');
+    node.title = !cell.held ? 'Calculated by the query'
+      : missed ? `Rule ${fact.rule.number}, but not fed: missing from totals`
+      : fact?.rule ? `Rule ${fact.rule.number}${fact.fed ? ', fed' : ''}`
+      : fact?.kind === 'consolidated' ? 'Added up from its leaves' : 'Read-only';
+  }
+  node.oncontextmenu = event => inspect(event, cell, shownAs);
+  return node;
+}
+
+/** Opens a panel saying how a cell comes by its value, where the cell was right-clicked. */
+async function inspect(event, cell, shownAs) {
+  event.preventDefault();
+  closeMenu();
+  const line = (label, text) => make('div', {}, [make('b', { textContent: `${label} ` }), text]);
+  const lines = [make('div', { className: 'where', textContent: `${cube.name}: ${cell.at.join(', ')}` })];
+  const panel = make('div', { id: 'menu', className: 'panel' }, lines);
+  panel.style.left = `${event.clientX}px`;
+  panel.style.top = `${event.clientY}px`;
+  document.body.append(panel);
+  if (!cell.held) return panel.append(line('Value', shownAs), line('Source', 'calculated by the query; the cube holds no such cell'));
+  let fact;
+  try {
+    const asked = { transaction, cells: [{ cube: cube.name, at: cell.at }], feeders: true };
+    fact = (await api('POST', '/cells/explain', asked)).cells[0];
+  } catch (error) {
+    return panel.append(line('Error', error.message));
+  }
+  if (fact.error) return panel.append(line('Error', fact.error.message));
+  fact = fact.cell;
+  const kinds = { leaf: 'leaf', consolidated: 'consolidation', text: 'text' };
+  const source = fact.rule ? `rule ${fact.rule.number}` : fact.kind === 'consolidated' ? 'added up from its leaves' : 'stored';
+  panel.append(
+    line('Value', String(fact.value === 0 ? '0' : fact.value)),
+    line('Kind', kinds[fact.kind]),
+    line('Source', source),
+    line('Writable', fact.writable ? 'yes' : 'no'),
+  );
+  if (fact.rule) panel.append(make('code', { textContent: fact.rule.text }));
+  if (fact.rule && fact.stored) panel.append(line('Stored', `${fact.stored} (hidden by the rule)`));
+  if (fact.fed !== null) panel.append(line('Fed', fact.fed ? 'yes' : fact.rule ? 'no: missing from totals if it holds a value' : 'no'));
+  for (const by of fact.fed_by) {
+    panel.append(line(`Feeder ${by.feeder.number} of ${by.from.cube}`, `from ${by.from.at.join(', ')}`), make('code', { textContent: by.feeder.text }));
+  }
+  if (fact.fed === null && fact.kind === 'leaf' && fact.rule) panel.append(line('Fed', 'this cube has no feeders, so every cell is counted'));
 }
 
 /**

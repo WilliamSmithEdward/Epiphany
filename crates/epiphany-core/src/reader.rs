@@ -137,6 +137,17 @@ impl<'a> Reader<'a> {
     }
 
     fn decide(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {
+        if let Some((_, value)) = self.ruling(cube, at)? {
+            return Ok(value);
+        }
+        match self.kind(cube, at) {
+            (_, true) => self.consolidate(cube, at),
+            (_, false) => Ok(self.stored(cube, at)),
+        }
+    }
+
+    /// Whether a cell is a text cell, and whether it is a consolidated one.
+    pub(crate) fn kind(&self, cube: usize, at: &[ElementId]) -> (bool, bool) {
         let definition = &self.model.cubes()[cube];
         let mut elements = self.elements(definition, at);
         let text = elements
@@ -146,21 +157,69 @@ impl<'a> Reader<'a> {
             && self
                 .elements(definition, at)
                 .any(|e| e.kind == ElementType::Consolidated);
+        (text, consolidated)
+    }
+
+    /// The rule that decides a cell, by its position among the cube's rules, and the value it
+    /// gives. Nothing if no rule covers the cell or the one that does leaves it as it is.
+    pub(crate) fn ruling(&self, cube: usize, at: &[ElementId]) -> Read<Option<(usize, Scalar)>> {
+        let (text, consolidated) = self.kind(cube, at);
         let read = |cube: usize, at: &[ElementId]| self.read(cube, at);
-        for rule in &definition.rules {
+        for (index, rule) in self.model.cubes()[cube].rules.iter().enumerate() {
             if !rule.covers(at, text, consolidated) {
                 continue;
             }
             match evaluate_rule(self.model, cube, rule, at, &read)? {
-                Outcome::Value(value) => return Ok(value),
+                Outcome::Value(value) => return Ok(Some((index, value))),
                 Outcome::Stet => break,
                 Outcome::Continue => {}
             }
         }
-        match consolidated {
-            true => self.consolidate(cube, at),
-            false => Ok(self.stored(cube, at)),
+        Ok(None)
+    }
+
+    /// Whether a leaf cell is fed, in a cube that is fed at all.
+    pub(crate) fn is_fed(&self, cube: usize, at: &[ElementId]) -> Option<bool> {
+        self.fed[cube].as_ref().map(|fed| fed.contains(at))
+    }
+
+    /// The feeders that feed a leaf cell, each with the cell it fed it from: the cube, the
+    /// feeder's position among that cube's feeders, and the source cell. At most `limit`.
+    pub(crate) fn fed_by(
+        &self,
+        cube: usize,
+        at: &[ElementId],
+        limit: usize,
+    ) -> Read<Vec<(usize, usize, Vec<ElementId>)>> {
+        let mut found = Vec::new();
+        for (id, source_cube) in self.model.cubes().iter().enumerate() {
+            if source_cube.feeders.is_empty() {
+                continue;
+            }
+            // Feeders fire from stored cells and from cells that are themselves fed.
+            let stored = self.cells[id].numbers_with(self.pending.map(|pending| &pending[id]));
+            let fed = self.fed[id].iter().flatten().map(|at| &**at);
+            let sources: FxHashSet<&[ElementId]> = stored.map(|(at, _)| at).chain(fed).collect();
+            for source in sources {
+                for (number, feeder) in source_cube.feeders.iter().enumerate() {
+                    if !within(self.model, source_cube, &feeder.source, source) {
+                        continue;
+                    }
+                    for (target_id, target) in feeder_targets(self.model, id, feeder, source)? {
+                        let target: Vec<Option<ElementId>> = target.into_iter().map(Some).collect();
+                        if target_id == cube
+                            && within(self.model, &self.model.cubes()[cube], &target, at)
+                        {
+                            found.push((id, number, source.to_vec()));
+                            if found.len() == limit {
+                                return Ok(found);
+                            }
+                        }
+                    }
+                }
+            }
         }
+        Ok(found)
     }
 
     /// Adds up a consolidated cell that no rule has decided.
@@ -272,6 +331,19 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// Whether a leaf cell lies in an area, where an area element that is a consolidation stands
+/// for every leaf beneath it.
+fn within(model: &Model, cube: &Cube, area: &[Option<ElementId>], at: &[ElementId]) -> bool {
+    let fits = |(position, (wanted, &element)): (usize, (&Option<ElementId>, &ElementId))| {
+        let dimension = &model.dimensions()[cube.dimensions[position] as usize];
+        wanted.is_none_or(|wanted| {
+            let beneath = &dimension.elements[wanted as usize].leaves;
+            wanted == element || beneath.iter().any(|&(leaf, _)| leaf == element)
+        })
+    };
+    area.iter().zip(at).enumerate().all(fits)
+}
+
 /// Works out which leaf cells the feeders feed, starting from every stored cell and following
 /// feeders from fed cells onward.
 pub(crate) fn feed(model: &Model, cells: &[Cells], pending: Option<&[Writes]>) -> Read<Fed> {
@@ -296,17 +368,7 @@ pub(crate) fn feed(model: &Model, cells: &[Cells], pending: Option<&[Writes]>) -
         let cube = &cubes[id];
         for feeder in &cube.feeders {
             // A source that names a consolidation stands for every leaf beneath it.
-            let within = feeder.source.iter().zip(at.iter()).enumerate().all(
-                |(position, (wanted, &element))| {
-                    wanted.is_none_or(|wanted| {
-                        wanted == element
-                            || leaves(cube, position, wanted)
-                                .iter()
-                                .any(|&(leaf, _)| leaf == element)
-                    })
-                },
-            );
-            if !within {
+            if !within(model, cube, &feeder.source, &at) {
                 continue;
             }
             for (target_id, target) in feeder_targets(model, id, feeder, &at)? {
