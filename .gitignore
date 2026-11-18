@@ -1,1 +1,36 @@
-/target
+# Rust build output
+/target/
+**/*.rs.bk
+*.pdb
+
+# .NET build output (Excel-DNA adapter)
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+.vs/
+
+# Server runtime data: snapshots and write logs
+/data/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and tools
+.idea/
+.vscode/
+*.swp
+*~
+.claude/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Excel lock files
+~$*
