@@ -7,6 +7,7 @@
 //!     dimensions/*.json
 //!     cubes/*.json
 //!   data/
+//!     lock                 held by the one process serving the directory
 //!     snapshot.json        every stored cell at some moment
 //!     log.jsonl            one line per commit since the snapshot
 //!     models/<version>/    every earlier model
@@ -18,7 +19,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::error::Error;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -44,6 +45,21 @@ struct Snapshot<'a> {
 /// Opens the database kept in a directory. The directory must hold a `model` folder; the
 /// `data` folder is created on first use.
 pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
+    // Two servers writing one log would corrupt it, so the directory belongs to one process
+    // at a time. The operating system releases the lock when that process ends, however it
+    // ends.
+    let data = directory.join("data");
+    fs::create_dir_all(&data)?;
+    let lock = File::create(data.join("lock"))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(TryLockError::WouldBlock) => {
+            let directory = directory.display();
+            return Err(format!("{directory} is already in use by another server").into());
+        }
+        Err(TryLockError::Error(error)) => return Err(error.into()),
+    }
+
     let (model, next) = (directory.join("model"), directory.join("model.next"));
     // A model update writes the new model beside the old one, then swaps them. Finish or
     // discard an update that was interrupted.
@@ -56,8 +72,6 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
     let version = read_json::<ModelFile>(&model.join("model.json"))?.map_or(1, |file| file.version);
     let mut database = Database::restore(load_model(&model)?, version)?;
 
-    let data = directory.join("data");
-    fs::create_dir_all(&data)?;
     let mut skipped = 0;
     if let Some(snapshot) = read_json::<Snapshot>(&data.join("snapshot.json"))? {
         skipped += database.load(&snapshot.cells);
@@ -89,6 +103,7 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
         directory: directory.to_owned(),
         log: OpenOptions::new().create(true).append(true).open(&log)?,
         log_bytes: recorded.len() as u64,
+        _lock: lock,
     };
     if !recorded.is_empty() {
         files.snapshot(version, &database.cells())?;
@@ -183,6 +198,8 @@ struct Files {
     directory: PathBuf,
     log: File,
     log_bytes: u64,
+    /// Held for as long as the database is open.
+    _lock: File,
 }
 
 impl Journal for Files {

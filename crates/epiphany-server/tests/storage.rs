@@ -101,6 +101,19 @@ fn committed_cells_survive_reopening() {
 }
 
 #[test]
+fn a_directory_serves_one_database_at_a_time() {
+    let home = Home::new("lock");
+    let first = home.open();
+    let refused = open(&home.0).unwrap_err().to_string();
+    assert!(
+        refused.ends_with("is already in use by another server"),
+        "{refused}"
+    );
+    drop(first);
+    home.open();
+}
+
+#[test]
 fn only_committed_transactions_are_kept() {
     let home = Home::new("transactions");
     let mut database = home.open();
