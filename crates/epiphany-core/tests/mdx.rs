@@ -93,6 +93,12 @@ fn columns_rows_and_a_slicer_address_cells() {
         FROM [General Ledger]
         WHERE ([Period].[Jan], [Version].[Actual])");
     assert_eq!(result.cube, "General Ledger");
+    let slicer: Vec<&str> = result
+        .slicer
+        .iter()
+        .map(|m| m.unique_name.as_str())
+        .collect();
+    assert_eq!(slicer, ["[Period].[Jan]", "[Version].[Actual]"]);
     assert_eq!(names(&result, 0), ["US", "UK", "Total Entity"]);
     assert_eq!(names(&result, 1), ["Product Revenue", "Revenue"]);
     assert_eq!(

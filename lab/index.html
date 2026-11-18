@@ -21,37 +21,37 @@
   .grip { width: 8px; height: 12px; opacity: .55; background: radial-gradient(circle, currentColor 1.1px, transparent 1.4px) 0 0 / 4px 4px; }
   .chip select { padding: 1px 4px; }
   .chip small { opacity: .65; }
+  #mdx { padding: 10px 16px 12px; border-bottom: 1px solid var(--line); }
+  #mdx .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 6px; }
+  #mdx .bar label { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
+  #query { width: 100%; box-sizing: border-box; font: 13px/1.45 ui-monospace, Consolas, monospace; padding: 8px; resize: vertical; border: 1px solid var(--line); border-radius: 6px; background: Canvas; color: CanvasText; }
+  #query.invalid { border-color: #c0392b; }
+  #mdxStatus.error { color: #c0392b; }
   #status { margin: 0; padding: 8px 16px; min-height: 1.4em; }
   #status.error { color: #c0392b; }
+  #legend { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin: 0; padding: 0 16px 8px; font-size: 12px; opacity: .85; }
+  #legend i { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; border: 1px solid var(--line); }
   main { padding: 0 16px 24px; overflow: auto; }
   table { border-collapse: collapse; }
   th, td { border: 1px solid var(--line); padding: 0; white-space: nowrap; }
   th { padding: 4px 8px; text-align: left; font-weight: 600; background: var(--shade); }
   thead th { text-align: right; }
   td.total, td.problem { padding: 4px 8px; text-align: right; background: var(--shade); font-weight: 600; cursor: not-allowed; }
+  td.problem { color: #c0392b; font-weight: 400; }
   td.leaf { background: color-mix(in srgb, Highlight 26%, Canvas); }
   td.leaf:hover { background: color-mix(in srgb, Highlight 40%, Canvas); }
-  #legend { display: flex; gap: 16px; align-items: center; margin: 0; padding: 0 16px 8px; font-size: 12px; opacity: .85; }
-  #legend i { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; border: 1px solid var(--line); }
-  td.problem { color: #c0392b; font-weight: 400; }
-  #mdx { padding: 0 16px 32px; border-top: 1px solid var(--line); }
-  #mdx h2 { font-size: 15px; margin: 16px 0 8px; }
-  #mdx div { overflow: auto; }
-  #query { width: min(100%, 900px); box-sizing: border-box; font: 13px/1.4 ui-monospace, Consolas, monospace; padding: 8px; }
-  #mdxStatus.error { color: #c0392b; }
-  #answer td { padding: 4px 8px; text-align: right; }
+  td.leaf.dirty, td.leaf.dirty:hover { background: color-mix(in srgb, gold 60%, Canvas); }
+  td input { width: 9em; border: 0; padding: 4px 8px; text-align: right; background: transparent; color: inherit; }
+  td input.text { text-align: left; width: 16em; }
+  td input:focus { outline: 2px solid Highlight; outline-offset: -2px; }
+  td input[readonly] { cursor: cell; caret-color: transparent; }
+  td input[readonly]::selection { background: transparent; }
   .toggle { all: unset; display: inline-block; width: 16px; text-align: center; cursor: pointer; opacity: .75; }
   .toggle:hover { opacity: 1; }
   .spacer { display: inline-block; width: 16px; }
   #menu { position: fixed; z-index: 10; display: grid; padding: 4px; background: Canvas; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px rgb(0 0 0 / .35); }
   #menu button { all: unset; padding: 5px 14px; border-radius: 4px; cursor: pointer; }
   #menu button:hover { background: var(--shade); }
-  td input { width: 9em; border: 0; padding: 4px 8px; text-align: right; background: transparent; color: inherit; }
-  td input.text { text-align: left; width: 16em; }
-  td input:focus { outline: 2px solid Highlight; outline-offset: -2px; }
-  td input[readonly] { cursor: cell; caret-color: transparent; }
-  td input[readonly]::selection { background: transparent; }
-  td.leaf.dirty, td.leaf.dirty:hover { background: color-mix(in srgb, gold 60%, Canvas); }
 </style>
 </head>
 <body>
@@ -74,21 +74,28 @@
   <div class="zone" data-zone="filters" title="Dimensions narrowed to one element you choose"><b>Filters</b></div>
   <div class="zone" data-zone="unused" title="Dimensions left at their top element"><b>Unused</b></div>
 </section>
+<section id="mdx">
+  <div class="bar">
+    <b>MDX</b>
+    <label><input type="checkbox" id="pretty" checked> Pretty print</label>
+    <button id="copy">Copy</button>
+    <button id="run" title="Ctrl+Enter">Run</button>
+    <span id="mdxStatus"></span>
+  </div>
+  <textarea id="query" rows="7" spellcheck="false"></textarea>
+</section>
 <p id="status"></p>
 <p id="legend">
   <span><i style="background: color-mix(in srgb, Highlight 26%, Canvas)"></i>Leaf: type to write</span>
   <span><i style="background: color-mix(in srgb, gold 60%, Canvas)"></i>Edited: not yet entered, or not yet committed</span>
-  <span><i style="background: var(--shade)"></i>Consolidation: calculated, read-only</span>
+  <span><i style="background: var(--shade)"></i>Consolidation or calculation: read-only</span>
 </p>
 <main><table id="grid"></table></main>
-<section id="mdx">
-  <h2>MDX</h2>
-  <textarea id="query" rows="6" spellcheck="false"></textarea>
-  <p><button id="run">Run query</button> <button id="fromView">Write the view above as MDX</button> <span id="mdxStatus"></span></p>
-  <div><table id="answer"></table></div>
-</section>
 <script>
-const MOST_CELLS = 20000;
+// The grid always shows the answer to the MDX query in the box. Dragging a dimension, folding
+// a hierarchy or choosing a filter rewrites the query; typing a query that the server accepts
+// moves the dimensions, filters and folds to match it.
+
 const $ = id => document.getElementById(id);
 const make = (tag, properties = {}, children = []) => {
   const node = Object.assign(document.createElement(tag), properties);
@@ -97,10 +104,11 @@ const make = (tag, properties = {}, children = []) => {
 };
 const options = (select, names, chosen) =>
   select.replaceChildren(...names.map(name => make('option', { textContent: name, selected: name === chosen })));
-const status = (message, isError = false) => {
-  $('status').textContent = message;
-  $('status').className = isError ? 'error' : '';
+const say = (id, message, isError = false) => {
+  $(id).textContent = message;
+  $(id).className = isError ? 'error' : '';
 };
+const status = (message, isError) => say('status', message, isError);
 
 async function api(method, path, body) {
   const response = await fetch(path, {
@@ -114,19 +122,23 @@ async function api(method, path, body) {
   return data;
 }
 
-let model;                // the model definition
-const dimensions = {};    // dimension views by name, loaded on demand
-let cube;                 // the chosen cube definition
-let layout;               // { columns, rows, filters, unused }: the cube's dimension names by zone
-let slice = {};           // the chosen element of each dimension, used while it is a filter
-let unfolded = {};          // per dimension, the paths of the consolidations shown expanded
-let visible = [];         // { at, editable, text } for every cell on screen
-let transaction = null;   // the open transaction, which reads and writes then go through
+let model;                 // the model definition
+const dimensions = {};     // dimension views by name, loaded on demand
+let cube;                  // the chosen cube: its name and its dimensions' names
+let layout;                // { columns, rows, filters, unused }: the cube's dimension names by zone
+let slice = {};            // the chosen element of each dimension, used while it is a filter
+let unfolded = {};         // per dimension, the names of the consolidations shown expanded
+let transaction = null;    // the open transaction, which reads and writes then go through
 const pending = new Set(); // the cells written in the open transaction, by cellKey
+let shown = null;          // the query last answered: { text, result, sideways }
+let visible = [];          // { at, editable, text } for every cell on screen
 
 async function dimension(name) {
   return dimensions[name] ??= await api('GET', `/dimensions/${encodeURIComponent(name)}`);
 }
+const element = (name, member) => dimensions[name].elements.find(e => e.name === member);
+/** The element a dimension stands at when a query does not mention it: its first top element. */
+const topElement = name => dimensions[name].elements.find(e => !e.parents.length) ?? dimensions[name].elements[0];
 
 // Transactions
 
@@ -156,96 +168,61 @@ async function end(action, done) {
   transaction = null;
   pending.clear();
   showTransaction();
-  await render();
+  await rerun();
 }
 
-// Layout: which dimensions are on columns, on rows, filtered to one chosen element, or unused
+// The view: which dimensions are where, which element each filter is on, and what is folded
 
-/** The element an unused dimension stands at: its first element with no parent. */
-const topElement = name => dimensions[name].elements.find(element => !element.parents.length) ?? dimensions[name].elements[0];
-
-// Hierarchies: a dimension on rows or columns is shown as a tree that can be folded
-
-/**
- * The dimension as a tree, parents before children: one node per path from a top element,
- * so an element with two parents appears under each. Children of a folded node are left
- * out unless `all` is set.
- */
+/** A dimension as a tree, parents before children, leaving out what is under a folded node. */
 function nodes(name, all = false) {
-  const { elements } = dimensions[name];
-  const byName = new Map(elements.map(element => [element.name, element]));
   const found = [];
-  const walk = (element, key, depth) => {
-    const parent = element.children.length > 0;
-    const isOpen = parent && (all || unfolded[name].has(key));
-    found.push({ element, key, depth, parent, open: isOpen });
-    if (isOpen) for (const child of element.children) walk(byName.get(child.name), `${key}\n${child.name}`, depth + 1);
+  const walk = (node, depth) => {
+    const parent = node.children.length > 0;
+    const open = parent && (all || unfolded[name].has(node.name));
+    found.push({ element: node, depth, parent, open });
+    if (open) for (const child of node.children) walk(element(name, child.name), depth + 1);
   };
-  for (const element of elements) if (!element.parents.length) walk(element, element.name, 0);
+  for (const node of dimensions[name].elements) if (!node.parents.length) walk(node, 0);
   return found;
 }
 
 /** The ways to fold a whole dimension, by the name shown to the user. */
 const fold = {
-  'Expand all': name => { unfolded[name] = new Set(nodes(name, true).filter(node => node.parent).map(node => node.key)); },
+  'Expand all': name => { unfolded[name] = new Set(dimensions[name].elements.filter(e => e.children.length).map(e => e.name)); },
   'Expand one level': name => {
     const closed = nodes(name).filter(node => node.parent && !node.open);
     const depth = Math.min(...closed.map(node => node.depth));
-    for (const node of closed) if (node.depth === depth) unfolded[name].add(node.key);
+    for (const node of closed) if (node.depth === depth) unfolded[name].add(node.element.name);
   },
   'Collapse one level': name => {
     const opened = nodes(name).filter(node => node.open);
     const depth = Math.max(...opened.map(node => node.depth));
-    for (const node of opened) if (node.depth === depth) unfolded[name].delete(node.key);
+    for (const node of opened) if (node.depth === depth) unfolded[name].delete(node.element.name);
   },
   'Collapse all': name => { unfolded[name] = new Set(); },
 };
 
-const closeMenu = () => $('menu')?.remove();
-
-/** Opens the menu of ways to fold a dimension, where its chip was right-clicked. */
-function showMenu(event, name) {
-  event.preventDefault();
-  closeMenu();
-  const choose = title => () => { closeMenu(); fold[title](name); render(`${title} on ${name}`); };
-  const items = Object.keys(fold).map(title => make('button', { textContent: title, onclick: choose(title) }));
-  const menu = make('div', { id: 'menu' }, items);
-  menu.style.left = `${event.clientX}px`;
-  menu.style.top = `${event.clientY}px`;
-  document.body.append(menu);
-}
-
-document.addEventListener('click', closeMenu);
-document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenu(); });
-
-/** A row or column heading for a node, with a control to fold it if it has children. */
-function heading(name, node, indent) {
-  const toggle = node.parent
-    ? make('button', {
-        className: 'toggle',
-        textContent: node.open ? '▾' : '▸',
-        title: node.open ? 'Collapse' : 'Expand',
-        onclick: () => { unfolded[name][node.open ? 'delete' : 'add'](node.key); render(); },
-      })
-    : make('span', { className: 'spacer' });
-  const cell = make('th', {}, [toggle, node.element.name]);
-  if (indent) cell.style.paddingLeft = `${8 + 16 * node.depth}px`;
-  return cell;
-}
-
-async function chooseCube() {
-  cube = model.cubes.find(c => c.name === $('cube').value);
-  await Promise.all(cube.dimensions.map(dimension));
-  const [first, second, ...rest] = cube.dimensions;
-  layout = { columns: second ? [second] : [], rows: [first], filters: rest, unused: [] };
+async function chooseCube(name) {
+  const definition = model.cubes.find(c => c.name === name);
+  const views = await Promise.all(definition.dimensions.map(dimension));
+  // The model may spell a dimension differently from the dimension itself; use its own name.
+  cube = { name: definition.name, dimensions: views.map(view => view.name) };
+  for (const view of views) dimensions[view.name] = view;
+  $('cube').value = cube.name;
   slice = {};
   for (const name of cube.dimensions) {
     const elements = dimensions[name].elements;
-    slice[name] = (elements.find(element => element.type !== 'consolidated') ?? elements[0]).name;
+    slice[name] = (elements.find(e => e.type !== 'consolidated') ?? elements[0]).name;
     fold['Expand all'](name);
   }
+}
+
+async function openCube() {
+  await chooseCube($('cube').value);
+  const [first, second, ...rest] = cube.dimensions;
+  layout = { columns: second ? [second] : [], rows: [first], filters: rest, unused: [] };
   showLayout();
-  await render();
+  await apply();
 }
 
 function chip(name, kind) {
@@ -258,8 +235,10 @@ function chip(name, kind) {
   };
   node.ondragend = () => node.classList.remove('dragging');
   if (kind === 'filters') {
-    const select = make('select', { onchange: () => { slice[name] = select.value; render(); } });
-    options(select, dimensions[name].elements.map(element => element.name), slice[name]);
+    const select = make('select', { onchange: () => { slice[name] = select.value; apply(); } });
+    const names = dimensions[name].elements.map(e => e.name);
+    // A typed query may filter on a member that is not an element, such as a calculated one.
+    options(select, names.includes(slice[name]) ? names : [slice[name], ...names], slice[name]);
     node.append(select);
   }
   if (kind === 'unused') node.append(make('small', { textContent: topElement(name).name }));
@@ -285,7 +264,7 @@ function move(name, kind, before) {
   const index = before ? layout[kind].indexOf(before) : -1;
   layout[kind].splice(index < 0 ? layout[kind].length : index, 0, name);
   showLayout();
-  render(`Moved ${name} to ${kind}`);
+  apply(`Moved ${name} to ${kind}`);
 }
 
 for (const zone of document.querySelectorAll('.zone')) {
@@ -304,79 +283,212 @@ for (const zone of document.querySelectorAll('.zone')) {
   };
 }
 
+const closeMenu = () => $('menu')?.remove();
+
+/** Opens the menu of ways to fold a dimension, where its chip was right-clicked. */
+function showMenu(event, name) {
+  event.preventDefault();
+  closeMenu();
+  const choose = title => () => { closeMenu(); fold[title](name); apply(`${title} on ${name}`); };
+  const items = Object.keys(fold).map(title => make('button', { textContent: title, onclick: choose(title) }));
+  const menu = make('div', { id: 'menu' }, items);
+  menu.style.left = `${event.clientX}px`;
+  menu.style.top = `${event.clientY}px`;
+  document.body.append(menu);
+}
+
+document.addEventListener('click', closeMenu);
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenu(); });
+
+// MDX: written from the view, or typed and then read back into the view
+
+const bracket = name => `[${name.replaceAll(']', ']]')}]`;
+const unique = (name, member) => `${bracket(name)}.${bracket(member)}`;
+
+/** The view as a query. MDX has no rows without columns, so rows alone go on the columns axis. */
+function generate() {
+  const axis = names => names
+    .map(name => `{${nodes(name).map(node => unique(name, node.element.name)).join(', ')}}`)
+    .join(' * ');
+  const [columns, rows] = [axis(layout.columns), axis(layout.rows)];
+  const axes = columns && rows ? [`${columns} ON COLUMNS`, `${rows} ON ROWS`]
+    : columns || rows ? [`${columns || rows} ON COLUMNS`] : [];
+  const where = layout.filters.map(name => unique(name, slice[name]));
+  return `SELECT ${axes.join(', ')} FROM ${bracket(cube.name)}${where.length ? ` WHERE (${where.join(', ')})` : ''}`;
+}
+
+const KEYWORDS = ['SELECT', 'FROM', 'WHERE', 'WITH', 'MEMBER', 'SET', 'AS', 'ON', 'AND', 'OR', 'NOT', 'NON', 'EMPTY', 'DIMENSION', 'PROPERTIES'];
+const TOKEN = /\[(?:[^\]]|\]\])*\]|"(?:[^"]|"")*"|'(?:[^']|'')*'|--[^\n]*|[A-Za-z_]\w*|\d+(?:\.\d+)?|<>|<=|>=|[(){},.+\-*\/=<>:]|\s+|./g;
+
+/**
+ * Lays a query out again: on one line, or pretty with a line for each clause, axis and
+ * cross-joined set, and long lists wrapped. Text that cannot be split into tokens is returned
+ * as it is.
+ */
+function format(text, pretty) {
+  const tokens = (text.match(TOKEN) ?? []).filter(token => !/^\s+$/.test(token));
+  if (tokens.some(token => token.length === 1 && !/[\w(){},.+\-*\/=<>:]/.test(token))) return text;
+  const lines = [''];
+  const write = token => { lines[lines.length - 1] += token; };
+  const line = indent => { if (lines.at(-1).trim()) lines.push(' '.repeat(indent)); else lines[lines.length - 1] = ' '.repeat(indent); };
+  let depth = 0;
+  let previous = null;
+  for (const token of tokens) {
+    const word = /^[A-Za-z_]/.test(token) ? token.toUpperCase() : null;
+    const keyword = KEYWORDS.includes(word);
+    const top = depth === 0;
+    if (pretty && top && ['SELECT', 'FROM', 'WHERE', 'WITH'].includes(word) && previous !== null) line(0);
+    else if (pretty && top && ['MEMBER', 'SET'].includes(word)) line(2);
+    else if (pretty && top && token === '*') line(4);
+    else if (previous !== null && lines.at(-1).trim()) {
+      const tight = '({.'.includes(previous) || ')},.'.includes(token)
+        || (token === '(' && /^[\w\]]/.test(previous) && !KEYWORDS.includes(previous.toUpperCase()))
+        || (previous === '-' && lines.at(-1).trimEnd().match(/[(,=<>+\-*\/]\s*-$|^\s*-$/));
+      if (!tight) write(' ');
+    }
+    write(keyword ? word : token);
+    if ('({'.includes(token)) depth += 1;
+    if (')}'.includes(token)) depth -= 1;
+    if (token.startsWith('--')) line(0);
+    else if (pretty && word === 'SELECT' && top) line(2);
+    else if (pretty && token === ',' && depth === 0) line(2);
+    else if (pretty && token === ',' && lines.at(-1).length > 96) line(6);
+    previous = token;
+  }
+  return lines.join('\n').trimEnd();
+}
+
+let runs = 0;              // counts queries sent, so a slow answer never replaces a newer one
+
+/** Rewrites the query from the view, then runs it. */
+async function apply(reason) {
+  const text = format(generate(), $('pretty').checked);
+  $('query').value = text;
+  // Rows alone are sent on the columns axis but still drawn down the side.
+  await run(text, { sideways: !layout.columns.length && layout.rows.length > 0, reason });
+}
+
+/** Runs the query last answered again, to show values that have changed. */
+const rerun = reason => shown ? run(shown.text, { sideways: shown.sideways, reason }) : null;
+
+/**
+ * Sends a query. If the server answers, the grid shows the answer; a typed query also moves
+ * the dimensions, filters and folds to match what it asked for.
+ */
+async function run(text, { sideways = false, typed = false, reason } = {}) {
+  const turn = ++runs;
+  let result;
+  try {
+    result = await api('POST', '/mdx', { transaction, mdx: text });
+  } catch (error) {
+    if (turn === runs) {
+      $('query').classList.add('invalid');
+      say('mdxStatus', error.message, true);
+    }
+    return;
+  }
+  if (turn !== runs) return;
+  $('query').classList.remove('invalid');
+  try {
+    if (typed) await adopt(result);
+    shown = { text, result, sideways };
+    draw();
+  } catch (error) {
+    return status(`The grid could not be drawn: ${error.message}`, true);
+  }
+  const more = result.axes.length > 2 ? ' Only the first page of the further axes is shown.' : '';
+  say('mdxStatus', `${result.cells.length.toLocaleString()} cells.${more}`);
+  if (reason) status(`${reason}.`);
+}
+
+/** Moves the view to match the answer to a typed query. */
+async function adopt(result) {
+  if (result.cube !== cube.name) await chooseCube(result.cube);
+  const on = axis => [...new Set((result.axes[axis]?.tuples[0] ?? []).map(member => member.dimension))];
+  const [columns, rows] = [on(0), on(1)];
+  const filters = result.slicer.map(member => member.dimension);
+  for (const member of result.slicer) slice[member.dimension] = member.name;
+  const placed = [...columns, ...rows, ...filters];
+  layout = { columns, rows, filters, unused: cube.dimensions.filter(name => !placed.includes(name)) };
+  // A consolidation is unfolded if the query shows anything beneath it, so that folding by
+  // hand afterwards starts from a tree that still contains what the query showed.
+  for (const name of [...columns, ...rows]) {
+    const listed = new Set(result.axes.flatMap(axis => axis.tuples.flat()).filter(m => m.dimension === name).map(m => m.name));
+    const covers = node => node.children.some(child => listed.has(child.name) || covers(element(name, child.name)));
+    unfolded[name] = new Set(dimensions[name].elements.filter(covers).map(e => e.name));
+  }
+  showLayout();
+}
+
 // Grid
 
-/** Every combination of one shown node from each of the named dimensions. */
-const tuples = names => names.reduce(
-  (found, name) => found.flatMap(tuple => nodes(name).map(node => [...tuple, node])),
-  [[]],
-);
+const cellKey = cell => [cell.cube ?? cube.name, ...cell.at].join('\n');
 
-function isEditable(elements) {
-  const text = elements.at(-1).type === 'string';
-  return { text, editable: text || elements.every(element => element.type !== 'consolidated') };
+/** A row or column heading for a member, with a control to fold it if it has children. */
+function heading(member, listed, indent) {
+  const node = dimensions[member.dimension] && element(member.dimension, member.name);
+  const parent = member.type === 'consolidated' && node?.children.length > 0;
+  const open = parent && node.children.some(child => listed.has(`${member.dimension}\n${child.name}`));
+  const toggle = parent
+    ? make('button', {
+        className: 'toggle',
+        textContent: open ? '▾' : '▸',
+        title: open ? 'Collapse' : 'Expand',
+        onclick: () => { unfolded[member.dimension][open ? 'delete' : 'add'](member.name); apply(); },
+      })
+    : make('span', { className: 'spacer' });
+  const cell = make('th', { title: `${member.unique_name} (${member.type})` }, [toggle, member.name]);
+  if (indent) {
+    const deepest = Math.max(...dimensions[member.dimension].elements.map(e => e.level));
+    cell.style.paddingLeft = `${8 + 16 * (deepest - member.level)}px`;
+  }
+  return cell;
 }
 
-let renders = 0;          // counts reads of the grid, so a slow answer never replaces a newer one
-
-/** Reads every cell of the current layout from the server and redraws the grid. */
-async function render(reason) {
-  try {
-    await draw(++renders, reason);
-  } catch (error) {
-    status(`The grid could not be redrawn: ${error.message}`, true);
-  }
-}
-
-async function draw(turn, reason) {
-  const [rows, columns] = [tuples(layout.rows), tuples(layout.columns)];
-  if (rows.length * columns.length > MOST_CELLS) {
-    $('grid').replaceChildren();
-    return status(`That layout has ${(rows.length * columns.length).toLocaleString()} cells; move a dimension to the filters.`, true);
-  }
-  const pick = (name, row, column) =>
-    row[layout.rows.indexOf(name)]?.element ?? column[layout.columns.indexOf(name)]?.element
-      ?? (layout.unused.includes(name) ? topElement(name) : dimensions[name].elements.find(element => element.name === slice[name]));
+/** Draws the answer last received. */
+function draw() {
+  const { result, sideways } = shown;
+  const columns = sideways ? [[]] : result.axes[0]?.tuples ?? [[]];
+  const rows = sideways ? result.axes[0].tuples : result.axes[1]?.tuples ?? [[]];
+  const listed = new Set([...columns, ...rows].flat().map(member => `${member.dimension}\n${member.name}`));
+  const sliced = Object.fromEntries(result.slicer.map(member => [member.dimension, member]));
+  const fixed = name => sliced[name] ?? { name: topElement(name).name, type: topElement(name).type };
 
   visible = rows.flatMap(row => columns.map(column => {
-    const elements = cube.dimensions.map(name => pick(name, row, column));
-    return { at: elements.map(element => element.name), ...isEditable(elements) };
+    const members = cube.dimensions.map(name => [...row, ...column].find(member => member.dimension === name) ?? fixed(name));
+    const text = members.at(-1).type === 'string';
+    const stored = members.every(member => member.type !== 'calculated' && (text || member.type !== 'consolidated'));
+    return { at: members.map(member => member.name), editable: stored, text };
   }));
-  let results;
-  try {
-    const cells = visible.map(cell => ({ cube: cube.name, at: cell.at }));
-    results = (await api('POST', '/cells/read', { transaction, cells })).cells;
-  } catch (error) {
-    return status(error.message, true);
-  }
-  if (turn !== renders) return;
 
   // The row dimension names sit above their labels, on the last header row only.
-  const corner = named => layout.rows.length ? layout.rows.map(name => make('th', { textContent: named ? name : '' })) : [make('th')];
-  const last = layout.columns.length - 1;
-  const head = layout.columns.length
-    ? layout.columns.map((_, k) => make('tr', {}, [...corner(k === last), ...columns.map(column => heading(layout.columns[k], column[k], false))]))
+  // An axis may have no tuples at all, in which case its dimensions are not known.
+  const [across, down] = [columns[0] ?? [], rows[0] ?? []];
+  const depth = across.length;
+  const corner = named => down.length ? down.map(member => make('th', { textContent: named ? member.dimension : '' })) : [make('th')];
+  const head = depth
+    ? across.map((_, k) => make('tr', {}, [...corner(k === depth - 1), ...columns.map(column => heading(column[k], listed, false))]))
     : [make('tr', {}, [...corner(true), make('th', { textContent: 'Value' })])];
   const body = rows.map((row, r) => {
-    const labels = row.map((node, k) => heading(layout.rows[k], node, true));
-    const cells = columns.map((_, c) => cellNode(visible[r * columns.length + c], results[r * columns.length + c]));
-    return make('tr', {}, [...(labels.length ? labels : [make('th', { textContent: 'Value' })]), ...cells]);
+    const labels = row.length ? row.map(member => heading(member, listed, true)) : [make('th', { textContent: 'Value' })];
+    const cells = columns.map((_, c) => {
+      const index = r * columns.length + c;
+      return cellNode(visible[index], result.cells[index]);
+    });
+    return make('tr', {}, [...labels, ...cells]);
   });
   // Redrawing replaces every cell, so put the selection back where it was.
   const selected = document.activeElement?.dataset?.key;
   $('grid').replaceChildren(make('thead', {}, head), make('tbody', {}, body));
   if (selected) [...$('grid').querySelectorAll('input')].find(input => input.dataset.key === selected)?.focus();
-  if (typeof reason === 'string') status(`${reason}: read ${visible.length.toLocaleString()} cells.`);
 }
 
-function cellNode(cell, result) {
-  if (result.error) return make('td', { className: 'problem', textContent: result.error.code, title: result.error.message });
-  const shown = cell.text ? result.value : result.value === 0 ? '' : result.value.toLocaleString(undefined, { maximumFractionDigits: 6 });
-  if (!cell.editable) return make('td', { className: 'total', textContent: shown, title: 'Consolidation: calculated from its leaves' });
-  return leafNode(cell, cell.text ? result.value : result.value === 0 ? '' : String(result.value));
+function cellNode(cell, value) {
+  const number = typeof value === 'number';
+  const shownAs = number ? (value === 0 ? '' : value.toLocaleString(undefined, { maximumFractionDigits: 6 })) : value ?? '';
+  if (!cell.editable) return make('td', { className: 'total', textContent: shownAs, title: 'Calculated from other cells' });
+  return leafNode(cell, number ? (value === 0 ? '' : String(value)) : value ?? '');
 }
-
-const cellKey = cell => [cell.cube ?? cube.name, ...cell.at].join('\n');
 
 /**
  * A leaf cell that behaves like a spreadsheet cell. Clicking selects it. Typing replaces its
@@ -429,7 +541,7 @@ function leafNode(cell, original) {
 
 const STEPS = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
 
-/** Moves the selection to the next leaf cell in a direction, passing over consolidations. */
+/** Moves the selection to the next leaf cell in a direction, passing over calculated cells. */
 function step(from, down, right) {
   let row = from.parentElement;
   let index = from.cellIndex;
@@ -453,66 +565,31 @@ async function write(cells) {
   } catch (error) {
     status(error.message, true);
   }
-  await render();
+  await rerun();
 }
 
-// MDX
+// Controls
 
-const bracket = name => `[${name.replaceAll(']', ']]')}]`;
-const unique = (dimension, element) => `${bracket(dimension)}.${bracket(element)}`;
+let typing = null;         // the wait before a query being typed is tried
+const tryTyped = () => { clearTimeout(typing); run($('query').value, { typed: true }); };
 
-/** The grid above as an MDX query: the same members on the same axes, and the same slice. */
-function viewAsMdx() {
-  const axis = names => names.length
-    ? names.map(name => `{${nodes(name).map(node => unique(name, node.element.name)).join(', ')}}`).join(' * ')
-    : null;
-  const [columns, rows] = [axis(layout.columns), axis(layout.rows)];
-  const sliced = [
-    ...layout.filters.map(name => unique(name, slice[name])),
-    ...layout.unused.map(name => unique(name, topElement(name).name)),
-    // MDX needs columns before rows, so with rows only they go on columns and nothing is lost.
-  ];
-  const axes = columns && rows ? [`${columns} ON COLUMNS`, `${rows} ON ROWS`]
-    : columns || rows ? [`${columns ?? rows} ON COLUMNS`] : [];
-  const where = sliced.length ? `\nWHERE (${sliced.join(', ')})` : '';
-  return `SELECT ${axes.join(',\n       ')}\nFROM ${bracket(cube.name)}${where}`;
-}
-
-async function runQuery() {
-  const note = (message, isError = false) => {
-    $('mdxStatus').textContent = message;
-    $('mdxStatus').className = isError ? 'error' : '';
-  };
-  let result;
+$('query').oninput = () => { clearTimeout(typing); typing = setTimeout(tryTyped, 700); };
+$('query').onkeydown = event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); tryTyped(); } };
+$('run').onclick = tryTyped;
+$('pretty').onchange = () => { $('query').value = format($('query').value, $('pretty').checked); };
+$('copy').onclick = async () => {
   try {
-    result = await api('POST', '/mdx', { transaction, mdx: $('query').value });
+    await navigator.clipboard.writeText($('query').value);
+    say('mdxStatus', 'Copied.');
   } catch (error) {
-    $('answer').replaceChildren();
-    return note(error.message, true);
+    $('query').select();
+    say('mdxStatus', 'Could not reach the clipboard; the query is selected, so press Ctrl+C.', true);
   }
-  const columns = result.axes[0]?.tuples ?? [[]];
-  const rows = result.axes[1]?.tuples ?? [[]];
-  const corner = () => rows[0].length ? rows[0].map(() => make('th')) : [];
-  const members = member => make('th', { textContent: member.name, title: `${member.unique_name} (${member.type}, level ${member.level})` });
-  const head = columns[0].map((_, k) => make('tr', {}, [...corner(), ...columns.map(column => members(column[k]))]));
-  const body = rows.map((row, r) => make('tr', {}, [
-    ...row.map(members),
-    ...columns.map((_, c) => {
-      const value = result.cells[r * columns.length + c];
-      return make('td', { textContent: typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 6 }) : value ?? '' });
-    }),
-  ]));
-  $('answer').replaceChildren(make('thead', {}, head), make('tbody', {}, body));
-  const pages = result.axes.length > 2 ? ' Only the first page of the further axes is shown.' : '';
-  note(`${result.cells.length.toLocaleString()} cells.${pages}`);
-}
-
-$('run').onclick = runQuery;
-$('fromView').onclick = () => { $('query').value = viewAsMdx(); runQuery(); };
-$('cube').onchange = chooseCube;
-$('refresh').onclick = () => render('Refreshed');
-$('expand').onclick = () => { cube.dimensions.forEach(fold['Expand all']); render('Expanded every dimension'); };
-$('collapse').onclick = () => { cube.dimensions.forEach(fold['Collapse all']); render('Collapsed every dimension'); };
+};
+$('cube').onchange = openCube;
+$('refresh').onclick = () => rerun('Refreshed');
+$('expand').onclick = () => { [...layout.columns, ...layout.rows].forEach(fold['Expand all']); apply('Expanded every dimension'); };
+$('collapse').onclick = () => { [...layout.columns, ...layout.rows].forEach(fold['Collapse all']); apply('Collapsed every dimension'); };
 $('begin').onclick = begin;
 $('commit').onclick = () => end('commit', 'Committed');
 $('rollback').onclick = () => end('rollback', 'Rolled back');
@@ -525,10 +602,10 @@ showTransaction();
     model = (await api('GET', '/model')).model;
     // Open on the first cube that holds numbers rather than text.
     const lasts = await Promise.all(model.cubes.map(c => dimension(c.dimensions.at(-1))));
-    const numeric = model.cubes.find((_, index) => lasts[index].elements.some(element => element.type !== 'string'));
+    const numeric = model.cubes.find((_, index) => lasts[index].elements.some(e => e.type !== 'string'));
     options($('cube'), model.cubes.map(c => c.name), numeric?.name);
-    await chooseCube();
-    status('Ready. Drag dimensions between columns, rows, filters and unused.');
+    await openCube();
+    status('Ready. Drag dimensions between the zones, or type a query.');
   } catch (error) {
     status(error.message, true);
   }

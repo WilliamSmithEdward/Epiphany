@@ -52,10 +52,21 @@ cargo run --release -p epiphany-server -- lab lab
 
 ## MDX
 
-Below the grid is a box for MDX queries. **Run query** sends it to the server and shows the
-answer as a table; hover a heading for the member's unique name, type and level. **Write the
-view above as MDX** fills the box with a query for exactly what the grid shows, which is a
-good starting point to edit. Inside a transaction, queries see its pending writes.
+The grid always shows the answer to the query in the MDX box, and the two drive each other:
+
+- Dragging a dimension, folding a hierarchy or choosing a filter rewrites the query and runs it.
+- Typing a query runs it a moment after you stop, or at once with **Run** or Ctrl+Enter.
+  While the server rejects it, the box is outlined in red with the reason beside it, and the
+  grid keeps what it showed. Once the server accepts it, the grid shows its answer and the
+  dimensions, filters and folds move to match it.
+- A typed query can show things the controls cannot, such as calculated members, filtered
+  sets or a different cube. The next change made with the controls rewrites the query from
+  the standard tree of each dimension, keeping unfolded whatever your query showed.
+- **Pretty print** switches between one line and a laid-out query, without running it.
+- **Copy** puts the query on the clipboard.
+
+Cells can be edited whatever query is showing, provided the cell is a stored leaf. Inside a
+transaction, queries see its pending writes. Hover a heading for the member's unique name.
 
 ## Data
 

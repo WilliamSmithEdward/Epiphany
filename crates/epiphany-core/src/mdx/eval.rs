@@ -113,14 +113,15 @@ impl Query {
             true => Ok(()),
             false => fail("a dimension is used on more than one axis or in the slicer"),
         };
-        if let Some(slicer) = &self.slicer {
-            let tuple = match evaluator.evaluate(slicer, &context)? {
+        let mut slicer = Tuple::new();
+        if let Some(expression) = &self.slicer {
+            slicer = match evaluator.evaluate(expression, &context)? {
                 Datum::Member(member) => vec![member],
                 Datum::Tuple(tuple) => tuple,
                 _ => return fail("WHERE takes a member or a tuple"),
             };
-            claim(&tuple)?;
-            context = with(&context, &tuple);
+            claim(&slicer)?;
+            context = with(&context, &slicer);
         }
 
         let mut axes: Vec<&Axis> = self.axes.iter().collect();
@@ -199,6 +200,10 @@ impl Query {
             cube: cube.name.clone(),
             cells: kept_cells.collect(),
             axes: axes.collect(),
+            slicer: slicer
+                .iter()
+                .map(|&member| evaluator.describe(member, &[]))
+                .collect(),
         })
     }
 }

@@ -58,6 +58,9 @@ pub struct QueryResult {
     pub cube: String,
     /// The columns axis, then the rows axis, then any further axes the query has.
     pub axes: Vec<AxisResult>,
+    /// The members the `WHERE` clause narrows the query to. A dimension that is neither here
+    /// nor on an axis stands at its first top element.
+    pub slicer: Vec<MemberResult>,
     pub cells: Vec<Option<Value>>,
 }
 

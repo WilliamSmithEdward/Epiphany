@@ -840,6 +840,7 @@
         "required": [
           "cube",
           "axes",
+          "slicer",
           "cells"
         ],
         "properties": {
@@ -856,6 +857,13 @@
           },
           "cube": {
             "type": "string"
+          },
+          "slicer": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MemberResult"
+            },
+            "description": "The members the `WHERE` clause narrows the query to. A dimension that is neither here\nnor on an axis stands at its first top element."
           }
         }
       },
