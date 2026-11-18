@@ -1,0 +1,59 @@
+# Excel adapter
+
+An Excel add-in that gives worksheets the PAfE functions (`DBRW`, `DBS`, `SUBNM` and the
+rest) against an Epiphany server. It holds no OLAP logic: every function is a question to
+the server's API. What each function takes and returns is in
+[docs/PAFE-COMPATIBILITY.md](../docs/PAFE-COMPATIBILITY.md).
+
+## Build
+
+Needs the .NET SDK. From the repository root:
+
+```
+dotnet build adapter/Epiphany.Excel -c Release
+```
+
+The add-in is then `adapter/Epiphany.Excel/bin/Release/net472/publish/Epiphany64-packed.xll`
+for 64-bit Excel (`Epiphany-packed.xll` for 32-bit). It is one file and needs nothing
+installed beside Excel, and no administrator rights.
+
+## Use
+
+1. Start a server, for example the lab: `lab\start.cmd`.
+2. In Excel, open the `.xll` file (File, Open), and allow the add-in for the session.
+3. Enter a formula:
+
+   ```
+   =DBRW("General Ledger", "Revenue", "Total Entity", "Q1", "Actual")
+   ```
+
+The add-in looks for the server at `http://127.0.0.1:8080`. The **Epiphany** menu, on Excel's
+Add-ins tab, has:
+
+- **Connect...** to name another server and to sign in.
+- **Disconnect** to sign out.
+- **Refresh** (Ctrl+Shift+R) to fetch every formula's value again.
+
+A cell shows `#N/A` while its value is on its way and when the server cannot be reached, and
+`*KEY_ERR` when the cube or an element it names does not exist.
+
+## Test
+
+```
+cargo build -p epiphany-server
+dotnet test adapter/Epiphany.Excel.Tests
+```
+
+The tests start a real server on a copy of the example model and ask it through the same
+code the worksheet functions use. They do not need Excel.
+
+## Layout
+
+| File | Purpose |
+| --- | --- |
+| `Epiphany.Excel/Functions.cs` | The worksheet functions. |
+| `Epiphany.Excel/Connection.cs` | The server: batched cell reads and writes, dimensions, sign-in. |
+| `Epiphany.Excel/Dimension.cs` | A copy of a dimension and the answers read from it. |
+| `Epiphany.Excel/AddIn.cs` | The menu commands and the sign-in window. |
+| `Epiphany.Excel/Json.cs` | JSON reading and writing. |
+| `Epiphany.Excel.Tests/` | The tests. |

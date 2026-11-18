@@ -284,6 +284,24 @@ practice that means:
 - Lookups (DIMNM, DIMIX, ELLEV, ELPAR, ELCOMP, ATTRS, ATTRN, DBRA) are answered from a
   per-connection metadata cache, refreshed when the model version changes.
 - SUBNM resolves against subsets and aliases through the same cache.
+- Done (in `adapter/`, table in `docs/PAFE-COMPATIBILITY.md`):
+  - An Excel-DNA add-in for the .NET Framework, which Windows already has, with no
+    libraries of its own beyond Excel-DNA.
+  - Every function of the compatibility list, plus `DIMSIZ`, `ELCOMPN` and `ELPARN`.
+  - Reads and writes asked for within twenty milliseconds of each other go as one request
+    each, the writes first. A write the server refuses gets `*KEY_ERR` and is left out; the
+    rest are sent again together.
+  - Dimension functions answer from a copy of the dimension fetched once per connection.
+  - Connect, Disconnect and Refresh commands; a sign-in window that opens when the server
+    refuses a request; the address and user name remembered, never the password.
+  - Tests that run the connection against a real server, without Excel.
+- Not done, or done differently:
+  - The table is recalled, not observed: no PAfE installation was at hand. Its unverified
+    rows still need checking against a real PAfE workbook.
+  - The dimension copies are renewed by the Refresh command, not by watching the model
+    version; the API has no cheap way to ask for the version alone.
+  - Nothing has been checked inside Excel yet; "every row passes in Excel" is still open.
+  - See "Not replicated" in the table for the PAfE features left out.
 
 ## 5. Build order
 

@@ -18,3 +18,13 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+  # The Excel adapter: built, then tested against a real server. Excel itself is not needed.
+  adapter:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo build -p epiphany-server
+      - run: dotnet test adapter/Epiphany.Excel.Tests
