@@ -12,7 +12,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    CellRef, CellWrite, Database, Error, Explanation, LockMode, ModelUpdate, TransactionId,
+    CellRef, CellWrite, Database, Error, Explanation, LockMode, ModelUpdate, Spread, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{AttributeType, ChildDef, Dimension, ElementId, ElementType, ModelDef};
@@ -34,6 +34,7 @@ fn router() -> OpenApiRouter<Shared> {
         .routes(routes!(read_cells))
         .routes(routes!(write_cells))
         .routes(routes!(explain_cells))
+        .routes(routes!(spread_cells))
         .routes(routes!(query))
         .routes(routes!(run_view))
         .routes(routes!(check_feeders))
@@ -285,6 +286,21 @@ enum ExplainResult {
     Error(ApiError),
 }
 
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct SpreadRequest {
+    /// Hold the writes in this transaction until it commits. Without it they are committed
+    /// at once.
+    transaction: Option<u64>,
+    spread: Spread,
+}
+
+#[derive(Serialize, ToSchema)]
+struct SpreadResult {
+    /// How many leaf cells were written.
+    written: usize,
+}
+
 #[derive(Serialize, ToSchema)]
 struct FeederCheck {
     /// Calculated leaf cells that hold a value but are not fed.
@@ -430,6 +446,29 @@ async fn write_cells(
     let mut database = database.write().unwrap();
     database.write(request.transaction, &request.cells)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Writes a value to a consolidated cell by sharing it out among its leaves, as one batch:
+/// every leaf is written or none.
+#[utoipa::path(
+    post,
+    path = "/cells/spread",
+    request_body = SpreadRequest,
+    responses(
+        (status = OK, body = SpreadResult, description = "The value was spread"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown transaction"),
+        (status = CONFLICT, body = ApiError, description = "Another transaction holds a lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The spread is invalid, or the request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
+)]
+async fn spread_cells(
+    State(database): State<Shared>,
+    Body(request): Body<SpreadRequest>,
+) -> Result<Json<SpreadResult>, ApiError> {
+    let mut database = database.write().unwrap();
+    let written = database.spread(request.transaction, &request.spread)?;
+    Ok(Json(SpreadResult { written }))
 }
 
 /// Answers an MDX query.

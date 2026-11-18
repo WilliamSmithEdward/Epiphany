@@ -283,6 +283,8 @@ pub enum CellError {
     Calculated,
     /// The number written was infinite or not a number.
     NotFinite,
+    /// A value could not be shared out among the leaves of a cell; the text says why.
+    Spread(String),
 }
 
 impl CellError {
@@ -296,6 +298,7 @@ impl CellError {
             Self::WrongType => "wrong_type",
             Self::Calculated => "calculated_cell",
             Self::NotFinite => "not_finite",
+            Self::Spread(_) => "spread_failed",
         }
     }
 }
@@ -314,6 +317,7 @@ impl fmt::Display for CellError {
             Self::WrongType => write!(f, "the value has the wrong type for the cell"),
             Self::Calculated => write!(f, "the cell is calculated by a rule and cannot be written"),
             Self::NotFinite => write!(f, "the number is not finite"),
+            Self::Spread(reason) => reason.fmt(f),
         }
     }
 }

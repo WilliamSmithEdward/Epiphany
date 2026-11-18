@@ -452,6 +452,47 @@ async fn rules_and_feeders_are_part_of_the_model() {
 }
 
 #[tokio::test]
+async fn a_value_is_spread_over_the_leaves_of_a_consolidation() {
+    let app = example();
+    let quarter = ["Rent", "US", "Q1", "Actual"];
+    let spread = |value: f64, method: &str| {
+        json!({ "spread": {
+        "cube": "General Ledger", "at": quarter, "value": value, "method": method
+    } })
+    };
+    let (status, body) = call(&app, "POST", "/cells/spread", Some(spread(90.0, "equal"))).await;
+    assert_eq!((status, body), (StatusCode::OK, json!({ "written": 3 })));
+    let months = json!({ "cells": [
+        cell(["Rent", "US", "Jan", "Actual"]),
+        cell(["Rent", "US", "Mar", "Actual"]),
+        cell(quarter),
+    ] });
+    let (_, body) = call(&app, "POST", "/cells/read", Some(months.clone())).await;
+    assert_eq!(
+        body,
+        json!({ "cells": [{ "value": 30.0 }, { "value": 30.0 }, { "value": 90.0 }] })
+    );
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/cells/spread",
+        Some(spread(45.0, "proportional")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, body) = call(&app, "POST", "/cells/read", Some(months)).await;
+    assert_eq!(
+        body,
+        json!({ "cells": [{ "value": 15.0 }, { "value": 15.0 }, { "value": 45.0 }] })
+    );
+
+    let (status, body) = call(&app, "POST", "/cells/spread", Some(spread(1.0, "sideways"))).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "invalid_request");
+}
+
+#[tokio::test]
 async fn a_malformed_body_uses_the_common_error_shape() {
     let body = json!({ "cells": [{ "cube": "General Ledger", "at": [], "colour": "red" }] });
     let (status, body) = call(&example(), "POST", "/cells/read", Some(body)).await;

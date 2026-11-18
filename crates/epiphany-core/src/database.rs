@@ -13,6 +13,7 @@
 mod error;
 mod locks;
 mod migrate;
+mod spread;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -33,6 +34,7 @@ use locks::{Locks, Mode, Resource};
 
 pub use error::Error;
 pub use locks::LockMode;
+pub use spread::{Spread, SpreadMethod};
 
 pub type TransactionId = u64;
 

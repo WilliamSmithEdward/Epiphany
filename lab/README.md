@@ -44,7 +44,10 @@ cargo run --release -p epiphany-server -- lab lab
     Escape abandons the change. Delete clears the selected cell.
 - Yellow cells have a change that is not final yet: either typed but not entered, or
   written inside a transaction that has not been committed.
-- Grey cells are consolidations, added up by the server on every refresh.
+- Grey cells are consolidations, added up by the server on every refresh. Typing a value
+  into one spreads it over its leaves, by the method chosen under **Spread** in the top bar:
+  proportional keeps the leaves' proportions (or shares equally where they are all empty),
+  equal gives each leaf the same share, and repeat gives each leaf the value itself.
 - **Fill visible leaves** writes random numbers to every numeric leaf on screen in one batch.
 - **Begin** opens a transaction. Until you **Commit**, your writes are visible only on this
   page; open the lab in a second tab to see that others do not see them. **Roll back**

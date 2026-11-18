@@ -85,6 +85,74 @@
         }
       }
     },
+    "/cells/spread": {
+      "post": {
+        "summary": "Writes a value to a consolidated cell by sharing it out among its leaves, as one batch:\nevery leaf is written or none.",
+        "operationId": "spread_cells",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SpreadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The value was spread",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SpreadResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another transaction holds a lock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The spread is invalid, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cells/write": {
       "post": {
         "summary": "Writes a batch of leaf cells: all of them, or none if any is refused.",
@@ -1353,6 +1421,77 @@
             "type": "string"
           }
         ]
+      },
+      "Spread": {
+        "type": "object",
+        "description": "A value to share out among the leaves of a consolidated cell.",
+        "required": [
+          "cube",
+          "at",
+          "value",
+          "method"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cube": {
+            "type": "string"
+          },
+          "method": {
+            "$ref": "#/components/schemas/SpreadMethod"
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SpreadMethod": {
+        "type": "string",
+        "enum": [
+          "proportional",
+          "equal",
+          "repeat"
+        ]
+      },
+      "SpreadRequest": {
+        "type": "object",
+        "required": [
+          "spread"
+        ],
+        "properties": {
+          "spread": {
+            "$ref": "#/components/schemas/Spread"
+          },
+          "transaction": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Hold the writes in this transaction until it commits. Without it they are committed\nat once.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "SpreadResult": {
+        "type": "object",
+        "required": [
+          "written"
+        ],
+        "properties": {
+          "written": {
+            "type": "integer",
+            "description": "How many leaf cells were written.",
+            "minimum": 0
+          }
+        }
       },
       "Statement": {
         "type": "object",

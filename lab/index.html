@@ -40,7 +40,9 @@
   td.problem { color: #c0392b; font-weight: 400; }
   td.leaf { background: color-mix(in srgb, Highlight 26%, Canvas); }
   td.leaf:hover { background: color-mix(in srgb, Highlight 40%, Canvas); }
-  td.leaf.dirty, td.leaf.dirty:hover { background: color-mix(in srgb, gold 60%, Canvas); }
+  td.leaf.dirty, td.leaf.dirty:hover, td.spread.dirty { background: color-mix(in srgb, gold 60%, Canvas); }
+  td.total.spread { padding: 0; cursor: cell; }
+  td.total.spread input { font-weight: 600; }
   td input { width: 9em; border: 0; padding: 4px 8px; text-align: right; background: transparent; color: inherit; }
   td input.text { text-align: left; width: 16em; }
   td input:focus { outline: 2px solid Highlight; outline-offset: -2px; }
@@ -66,6 +68,7 @@
   <label>Cube <select id="cube"></select></label>
   <button id="refresh">Refresh</button>
   <button id="fill">Fill visible leaves</button>
+  <label>Spread <select id="method" title="How a value typed into a consolidation is shared out among its leaves"><option>proportional</option><option>equal</option><option>repeat</option></select></label>
   <button id="expand">Expand all</button>
   <button id="collapse">Collapse all</button>
   <label>Transaction <output id="transaction">none</output></label>
@@ -490,7 +493,8 @@ function draw() {
   const listed = new Set([...columns, ...rows].flat().map(member => `${member.dimension}\n${member.name}`));
   visible = cells.map((cell, index) => {
     const fact = facts[index];
-    return { at: cell.at, held: cell.held, fact, editable: fact?.writable ?? false, text: fact?.kind === 'text' };
+    const spreadable = fact?.kind === 'consolidated' && !fact.rule;
+    return { at: cell.at, held: cell.held, fact, editable: fact?.writable ?? false, spreadable, text: fact?.kind === 'text' };
   });
 
   // The row dimension names sit above their labels, on the last header row only.
@@ -518,8 +522,9 @@ function draw() {
 function cellNode(cell, value) {
   const number = typeof value === 'number';
   const shownAs = number ? (value === 0 ? '' : value.toLocaleString(undefined, { maximumFractionDigits: 6 })) : value ?? '';
-  const node = cell.editable
-    ? leafNode(cell, number ? (value === 0 ? '' : String(value)) : value ?? '')
+  const typed = number ? (value === 0 ? '' : String(value)) : value ?? '';
+  const node = cell.editable ? leafNode(cell, typed, value => write([{ cube: cube.name, at: cell.at, value }]), 'leaf')
+    : cell.spreadable ? leafNode(cell, typed, value => spread(cell, value), 'total spread')
     : make('td', { className: 'total', textContent: shownAs });
   const fact = cell.fact;
   if (!cell.editable) {
@@ -530,6 +535,7 @@ function cellNode(cell, value) {
     node.title = !cell.held ? 'Calculated by the query'
       : missed ? `Rule ${fact.rule.number}, but not fed: missing from totals`
       : fact?.rule ? `Rule ${fact.rule.number}${fact.fed ? ', fed' : ''}`
+      : cell.spreadable ? 'Added up from its leaves. Type a value to spread it over them'
       : fact?.kind === 'consolidated' ? 'Added up from its leaves' : 'Read-only';
   }
   node.oncontextmenu = event => inspect(event, cell, shownAs);
@@ -578,13 +584,12 @@ async function inspect(event, cell, shownAs) {
  * value; F2 or a double click edits the value it has. Enter or leaving the cell enters the
  * change, Escape abandons it, Delete clears the cell, and the arrow keys move the selection.
  */
-function leafNode(cell, original) {
+function leafNode(cell, original, send, className) {
   const key = cellKey(cell);
   const input = make('input', { value: original, readOnly: true, className: cell.text ? 'text' : '' });
   input.dataset.key = key;
-  const node = make('td', { className: 'leaf' }, [input]);
+  const node = make('td', { className }, [input]);
   const mark = () => node.classList.toggle('dirty', input.value !== original || pending.has(key));
-  const send = value => write([{ cube: cube.name, at: cell.at, value }]);
   const edit = replace => {
     input.readOnly = false;
     if (replace) input.value = '';
@@ -636,6 +641,20 @@ function step(from, down, right) {
     const input = next.querySelector('input');
     if (input) return input.focus();
   }
+}
+
+/** Shares a value typed into a consolidation out among its leaves. */
+async function spread(cell, value) {
+  const method = $('method').value;
+  try {
+    const asked = { transaction, spread: { cube: cube.name, at: cell.at, value, method } };
+    const { written } = await api('POST', '/cells/spread', asked);
+    const where = transaction === null ? '' : ` in transaction ${transaction}, not yet committed`;
+    status(`Spread ${value} over ${written} cell${written === 1 ? '' : 's'}, ${method}${where}.`);
+  } catch (error) {
+    status(error.message, true);
+  }
+  await rerun();
 }
 
 async function write(cells) {

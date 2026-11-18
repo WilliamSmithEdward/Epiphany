@@ -199,9 +199,18 @@ practice that means:
 
 ### 2.8 Spreading
 
-- A write to a consolidated cell with a spread method (proportional, equal, repeat) becomes
-  a set of leaf writes inside one transaction. Proportional spreading over all-zero leaves
-  falls back to equal.
+- Done, at `POST /cells/spread`. A value written to a consolidated cell with a method
+  becomes one batch of leaf writes, inside the caller's transaction or its own.
+  - **Proportional** scales the leaves that hold a value so the cell comes to the value
+    given. It writes only those leaves, so it is cheap however wide the cell. Where no
+    leaf holds a value it spreads equally.
+  - **Equal** gives every leaf the same share, taking weights into account, so the cell
+    comes to the value given. Where the weights cancel out, as with one part revenue less
+    one part cost, no such share exists and the spread is refused.
+  - **Repeat** gives every leaf the value itself, so the cell comes to that value times
+    its leaves.
+- Leaves that a rule calculates are left alone, and a cell that a rule decides cannot be
+  spread into. Equal and repeat refuse a cell with more than a million leaves.
 
 ### 2.9 Subsets and views
 
@@ -273,7 +282,7 @@ Each milestone ends with something that can be observed working.
 | 6 | MDX | A corpus of queries returns the expected axes and cells |
 | 7 | Subsets and views | Stored subsets and views round-trip and can be used inside MDX |
 | 8 | Rules, then feeders | Rule results match hand-computed cases; feeders change speed, not values |
-| 9 | Spreading | Leaf totals equal the written value for each method |
+| 9 | Spreading | The cell comes to the written value for proportional and equal, and every leaf to it for repeat |
 | 10 | Authentication and sessions | Unauthenticated calls are refused; tokens expire |
 | 11 | PAfE adapter | Every row of the compatibility table passes in Excel |
 
