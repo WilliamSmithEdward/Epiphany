@@ -4,6 +4,7 @@ use std::fmt;
 
 use super::TransactionId;
 use crate::cells::CellError;
+use crate::mdx::MdxError;
 use crate::model::ModelError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,7 @@ pub enum Error {
     },
     /// The change could not be recorded on disk, so it was not made.
     Storage(String),
+    Mdx(MdxError),
 }
 
 impl Error {
@@ -38,6 +40,7 @@ impl Error {
             Self::Locked(_) => "locked",
             Self::StaleVersion { .. } => "stale_version",
             Self::Storage(_) => "storage_failed",
+            Self::Mdx(_) => "invalid_mdx",
         }
     }
 }
@@ -54,11 +57,18 @@ impl fmt::Display for Error {
                 "the update is based on model version {based_on}, but the current version is {current}"
             ),
             Self::Storage(reason) => write!(f, "the change could not be stored: {reason}"),
+            Self::Mdx(error) => error.fmt(f),
         }
     }
 }
 
 impl std::error::Error for Error {}
+
+impl From<MdxError> for Error {
+    fn from(error: MdxError) -> Self {
+        Self::Mdx(error)
+    }
+}
 
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {

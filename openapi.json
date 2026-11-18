@@ -122,6 +122,53 @@
         }
       }
     },
+    "/mdx": {
+      "post": {
+        "summary": "Answers an MDX query.",
+        "operationId": "query",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The query is invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/model": {
       "get": {
         "summary": "The model definition and its version.",
@@ -340,6 +387,24 @@
           "numeric",
           "alias"
         ]
+      },
+      "AxisResult": {
+        "type": "object",
+        "required": [
+          "tuples"
+        ],
+        "properties": {
+          "tuples": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/MemberResult"
+              }
+            },
+            "description": "Each tuple holds one member per dimension on the axis."
+          }
+        }
       },
       "CellRef": {
         "type": "object",
@@ -620,6 +685,54 @@
         },
         "additionalProperties": false
       },
+      "MemberResult": {
+        "type": "object",
+        "required": [
+          "dimension",
+          "name",
+          "unique_name",
+          "type",
+          "level",
+          "properties"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "string"
+          },
+          "level": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Zero for a leaf or a calculated member, otherwise one more than the highest child level.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "properties": {
+            "type": "object",
+            "description": "The attributes asked for with `PROPERTIES`, where the member has a value for them.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "type": {
+            "$ref": "#/components/schemas/MemberType"
+          },
+          "unique_name": {
+            "type": "string"
+          }
+        }
+      },
+      "MemberType": {
+        "type": "string",
+        "enum": [
+          "numeric",
+          "string",
+          "consolidated",
+          "calculated"
+        ]
+      },
       "ModelDef": {
         "type": "object",
         "properties": {
@@ -694,6 +807,55 @@
             "format": "int64",
             "description": "Counts up by one with every update.",
             "minimum": 0
+          }
+        }
+      },
+      "QueryRequest": {
+        "type": "object",
+        "required": [
+          "mdx"
+        ],
+        "properties": {
+          "mdx": {
+            "type": "string",
+            "description": "The query text, for example `SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]`."
+          },
+          "transaction": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/u64",
+                "description": "Query within this transaction, seeing its pending writes."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "QueryResult": {
+        "type": "object",
+        "description": "The answer to a query.\n\nWith columns and rows, `cells` holds one value per pair of tuples, row by row: the cell of\nrow `r` and column `c` is at `r * columns + c`. With columns only there is one cell per\ncolumn, and with no axes a single cell. A cell with no value, such as a division by zero,\nis null.",
+        "required": [
+          "cube",
+          "axes",
+          "cells"
+        ],
+        "properties": {
+          "axes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AxisResult"
+            },
+            "description": "The columns axis, then the rows axis, as far as the query has them."
+          },
+          "cells": {
+            "type": "array",
+            "items": {}
+          },
+          "cube": {
+            "type": "string"
           }
         }
       },

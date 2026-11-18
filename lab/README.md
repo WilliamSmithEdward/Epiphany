@@ -50,6 +50,13 @@ cargo run --release -p epiphany-server -- lab lab
   page; open the lab in a second tab to see that others do not see them. **Roll back**
   discards them. A transaction left idle for five minutes is rolled back by the server.
 
+## MDX
+
+Below the grid is a box for MDX queries. **Run query** sends it to the server and shows the
+answer as a table; hover a heading for the member's unique name, type and level. **Write the
+view above as MDX** fills the box with a query for exactly what the grid shows, which is a
+good starting point to edit. Inside a transaction, queries see its pending writes.
+
 ## Data
 
 What you write is kept in `data/` (ignored by git) and is still there after a restart. Delete

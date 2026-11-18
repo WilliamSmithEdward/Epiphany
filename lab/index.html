@@ -34,6 +34,12 @@
   #legend { display: flex; gap: 16px; align-items: center; margin: 0; padding: 0 16px 8px; font-size: 12px; opacity: .85; }
   #legend i { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: -2px; border: 1px solid var(--line); }
   td.problem { color: #c0392b; font-weight: 400; }
+  #mdx { padding: 0 16px 32px; border-top: 1px solid var(--line); }
+  #mdx h2 { font-size: 15px; margin: 16px 0 8px; }
+  #mdx div { overflow: auto; }
+  #query { width: min(100%, 900px); box-sizing: border-box; font: 13px/1.4 ui-monospace, Consolas, monospace; padding: 8px; }
+  #mdxStatus.error { color: #c0392b; }
+  #answer td { padding: 4px 8px; text-align: right; }
   .toggle { all: unset; display: inline-block; width: 16px; text-align: center; cursor: pointer; opacity: .75; }
   .toggle:hover { opacity: 1; }
   .spacer { display: inline-block; width: 16px; }
@@ -75,6 +81,12 @@
   <span><i style="background: var(--shade)"></i>Consolidation: calculated, read-only</span>
 </p>
 <main><table id="grid"></table></main>
+<section id="mdx">
+  <h2>MDX</h2>
+  <textarea id="query" rows="6" spellcheck="false"></textarea>
+  <p><button id="run">Run query</button> <button id="fromView">Write the view above as MDX</button> <span id="mdxStatus"></span></p>
+  <div><table id="answer"></table></div>
+</section>
 <script>
 const MOST_CELLS = 20000;
 const $ = id => document.getElementById(id);
@@ -444,6 +456,58 @@ async function write(cells) {
   await render();
 }
 
+// MDX
+
+const bracket = name => `[${name.replaceAll(']', ']]')}]`;
+const unique = (dimension, element) => `${bracket(dimension)}.${bracket(element)}`;
+
+/** The grid above as an MDX query: the same members on the same axes, and the same slice. */
+function viewAsMdx() {
+  const axis = names => names.length
+    ? names.map(name => `{${nodes(name).map(node => unique(name, node.element.name)).join(', ')}}`).join(' * ')
+    : null;
+  const [columns, rows] = [axis(layout.columns), axis(layout.rows)];
+  const sliced = [
+    ...layout.filters.map(name => unique(name, slice[name])),
+    ...layout.unused.map(name => unique(name, topElement(name).name)),
+    // MDX needs columns before rows, so with rows only they go on columns and nothing is lost.
+  ];
+  const axes = columns && rows ? [`${columns} ON COLUMNS`, `${rows} ON ROWS`]
+    : columns || rows ? [`${columns ?? rows} ON COLUMNS`] : [];
+  const where = sliced.length ? `\nWHERE (${sliced.join(', ')})` : '';
+  return `SELECT ${axes.join(',\n       ')}\nFROM ${bracket(cube.name)}${where}`;
+}
+
+async function runQuery() {
+  const note = (message, isError = false) => {
+    $('mdxStatus').textContent = message;
+    $('mdxStatus').className = isError ? 'error' : '';
+  };
+  let result;
+  try {
+    result = await api('POST', '/mdx', { transaction, mdx: $('query').value });
+  } catch (error) {
+    $('answer').replaceChildren();
+    return note(error.message, true);
+  }
+  const columns = result.axes[0]?.tuples ?? [[]];
+  const rows = result.axes[1]?.tuples ?? [[]];
+  const corner = () => rows[0].length ? rows[0].map(() => make('th')) : [];
+  const members = member => make('th', { textContent: member.name, title: `${member.unique_name} (${member.type}, level ${member.level})` });
+  const head = columns[0].map((_, k) => make('tr', {}, [...corner(), ...columns.map(column => members(column[k]))]));
+  const body = rows.map((row, r) => make('tr', {}, [
+    ...row.map(members),
+    ...columns.map((_, c) => {
+      const value = result.cells[r * columns.length + c];
+      return make('td', { textContent: typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 6 }) : value ?? '' });
+    }),
+  ]));
+  $('answer').replaceChildren(make('thead', {}, head), make('tbody', {}, body));
+  note(`${result.cells.length.toLocaleString()} cells.`);
+}
+
+$('run').onclick = runQuery;
+$('fromView').onclick = () => { $('query').value = viewAsMdx(); runQuery(); };
 $('cube').onchange = chooseCube;
 $('refresh').onclick = () => render('Refreshed');
 $('expand').onclick = () => { cube.dimensions.forEach(fold['Expand all']); render('Expanded every dimension'); };

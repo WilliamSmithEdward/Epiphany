@@ -9,4 +9,5 @@ pub use definition::{
     ModelDef,
 };
 pub use error::ModelError;
+pub(crate) use snapshot::key;
 pub use snapshot::{Attribute, Cube, Dimension, DimensionId, Element, ElementId, Model};

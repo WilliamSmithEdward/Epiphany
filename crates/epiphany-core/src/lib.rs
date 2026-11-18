@@ -2,6 +2,7 @@
 
 pub mod cells;
 pub mod database;
+pub mod mdx;
 pub mod model;
 mod value;
 

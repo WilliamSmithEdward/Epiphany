@@ -14,6 +14,7 @@ use epiphany_core::Value;
 use epiphany_core::database::{
     CellRef, CellWrite, Database, Error, LockMode, ModelUpdate, TransactionId,
 };
+use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{AttributeType, ChildDef, Dimension, ElementId, ElementType, ModelDef};
 use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
@@ -32,6 +33,7 @@ fn router() -> OpenApiRouter<Shared> {
         .routes(routes!(get_dimension))
         .routes(routes!(read_cells))
         .routes(routes!(write_cells))
+        .routes(routes!(query))
         .routes(routes!(begin_transaction))
         .routes(routes!(commit_transaction))
         .routes(routes!(rollback_transaction))
@@ -89,7 +91,7 @@ impl ApiError {
 impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         let status = match error {
-            Error::Cell(_) | Error::Write { .. } | Error::Model(_) => {
+            Error::Cell(_) | Error::Write { .. } | Error::Model(_) | Error::Mdx(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
             Error::UnknownTransaction(_) => StatusCode::NOT_FOUND,
@@ -234,6 +236,15 @@ struct WriteRequest {
     cells: Vec<CellWrite>,
 }
 
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct QueryRequest {
+    /// Query within this transaction, seeing its pending writes.
+    transaction: Option<TransactionId>,
+    /// The query text, for example `SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]`.
+    mdx: String,
+}
+
 #[derive(Serialize, ToSchema)]
 struct TransactionView {
     transaction: TransactionId,
@@ -338,6 +349,25 @@ async fn write_cells(
     let mut database = database.write().unwrap();
     database.write(request.transaction, &request.cells)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Answers an MDX query.
+#[utoipa::path(
+    post,
+    path = "/mdx",
+    request_body = QueryRequest,
+    responses(
+        (status = OK, body = QueryResult),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown transaction"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The query is invalid")
+    )
+)]
+async fn query(
+    State(database): State<Shared>,
+    Body(request): Body<QueryRequest>,
+) -> Result<Json<QueryResult>, ApiError> {
+    let database = database.read().unwrap();
+    Ok(Json(database.query(request.transaction, &request.mdx)?))
 }
 
 /// Begins a transaction. It is rolled back if left idle.

@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Value;
 use crate::cells::{Cells, Writes, check, coordinate};
+use crate::mdx::{self, QueryResult};
 use crate::model::{ElementId, Model, ModelDef, ModelError};
 use locks::{Locks, Mode, Resource};
 
@@ -189,6 +190,27 @@ impl Database {
                 cells.read_with(&self.model, definition, &at, pending)
             }
         })
+    }
+
+    /// Answers an MDX query from committed values, or within a transaction from the values
+    /// that transaction would leave.
+    pub fn query(
+        &self,
+        transaction: Option<TransactionId>,
+        text: &str,
+    ) -> Result<QueryResult, Error> {
+        let query = mdx::parse(text)?;
+        let cube = self.cube_id(&query.cube)?;
+        let (cells, definition) = (&self.cells[cube], &self.model.cubes()[cube]);
+        let pending = match transaction {
+            Some(id) => Some(&self.transaction(id)?.writes[cube]),
+            None => None,
+        };
+        let read = |at: &[ElementId]| match pending {
+            Some(pending) => cells.read_with(&self.model, definition, at, pending),
+            None => cells.read(&self.model, definition, at),
+        };
+        Ok(query.evaluate(&self.model, definition, &read)?)
     }
 
     /// Writes every cell, or none of them if any write is refused. Within a transaction the

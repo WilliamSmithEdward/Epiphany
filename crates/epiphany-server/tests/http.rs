@@ -308,6 +308,43 @@ async fn the_model_is_updated_against_its_version() {
     assert_eq!(call(&app, "GET", "/model", None).await.1["version"], 2);
 }
 #[tokio::test]
+async fn an_mdx_query_is_answered_with_axes_and_cells() {
+    let app = example();
+    let cells = json!({ "cells": [
+        write(["Product Revenue", "US", "Jan", "Actual"], json!(100)),
+        write(["Product Revenue", "UK", "Jan", "Actual"], json!(50)),
+    ] });
+    call(&app, "POST", "/cells/write", Some(cells)).await;
+
+    let mdx = "SELECT {[Entity].[US], [Entity].[Total Entity]} ON COLUMNS,
+                      {[Account].[Revenue]} ON ROWS
+               FROM [General Ledger] WHERE ([Period].[Jan], [Version].[Actual])";
+    let (status, body) = call(&app, "POST", "/mdx", Some(json!({ "mdx": mdx }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cube"], "General Ledger");
+    assert_eq!(body["cells"], json!([100.0, 150.0]));
+    assert_eq!(
+        body["axes"][0]["tuples"][1],
+        json!([{
+            "dimension": "Entity",
+            "name": "Total Entity",
+            "unique_name": "[Entity].[Total Entity]",
+            "type": "consolidated",
+            "level": 1,
+            "properties": {}
+        }])
+    );
+
+    let broken = json!({ "mdx": "SELECT {[Entity].[Mars]} ON COLUMNS FROM [General Ledger]" });
+    let (status, body) = call(&app, "POST", "/mdx", Some(broken)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body,
+        json!({ "code": "invalid_mdx", "message": "dimension 'Entity' has no member 'Mars'" })
+    );
+}
+
+#[tokio::test]
 async fn a_malformed_body_uses_the_common_error_shape() {
     let body = json!({ "cells": [{ "cube": "General Ledger", "at": [], "colour": "red" }] });
     let (status, body) = call(&example(), "POST", "/cells/read", Some(body)).await;

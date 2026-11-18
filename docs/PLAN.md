@@ -134,9 +134,30 @@ practice that means:
 - Hand-written lexer and recursive-descent parser, with no parser dependency.
 - Three stages: parse to a syntax tree; bind names against the model snapshot (names,
   aliases, unique names); evaluate sets to axes of tuples, then fetch all cells in one batch.
-- Functions arrive in dependency order: members and tuples, set braces and `.Members` /
-  `.Children`, CrossJoin, Descendants and Ancestors, Hierarchize, Order, Filter, NonEmpty,
-  then `WITH MEMBER` and `WITH SET`, then properties.
+- Done, at `POST /mdx`:
+  - `SELECT ... ON COLUMNS [, ... ON ROWS] FROM [cube] [WHERE tuple]`, with `NON EMPTY` and
+    `[DIMENSION] PROPERTIES` on an axis. Axes may also be numbered (`ON 0`, `ON AXIS(1)`).
+  - Sets: braces, `.Members`, `.Children`, `CrossJoin` and `*`, `Filter`, `Order` (`ASC`,
+    `DESC`, `BASC`, `BDESC`), `Descendants` (distance and `SELF`, `AFTER`,
+    `SELF_AND_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and `POST`), `NonEmpty`.
+  - Members: `[Dimension].[Member]` by name or alias, `.Parent`, `.FirstChild`,
+    `.LastChild`, `.CurrentMember`, `Ancestor`.
+  - Values: arithmetic, comparisons, `AND` / `OR` / `NOT`, `IIF`, `IsEmpty`, tuples as
+    cell references, `.Name`, `.UniqueName`, `.Value`, and `.Properties("name")` for an
+    attribute or for `MEMBER_NAME`, `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`,
+    `PARENT_UNIQUE_NAME`, `CHILDREN_CARDINALITY`.
+  - `WITH MEMBER` (calculated members, which may refer to one another) and `WITH SET`.
+  - A query may run inside a transaction and then sees its pending writes.
+- **Decisions:**
+  - A dimension the query does not mention stands at its first top element.
+  - `LEVEL_NUMBER` and the `level` of a member count up from the leaves, as ELLEV does,
+    not down from the top as in other MDX servers.
+  - A value that cannot be computed, such as a division by zero, is null.
+  - A member with several parents uses its first for `.Parent`, `Ancestor` and `Order`.
+  - `.Members` lists elements only, not calculated members.
+- Not done: more than two axes, aggregate functions such as `Sum` and `Count`, set
+  functions beyond those listed (`Union`, `Except`, `Head`, `TopCount`, ...), and
+  `SOLVE_ORDER`.
 
 ### 2.8 Spreading
 
