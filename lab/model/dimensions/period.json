@@ -1,0 +1,68 @@
+{
+  "name": "Period",
+  "type": "standard",
+  "elements": [
+    {
+      "name": "Year",
+      "type": "consolidated",
+      "children": [
+        { "name": "Q1", "weight": 1 },
+        { "name": "Q2", "weight": 1 },
+        { "name": "Q3", "weight": 1 },
+        { "name": "Q4", "weight": 1 }
+      ]
+    },
+    {
+      "name": "Q1",
+      "type": "consolidated",
+      "children": [
+        { "name": "Jan", "weight": 1 },
+        { "name": "Feb", "weight": 1 },
+        { "name": "Mar", "weight": 1 }
+      ]
+    },
+    { "name": "Jan", "type": "numeric", "attributes": { "Code": "M01", "Days": 31 } },
+    { "name": "Feb", "type": "numeric", "attributes": { "Code": "M02", "Days": 28 } },
+    { "name": "Mar", "type": "numeric", "attributes": { "Code": "M03", "Days": 31 } },
+    {
+      "name": "Q2",
+      "type": "consolidated",
+      "children": [
+        { "name": "Apr", "weight": 1 },
+        { "name": "May", "weight": 1 },
+        { "name": "Jun", "weight": 1 }
+      ]
+    },
+    { "name": "Apr", "type": "numeric", "attributes": { "Code": "M04", "Days": 30 } },
+    { "name": "May", "type": "numeric", "attributes": { "Code": "M05", "Days": 31 } },
+    { "name": "Jun", "type": "numeric", "attributes": { "Code": "M06", "Days": 30 } },
+    {
+      "name": "Q3",
+      "type": "consolidated",
+      "children": [
+        { "name": "Jul", "weight": 1 },
+        { "name": "Aug", "weight": 1 },
+        { "name": "Sep", "weight": 1 }
+      ]
+    },
+    { "name": "Jul", "type": "numeric", "attributes": { "Code": "M07", "Days": 31 } },
+    { "name": "Aug", "type": "numeric", "attributes": { "Code": "M08", "Days": 31 } },
+    { "name": "Sep", "type": "numeric", "attributes": { "Code": "M09", "Days": 30 } },
+    {
+      "name": "Q4",
+      "type": "consolidated",
+      "children": [
+        { "name": "Oct", "weight": 1 },
+        { "name": "Nov", "weight": 1 },
+        { "name": "Dec", "weight": 1 }
+      ]
+    },
+    { "name": "Oct", "type": "numeric", "attributes": { "Code": "M10", "Days": 31 } },
+    { "name": "Nov", "type": "numeric", "attributes": { "Code": "M11", "Days": 30 } },
+    { "name": "Dec", "type": "numeric", "attributes": { "Code": "M12", "Days": 31 } }
+  ],
+  "attributes": {
+    "Code": "alias",
+    "Days": "numeric"
+  }
+}

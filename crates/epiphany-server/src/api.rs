@@ -1,12 +1,13 @@
 //! The routes, their request and response shapes, and the OpenAPI document generated from them.
 
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Value;
@@ -43,6 +44,17 @@ pub fn app(database: Database) -> Router {
     router
         .route("/openapi.json", get(async move || Json(contract)))
         .with_state(Arc::new(RwLock::new(database)))
+}
+
+/// The application plus a test page at `/lab`, read from disk on every request so that it can
+/// be edited while the server runs.
+pub fn lab(database: Database, page: PathBuf) -> Router {
+    let serve = move || {
+        let page = std::fs::read_to_string(&page);
+        let missing = |error: std::io::Error| (StatusCode::NOT_FOUND, error.to_string());
+        async move { page.map(Html).map_err(missing) }
+    };
+    app(database).route("/lab", get(serve))
 }
 
 /// The one error shape used by every route.

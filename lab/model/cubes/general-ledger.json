@@ -1,0 +1,9 @@
+{
+  "name": "General Ledger",
+  "dimensions": [
+    "Account",
+    "Entity",
+    "Period",
+    "Version"
+  ]
+}

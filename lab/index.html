@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Epiphany lab</title>
+<style>
+  :root { color-scheme: light dark; --line: color-mix(in srgb, CanvasText 18%, Canvas); --shade: color-mix(in srgb, CanvasText 7%, Canvas); }
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 0; background: Canvas; color: CanvasText; }
+  header { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: end; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 16px; margin: 0 8px 4px 0; }
+  label { display: grid; gap: 2px; font-size: 12px; opacity: .85; }
+  select, button, input { font: inherit; }
+  select, button { padding: 4px 8px; }
+  #status { margin: 0; padding: 8px 16px; min-height: 1.4em; }
+  #status.error { color: #c0392b; }
+  main { padding: 0 16px 24px; overflow: auto; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid var(--line); padding: 0; white-space: nowrap; }
+  th { padding: 4px 8px; text-align: left; font-weight: 600; background: var(--shade); }
+  thead th { text-align: right; }
+  td.total, td.problem { padding: 4px 8px; text-align: right; background: var(--shade); font-weight: 600; }
+  td.problem { color: #c0392b; font-weight: 400; }
+  td input { width: 9em; border: 0; padding: 4px 8px; text-align: right; background: transparent; color: inherit; }
+  td input.text { text-align: left; width: 16em; }
+  td input:focus { outline: 2px solid Highlight; outline-offset: -2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Epiphany lab</h1>
+  <label>Cube <select id="cube"></select></label>
+  <label>Rows <select id="rows"></select></label>
+  <label>Columns <select id="columns"></select></label>
+  <span id="filters" style="display: contents"></span>
+  <button id="refresh">Refresh</button>
+  <button id="fill">Fill visible leaves</button>
+  <a href="/openapi.json" target="_blank">OpenAPI</a>
+</header>
+<p id="status"></p>
+<main><table id="grid"></table></main>
+<script>
+const $ = id => document.getElementById(id);
+const make = (tag, properties = {}, children = []) => {
+  const node = Object.assign(document.createElement(tag), properties);
+  node.append(...children);
+  return node;
+};
+const options = (select, names, chosen) =>
+  select.replaceChildren(...names.map(name => make('option', { textContent: name, selected: name === chosen })));
+const status = (message, isError = false) => {
+  $('status').textContent = message;
+  $('status').className = isError ? 'error' : '';
+};
+
+async function api(method, path, body) {
+  const response = await fetch(path, {
+    method,
+    headers: body ? { 'content-type': 'application/json' } : {},
+    body: body && JSON.stringify(body),
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!response.ok) throw new Error(data?.message ?? `${response.status} ${response.statusText}`);
+  return data;
+}
+
+let model;                // the model definition
+const dimensions = {};    // dimension views by name, loaded on demand
+let cube;                 // the chosen cube definition
+let slice = {};           // the chosen element of each dimension not on rows or columns
+let visible = [];         // { at, editable, text } for every cell on screen
+
+async function dimension(name) {
+  return dimensions[name] ??= await api('GET', `/dimensions/${encodeURIComponent(name)}`);
+}
+
+async function chooseCube() {
+  cube = model.cubes.find(c => c.name === $('cube').value);
+  await Promise.all(cube.dimensions.map(dimension));
+  options($('rows'), cube.dimensions, cube.dimensions[0]);
+  options($('columns'), cube.dimensions, cube.dimensions[1] ?? cube.dimensions[0]);
+  slice = {};
+  await layout();
+}
+
+async function layout(changed) {
+  if ($('rows').value === $('columns').value && cube.dimensions.length > 1) {
+    const other = changed === $('rows') ? $('columns') : $('rows');
+    other.value = cube.dimensions.find(name => name !== changed?.value) ?? other.value;
+  }
+  const sliced = cube.dimensions.filter(name => name !== $('rows').value && name !== $('columns').value);
+  $('filters').replaceChildren(...sliced.map(name => {
+    const elements = dimensions[name].elements;
+    const names = elements.map(element => element.name);
+    slice[name] ??= (elements.find(element => element.type !== 'consolidated') ?? elements[0]).name;
+    const select = make('select', { onchange: () => { slice[name] = select.value; render(); } });
+    options(select, names, slice[name]);
+    return make('label', {}, [name, select]);
+  }));
+  await render();
+}
+
+function isEditable(elements) {
+  const text = elements.at(-1).type === 'string';
+  return { text, editable: text || elements.every(element => element.type !== 'consolidated') };
+}
+
+async function render() {
+  const rows = dimensions[$('rows').value].elements;
+  const single = cube.dimensions.length === 1;
+  const columns = single ? [null] : dimensions[$('columns').value].elements;
+  const pick = (name, row, column) =>
+    name === $('rows').value ? row : name === $('columns').value ? column
+      : dimensions[name].elements.find(element => element.name === slice[name]);
+
+  visible = rows.flatMap(row => columns.map(column => {
+    const elements = cube.dimensions.map(name => pick(name, row, column));
+    return { at: elements.map(element => element.name), ...isEditable(elements) };
+  }));
+  let results;
+  try {
+    const cells = visible.map(cell => ({ cube: cube.name, at: cell.at }));
+    results = (await api('POST', '/cells/read', { cells })).cells;
+  } catch (error) {
+    return status(error.message, true);
+  }
+
+  const depth = Math.max(...rows.map(row => row.level));
+  const head = make('tr', {}, [make('th'), ...columns.map(column => make('th', { textContent: column?.name ?? 'Value' }))]);
+  const body = rows.map((row, r) => {
+    const label = make('th', { textContent: row.name });
+    label.style.paddingLeft = `${8 + 16 * (depth - row.level)}px`;
+    return make('tr', {}, [label, ...columns.map((_, c) => cellNode(visible[r * columns.length + c], results[r * columns.length + c]))]);
+  });
+  $('grid').replaceChildren(make('thead', {}, [head]), make('tbody', {}, body));
+}
+
+function cellNode(cell, result) {
+  if (result.error) return make('td', { className: 'problem', textContent: result.error.code, title: result.error.message });
+  const shown = cell.text ? result.value : result.value === 0 ? '' : result.value.toLocaleString(undefined, { maximumFractionDigits: 6 });
+  if (!cell.editable) return make('td', { className: 'total', textContent: shown });
+  const input = make('input', { value: cell.text ? result.value : result.value || '', className: cell.text ? 'text' : '' });
+  input.onkeydown = event => { if (event.key === 'Enter') input.blur(); };
+  input.onchange = () => {
+    const value = cell.text ? input.value : Number(input.value.replaceAll(',', '') || 0);
+    write([{ cube: cube.name, at: cell.at, value }]);
+  };
+  return make('td', {}, [input]);
+}
+
+async function write(cells) {
+  if (!cells.length) return status('No numeric leaf cells on screen: slice by leaf elements to edit.', true);
+  try {
+    await api('POST', '/cells/write', { cells });
+    status(`Wrote ${cells.length} cell${cells.length === 1 ? '' : 's'}.`);
+  } catch (error) {
+    status(error.message, true);
+  }
+  await render();
+}
+
+$('cube').onchange = chooseCube;
+$('rows').onchange = () => layout($('rows'));
+$('columns').onchange = () => layout($('columns'));
+$('refresh').onclick = render;
+$('fill').onclick = () => write(visible.filter(cell => cell.editable && !cell.text)
+  .map(cell => ({ cube: cube.name, at: cell.at, value: Math.ceil(Math.random() * 1000) })));
+
+(async () => {
+  try {
+    model = await api('GET', '/model');
+    options($('cube'), model.cubes.map(c => c.name));
+    await chooseCube();
+    status('Ready.');
+  } catch (error) {
+    status(error.message, true);
+  }
+})();
+</script>
+</body>
+</html>

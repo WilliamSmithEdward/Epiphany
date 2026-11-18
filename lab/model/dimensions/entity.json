@@ -1,0 +1,16 @@
+{
+  "name": "Entity",
+  "type": "standard",
+  "elements": [
+    {
+      "name": "Total Entity",
+      "type": "consolidated",
+      "children": [
+        { "name": "US", "weight": 1 },
+        { "name": "UK", "weight": 1 }
+      ]
+    },
+    { "name": "US", "type": "numeric" },
+    { "name": "UK", "type": "numeric" }
+  ]
+}

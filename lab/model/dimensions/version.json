@@ -1,0 +1,16 @@
+{
+  "name": "Version",
+  "type": "standard",
+  "elements": [
+    { "name": "Actual", "type": "numeric" },
+    { "name": "Budget", "type": "numeric" },
+    {
+      "name": "Variance",
+      "type": "consolidated",
+      "children": [
+        { "name": "Actual", "weight": 1 },
+        { "name": "Budget", "weight": -1 }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Commentary",
+  "dimensions": [
+    "Account",
+    "Period",
+    "Note"
+  ]
+}

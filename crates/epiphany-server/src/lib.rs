@@ -3,5 +3,5 @@
 mod api;
 mod load;
 
-pub use api::{app, openapi};
+pub use api::{app, lab, openapi};
 pub use load::load_model;

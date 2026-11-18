@@ -1,0 +1,8 @@
+{
+  "name": "Note",
+  "type": "standard",
+  "elements": [
+    { "name": "Comment", "type": "string" },
+    { "name": "Owner", "type": "string" }
+  ]
+}

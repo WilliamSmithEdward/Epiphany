@@ -1,0 +1,54 @@
+{
+  "name": "Account",
+  "type": "standard",
+  "elements": [
+    {
+      "name": "Net Income",
+      "type": "consolidated",
+      "children": [
+        { "name": "Revenue", "weight": 1 },
+        { "name": "Operating Expenses", "weight": -1 }
+      ]
+    },
+    {
+      "name": "Revenue",
+      "type": "consolidated",
+      "children": [
+        { "name": "Product Revenue", "weight": 1 },
+        { "name": "Service Revenue", "weight": 1 }
+      ]
+    },
+    {
+      "name": "Product Revenue",
+      "type": "numeric",
+      "attributes": { "AccountType": "Income", "AccountCode": "4000" }
+    },
+    {
+      "name": "Service Revenue",
+      "type": "numeric",
+      "attributes": { "AccountType": "Income", "AccountCode": "4100" }
+    },
+    {
+      "name": "Operating Expenses",
+      "type": "consolidated",
+      "children": [
+        { "name": "Salaries", "weight": 1 },
+        { "name": "Rent", "weight": 1 }
+      ]
+    },
+    {
+      "name": "Salaries",
+      "type": "numeric",
+      "attributes": { "AccountType": "Expense", "AccountCode": "6000" }
+    },
+    {
+      "name": "Rent",
+      "type": "numeric",
+      "attributes": { "AccountType": "Expense", "AccountCode": "6100" }
+    }
+  ],
+  "attributes": {
+    "AccountType": "string",
+    "AccountCode": "string"
+  }
+}
