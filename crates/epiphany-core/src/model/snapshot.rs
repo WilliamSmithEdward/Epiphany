@@ -2,10 +2,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::definition::{
-    AttributeType, AttributeValue, CubeDef, DimensionDef, ElementDef, ElementType, ModelDef,
-};
+use super::definition::{AttributeType, CubeDef, DimensionDef, ElementDef, ElementType, ModelDef};
 use super::error::ModelError;
+use crate::Value;
 
 /// Position of a dimension in [`Model::dimensions`].
 pub type DimensionId = u32;
@@ -142,8 +141,7 @@ impl Dimension {
 
         for (id, element) in elements.iter().enumerate() {
             for (attribute, value) in attributes.iter().zip(&element.attributes) {
-                let (AttributeType::Alias, Some(AttributeValue::Text(alias))) =
-                    (attribute.kind, value)
+                let (AttributeType::Alias, Some(Value::Text(alias))) = (attribute.kind, value)
                 else {
                     continue;
                 };
@@ -186,7 +184,7 @@ impl Dimension {
         self.element_id(name).map(|id| &self.elements[id as usize])
     }
 
-    pub fn attribute_value(&self, element: ElementId, attribute: &str) -> Option<&AttributeValue> {
+    pub fn attribute_value(&self, element: ElementId, attribute: &str) -> Option<&Value> {
         let id = *self.attribute_ids.get(&key(attribute))?;
         self.elements[element as usize].attributes[id as usize].as_ref()
     }
@@ -206,7 +204,7 @@ pub struct Element {
     /// A leaf lists itself with weight one.
     pub leaves: Vec<(ElementId, f64)>,
     /// One value per attribute of the dimension, in [`Dimension::attributes`] order.
-    pub attributes: Vec<Option<AttributeValue>>,
+    pub attributes: Vec<Option<Value>>,
 }
 
 impl Element {
@@ -248,9 +246,9 @@ impl Element {
         for (name, value) in &def.attributes {
             let id = resolve(attribute_ids, "attribute", &within, name)? as usize;
             let fits = match attributes[id].kind {
-                AttributeType::Numeric => matches!(value, AttributeValue::Number(_)),
+                AttributeType::Numeric => matches!(value, Value::Number(_)),
                 AttributeType::Text | AttributeType::Alias => {
-                    matches!(value, AttributeValue::Text(_))
+                    matches!(value, Value::Text(_))
                 }
             };
             if !fits {

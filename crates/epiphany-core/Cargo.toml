@@ -7,6 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
+rustc-hash = "2.1.3"
 serde = { version = "1.0.229", features = ["derive"] }
 
 [dev-dependencies]

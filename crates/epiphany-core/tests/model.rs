@@ -1,12 +1,13 @@
-use epiphany_core::model::{AttributeValue, Dimension, Model, ModelDef, ModelError};
-use serde_json::{Value, json};
+use epiphany_core::Value;
+use epiphany_core::model::{Dimension, Model, ModelDef, ModelError};
+use serde_json::{Value as Json, json};
 
-fn compile(def: Value) -> Result<Model, ModelError> {
+fn compile(def: Json) -> Result<Model, ModelError> {
     Model::compile(&serde_json::from_value(def).expect("definition parses"))
 }
 
 /// A model of one dimension named `D` with the given elements.
-fn dimension(elements: Value) -> Value {
+fn dimension(elements: Json) -> Json {
     json!({ "dimensions": [{ "name": "D", "elements": elements }] })
 }
 
@@ -134,11 +135,11 @@ fn attributes_are_read_by_name() {
     let feb = period.element_id("Feb").unwrap();
     assert_eq!(
         account.attribute_value(rent, "accountcode"),
-        Some(&AttributeValue::Text("6100".to_owned()))
+        Some(&Value::Text("6100".to_owned()))
     );
     assert_eq!(
         period.attribute_value(feb, "Days"),
-        Some(&AttributeValue::Number(28.0))
+        Some(&Value::Number(28.0))
     );
     assert_eq!(
         account.attribute_value(account.element_id("Revenue").unwrap(), "AccountCode"),
@@ -188,10 +189,10 @@ fn unknown_fields_are_rejected() {
 fn invalid_models_are_rejected() {
     let leaf = |name: &str| json!({ "name": name, "type": "numeric" });
     let parent = |name: &str, children: &[&str]| {
-        let children: Vec<Value> = children.iter().map(|c| json!({ "name": c })).collect();
+        let children: Vec<Json> = children.iter().map(|c| json!({ "name": c })).collect();
         json!({ "name": name, "type": "consolidated", "children": children })
     };
-    let attributed = |declared: Value, values: Value| {
+    let attributed = |declared: Json, values: Json| {
         json!({ "dimensions": [{
             "name": "D",
             "attributes": declared,
@@ -202,7 +203,7 @@ fn invalid_models_are_rejected() {
         }] })
     };
     let aliases = json!({ "Alias": "alias", "Other": "alias", "Size": "numeric" });
-    let cubes = |cubes: Value| json!({ "dimensions": [{ "name": "D", "elements": [leaf("a")] }], "cubes": cubes });
+    let cubes = |cubes: Json| json!({ "dimensions": [{ "name": "D", "elements": [leaf("a")] }], "cubes": cubes });
 
     let cases = [
         (

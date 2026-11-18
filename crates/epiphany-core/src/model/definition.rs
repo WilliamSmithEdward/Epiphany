@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::Value;
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelDef {
@@ -43,7 +45,7 @@ pub struct ElementDef {
     pub children: Vec<ChildDef>,
     /// Attribute values, keyed by attribute name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub attributes: BTreeMap<String, AttributeValue>,
+    pub attributes: BTreeMap<String, Value>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -75,13 +77,6 @@ pub enum AttributeType {
     Numeric,
     /// A text attribute whose values are alternative names for their elements.
     Alias,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum AttributeValue {
-    Number(f64),
-    Text(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
