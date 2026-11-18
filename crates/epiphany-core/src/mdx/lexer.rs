@@ -16,8 +16,9 @@ pub(super) enum Token {
 }
 
 /// Longer symbols first, so that `<=` is not read as `<` then `=`.
-const SYMBOLS: [&str; 17] = [
-    "<>", "<=", ">=", "(", ")", "{", "}", ",", ".", "+", "-", "*", "/", "=", "<", ">", ":",
+const SYMBOLS: [&str; 19] = [
+    "=>", "<>", "<=", ">=", ";", "(", ")", "{", "}", ",", ".", "+", "-", "*", "/", "=", "<", ">",
+    ":",
 ];
 
 /// The tokens of a query, each with the position of its first character.

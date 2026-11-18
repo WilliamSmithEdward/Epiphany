@@ -119,4 +119,14 @@ pub struct CubeDef {
     /// Saved queries against this cube, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub views: BTreeMap<String, ViewDef>,
+    /// Statements that calculate cells, each `[N: | C: | S:] area = expression`. The area is a
+    /// member or a tuple, such as `[Account].[Margin]`; the expression is written as in MDX.
+    /// The first rule that covers a cell decides it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
+    /// Statements that say which calculated leaf cells may hold a value, each
+    /// `source => target, ...`, such as `[Account].[Revenue] => [Account].[Margin]`. A cube
+    /// that is fed consolidates only its stored and fed cells.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub feeders: Vec<String>,
 }

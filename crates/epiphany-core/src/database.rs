@@ -14,7 +14,9 @@ mod error;
 mod locks;
 mod migrate;
 
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use std::{fmt, io};
@@ -22,9 +24,11 @@ use std::{fmt, io};
 use serde::{Deserialize, Serialize};
 
 use crate::Scalar;
+use crate::cells::CellError;
 use crate::cells::{Cells, Writes, check, coordinate};
-use crate::mdx::{self, QueryResult};
+use crate::mdx::{self, MdxError, QueryResult};
 use crate::model::{ElementId, Model, ModelDef, ModelError};
+use crate::reader::{Fed, Reader, feed};
 use locks::{Locks, Mode, Resource};
 
 pub use error::Error;
@@ -103,6 +107,8 @@ pub struct Database {
     started: Instant,
     timeout: Duration,
     journal: Option<Box<dyn Journal>>,
+    /// The cells the feeders feed, worked out when first needed after the data changes.
+    fed: OnceLock<Result<Fed, MdxError>>,
 }
 
 impl Database {
@@ -125,6 +131,7 @@ impl Database {
             started: Instant::now(),
             timeout: DEFAULT_TIMEOUT,
             journal: None,
+            fed: OnceLock::new(),
         })
     }
 
@@ -142,6 +149,7 @@ impl Database {
                 Err(_) => skipped += 1,
             }
         }
+        self.fed = OnceLock::new();
         skipped
     }
 
@@ -186,14 +194,49 @@ impl Database {
         cell: &CellRef,
     ) -> Result<Scalar, Error> {
         let (cube, at) = self.locate(&cell.cube, &cell.at)?;
-        let (cells, definition) = (&self.cells[cube], &self.model.cubes()[cube]);
-        Ok(match transaction {
-            None => cells.read(&self.model, definition, &at),
-            Some(id) => {
-                let pending = &self.transaction(id)?.writes[cube];
-                cells.read_with(&self.model, definition, &at, pending)
+        let value = self.reader(transaction)?.read(cube, &at);
+        value.map_err(|error| Error::Rule(error.to_string()))
+    }
+
+    /// The leaf cells of a fed cube that a rule gives a value but nothing feeds, so that
+    /// its consolidations leave them out. At most `limit` are returned; none means the cube
+    /// is not fed, or its feeders are complete for the data it holds.
+    pub fn unfed(&self, cube: &str, limit: usize) -> Result<Vec<CellRef>, Error> {
+        let id = self.cube_id(cube)?;
+        let cells = self.reader(None)?.unfed(id, limit);
+        let cells = cells.map_err(|error| Error::Rule(error.to_string()))?;
+        let named = |at: Vec<ElementId>| {
+            let cell = self.named(id, &at, Scalar::Number(0.0));
+            CellRef {
+                cube: cell.cube,
+                at: cell.at,
             }
-        })
+        };
+        Ok(cells.into_iter().map(named).collect())
+    }
+
+    /// A reader of committed cells, or within a transaction of the cells it would leave.
+    fn reader(&self, transaction: Option<TransactionId>) -> Result<Reader<'_>, Error> {
+        let pending = match transaction {
+            Some(id) => Some(self.transaction(id)?.writes.as_slice()),
+            None => None,
+        };
+        let rule_error = |error: &MdxError| Error::Rule(error.to_string());
+        // What is fed depends on what is stored, so a transaction with writes of its own
+        // has it worked out afresh; everyone else shares one answer until the data changes.
+        let fed = match pending.filter(|pending| pending.iter().any(|writes| !writes.is_empty())) {
+            Some(pending) => {
+                let fed = feed(&self.model, &self.cells, Some(pending));
+                Cow::Owned(fed.map_err(|error| rule_error(&error))?)
+            }
+            None => {
+                let fed = self
+                    .fed
+                    .get_or_init(|| feed(&self.model, &self.cells, None));
+                Cow::Borrowed(fed.as_ref().map_err(rule_error)?)
+            }
+        };
+        Ok(Reader::new(&self.model, &self.cells, pending, fed))
     }
 
     /// Answers an MDX query from committed values, or within a transaction from the values
@@ -205,16 +248,9 @@ impl Database {
     ) -> Result<QueryResult, Error> {
         let query = mdx::parse(text)?;
         let cube = self.cube_id(&query.cube)?;
-        let (cells, definition) = (&self.cells[cube], &self.model.cubes()[cube]);
-        let pending = match transaction {
-            Some(id) => Some(&self.transaction(id)?.writes[cube]),
-            None => None,
-        };
-        let read = |at: &[ElementId]| match pending {
-            Some(pending) => cells.read_with(&self.model, definition, at, pending),
-            None => cells.read(&self.model, definition, at),
-        };
-        Ok(query.evaluate(&self.model, definition, &read)?)
+        let reader = self.reader(transaction)?;
+        let read = |cube: usize, at: &[ElementId]| reader.read(cube, at);
+        Ok(query.evaluate(&self.model, cube, &read)?)
     }
 
     /// Writes every cell, or none of them if any write is refused. Within a transaction the
@@ -269,6 +305,7 @@ impl Database {
                 cells.set(&at, value);
             }
         }
+        self.fed = OnceLock::new();
         if self
             .journal
             .as_ref()
@@ -324,14 +361,18 @@ impl Database {
         free?;
 
         let model = Model::compile(&definition)?;
-        // A change to subsets and views alone leaves every cell where it is.
+        // A change to subsets, views, rules and feeders alone leaves every cell where it is.
         let structure = |definition: &ModelDef| {
             let mut structure = definition.clone();
             structure
                 .dimensions
                 .iter_mut()
                 .for_each(|d| d.subsets.clear());
-            structure.cubes.iter_mut().for_each(|c| c.views.clear());
+            for cube in &mut structure.cubes {
+                cube.views.clear();
+                cube.rules.clear();
+                cube.feeders.clear();
+            }
             structure
         };
         let moved = (structure(&definition) != structure(&self.definition))
@@ -342,6 +383,7 @@ impl Database {
         self.model = model;
         self.definition = definition;
         self.model_version += 1;
+        self.fed = OnceLock::new();
         let mut dropped_cells = 0;
         if let Some((cells, dropped)) = moved {
             for transaction in self.transactions.values_mut() {
@@ -377,8 +419,13 @@ impl Database {
         self.transaction(id)?;
         let locate = |(index, write): (usize, &CellWrite)| {
             let located = self.locate(&write.cube, &write.at).and_then(|(cube, at)| {
-                check(&self.model, &self.model.cubes()[cube], &at, &write.value)?;
-                Ok((cube, at))
+                let definition = &self.model.cubes()[cube];
+                check(&self.model, definition, &at, &write.value)?;
+                let text = matches!(write.value, Scalar::Text(_));
+                match definition.rule_for_leaf(&at, text) {
+                    Some(_) => Err(CellError::Calculated),
+                    None => Ok((cube, at)),
+                }
             });
             located.map_err(|error| Error::Write { index, error })
         };

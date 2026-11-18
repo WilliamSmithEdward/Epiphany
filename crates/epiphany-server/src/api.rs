@@ -35,6 +35,7 @@ fn router() -> OpenApiRouter<Shared> {
         .routes(routes!(write_cells))
         .routes(routes!(query))
         .routes(routes!(run_view))
+        .routes(routes!(check_feeders))
         .routes(routes!(begin_transaction))
         .routes(routes!(commit_transaction))
         .routes(routes!(rollback_transaction))
@@ -92,9 +93,11 @@ impl ApiError {
 impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         let status = match error {
-            Error::Cell(_) | Error::Write { .. } | Error::Model(_) | Error::Mdx(_) => {
-                StatusCode::UNPROCESSABLE_ENTITY
-            }
+            Error::Cell(_)
+            | Error::Write { .. }
+            | Error::Model(_)
+            | Error::Mdx(_)
+            | Error::Rule(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Error::UnknownTransaction(_) | Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::Locked(_) | Error::StaleVersion { .. } => StatusCode::CONFLICT,
             Error::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -257,6 +260,12 @@ struct QueryRequest {
 }
 
 #[derive(Serialize, ToSchema)]
+struct FeederCheck {
+    /// Calculated leaf cells that hold a value but are not fed.
+    unfed: Vec<CellRef>,
+}
+
+#[derive(Serialize, ToSchema)]
 struct TransactionView {
     transaction: u64,
 }
@@ -405,6 +414,27 @@ async fn run_view(
     Path((cube, view)): Path<(String, String)>,
 ) -> Result<Json<QueryResult>, ApiError> {
     Ok(Json(database.read().unwrap().view(None, &cube, &view)?))
+}
+
+/// Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's
+/// consolidations therefore leave out. It works every calculated leaf out, so it is slow on
+/// a large cube. At most a hundred cells are returned; none means the feeders are complete
+/// for the data held, or the cube is not fed.
+#[utoipa::path(
+    get,
+    path = "/cubes/{cube}/feeders/check",
+    params(("cube" = String, Path)),
+    responses(
+        (status = OK, body = FeederCheck, description = "The cells found"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "Unknown cube, or a rule failed")
+    )
+)]
+async fn check_feeders(
+    State(database): State<Shared>,
+    Path(cube): Path<String>,
+) -> Result<Json<FeederCheck>, ApiError> {
+    let unfed = database.read().unwrap().unfed(&cube, 100)?;
+    Ok(Json(FeederCheck { unfed }))
 }
 
 /// Begins a transaction. It is rolled back if left idle.

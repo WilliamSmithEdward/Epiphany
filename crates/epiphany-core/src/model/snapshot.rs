@@ -6,7 +6,8 @@ use super::definition::{
     AttributeType, CubeDef, DimensionDef, ElementDef, ElementType, ModelDef, SubsetDef, ViewDef,
 };
 use super::error::ModelError;
-use crate::{Scalar, mdx};
+use crate::Scalar;
+use crate::mdx::{self, Feeder, Rule};
 
 /// Position of a dimension in [`Model::dimensions`].
 pub type DimensionId = u32;
@@ -67,11 +68,40 @@ impl Model {
                 });
             }
         }
-        for (cube, definition) in model.cubes.iter().zip(&def.cubes) {
-            let within = format!("cube '{}'", cube.name);
+        // Rules and feeders may refer to other cubes, so every cube is in place first.
+        for (id, definition) in def.cubes.iter().enumerate() {
+            let within = |kind: &str, number: usize| {
+                format!("{kind} {} of cube '{}'", number + 1, definition.name)
+            };
+            let mut rules = Vec::new();
+            for (number, text) in definition.rules.iter().enumerate() {
+                rules.push(mdx::compile_rule(&model, id, text).map_err(|error| {
+                    ModelError::Mdx {
+                        within: within("rule", number),
+                        error: error.to_string(),
+                    }
+                })?);
+            }
+            let mut feeders = Vec::new();
+            for (number, text) in definition.feeders.iter().enumerate() {
+                feeders.push(mdx::compile_feeder(&model, id, text).map_err(|error| {
+                    ModelError::Mdx {
+                        within: within("feeder", number),
+                        error: error.to_string(),
+                    }
+                })?);
+            }
+            for fed in feeders.iter().flat_map(|feeder| &feeder.feeds) {
+                model.cubes[*fed].sparse = true;
+            }
+            model.cubes[id].rules = rules;
+            model.cubes[id].feeders = feeders;
+        }
+        for (id, definition) in def.cubes.iter().enumerate() {
+            let within = format!("cube '{}'", definition.name);
             index("view", &within, definition.views.keys().map(String::as_str))?;
             for (name, view) in &definition.views {
-                mdx::check_view(&model, cube, &view.mdx).map_err(|error| ModelError::Mdx {
+                mdx::check_view(&model, id, &view.mdx).map_err(|error| ModelError::Mdx {
                     within: format!("view '{name}' of {within}"),
                     error: error.to_string(),
                 })?;
@@ -109,6 +139,12 @@ pub struct Cube {
     pub dimensions: Vec<DimensionId>,
     /// Saved queries, in name order.
     pub views: Vec<View>,
+    /// The rules that calculate cells, in the order they are tried.
+    pub rules: Vec<Rule>,
+    pub feeders: Vec<Feeder>,
+    /// Whether some feeder feeds this cube, in which case its consolidations add up only
+    /// stored and fed cells.
+    pub sparse: bool,
 }
 
 #[derive(Debug)]
@@ -149,7 +185,15 @@ impl Cube {
             name: def.name.clone(),
             dimensions: dimensions.collect::<Result<_, _>>()?,
             views: def.views.iter().map(view).collect(),
+            rules: Vec::new(),
+            feeders: Vec::new(),
+            sparse: false,
         })
+    }
+
+    /// The first rule that may decide a leaf cell, if any: such a cell cannot be written.
+    pub(crate) fn rule_for_leaf(&self, at: &[ElementId], text: bool) -> Option<&Rule> {
+        self.rules.iter().find(|rule| rule.covers(at, text, false))
     }
 
     /// Finds a view by name, ignoring case and spaces.

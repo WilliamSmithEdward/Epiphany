@@ -119,15 +119,37 @@ practice that means:
 
 ### 2.6 Rules and feeders
 
-- **Decision:** an original, small rules language in the familiar area-equals-expression
-  form, for example `['Margin'] = N: ['Revenue'] - ['Cost'];`, with `N:` for leaf cells and
-  `C:` for consolidated cells, arithmetic, `IF`, and cross-cube references.
-- Rules compile to an expression tree per cube. Evaluation is on read, memoised per query,
-  with circular-reference detection.
-- Rules land first without feeders: correct, but consolidations over rule-calculated leaves
-  must visit every candidate leaf. Feeders are then added as the optimisation they are:
-  they mark which calculated leaves can be non-zero so consolidation and NonEmpty skip the
-  rest. A check mode reports cells that have a value but no feeder.
+- Done. **Decision:** rules are written in the query language, not a second language. A
+  rule is `[N: | C: | S:] area = expression`, for example
+  `N: [Account].[Margin] = [Account].[Revenue] - [Account].[Cost]`. The area is a member or
+  a tuple; the expression is any MDX value expression, so rules have the same functions,
+  member properties and hierarchy navigation as calculated members. A cube's rules are a
+  list of such statements in its JSON.
+- `N:` limits a rule to leaf cells, `C:` to consolidated cells, `S:` to text cells; without
+  one it covers every numeric cell of its area. The first rule that covers a cell decides
+  it, unless it answers `STET` (keep the stored or consolidated value) or `CONTINUE` (ask
+  the next rule).
+- `LookupCube("Cube", member, ...)` reads another cube. Dimensions the two cubes share
+  carry across from the cell being calculated; the members given move the rest.
+- Names in a rule are checked and resolved when the model is compiled, so a mistake makes
+  the model invalid and evaluation does no lookups by name.
+- Evaluation is on read, remembered for the length of one request, and a cell that depends
+  on itself is reported instead of looping.
+- A cell that a rule decides cannot be written.
+- Feeders are a second list of statements, `source => target, ...`, for example
+  `[Account].[Units] => [Account].[Revenue]`. Wherever a stored cell lies in the source
+  area, the matching target cell is fed; a fed cell feeds onward through further feeders;
+  a target may be in another cube through `LookupCube`; and a source or target that names a
+  consolidation stands for the leaves beneath it.
+- A cube that some feeder feeds adds up its consolidations from stored and fed cells only.
+  A cube that no feeder feeds visits every leaf beneath a consolidation that a leaf rule
+  can reach, which is always right and can be slow; past ten million cells it refuses and
+  asks for feeders.
+- `GET /cubes/{cube}/feeders/check` lists calculated leaf cells that hold a value but are
+  not fed, which is how missing feeders are found.
+- Not done: feeders whose target depends on cell values, and a way to tell from a query
+  answer that a cell is calculated (the lab shows such cells as editable and reports the
+  refusal when written).
 
 ### 2.7 MDX
 

@@ -83,6 +83,8 @@ pub fn random_model(rng: &mut Rng, dimensions: usize, shape: &Shape) -> ModelDef
             name: "C".to_owned(),
             dimensions: (0..dimensions).map(|index| format!("d{index}")).collect(),
             views: Default::default(),
+            rules: Vec::new(),
+            feeders: Vec::new(),
         }],
     }
 }

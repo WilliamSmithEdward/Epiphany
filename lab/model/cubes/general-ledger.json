@@ -6,6 +6,9 @@
     "Period",
     "Version"
   ],
+  "rules": [
+    "[Account].[Net Margin %] = IIF([Account].[Revenue] = 0, 0, [Account].[Net Income] / [Account].[Revenue])"
+  ],
   "views": {
     "Quarterly income by entity": {
       "mdx": "SELECT TM1SubsetToSet([Period], 'Quarters') ON COLUMNS, {[Entity].Members} * {[Account].[Net Income], [Account].[Revenue], [Account].[Operating Expenses]} ON ROWS FROM [General Ledger] WHERE ([Version].[Actual])"

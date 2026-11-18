@@ -14,10 +14,12 @@ const MOST_CELLS: usize = 1_000_000;
 /// How deeply calculated members may refer to one another.
 const DEEPEST: u32 = 32;
 
-type Evaluated<T> = Result<T, MdxError>;
+pub(super) type Evaluated<T> = Result<T, MdxError>;
+/// Reads a cell of a cube, by the cube's position in the model.
+pub(crate) type Read<'a> = &'a dyn Fn(usize, &[ElementId]) -> Evaluated<Scalar>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum Id {
+pub(super) enum Id {
     Element(ElementId),
     /// A calculated member, by its position in the query.
     Calculated(usize),
@@ -25,20 +27,24 @@ enum Id {
 
 /// A member of the dimension at a position in the cube.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct Member {
-    position: usize,
-    id: Id,
+pub(super) struct Member {
+    pub(super) position: usize,
+    pub(super) id: Id,
 }
 
 /// Members of different dimensions.
-type Tuple = Vec<Member>;
+pub(super) type Tuple = Vec<Member>;
 /// One member per dimension of the cube: the cell an expression is evaluated at.
-type Context = Vec<Id>;
+pub(super) type Context = Vec<Id>;
 
 /// What an expression evaluates to.
 #[derive(Debug, Clone, PartialEq)]
-enum Datum {
+pub(super) enum Datum {
     Null,
+    /// A rule's way of saying the cell keeps its stored or consolidated value.
+    Stet,
+    /// A rule's way of passing the cell on to the next rule.
+    Continue,
     Number(f64),
     Text(String),
     Bool(bool),
@@ -56,31 +62,30 @@ struct Calculated<'a> {
     solve_order: f64,
 }
 
-struct Evaluator<'a> {
-    model: &'a Model,
-    cube: &'a Cube,
-    read: &'a dyn Fn(&[ElementId]) -> Scalar,
+pub(super) struct Evaluator<'a> {
+    pub(super) model: &'a Model,
+    /// The cube's position in the model.
+    pub(super) cube_id: usize,
+    pub(super) cube: &'a Cube,
+    read: Read<'a>,
     calculated: Vec<Calculated<'a>>,
     sets: HashMap<String, Vec<Tuple>>,
     /// How many calculated members are being evaluated inside one another.
     depth: Cell<u32>,
 }
 
-fn fail<T>(message: impl Into<String>) -> Evaluated<T> {
+pub(super) fn fail<T>(message: impl Into<String>) -> Evaluated<T> {
     Err(MdxError::new(message))
+}
+
+/// A cell reader for work that must not depend on cell values: every cell is empty.
+pub(super) fn no_cells(_: usize, _: &[ElementId]) -> Evaluated<Scalar> {
+    Ok(Scalar::Number(0.0))
 }
 
 /// The elements a set over a one-dimension cube selects, reading every cell as empty.
 pub(super) fn elements(model: &Model, cube: &Cube, set: &Expr) -> Evaluated<Vec<ElementId>> {
-    let empty = |_: &[ElementId]| Scalar::Number(0.0);
-    let evaluator = Evaluator {
-        model,
-        cube,
-        read: &empty,
-        calculated: Vec::new(),
-        sets: HashMap::new(),
-        depth: Cell::new(0),
-    };
+    let evaluator = Evaluator::new(model, usize::MAX, cube, &no_cells);
     let top = evaluator
         .dimension(0)
         .elements
@@ -108,17 +113,11 @@ impl Query {
     pub(crate) fn evaluate(
         &self,
         model: &Model,
-        cube: &Cube,
-        read: &dyn Fn(&[ElementId]) -> Scalar,
+        cube_id: usize,
+        read: Read,
     ) -> Evaluated<QueryResult> {
-        let mut evaluator = Evaluator {
-            model,
-            cube,
-            read,
-            calculated: Vec::new(),
-            sets: HashMap::new(),
-            depth: Cell::new(0),
-        };
+        let cube = &model.cubes()[cube_id];
+        let mut evaluator = Evaluator::new(model, cube_id, cube, read);
         for member in &self.members {
             let [dimension, .., name] = member.name.as_slice() else {
                 return fail("a calculated member is named [Dimension].[Name]");
@@ -132,11 +131,7 @@ impl Query {
         }
 
         // Every dimension starts at its first top element; the slicer then narrows some.
-        let top = |dimension: &Dimension| {
-            let top = dimension.elements.iter().position(|e| e.parents.is_empty());
-            Id::Element(top.unwrap_or(0) as ElementId)
-        };
-        let mut context: Context = evaluator.dimensions().map(top).collect();
+        let mut context = evaluator.top();
         for (name, expression) in &self.sets {
             let set = evaluator.set(expression, &context)?;
             evaluator.sets.insert(key(name), set);
@@ -316,6 +311,152 @@ fn compare(left: &Datum, right: &Datum) -> Ordering {
 }
 
 impl<'a> Evaluator<'a> {
+    pub(super) fn new(model: &'a Model, cube_id: usize, cube: &'a Cube, read: Read<'a>) -> Self {
+        Self {
+            model,
+            cube_id,
+            cube,
+            read,
+            calculated: Vec::new(),
+            sets: HashMap::new(),
+            depth: Cell::new(0),
+        }
+    }
+
+    /// The cell every dimension starts at: its first top element.
+    pub(super) fn top(&self) -> Context {
+        let top = |dimension: &Dimension| {
+            let top = dimension.elements.iter().position(|e| e.parents.is_empty());
+            Id::Element(top.unwrap_or(0) as ElementId)
+        };
+        self.dimensions().map(top).collect()
+    }
+
+    /// A copy of an expression with every name that can be settled now replaced by what it
+    /// names, so that evaluating it again and again does no lookups by name. It also reports
+    /// names that mean nothing. Names inside `LookupCube` belong to another cube and are left.
+    pub(super) fn bind(&self, expression: &Expr) -> Evaluated<Expr> {
+        let all = |items: &[Expr]| {
+            items
+                .iter()
+                .map(|item| self.bind(item))
+                .collect::<Evaluated<Vec<_>>>()
+        };
+        let one = |item: &Expr| self.bind(item).map(Box::new);
+        Ok(match expression {
+            Expr::Name(parts) => match (parts.as_slice(), self.resolve(parts)) {
+                ([word], _) if ["STET", "CONTINUE"].contains(&&*word.to_uppercase()) => {
+                    Expr::Call(word.to_uppercase(), Vec::new())
+                }
+                (
+                    _,
+                    Ok(Datum::Member(Member {
+                        position,
+                        id: Id::Element(id),
+                    })),
+                ) => Expr::Member(position, id),
+                (_, Ok(Datum::Dimension(position))) => Expr::Dimension(position),
+                // A single word that names nothing may be a flag such as DESC.
+                ([_], Err(_)) => expression.clone(),
+                (_, Err(error)) => return Err(error),
+                (_, Ok(_)) => expression.clone(),
+            },
+            Expr::Call(function, arguments) if function == "LOOKUPCUBE" => {
+                self.lookup(arguments, &self.top())?;
+                expression.clone()
+            }
+            Expr::Call(function, arguments) => Expr::Call(function.clone(), all(arguments)?),
+            Expr::Method(target, method, arguments) => {
+                Expr::Method(one(target)?, method.clone(), all(arguments)?)
+            }
+            Expr::Set(items) => Expr::Set(all(items)?),
+            Expr::Tuple(items) => Expr::Tuple(all(items)?),
+            Expr::Not(operand) => Expr::Not(one(operand)?),
+            Expr::Negate(operand) => Expr::Negate(one(operand)?),
+            Expr::Binary(left, operator, right) => Expr::Binary(one(left)?, operator, one(right)?),
+            Expr::Number(_) | Expr::Text(_) | Expr::Member(..) | Expr::Dimension(_) => {
+                expression.clone()
+            }
+        })
+    }
+
+    /// The cell `LookupCube("Cube", member, ...)` refers to. Each dimension the other cube
+    /// shares with this one starts at this cell's element; its other dimensions start at their
+    /// top. The members then move the dimensions they belong to: a name is looked up in the
+    /// other cube, and anything else is worked out here and carried across.
+    pub(super) fn lookup(
+        &self,
+        arguments: &[Expr],
+        context: &Context,
+    ) -> Evaluated<(usize, Vec<ElementId>)> {
+        let [Expr::Text(name), members @ ..] = arguments else {
+            return fail("LookupCube takes a cube name in quotes, then members");
+        };
+        let unknown = || MdxError::new(format!("unknown cube '{name}'"));
+        let cube_id = self.model.cube_id(name).ok_or_else(unknown)?;
+        let cube = &self.model.cubes()[cube_id];
+        let other = Evaluator::new(self.model, cube_id, cube, self.read);
+        let shared = |dimension: u32| self.cube.dimensions.iter().position(|&d| d == dimension);
+        let element = |id: Id| match id {
+            Id::Element(id) => Ok(id),
+            Id::Calculated(_) => fail("LookupCube cannot carry a calculated member across"),
+        };
+        let mut at = Vec::with_capacity(cube.dimensions.len());
+        for (&dimension, top) in cube.dimensions.iter().zip(other.top()) {
+            at.push(element(
+                shared(dimension).map_or(top, |position| context[position]),
+            )?);
+        }
+        for member in members {
+            let named = match member {
+                Expr::Name(parts) => other.resolve(parts).ok(),
+                _ => None,
+            };
+            let (dimension, id) = match named {
+                Some(Datum::Member(member)) => {
+                    (cube.dimensions[member.position], element(member.id)?)
+                }
+                _ => {
+                    let member = self.member(member, context)?;
+                    (self.cube.dimensions[member.position], element(member.id)?)
+                }
+            };
+            let position = cube.dimensions.iter().position(|&d| d == dimension);
+            let position = position.ok_or_else(|| {
+                let dimension = &self.model.dimensions()[dimension as usize].name;
+                MdxError::new(format!(
+                    "cube '{}' has no dimension '{dimension}'",
+                    cube.name
+                ))
+            })?;
+            at[position] = id;
+        }
+        Ok((cube_id, at))
+    }
+
+    /// The cell an expression points at: a member or tuple of this cube, or a `LookupCube`.
+    pub(super) fn target(
+        &self,
+        expression: &Expr,
+        context: &Context,
+    ) -> Evaluated<(usize, Vec<ElementId>)> {
+        if let Expr::Call(function, arguments) = expression
+            && function == "LOOKUPCUBE"
+        {
+            return self.lookup(arguments, context);
+        }
+        let tuple = match self.evaluate(expression, context)? {
+            Datum::Member(member) => vec![member],
+            Datum::Tuple(tuple) => tuple,
+            _ => return fail("expected a member, a tuple or a LookupCube"),
+        };
+        let elements = with(context, &tuple).into_iter().map(|id| match id {
+            Id::Element(id) => Ok(id),
+            Id::Calculated(_) => fail("expected elements, found a calculated member"),
+        });
+        Ok((self.cube_id, elements.collect::<Evaluated<_>>()?))
+    }
+
     fn dimensions(&self) -> impl Iterator<Item = &'a Dimension> + use<'a> {
         let model = self.model;
         let dimensions = self.cube.dimensions.iter();
@@ -378,11 +519,16 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    fn evaluate(&self, expression: &Expr, context: &Context) -> Evaluated<Datum> {
+    pub(super) fn evaluate(&self, expression: &Expr, context: &Context) -> Evaluated<Datum> {
         Ok(match expression {
             Expr::Number(number) => Datum::Number(*number),
             Expr::Text(text) => Datum::Text(text.clone()),
             Expr::Name(parts) => self.resolve(parts)?,
+            &Expr::Member(position, id) => Datum::Member(Member {
+                position,
+                id: Id::Element(id),
+            }),
+            &Expr::Dimension(position) => Datum::Dimension(position),
             Expr::Set(items) => {
                 let mut set = Vec::new();
                 for item in items {
@@ -637,6 +783,15 @@ impl<'a> Evaluator<'a> {
                     true => generated,
                     false => distinct(generated),
                 }))
+            }
+            "STET" => Ok(Datum::Stet),
+            "CONTINUE" => Ok(Datum::Continue),
+            "LOOKUPCUBE" => {
+                let (cube, at) = self.lookup(arguments, context)?;
+                Ok(match (self.read)(cube, &at)? {
+                    Scalar::Number(number) => Datum::Number(number),
+                    Scalar::Text(text) => Datum::Text(text),
+                })
             }
             "TM1SUBSETTOSET" => {
                 count(2..=2)?;
@@ -1141,7 +1296,7 @@ impl<'a> Evaluator<'a> {
                     Id::Calculated(_) => unreachable!("checked above"),
                 })
                 .collect();
-            return Ok(match (self.read)(&at) {
+            return Ok(match (self.read)(self.cube_id, &at)? {
                 Scalar::Number(number) => Datum::Number(number),
                 Scalar::Text(text) => Datum::Text(text),
             });
@@ -1158,7 +1313,7 @@ impl<'a> Evaluator<'a> {
     }
 
     /// Reduces a value to a number, text, truth or nothing: a member or tuple gives its cell.
-    fn scalar(&self, datum: Datum, context: &Context) -> Evaluated<Datum> {
+    pub(super) fn scalar(&self, datum: Datum, context: &Context) -> Evaluated<Datum> {
         match datum {
             Datum::Member(member) => self.cell(&with(context, &vec![member])),
             Datum::Tuple(tuple) => self.cell(&with(context, &tuple)),

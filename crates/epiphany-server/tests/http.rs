@@ -395,6 +395,63 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
 }
 
 #[tokio::test]
+async fn rules_and_feeders_are_part_of_the_model() {
+    let app = example();
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    let mut model = served["model"].clone();
+    // Budget is a tenth more than actual, and only US actuals feed it.
+    model["cubes"][0]["rules"] = json!(["N: [Version].[Budget] = [Version].[Actual] * 1.1"]);
+    model["cubes"][0]["feeders"] =
+        json!(["([Version].[Actual], [Entity].[US]) => [Version].[Budget]"]);
+    let update = json!({ "based_on": 1, "model": model });
+    assert_eq!(
+        call(&app, "PUT", "/model", Some(update)).await.0,
+        StatusCode::OK
+    );
+
+    let cells = json!({ "cells": [
+        write(["Rent", "US", "Jan", "Actual"], json!(100)),
+        write(["Rent", "UK", "Jan", "Actual"], json!(200)),
+    ] });
+    call(&app, "POST", "/cells/write", Some(cells)).await;
+    let reads = json!({ "cells": [
+        cell(["Rent", "UK", "Jan", "Budget"]),
+        cell(["Rent", "Total Entity", "Jan", "Budget"]),
+    ] });
+    let (_, body) = call(&app, "POST", "/cells/read", Some(reads)).await;
+    // The UK budget is calculated, but nothing feeds it, so the total leaves it out.
+    let values: Vec<f64> = body["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["value"].as_f64().unwrap())
+        .collect();
+    assert!(
+        (values[0] - 220.0).abs() < 1e-9 && (values[1] - 110.0).abs() < 1e-9,
+        "{values:?}"
+    );
+
+    let (status, body) = call(&app, "GET", "/cubes/General%20Ledger/feeders/check", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({ "unfed": [{ "cube": "General Ledger", "at": ["Rent", "UK", "Jan", "Budget"] }] })
+    );
+
+    let calculated = json!({ "cells": [write(["Rent", "US", "Jan", "Budget"], json!(1))] });
+    let (status, body) = call(&app, "POST", "/cells/write", Some(calculated)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body,
+        json!({
+            "code": "calculated_cell",
+            "message": "the cell is calculated by a rule and cannot be written",
+            "index": 0
+        })
+    );
+}
+
+#[tokio::test]
 async fn a_malformed_body_uses_the_common_error_shape() {
     let body = json!({ "cells": [{ "cube": "General Ledger", "at": [], "colour": "red" }] });
     let (status, body) = call(&example(), "POST", "/cells/read", Some(body)).await;

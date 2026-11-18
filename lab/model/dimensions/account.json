@@ -45,6 +45,11 @@
       "name": "Rent",
       "type": "numeric",
       "attributes": { "AccountType": "Expense", "AccountCode": "6100" }
+    },
+    {
+      "name": "Net Margin %",
+      "type": "numeric",
+      "attributes": { "AccountType": "Ratio" }
     }
   ],
   "attributes": {

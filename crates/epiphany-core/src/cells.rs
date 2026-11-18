@@ -12,7 +12,7 @@ pub(crate) type Coordinate = Box<[ElementId]>;
 /// Values not yet stored, by the coordinate they will be written to.
 pub(crate) type Writes = FxHashMap<Coordinate, Scalar>;
 /// The leaves of one element and the weight of each, ordered by id.
-type Leaves<'a> = &'a [(ElementId, f64)];
+pub(crate) type Leaves<'a> = &'a [(ElementId, f64)];
 
 /// The stored cells of one cube. Zero and empty cells are not stored.
 ///
@@ -116,21 +116,36 @@ impl Cells {
                 let weights = positions.iter().zip(leaves).map(|(&p, l)| l[p].1);
                 total += weights.product::<f64>() * value;
             }
-            let mut dimension = leaves.len();
-            loop {
-                if dimension == 0 {
-                    return total;
-                }
-                dimension -= 1;
-                positions[dimension] += 1;
-                if positions[dimension] == leaves[dimension].len() {
-                    positions[dimension] = 0;
-                }
-                at[dimension] = leaves[dimension][positions[dimension]].0;
-                if positions[dimension] != 0 {
-                    break;
-                }
+            if !advance(leaves, &mut positions, &mut at) {
+                return total;
             }
+        }
+    }
+
+    /// The stored leaf numbers as they would be once the pending writes were stored.
+    pub(crate) fn numbers_with<'a>(
+        &'a self,
+        pending: Option<&'a Writes>,
+    ) -> impl Iterator<Item = (&'a [ElementId], f64)> {
+        let replaced =
+            move |at: &Coordinate| pending.is_some_and(|pending| pending.contains_key(at));
+        let stored = self.numbers.iter().filter(move |(at, _)| !replaced(at));
+        let written = pending
+            .into_iter()
+            .flatten()
+            .filter_map(|(at, value)| match value {
+                Scalar::Number(number) if *number != 0.0 => Some((&**at, *number)),
+                _ => None,
+            });
+        stored.map(|(at, &number)| (&**at, number)).chain(written)
+    }
+
+    /// One leaf number as it would be once the pending writes were stored.
+    pub(crate) fn number_with(&self, at: &[ElementId], pending: Option<&Writes>) -> f64 {
+        match pending.and_then(|pending| pending.get(at)) {
+            Some(Scalar::Number(number)) => *number,
+            Some(Scalar::Text(_)) => 0.0,
+            None => self.numbers.get(at).copied().unwrap_or(0.0),
         }
     }
 
@@ -143,8 +158,25 @@ impl Cells {
     }
 }
 
+/// Moves to the next combination of one leaf per dimension, the last dimension turning
+/// fastest. `positions` says which leaf each dimension is at and `at` is the combination.
+/// Returns false once every combination has been visited.
+pub(crate) fn advance(leaves: &[Leaves], positions: &mut [usize], at: &mut [ElementId]) -> bool {
+    for dimension in (0..leaves.len()).rev() {
+        positions[dimension] += 1;
+        if positions[dimension] == leaves[dimension].len() {
+            positions[dimension] = 0;
+        }
+        at[dimension] = leaves[dimension][positions[dimension]].0;
+        if positions[dimension] != 0 {
+            return true;
+        }
+    }
+    false
+}
+
 /// The weight a leaf cell carries in a consolidation, if it is part of it.
-fn weight(leaves: &[Leaves], at: &[ElementId]) -> Option<f64> {
+pub(crate) fn weight(leaves: &[Leaves], at: &[ElementId]) -> Option<f64> {
     at.iter().zip(leaves).try_fold(1.0, |weight, (id, l)| {
         let position = l.binary_search_by_key(id, |&(leaf, _)| leaf).ok()?;
         Some(weight * l[position].1)
@@ -247,6 +279,8 @@ pub enum CellError {
     Consolidated,
     /// A number was written to a text cell, or text to a numeric cell.
     WrongType,
+    /// A value was written to a cell that a rule calculates.
+    Calculated,
     /// The number written was infinite or not a number.
     NotFinite,
 }
@@ -260,6 +294,7 @@ impl CellError {
             Self::UnknownCube { .. } => "unknown_cube",
             Self::Consolidated => "consolidated_cell",
             Self::WrongType => "wrong_type",
+            Self::Calculated => "calculated_cell",
             Self::NotFinite => "not_finite",
         }
     }
@@ -277,6 +312,7 @@ impl fmt::Display for CellError {
             Self::UnknownCube { cube } => write!(f, "unknown cube '{cube}'"),
             Self::Consolidated => write!(f, "a consolidated cell cannot be written"),
             Self::WrongType => write!(f, "the value has the wrong type for the cell"),
+            Self::Calculated => write!(f, "the cell is calculated by a rule and cannot be written"),
             Self::NotFinite => write!(f, "the number is not finite"),
         }
     }

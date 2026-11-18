@@ -108,6 +108,44 @@
         }
       }
     },
+    "/cubes/{cube}/feeders/check": {
+      "get": {
+        "summary": "Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's\nconsolidations therefore leave out. It works every calculated leaf out, so it is slow on\na large cube. At most a hundred cells are returned; none means the feeders are complete\nfor the data held, or the cube is not fed.",
+        "operationId": "check_feeders",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cells found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeederCheck"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown cube, or a rule failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cubes/{cube}/views/{view}": {
       "get": {
         "summary": "Runs a view saved with a cube.",
@@ -635,8 +673,22 @@
               "type": "string"
             }
           },
+          "feeders": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Statements that say which calculated leaf cells may hold a value, each\n`source => target, ...`, such as `[Account].[Revenue] => [Account].[Margin]`. A cube\nthat is fed consolidates only its stored and fed cells."
+          },
           "name": {
             "type": "string"
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Statements that calculate cells, each `[N: | C: | S:] area = expression`. The area is a\nmember or a tuple, such as `[Account].[Margin]`; the expression is written as in MDX.\nThe first rule that covers a cell decides it."
           },
           "views": {
             "type": "object",
@@ -827,6 +879,21 @@
           },
           "type": {
             "$ref": "#/components/schemas/ElementType"
+          }
+        }
+      },
+      "FeederCheck": {
+        "type": "object",
+        "required": [
+          "unfed"
+        ],
+        "properties": {
+          "unfed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CellRef"
+            },
+            "description": "Calculated leaf cells that hold a value but are not fed."
           }
         }
       },

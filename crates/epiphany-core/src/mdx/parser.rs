@@ -2,6 +2,7 @@
 
 use super::MdxError;
 use super::lexer::{Token, lex};
+use crate::model::ElementId;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Expr {
@@ -9,6 +10,10 @@ pub(crate) enum Expr {
     Text(String),
     /// A dotted name such as `[Account].[Revenue]`, or a single word such as `DESC`.
     Name(Vec<String>),
+    /// A name already found to be an element of the dimension at a position in the cube.
+    Member(usize, ElementId),
+    /// A name already found to be the dimension at a position in the cube.
+    Dimension(usize),
     /// `{ a, b, ... }`
     Set(Vec<Expr>),
     /// `( a, b, ... )` with more than one item.
@@ -164,6 +169,39 @@ impl Parser {
             cube,
             slicer,
         })
+    }
+
+    /// A rule: `[N: | C: | S:] area = expression [;]`. Returns the scope letter, the area and
+    /// the expression.
+    pub(super) fn rule(mut self) -> Parsed<(Option<char>, Expr, Expr)> {
+        let scope = match (self.peek(), self.after()) {
+            (Token::Word(word), Token::Symbol(":"))
+                if ["N", "C", "S"].contains(&&*word.to_uppercase()) =>
+            {
+                word.to_uppercase().chars().next()
+            }
+            _ => None,
+        };
+        self.next += 2 * usize::from(scope.is_some());
+        let area = self.primary()?;
+        self.expect_symbol("=")?;
+        let expression = self.expression()?;
+        self.symbol(";");
+        self.expect_end()?;
+        Ok((scope, area, expression))
+    }
+
+    /// A feeder: `source => target [, target ...] [;]`.
+    pub(super) fn feeder(mut self) -> Parsed<(Expr, Vec<Expr>)> {
+        let source = self.primary()?;
+        self.expect_symbol("=>")?;
+        let mut targets = vec![self.expression()?];
+        while self.symbol(",") {
+            targets.push(self.expression()?);
+        }
+        self.symbol(";");
+        self.expect_end()?;
+        Ok((source, targets))
     }
 
     /// A set expression on its own, as a subset is written.

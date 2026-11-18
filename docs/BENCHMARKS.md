@@ -39,6 +39,24 @@ Parsing and set handling are negligible; the time is the consolidated reads, whi
 uncached. A grid of a few thousand consolidated cells would take seconds, so a consolidation
 cache is the first optimisation to make when that matters.
 
+## Rules and feeders
+
+```
+cargo run --release --example bench_rules
+```
+
+A random cube of 3 dimensions of 100 leaves each. In the last dimension one element is
+calculated by a leaf rule as twice another, and 50,000 cells of that other element are stored.
+
+| Read | Without feeders | With feeders |
+| --- | --- | --- |
+| Total of the calculated element (10,000 leaves beneath it) | 4.3 ms | 8.0 ms, including working out what is fed |
+| Grand total (1,000,000 leaves beneath it) | 401 ms | 5.0 ms |
+
+Both give the same values. Without feeders a consolidation that a leaf rule can reach visits
+every leaf beneath it; with them it visits only the stored and fed cells. What is fed is
+worked out once after each change to the data, which is the extra time on the first read.
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.

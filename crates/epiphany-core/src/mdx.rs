@@ -3,6 +3,7 @@
 mod eval;
 mod lexer;
 mod parser;
+mod rules;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -13,6 +14,10 @@ use crate::Scalar;
 use crate::model::{Cube, DimensionId, ElementId, Model, key};
 
 pub(crate) use parser::Query;
+pub use rules::{Feeder, Rule};
+pub(crate) use rules::{
+    Outcome, compile_feeder, compile_rule, evaluate_rule, feeder_targets, matches,
+};
 
 /// Parses the text of a query.
 pub(crate) fn parse(text: &str) -> Result<Query, MdxError> {
@@ -31,21 +36,25 @@ pub(crate) fn subset(
         name: String::new(),
         dimensions: vec![dimension],
         views: Vec::new(),
+        rules: Vec::new(),
+        feeders: Vec::new(),
+        sparse: false,
     };
     eval::elements(model, &alone, &set)
 }
 
-/// Checks that a view's query can be answered by its cube.
-pub(crate) fn check_view(model: &Model, cube: &Cube, text: &str) -> Result<(), MdxError> {
+/// Checks that a view's query can be answered by its cube, by running it with every cell
+/// empty.
+pub(crate) fn check_view(model: &Model, cube_id: usize, text: &str) -> Result<(), MdxError> {
     let query = parse(text)?;
+    let cube = &model.cubes()[cube_id];
     if key(&query.cube) != key(&cube.name) {
         return Err(MdxError::new(format!(
             "the view selects from '{}'",
             query.cube
         )));
     }
-    let empty = |_: &[ElementId]| Scalar::Number(0.0);
-    query.evaluate(model, cube, &empty).map(drop)
+    query.evaluate(model, cube_id, &eval::no_cells).map(drop)
 }
 
 /// Why a query could not be parsed or evaluated.

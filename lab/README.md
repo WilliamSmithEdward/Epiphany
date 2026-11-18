@@ -71,6 +71,20 @@ The grid always shows the answer to the query in the MDX box, and the two drive 
 Cells can be edited whatever query is showing, provided the cell is a stored leaf. Inside a
 transaction, queries see its pending writes. Hover a heading for the member's unique name.
 
+## Rules
+
+The General Ledger cube has one rule, in its model file: `Net Margin %` is net income over
+revenue, at every level. It appears as a row like any other account, but writing to it is
+refused. Edit `model/cubes/general-ledger.json` to try more, for example a leaf rule with a
+feeder:
+
+```
+"rules":   ["N: [Version].[Budget] = [Version].[Actual] * 1.1"],
+"feeders": ["[Version].[Actual] => [Version].[Budget]"]
+```
+
+`GET /cubes/General%20Ledger/feeders/check` then lists any calculated cells the feeders miss.
+
 ## Data
 
 What you write is kept in `data/` (ignored by git) and is still there after a restart. Delete
