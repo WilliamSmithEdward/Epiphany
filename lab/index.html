@@ -184,11 +184,15 @@ function move(name, kind, before) {
   const index = before ? layout[kind].indexOf(before) : -1;
   layout[kind].splice(index < 0 ? layout[kind].length : index, 0, name);
   showLayout();
-  render();
+  render(`Moved ${name} to ${kind}`);
 }
 
 for (const zone of document.querySelectorAll('.zone')) {
-  zone.ondragover = event => { event.preventDefault(); zone.classList.add('over'); };
+  zone.ondragover = event => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    zone.classList.add('over');
+  };
   zone.ondragleave = () => zone.classList.remove('over');
   zone.ondrop = event => {
     event.preventDefault();
@@ -212,7 +216,18 @@ function isEditable(elements) {
   return { text, editable: text || elements.every(element => element.type !== 'consolidated') };
 }
 
-async function render() {
+let renders = 0;          // counts reads of the grid, so a slow answer never replaces a newer one
+
+/** Reads every cell of the current layout from the server and redraws the grid. */
+async function render(reason) {
+  try {
+    await draw(++renders, reason);
+  } catch (error) {
+    status(`The grid could not be redrawn: ${error.message}`, true);
+  }
+}
+
+async function draw(turn, reason) {
   const [rows, columns] = [tuples(layout.rows), tuples(layout.columns)];
   if (rows.length * columns.length > MOST_CELLS) {
     $('grid').replaceChildren();
@@ -233,6 +248,7 @@ async function render() {
   } catch (error) {
     return status(error.message, true);
   }
+  if (turn !== renders) return;
 
   const depth = name => Math.max(...dimensions[name].elements.map(element => element.level));
   // The row dimension names sit above their labels, on the last header row only.
@@ -251,6 +267,7 @@ async function render() {
     return make('tr', {}, [...(labels.length ? labels : [make('th', { textContent: 'Value' })]), ...cells]);
   });
   $('grid').replaceChildren(make('thead', {}, head), make('tbody', {}, body));
+  if (typeof reason === 'string') status(`${reason}: read ${visible.length.toLocaleString()} cells.`);
 }
 
 function cellNode(cell, result) {
@@ -279,7 +296,7 @@ async function write(cells) {
 }
 
 $('cube').onchange = chooseCube;
-$('refresh').onclick = render;
+$('refresh').onclick = () => render('Refreshed');
 $('begin').onclick = begin;
 $('commit').onclick = () => end('commit', 'Committed');
 $('rollback').onclick = () => end('rollback', 'Rolled back');
