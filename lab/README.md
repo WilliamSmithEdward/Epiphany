@@ -62,6 +62,9 @@ The grid always shows the answer to the query in the MDX box, and the two drive 
 - A typed query can show things the controls cannot, such as calculated members, filtered
   sets or a different cube. The next change made with the controls rewrites the query from
   the standard tree of each dimension, keeping unfolded whatever your query showed.
+- **View** lists the queries saved with the cube in its model file; choosing one loads and
+  runs it. The lab's model also defines subsets on Period, which a query can use with
+  `TM1SubsetToSet([Period], 'Months')`.
 - **Pretty print** switches between one line and a laid-out query, without running it.
 - **Copy** puts the query on the clipboard.
 

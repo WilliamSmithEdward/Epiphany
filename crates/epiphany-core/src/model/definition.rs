@@ -27,6 +27,30 @@ pub struct DimensionDef {
     /// Declared attributes and their types. Elements may only carry attributes declared here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: BTreeMap<String, AttributeType>,
+    /// Reusable selections of this dimension's elements, by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub subsets: BTreeMap<String, SubsetDef>,
+}
+
+/// A selection of a dimension's elements.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum SubsetDef {
+    /// The elements, by name or alias, in the order given.
+    Elements(Vec<String>),
+    /// An MDX set over the dimension, such as `TM1FilterByLevel([Period].Members, 0)`. It is
+    /// worked out from the dimension alone, so it cannot depend on cell values.
+    Mdx(String),
+}
+
+/// A saved query against a cube.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ViewDef {
+    /// The MDX query, which must select from the cube the view belongs to.
+    pub mdx: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,4 +116,7 @@ pub enum AttributeType {
 pub struct CubeDef {
     pub name: String,
     pub dimensions: Vec<String>,
+    /// Saved queries against this cube, by name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub views: BTreeMap<String, ViewDef>,
 }

@@ -10,12 +10,42 @@ use std::fmt;
 use serde::Serialize;
 
 use crate::Value;
+use crate::model::{Cube, DimensionId, ElementId, Model, key};
 
 pub(crate) use parser::Query;
 
 /// Parses the text of a query.
 pub(crate) fn parse(text: &str) -> Result<Query, MdxError> {
     parser::Parser::new(lexer::lex(text)?).query()
+}
+
+/// The elements an MDX set over one dimension selects. The set is worked out from the
+/// dimension alone: every cell it might read is empty.
+pub(crate) fn subset(
+    model: &Model,
+    dimension: DimensionId,
+    text: &str,
+) -> Result<Vec<ElementId>, MdxError> {
+    let set = parser::Parser::new(lexer::lex(text)?).set()?;
+    let alone = Cube {
+        name: String::new(),
+        dimensions: vec![dimension],
+        views: Vec::new(),
+    };
+    eval::elements(model, &alone, &set)
+}
+
+/// Checks that a view's query can be answered by its cube.
+pub(crate) fn check_view(model: &Model, cube: &Cube, text: &str) -> Result<(), MdxError> {
+    let query = parse(text)?;
+    if key(&query.cube) != key(&cube.name) {
+        return Err(MdxError::new(format!(
+            "the view selects from '{}'",
+            query.cube
+        )));
+    }
+    let empty = |_: &[ElementId]| Value::Number(0.0);
+    query.evaluate(model, cube, &empty).map(drop)
 }
 
 /// Why a query could not be parsed or evaluated.

@@ -48,6 +48,11 @@ pub enum ModelError {
         dimension: String,
         alias: String,
     },
+    /// The MDX of a subset or a view is wrong.
+    Mdx {
+        within: String,
+        error: String,
+    },
     /// A cube has no dimensions.
     NoDimensions {
         cube: String,
@@ -88,6 +93,7 @@ impl fmt::Display for ModelError {
                 f,
                 "alias '{alias}' in dimension '{dimension}' is already the name or alias of another element"
             ),
+            Self::Mdx { within, error } => write!(f, "invalid MDX in {within}: {error}"),
             Self::NoDimensions { cube } => write!(f, "cube '{cube}' has no dimensions"),
         }
     }

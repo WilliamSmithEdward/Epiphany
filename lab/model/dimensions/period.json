@@ -64,5 +64,10 @@
   "attributes": {
     "Code": "alias",
     "Days": "numeric"
+  },
+  "subsets": {
+    "Months": { "mdx": "TM1FilterByLevel([Period].Members, 0)" },
+    "Quarters": { "elements": ["Q1", "Q2", "Q3", "Q4"] },
+    "First half": { "mdx": "Descendants([Period].[Q1], 1) + Descendants([Period].[Q2], 1)" }
   }
 }

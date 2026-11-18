@@ -73,6 +73,7 @@ pub fn random_model(rng: &mut Rng, dimensions: usize, shape: &Shape) -> ModelDef
             kind: DimensionType::Standard,
             elements,
             attributes: Default::default(),
+            subsets: Default::default(),
         }
     };
 
@@ -81,6 +82,7 @@ pub fn random_model(rng: &mut Rng, dimensions: usize, shape: &Shape) -> ModelDef
         cubes: vec![CubeDef {
             name: "C".to_owned(),
             dimensions: (0..dimensions).map(|index| format!("d{index}")).collect(),
+            views: Default::default(),
         }],
     }
 }

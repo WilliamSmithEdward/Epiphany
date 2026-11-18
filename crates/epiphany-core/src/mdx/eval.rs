@@ -70,6 +70,39 @@ fn fail<T>(message: impl Into<String>) -> Evaluated<T> {
     Err(MdxError::new(message))
 }
 
+/// The elements a set over a one-dimension cube selects, reading every cell as empty.
+pub(super) fn elements(model: &Model, cube: &Cube, set: &Expr) -> Evaluated<Vec<ElementId>> {
+    let empty = |_: &[ElementId]| Value::Number(0.0);
+    let evaluator = Evaluator {
+        model,
+        cube,
+        read: &empty,
+        calculated: Vec::new(),
+        sets: HashMap::new(),
+        depth: Cell::new(0),
+    };
+    let top = evaluator
+        .dimension(0)
+        .elements
+        .iter()
+        .position(|e| e.parents.is_empty());
+    let context = vec![Id::Element(top.unwrap_or(0) as ElementId)];
+    let element = |tuple: Tuple| match tuple.as_slice() {
+        [
+            Member {
+                id: Id::Element(id),
+                ..
+            },
+        ] => Ok(*id),
+        _ => fail("a subset selects elements of its dimension"),
+    };
+    evaluator
+        .set(set, &context)?
+        .into_iter()
+        .map(element)
+        .collect()
+}
+
 impl Query {
     /// Runs the query against a cube, reading stored and consolidated cells through `read`.
     pub(crate) fn evaluate(
@@ -604,6 +637,26 @@ impl<'a> Evaluator<'a> {
                     true => generated,
                     false => distinct(generated),
                 }))
+            }
+            "TM1SUBSETTOSET" => {
+                count(2..=2)?;
+                let dimension = self.evaluate(&arguments[0], context)?;
+                let name = self.evaluate(&arguments[1], context)?;
+                let (Datum::Dimension(position), Datum::Text(name)) = (dimension, name) else {
+                    return fail("TM1SUBSETTOSET takes a dimension and a subset name in quotes");
+                };
+                let dimension = self.dimension(position);
+                let subset = dimension.subset(&name).ok_or_else(|| {
+                    let dimension = &dimension.name;
+                    MdxError::new(format!("dimension '{dimension}' has no subset '{name}'"))
+                })?;
+                let member = |&id: &ElementId| {
+                    vec![Member {
+                        position,
+                        id: Id::Element(id),
+                    }]
+                };
+                Ok(Datum::Set(subset.elements.iter().map(member).collect()))
             }
             "TM1SUBSETALL" => {
                 count(1..=1)?;

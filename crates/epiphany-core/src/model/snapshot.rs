@@ -2,9 +2,11 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use super::definition::{AttributeType, CubeDef, DimensionDef, ElementDef, ElementType, ModelDef};
+use super::definition::{
+    AttributeType, CubeDef, DimensionDef, ElementDef, ElementType, ModelDef, SubsetDef, ViewDef,
+};
 use super::error::ModelError;
-use crate::Value;
+use crate::{Value, mdx};
 
 /// Position of a dimension in [`Model::dimensions`].
 pub type DimensionId = u32;
@@ -28,12 +30,54 @@ impl Model {
         let cube_ids = index("cube", WITHIN, def.cubes.iter().map(|c| c.name.as_str()))?;
         let dimensions = def.dimensions.iter().map(Dimension::compile);
         let cubes = def.cubes.iter().map(|c| Cube::compile(c, &dimension_ids));
-        Ok(Self {
+        let mut model = Self {
             dimensions: dimensions.collect::<Result<_, _>>()?,
             cubes: cubes.collect::<Result<_, _>>()?,
             dimension_ids,
             cube_ids,
-        })
+        };
+
+        // Subsets and views are written in MDX, which needs the rest of the model in place.
+        // A subset is worked out once, here; it may build on the subsets before it by name.
+        for (id, dimension) in def.dimensions.iter().enumerate() {
+            let within = format!("dimension '{}'", dimension.name);
+            index(
+                "subset",
+                &within,
+                dimension.subsets.keys().map(String::as_str),
+            )?;
+            for (name, subset) in &dimension.subsets {
+                let within = format!("subset '{name}' of {within}");
+                let elements =
+                    match subset {
+                        SubsetDef::Elements(names) => {
+                            let ids = &model.dimensions[id].element_ids;
+                            let element = |name: &String| resolve(ids, "element", &within, name);
+                            names.iter().map(element).collect::<Result<_, _>>()?
+                        }
+                        SubsetDef::Mdx(text) => mdx::subset(&model, id as DimensionId, text)
+                            .map_err(|error| ModelError::Mdx {
+                                within,
+                                error: error.to_string(),
+                            })?,
+                    };
+                model.dimensions[id].subsets.push(Subset {
+                    name: name.clone(),
+                    elements,
+                });
+            }
+        }
+        for (cube, definition) in model.cubes.iter().zip(&def.cubes) {
+            let within = format!("cube '{}'", cube.name);
+            index("view", &within, definition.views.keys().map(String::as_str))?;
+            for (name, view) in &definition.views {
+                mdx::check_view(&model, cube, &view.mdx).map_err(|error| ModelError::Mdx {
+                    within: format!("view '{name}' of {within}"),
+                    error: error.to_string(),
+                })?;
+            }
+        }
+        Ok(model)
     }
 
     pub fn dimensions(&self) -> &[Dimension] {
@@ -63,6 +107,21 @@ impl Model {
 pub struct Cube {
     pub name: String,
     pub dimensions: Vec<DimensionId>,
+    /// Saved queries, in name order.
+    pub views: Vec<View>,
+}
+
+#[derive(Debug)]
+pub struct View {
+    pub name: String,
+    pub mdx: String,
+}
+
+/// The elements a subset selects, in order.
+#[derive(Debug)]
+pub struct Subset {
+    pub name: String,
+    pub elements: Vec<ElementId>,
 }
 
 impl Cube {
@@ -82,10 +141,20 @@ impl Cube {
             .dimensions
             .iter()
             .map(|name| resolve(dimension_ids, "dimension", &within, name));
+        let view = |(name, view): (&String, &ViewDef)| View {
+            name: name.clone(),
+            mdx: view.mdx.clone(),
+        };
         Ok(Self {
             name: def.name.clone(),
             dimensions: dimensions.collect::<Result<_, _>>()?,
+            views: def.views.iter().map(view).collect(),
         })
+    }
+
+    /// Finds a view by name, ignoring case and spaces.
+    pub fn view(&self, name: &str) -> Option<&View> {
+        self.views.iter().find(|view| key(&view.name) == key(name))
     }
 }
 
@@ -101,6 +170,8 @@ pub struct Dimension {
     /// Elements in declaration order.
     pub elements: Vec<Element>,
     pub attributes: Vec<Attribute>,
+    /// Reusable selections of elements, in name order.
+    pub subsets: Vec<Subset>,
     /// Element ids by the key of every name and alias.
     element_ids: HashMap<String, ElementId>,
     attribute_ids: HashMap<String, u32>,
@@ -173,9 +244,17 @@ impl Dimension {
             name: def.name.clone(),
             elements,
             attributes,
+            subsets: Vec::new(),
             element_ids,
             attribute_ids,
         })
+    }
+
+    /// Finds a subset by name, ignoring case and spaces.
+    pub fn subset(&self, name: &str) -> Option<&Subset> {
+        self.subsets
+            .iter()
+            .find(|subset| key(&subset.name) == key(name))
     }
 
     /// Finds an element by name or alias, ignoring case and spaces.

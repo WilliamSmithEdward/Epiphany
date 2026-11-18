@@ -177,6 +177,24 @@ practice that means:
   a set of leaf writes inside one transaction. Proportional spreading over all-zero leaves
   falls back to equal.
 
+### 2.9 Subsets and views
+
+- Done. Both are part of the model definition, so they are validated, versioned, stored and
+  updated exactly as dimensions and cubes are.
+- A dimension has named subsets: either a list of elements, or an MDX set over the
+  dimension. A cube has named views: each an MDX query against that cube.
+- A subset is worked out once, when the model is compiled, and a mistake in one makes the
+  model invalid. **Decision:** an MDX subset is evaluated over its dimension alone, so it
+  can use the hierarchy, levels, names and other subsets, but not cell values. Subsets are
+  worked out in name order, and one may refer to those before it.
+- A view is checked when the model is compiled, by running it against an empty cube.
+- `TM1SubsetToSet([Dimension], "name")` uses a subset in any query.
+- `GET /dimensions/{name}` lists each subset's elements; `GET /cubes/{cube}/views/{view}`
+  runs a view.
+- A model update that changes only subsets and views leaves the stored cells untouched.
+- Not done: saving one subset or view without sending the whole model, subsets that depend
+  on cell values, and private (per-user) subsets and views.
+
 ## 3. API
 
 - JSON over HTTP. The OpenAPI document is generated from the server's route definitions,
@@ -189,8 +207,9 @@ practice that means:
   - `/cells/read`, `/cells/write`, `/cells/spread`: batched. Each cell names its cube, so
     one batch can span cubes, as one worksheet calculation can. A read reports errors per
     cell; a write is all or nothing and reports the first bad cell (read and write done)
-  - `/mdx`: run a query
-  - `/subsets`, `/views`: stored selections and stored queries
+  - `/mdx`: run a query (done)
+  - `/cubes/{cube}/views/{view}`: run a saved view (done); subsets come with
+    `/dimensions/{name}`
   - `/transactions`, `/transactions/{id}/commit`, `/rollback`, `/locks`
   - `/sessions`: sign in and out
 - Any data call may carry a transaction id; without one it is its own transaction.

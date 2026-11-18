@@ -28,6 +28,8 @@ pub enum Error {
     /// The change could not be recorded on disk, so it was not made.
     Storage(String),
     Mdx(MdxError),
+    /// Something asked for by name does not exist; the text says what.
+    NotFound(String),
 }
 
 impl Error {
@@ -41,6 +43,7 @@ impl Error {
             Self::StaleVersion { .. } => "stale_version",
             Self::Storage(_) => "storage_failed",
             Self::Mdx(_) => "invalid_mdx",
+            Self::NotFound(_) => "not_found",
         }
     }
 }
@@ -58,6 +61,7 @@ impl fmt::Display for Error {
             ),
             Self::Storage(reason) => write!(f, "the change could not be stored: {reason}"),
             Self::Mdx(error) => error.fmt(f),
+            Self::NotFound(what) => what.fmt(f),
         }
     }
 }

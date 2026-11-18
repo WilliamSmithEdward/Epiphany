@@ -6,7 +6,7 @@ mod snapshot;
 
 pub use definition::{
     AttributeType, ChildDef, CubeDef, DimensionDef, DimensionType, ElementDef, ElementType,
-    ModelDef,
+    ModelDef, SubsetDef, ViewDef,
 };
 pub use error::ModelError;
 pub(crate) use snapshot::key;

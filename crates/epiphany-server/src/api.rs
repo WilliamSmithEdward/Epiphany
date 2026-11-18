@@ -34,6 +34,7 @@ fn router() -> OpenApiRouter<Shared> {
         .routes(routes!(read_cells))
         .routes(routes!(write_cells))
         .routes(routes!(query))
+        .routes(routes!(run_view))
         .routes(routes!(begin_transaction))
         .routes(routes!(commit_transaction))
         .routes(routes!(rollback_transaction))
@@ -94,7 +95,7 @@ impl From<Error> for ApiError {
             Error::Cell(_) | Error::Write { .. } | Error::Model(_) | Error::Mdx(_) => {
                 StatusCode::UNPROCESSABLE_ENTITY
             }
-            Error::UnknownTransaction(_) => StatusCode::NOT_FOUND,
+            Error::UnknownTransaction(_) | Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::Locked(_) | Error::StaleVersion { .. } => StatusCode::CONFLICT,
             Error::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -160,6 +161,8 @@ struct DimensionView {
     attributes: BTreeMap<String, AttributeType>,
     /// Elements in declaration order.
     elements: Vec<ElementView>,
+    /// The element names each subset selects, in the subset's order.
+    subsets: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -202,6 +205,14 @@ impl From<&Dimension> for DimensionView {
                 .map(|attribute| (attribute.name.clone(), attribute.kind))
                 .collect(),
             elements: elements.collect(),
+            subsets: dimension
+                .subsets
+                .iter()
+                .map(|subset| {
+                    let names = subset.elements.iter().map(|&id| name(id));
+                    (subset.name.clone(), names.collect())
+                })
+                .collect(),
         }
     }
 }
@@ -368,6 +379,20 @@ async fn query(
 ) -> Result<Json<QueryResult>, ApiError> {
     let database = database.read().unwrap();
     Ok(Json(database.query(request.transaction, &request.mdx)?))
+}
+
+/// Runs a view saved with a cube.
+#[utoipa::path(
+    get,
+    path = "/cubes/{cube}/views/{view}",
+    params(("cube" = String, Path), ("view" = String, Path)),
+    responses((status = OK, body = QueryResult), (status = NOT_FOUND, body = ApiError))
+)]
+async fn run_view(
+    State(database): State<Shared>,
+    Path((cube, view)): Path<(String, String)>,
+) -> Result<Json<QueryResult>, ApiError> {
+    Ok(Json(database.read().unwrap().view(None, &cube, &view)?))
 }
 
 /// Begins a transaction. It is rolled back if left idle.

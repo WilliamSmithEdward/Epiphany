@@ -85,6 +85,50 @@
         }
       }
     },
+    "/cubes/{cube}/views/{view}": {
+      "get": {
+        "summary": "Runs a view saved with a cube.",
+        "operationId": "run_view",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "view",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueryResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dimensions/{name}": {
       "get": {
         "summary": "One dimension, with each element's level, parents, children and attributes.",
@@ -503,6 +547,16 @@
           },
           "name": {
             "type": "string"
+          },
+          "views": {
+            "type": "object",
+            "description": "Saved queries against this cube, by name.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ViewDef"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false
@@ -533,6 +587,16 @@
           "name": {
             "type": "string"
           },
+          "subsets": {
+            "type": "object",
+            "description": "Reusable selections of this dimension's elements, by name.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/SubsetDef"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "type": {
             "$ref": "#/components/schemas/DimensionType"
           }
@@ -551,7 +615,8 @@
         "required": [
           "name",
           "attributes",
-          "elements"
+          "elements",
+          "subsets"
         ],
         "properties": {
           "attributes": {
@@ -572,6 +637,19 @@
           },
           "name": {
             "type": "string"
+          },
+          "subsets": {
+            "type": "object",
+            "description": "The element names each subset selects, in the subset's order.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "propertyNames": {
+              "type": "string"
+            }
           }
         }
       },
@@ -908,6 +986,40 @@
           }
         }
       },
+      "SubsetDef": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "The elements, by name or alias, in the order given.",
+            "required": [
+              "elements"
+            ],
+            "properties": {
+              "elements": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "The elements, by name or alias, in the order given."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An MDX set over the dimension, such as `TM1FilterByLevel([Period].Members, 0)`. It is\nworked out from the dimension alone, so it cannot depend on cell values.",
+            "required": [
+              "mdx"
+            ],
+            "properties": {
+              "mdx": {
+                "type": "string",
+                "description": "An MDX set over the dimension, such as `TM1FilterByLevel([Period].Members, 0)`. It is\nworked out from the dimension alone, so it cannot depend on cell values."
+              }
+            }
+          }
+        ],
+        "description": "A selection of a dimension's elements."
+      },
       "TransactionView": {
         "type": "object",
         "required": [
@@ -918,6 +1030,20 @@
             "$ref": "#/components/schemas/u64"
           }
         }
+      },
+      "ViewDef": {
+        "type": "object",
+        "description": "A saved query against a cube.",
+        "required": [
+          "mdx"
+        ],
+        "properties": {
+          "mdx": {
+            "type": "string",
+            "description": "The MDX query, which must select from the cube the view belongs to."
+          }
+        },
+        "additionalProperties": false
       },
       "WriteRequest": {
         "type": "object",

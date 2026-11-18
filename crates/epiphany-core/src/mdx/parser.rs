@@ -166,6 +166,13 @@ impl Parser {
         })
     }
 
+    /// A set expression on its own, as a subset is written.
+    pub(super) fn set(mut self) -> Parsed<Expr> {
+        let expression = self.expression()?;
+        self.expect_end()?;
+        Ok(expression)
+    }
+
     /// The expression after `AS`, which older queries wrap in quotes.
     fn definition(&mut self) -> Parsed<Expr> {
         let Token::Text(text) = self.peek().clone() else {

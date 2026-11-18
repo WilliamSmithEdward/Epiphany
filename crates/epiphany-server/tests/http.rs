@@ -345,6 +345,56 @@ async fn an_mdx_query_is_answered_with_axes_and_cells() {
 }
 
 #[tokio::test]
+async fn subsets_and_views_are_saved_with_the_model_and_served() {
+    let app = example();
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    let mut model = served["model"].clone();
+    model["dimensions"][2]["subsets"] = json!({
+        "Months": { "mdx": "TM1FilterByLevel([Period].Members, 0)" },
+        "Winter": { "elements": ["Jan", "Feb"] }
+    });
+    model["cubes"][0]["views"] = json!({ "Winter rent": { "mdx":
+        "SELECT TM1SubsetToSet([Period], 'Winter') ON COLUMNS FROM [General Ledger]
+         WHERE ([Account].[Rent], [Entity].[US], [Version].[Actual])" } });
+    let update = json!({ "based_on": 1, "model": model });
+    let (status, body) = call(&app, "PUT", "/model", Some(update)).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::OK, json!({ "version": 2, "dropped_cells": 0 }))
+    );
+
+    let cells = json!({ "cells": [write(["Rent", "US", "Feb", "Actual"], json!(25))] });
+    call(&app, "POST", "/cells/write", Some(cells)).await;
+    let (status, body) = call(
+        &app,
+        "GET",
+        "/cubes/General%20Ledger/views/winter%20rent",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cells"], json!([0.0, 25.0]));
+
+    let (_, body) = call(&app, "GET", "/dimensions/Period", None).await;
+    assert_eq!(
+        body["subsets"],
+        json!({ "Months": ["Jan", "Feb", "Mar", "Apr", "May", "Jun"], "Winter": ["Jan", "Feb"] })
+    );
+    let (_, body) = call(&app, "GET", "/model", None).await;
+    assert_eq!(
+        body["model"]["dimensions"][2]["subsets"]["Winter"],
+        json!({ "elements": ["Jan", "Feb"] })
+    );
+
+    let (status, body) = call(&app, "GET", "/cubes/General%20Ledger/views/Nope", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(
+        body,
+        json!({ "code": "not_found", "message": "cube 'General Ledger' has no view 'Nope'" })
+    );
+}
+
+#[tokio::test]
 async fn a_malformed_body_uses_the_common_error_shape() {
     let body = json!({ "cells": [{ "cube": "General Ledger", "at": [], "colour": "red" }] });
     let (status, body) = call(&example(), "POST", "/cells/read", Some(body)).await;

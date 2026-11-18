@@ -320,22 +320,52 @@ impl Database {
         free?;
 
         let model = Model::compile(&definition)?;
-        let (cells, dropped_cells) = migrate::migrate(&self.model, &model, &self.cells);
+        // A change to subsets and views alone leaves every cell where it is.
+        let structure = |definition: &ModelDef| {
+            let mut structure = definition.clone();
+            structure
+                .dimensions
+                .iter_mut()
+                .for_each(|d| d.subsets.clear());
+            structure.cubes.iter_mut().for_each(|c| c.views.clear());
+            structure
+        };
+        let moved = (structure(&definition) != structure(&self.definition))
+            .then(|| migrate::migrate(&self.model, &model, &self.cells));
         if let Some(journal) = &mut self.journal {
             journal.model(self.model_version + 1, &definition)?;
         }
-        for transaction in self.transactions.values_mut() {
-            transaction.writes = vec![Writes::default(); cells.len()];
-        }
-        self.cells = cells;
         self.model = model;
         self.definition = definition;
         self.model_version += 1;
-        self.snapshot();
+        let mut dropped_cells = 0;
+        if let Some((cells, dropped)) = moved {
+            for transaction in self.transactions.values_mut() {
+                transaction.writes = vec![Writes::default(); cells.len()];
+            }
+            self.cells = cells;
+            dropped_cells = dropped;
+            // The commits recorded so far name cells of the old model.
+            self.snapshot();
+        }
         Ok(ModelUpdate {
             version: self.model_version,
             dropped_cells,
         })
+    }
+
+    /// Runs a view saved with a cube.
+    pub fn view(
+        &self,
+        transaction: Option<TransactionId>,
+        cube: &str,
+        view: &str,
+    ) -> Result<QueryResult, Error> {
+        let cube = &self.model.cubes()[self.cube_id(cube)?];
+        let saved = cube
+            .view(view)
+            .ok_or_else(|| Error::NotFound(format!("cube '{}' has no view '{view}'", cube.name)))?;
+        self.query(transaction, &saved.mdx)
     }
 
     /// Checks a batch of writes and adds it to a transaction's pending writes.
