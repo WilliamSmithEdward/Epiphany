@@ -34,8 +34,8 @@ cargo run --release -p epiphany-server -- lab lab
   - **Unused** leaves the dimension at its top element, usually its grand total.
 - Dimensions on columns and rows are shown as trees that fold:
   - The arrow beside a consolidation folds or unfolds that one element.
-  - The buttons on a dimension's chip fold that dimension: `++` expands all, `+` expands
-    one level, `−` collapses one level, `−−` collapses all.
+  - Right-click a dimension's chip in Columns or Rows for a menu that folds that dimension:
+    expand all, expand one level, collapse one level, collapse all.
   - **Expand all** and **Collapse all** in the top bar do so for every dimension.
 - Blue cells are leaves: type a value and press Enter or leave the cell to write it.
 - Grey cells are consolidations, calculated by the server on every refresh.

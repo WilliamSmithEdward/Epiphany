@@ -37,7 +37,9 @@
   .toggle { all: unset; display: inline-block; width: 16px; text-align: center; cursor: pointer; opacity: .75; }
   .toggle:hover { opacity: 1; }
   .spacer { display: inline-block; width: 16px; }
-  .chip button { padding: 0 5px; font-size: 12px; line-height: 16px; }
+  #menu { position: fixed; z-index: 10; display: grid; padding: 4px; background: Canvas; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px rgb(0 0 0 / .35); }
+  #menu button { all: unset; padding: 5px 14px; border-radius: 4px; cursor: pointer; }
+  #menu button:hover { background: var(--shade); }
   td input { width: 9em; border: 0; padding: 4px 8px; text-align: right; background: transparent; color: inherit; }
   td input.text { text-align: left; width: 16em; }
   td input:focus { outline: 2px solid Highlight; outline-offset: -2px; }
@@ -181,6 +183,23 @@ const fold = {
   'Collapse all': name => { unfolded[name] = new Set(); },
 };
 
+const closeMenu = () => $('menu')?.remove();
+
+/** Opens the menu of ways to fold a dimension, where its chip was right-clicked. */
+function showMenu(event, name) {
+  event.preventDefault();
+  closeMenu();
+  const choose = title => () => { closeMenu(); fold[title](name); render(`${title} on ${name}`); };
+  const items = Object.keys(fold).map(title => make('button', { textContent: title, onclick: choose(title) }));
+  const menu = make('div', { id: 'menu' }, items);
+  menu.style.left = `${event.clientX}px`;
+  menu.style.top = `${event.clientY}px`;
+  document.body.append(menu);
+}
+
+document.addEventListener('click', closeMenu);
+document.addEventListener('keydown', event => { if (event.key === 'Escape') closeMenu(); });
+
 /** A row or column heading for a node, with a control to fold it if it has children. */
 function heading(name, node, indent) {
   const toggle = node.parent
@@ -227,9 +246,8 @@ function chip(name, kind) {
   }
   if (kind === 'unused') node.append(make('small', { textContent: topElement(name).name }));
   if (kind === 'rows' || kind === 'columns') {
-    const symbols = { 'Expand all': '++', 'Expand one level': '+', 'Collapse one level': '−', 'Collapse all': '−−' };
-    node.append(...Object.entries(symbols).map(([title, textContent]) =>
-      make('button', { title, textContent, onclick: () => { fold[title](name); render(`${title} on ${name}`); } })));
+    node.title = 'Right-click to expand or collapse';
+    node.oncontextmenu = event => showMenu(event, name);
   }
   return node;
 }
