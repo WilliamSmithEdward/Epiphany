@@ -43,6 +43,9 @@
   td input { width: 9em; border: 0; padding: 4px 8px; text-align: right; background: transparent; color: inherit; }
   td input.text { text-align: left; width: 16em; }
   td input:focus { outline: 2px solid Highlight; outline-offset: -2px; }
+  td input[readonly] { cursor: cell; caret-color: transparent; }
+  td input[readonly]::selection { background: transparent; }
+  td.leaf.dirty, td.leaf.dirty:hover { background: color-mix(in srgb, gold 60%, Canvas); }
 </style>
 </head>
 <body>
@@ -68,6 +71,7 @@
 <p id="status"></p>
 <p id="legend">
   <span><i style="background: color-mix(in srgb, Highlight 26%, Canvas)"></i>Leaf: type to write</span>
+  <span><i style="background: color-mix(in srgb, gold 60%, Canvas)"></i>Edited: not yet entered, or not yet committed</span>
   <span><i style="background: var(--shade)"></i>Consolidation: calculated, read-only</span>
 </p>
 <main><table id="grid"></table></main>
@@ -106,6 +110,7 @@ let slice = {};           // the chosen element of each dimension, used while it
 let unfolded = {};          // per dimension, the paths of the consolidations shown expanded
 let visible = [];         // { at, editable, text } for every cell on screen
 let transaction = null;   // the open transaction, which reads and writes then go through
+const pending = new Set(); // the cells written in the open transaction, by cellKey
 
 async function dimension(name) {
   return dimensions[name] ??= await api('GET', `/dimensions/${encodeURIComponent(name)}`);
@@ -137,6 +142,7 @@ async function end(action, done) {
     status(error.message, true);
   }
   transaction = null;
+  pending.clear();
   showTransaction();
   await render();
 }
@@ -344,7 +350,10 @@ async function draw(turn, reason) {
     const cells = columns.map((_, c) => cellNode(visible[r * columns.length + c], results[r * columns.length + c]));
     return make('tr', {}, [...(labels.length ? labels : [make('th', { textContent: 'Value' })]), ...cells]);
   });
+  // Redrawing replaces every cell, so put the selection back where it was.
+  const selected = document.activeElement?.dataset?.key;
   $('grid').replaceChildren(make('thead', {}, head), make('tbody', {}, body));
+  if (selected) [...$('grid').querySelectorAll('input')].find(input => input.dataset.key === selected)?.focus();
   if (typeof reason === 'string') status(`${reason}: read ${visible.length.toLocaleString()} cells.`);
 }
 
@@ -352,19 +361,81 @@ function cellNode(cell, result) {
   if (result.error) return make('td', { className: 'problem', textContent: result.error.code, title: result.error.message });
   const shown = cell.text ? result.value : result.value === 0 ? '' : result.value.toLocaleString(undefined, { maximumFractionDigits: 6 });
   if (!cell.editable) return make('td', { className: 'total', textContent: shown, title: 'Consolidation: calculated from its leaves' });
-  const input = make('input', { value: cell.text ? result.value : result.value || '', className: cell.text ? 'text' : '' });
-  input.onkeydown = event => { if (event.key === 'Enter') input.blur(); };
-  input.onchange = () => {
-    const value = cell.text ? input.value : Number(input.value.replaceAll(',', '') || 0);
-    write([{ cube: cube.name, at: cell.at, value }]);
+  return leafNode(cell, cell.text ? result.value : result.value === 0 ? '' : String(result.value));
+}
+
+const cellKey = cell => [cell.cube ?? cube.name, ...cell.at].join('\n');
+
+/**
+ * A leaf cell that behaves like a spreadsheet cell. Clicking selects it. Typing replaces its
+ * value; F2 or a double click edits the value it has. Enter or leaving the cell enters the
+ * change, Escape abandons it, Delete clears the cell, and the arrow keys move the selection.
+ */
+function leafNode(cell, original) {
+  const key = cellKey(cell);
+  const input = make('input', { value: original, readOnly: true, className: cell.text ? 'text' : '' });
+  input.dataset.key = key;
+  const node = make('td', { className: 'leaf' }, [input]);
+  const mark = () => node.classList.toggle('dirty', input.value !== original || pending.has(key));
+  const send = value => write([{ cube: cube.name, at: cell.at, value }]);
+  const edit = replace => {
+    input.readOnly = false;
+    if (replace) input.value = '';
+    input.setSelectionRange(input.value.length, input.value.length);
   };
-  return make('td', { className: 'leaf' }, [input]);
+  const abandon = () => { input.value = original; input.readOnly = true; mark(); };
+  const enter = () => {
+    if (input.readOnly) return;
+    const value = cell.text ? input.value : Number(input.value.replaceAll(',', '').trim() || 0);
+    if (Number.isNaN(value)) {
+      status(`"${input.value}" is not a number.`, true);
+      return abandon();
+    }
+    input.readOnly = true;
+    if (input.value !== original) send(value);
+    mark();
+  };
+  mark();
+  input.oninput = mark;
+  input.onblur = enter;
+  input.ondblclick = () => { if (input.readOnly) edit(false); };
+  input.onkeydown = event => {
+    const typed = event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey;
+    if (!input.readOnly) {
+      if (event.key === 'Enter') enter();
+      if (event.key === 'Escape') abandon();
+    } else if (event.key === 'F2') edit(false);
+    else if (typed) edit(true);
+    else if (event.key === 'Delete' && original !== '') send(cell.text ? '' : 0);
+    else if (event.key in STEPS) {
+      event.preventDefault();
+      step(node, ...STEPS[event.key]);
+    }
+  };
+  return node;
+}
+
+const STEPS = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+
+/** Moves the selection to the next leaf cell in a direction, passing over consolidations. */
+function step(from, down, right) {
+  let row = from.parentElement;
+  let index = from.cellIndex;
+  for (;;) {
+    if (down) row = down < 0 ? row.previousElementSibling : row.nextElementSibling;
+    index += right;
+    const next = row?.cells[index];
+    if (!next || next.tagName === 'TH') return;
+    const input = next.querySelector('input');
+    if (input) return input.focus();
+  }
 }
 
 async function write(cells) {
   if (!cells.length) return status('No numeric leaf cells on screen: put the other dimensions in filters set to leaf elements.', true);
   try {
     await api('POST', '/cells/write', { transaction, cells });
+    if (transaction !== null) cells.forEach(cell => pending.add(cellKey(cell)));
     const where = transaction === null ? '' : ` in transaction ${transaction}, not yet committed`;
     status(`Wrote ${cells.length} cell${cells.length === 1 ? '' : 's'}${where}.`);
   } catch (error) {

@@ -37,7 +37,13 @@ cargo run --release -p epiphany-server -- lab lab
   - Right-click a dimension's chip in Columns or Rows for a menu that folds that dimension:
     expand all, expand one level, collapse one level, collapse all.
   - **Expand all** and **Collapse all** in the top bar do so for every dimension.
-- Blue cells are leaves: type a value and press Enter or leave the cell to write it.
+- Blue cells are leaves and work like spreadsheet cells:
+  - Click selects a cell; the arrow keys move the selection, passing over consolidations.
+  - Typing replaces the cell's value. F2 or a double click edits the value it has.
+  - Enter writes the change and keeps the cell selected. Leaving the cell also writes it.
+    Escape abandons the change. Delete clears the selected cell.
+- Yellow cells have a change that is not final yet: either typed but not entered, or
+  written inside a transaction that has not been committed.
 - Grey cells are consolidations, calculated by the server on every refresh.
 - **Fill visible leaves** writes random numbers to every numeric leaf on screen in one batch.
 - **Begin** opens a transaction. Until you **Commit**, your writes are visible only on this
