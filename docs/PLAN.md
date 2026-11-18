@@ -92,15 +92,30 @@ practice that means:
   cube changed its dimensions, are dropped, and the response reports how many. A rename is
   a removal and an addition, so it drops the cells.
 - An update is refused while any transaction holds a lock.
-- Done so far: whole-model replacement with an in-memory version counter. Updating a single
-  dimension or cube, and keeping every version on disk as a numbered copy, come with
-  persistence at milestone 5.
+- Done: whole-model replacement, with the version and every earlier model kept on disk.
+  Updating a single dimension or cube is not done yet.
 
 ### 2.5 Persistence
 
 - **Decision:** serving is purely in memory; durability is a snapshot file plus an
   append-only log of committed transactions, replayed on start. The log is written before a
   commit is acknowledged. A snapshot truncates the log.
+- Done. The server is given one directory: `model/` holds the current model with its
+  version in `model.json`; `data/` holds `snapshot.json`, `log.jsonl` and every earlier
+  model under `models/<version>/`.
+- The engine reaches disk only through the `Journal` trait; the server crate implements it
+  with files. A commit is appended to the log and flushed to disk before it is applied in
+  memory; if that fails the commit is refused and the transaction stays open.
+- Cells are recorded by cube and element name, so a snapshot or log loads into whatever
+  model is current, dropping cells that no longer fit. That makes hand-edited model files
+  and interrupted model updates safe.
+- A snapshot replaces the log at every start, after every model update, and once the log
+  passes 64 MiB.
+- A model update writes the new model beside the old one, moves the old one into the
+  history, and moves the new one into place; opening the directory finishes or discards an
+  update that was interrupted.
+- Cost to keep in view: every commit waits for the disk, so many small commits are slower
+  than one batch.
 
 ### 2.6 Rules and feeders
 

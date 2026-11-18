@@ -10,8 +10,10 @@
 *.suo
 .vs/
 
-# Server runtime data: snapshots and write logs
+# Server runtime data: snapshots, commit logs and earlier model versions
 /data/
+/lab/data/
+/lab/model.next/
 
 # Secrets and local configuration
 .env

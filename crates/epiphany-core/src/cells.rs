@@ -73,15 +73,15 @@ impl Cells {
     }
 
     /// Every stored cell and its value.
-    pub(crate) fn into_entries(self) -> impl Iterator<Item = (Coordinate, Value)> {
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&Coordinate, Value)> {
         let numbers = self
             .numbers
-            .into_iter()
-            .map(|(at, n)| (at, Value::Number(n)));
+            .iter()
+            .map(|(at, &number)| (at, Value::Number(number)));
         let texts = self
             .texts
-            .into_iter()
-            .map(|(at, text)| (at, Value::Text(text)));
+            .iter()
+            .map(|(at, text)| (at, Value::Text(text.clone())));
         numbers.chain(texts)
     }
 

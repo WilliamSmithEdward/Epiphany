@@ -18,6 +18,7 @@ cargo run --release -p epiphany-server -- lab lab
 | Path | Purpose |
 | --- | --- |
 | `model/` | The lab's model: `dimensions/*.json` and `cubes/*.json`. Edit freely, then restart. |
+| `data/` | Created on first start: the stored cells. Not committed. |
 | `index.html` | The lab page. It is read on every request, so edits show on refresh. |
 | `start.cmd` | The launcher. |
 | `.env.example` | Settings you can override by copying it to `.env.local`. |
@@ -38,4 +39,11 @@ cargo run --release -p epiphany-server -- lab lab
   page; open the lab in a second tab to see that others do not see them. **Roll back**
   discards them. A transaction left idle for five minutes is rolled back by the server.
 
-Data lives in memory only for now, so it is gone when the server stops.
+## Data
+
+What you write is kept in `data/` (ignored by git) and is still there after a restart. Delete
+the `data` folder to start again from an empty cube.
+
+If you edit the model files by hand, cells that no longer fit the model are dropped at the
+next start, with a warning in the server window. Updating the model through the API rewrites
+the files in `model/` and keeps the previous version under `data/models/`.

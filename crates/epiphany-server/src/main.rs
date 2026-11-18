@@ -1,17 +1,18 @@
 use std::error::Error;
 use std::path::Path;
 
-use axum::Router;
-use epiphany_core::database::Database;
-use epiphany_server::{app, lab, load_model, openapi};
+use epiphany_server::{app, lab, open, openapi};
 use tokio::net::TcpListener;
 
 const ADDRESS: &str = "127.0.0.1:8080";
 const USAGE: &str = "usage:
-  epiphany-server serve <model-directory> [address]   serve the model (default 127.0.0.1:8080)
-  epiphany-server lab <lab-directory> [address]       serve <lab-directory>/model and the test
-                                                      page <lab-directory>/index.html at /lab
-  epiphany-server openapi                             print the OpenAPI document";
+  epiphany-server serve <directory> [address]   serve the database kept in a directory
+  epiphany-server lab <directory> [address]     the same, plus the test page
+                                                <directory>/index.html at /lab
+  epiphany-server openapi                       print the OpenAPI document
+
+The directory holds the model in <directory>/model and keeps its data in <directory>/data.
+The address defaults to 127.0.0.1:8080.";
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -31,12 +32,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             std::process::exit(2);
         }
     };
-    let (application, page): (Router, &str) = match command {
-        "lab" => {
-            let database = Database::new(load_model(&directory.join("model"))?)?;
-            (lab(database, directory.join("index.html")), "/lab")
-        }
-        _ => (app(Database::new(load_model(directory)?)?), ""),
+    let database = open(directory)?;
+    let (application, page) = match command {
+        "lab" => (lab(database, directory.join("index.html")), "/lab"),
+        _ => (app(database), ""),
     };
     let listener = TcpListener::bind(address).await?;
     println!("listening on http://{}{page}", listener.local_addr()?);

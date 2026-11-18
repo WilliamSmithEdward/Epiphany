@@ -17,6 +17,7 @@ mod migrate;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use std::{fmt, io};
 
 use serde::{Deserialize, Serialize};
 
@@ -61,6 +62,25 @@ pub struct ModelUpdate {
     pub dropped_cells: usize,
 }
 
+/// Where a database records its changes so that they outlive the process.
+///
+/// A commit or a new model is recorded before it takes effect; if recording fails, the
+/// change is refused. A snapshot holds every stored cell and replaces the commits recorded
+/// before it.
+pub trait Journal: Send + Sync + fmt::Debug {
+    /// Records the writes of one commit.
+    fn commit(&mut self, writes: &[CellWrite]) -> io::Result<()>;
+
+    /// Records a new model version.
+    fn model(&mut self, version: u64, definition: &ModelDef) -> io::Result<()>;
+
+    /// Whether enough commits have been recorded that a snapshot should replace them.
+    fn is_full(&self) -> bool;
+
+    /// Records every stored cell, replacing the commits recorded so far.
+    fn snapshot(&mut self, model_version: u64, cells: &[CellWrite]) -> io::Result<()>;
+}
+
 #[derive(Debug)]
 struct Transaction {
     /// Pending writes to each cube, in [`Model::cubes`] order.
@@ -81,22 +101,63 @@ pub struct Database {
     locks: Locks,
     started: Instant,
     timeout: Duration,
+    journal: Option<Box<dyn Journal>>,
 }
 
 impl Database {
+    /// An empty database at model version one.
     pub fn new(definition: ModelDef) -> Result<Self, ModelError> {
+        Self::restore(definition, 1)
+    }
+
+    /// An empty database at a given model version, to be filled with [`Database::load`].
+    pub fn restore(definition: ModelDef, model_version: u64) -> Result<Self, ModelError> {
         let model = Model::compile(&definition)?;
         Ok(Self {
             cells: vec![Cells::default(); model.cubes().len()],
             definition,
             model,
-            model_version: 1,
+            model_version,
             transactions: HashMap::new(),
             last_transaction: 0,
             locks: Locks::default(),
             started: Instant::now(),
             timeout: DEFAULT_TIMEOUT,
+            journal: None,
         })
+    }
+
+    /// Stores previously recorded cells without recording them again. Cells that no longer
+    /// fit the model are skipped; returns how many.
+    pub fn load(&mut self, cells: &[CellWrite]) -> usize {
+        let mut skipped = 0;
+        for write in cells {
+            let located = self.locate(&write.cube, &write.at).and_then(|(cube, at)| {
+                check(&self.model, &self.model.cubes()[cube], &at, &write.value)?;
+                Ok((cube, at))
+            });
+            match located {
+                Ok((cube, at)) => self.cells[cube].set(&at, write.value.clone()),
+                Err(_) => skipped += 1,
+            }
+        }
+        skipped
+    }
+
+    /// Records every later commit and model update in a journal.
+    pub fn set_journal(&mut self, journal: Box<dyn Journal>) {
+        self.journal = Some(journal);
+    }
+
+    /// Every stored cell, addressed by name.
+    pub fn cells(&self) -> Vec<CellWrite> {
+        let mut named = Vec::new();
+        for (cube, cells) in self.cells.iter().enumerate() {
+            for (at, value) in cells.entries() {
+                named.push(self.named(cube, at, value));
+            }
+        }
+        named
     }
 
     /// Sets how long a transaction may stay idle before it is rolled back.
@@ -142,12 +203,11 @@ impl Database {
             return self.stage(id, writes);
         }
         let id = self.begin();
-        let staged = self.stage(id, writes);
-        let finished = match staged {
-            Ok(()) => self.commit(id),
-            Err(_) => self.rollback(id),
-        };
-        staged.and(finished)
+        let written = self.stage(id, writes).and_then(|()| self.commit(id));
+        if written.is_err() {
+            self.end(id)?;
+        }
+        written
     }
 
     pub fn begin(&mut self) -> TransactionId {
@@ -161,14 +221,34 @@ impl Database {
         self.last_transaction
     }
 
-    /// Stores a transaction's writes and ends it.
+    /// Stores a transaction's writes and ends it. If the writes cannot be recorded in the
+    /// journal, nothing is stored and the transaction stays open.
     pub fn commit(&mut self, id: TransactionId) -> Result<(), Error> {
         self.expire();
+        let mut record = Vec::new();
+        for (cube, writes) in self.transaction(id)?.writes.iter().enumerate() {
+            for (at, value) in writes {
+                record.push(self.named(cube, at, value.clone()));
+            }
+        }
+        if let Some(journal) = &mut self.journal
+            && !record.is_empty()
+        {
+            journal.commit(&record)?;
+        }
+
         let transaction = self.end(id)?;
         for (cells, writes) in self.cells.iter_mut().zip(transaction.writes) {
             for (at, value) in writes {
                 cells.set(&at, value);
             }
+        }
+        if self
+            .journal
+            .as_ref()
+            .is_some_and(|journal| journal.is_full())
+        {
+            self.snapshot();
         }
         Ok(())
     }
@@ -218,8 +298,10 @@ impl Database {
         free?;
 
         let model = Model::compile(&definition)?;
-        let (cells, dropped_cells) =
-            migrate::migrate(&self.model, &model, std::mem::take(&mut self.cells));
+        let (cells, dropped_cells) = migrate::migrate(&self.model, &model, &self.cells);
+        if let Some(journal) = &mut self.journal {
+            journal.model(self.model_version + 1, &definition)?;
+        }
         for transaction in self.transactions.values_mut() {
             transaction.writes = vec![Writes::default(); cells.len()];
         }
@@ -227,6 +309,7 @@ impl Database {
         self.model = model;
         self.definition = definition;
         self.model_version += 1;
+        self.snapshot();
         Ok(ModelUpdate {
             version: self.model_version,
             dropped_cells,
@@ -270,6 +353,30 @@ impl Database {
             pending[cube].insert(at.into(), write.value.clone());
         }
         Ok(())
+    }
+
+    /// Replaces the journal's recorded commits with a snapshot. The commits already recorded
+    /// say the same thing, so if the snapshot fails they are kept and it is tried again after
+    /// a later commit.
+    fn snapshot(&mut self) {
+        let cells = self.cells();
+        if let Some(journal) = &mut self.journal {
+            let _ = journal.snapshot(self.model_version, &cells);
+        }
+    }
+
+    /// A cell and its value, addressed by name.
+    fn named(&self, cube: usize, at: &[ElementId], value: Value) -> CellWrite {
+        let cube = &self.model.cubes()[cube];
+        let name = |(&dimension, &element): (&u32, &ElementId)| {
+            let dimension = &self.model.dimensions()[dimension as usize];
+            dimension.elements[element as usize].name.clone()
+        };
+        CellWrite {
+            cube: cube.name.clone(),
+            at: cube.dimensions.iter().zip(at).map(name).collect(),
+            value,
+        }
     }
 
     /// Removes a transaction and releases its locks.

@@ -94,6 +94,7 @@ impl From<Error> for ApiError {
             }
             Error::UnknownTransaction(_) => StatusCode::NOT_FOUND,
             Error::Locked(_) | Error::StaleVersion { .. } => StatusCode::CONFLICT,
+            Error::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
         let index = match error {
             Error::Write { index, .. } => Some(index),

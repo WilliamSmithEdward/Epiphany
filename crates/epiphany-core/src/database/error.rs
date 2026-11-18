@@ -24,6 +24,8 @@ pub enum Error {
         based_on: u64,
         current: u64,
     },
+    /// The change could not be recorded on disk, so it was not made.
+    Storage(String),
 }
 
 impl Error {
@@ -35,6 +37,7 @@ impl Error {
             Self::UnknownTransaction(_) => "unknown_transaction",
             Self::Locked(_) => "locked",
             Self::StaleVersion { .. } => "stale_version",
+            Self::Storage(_) => "storage_failed",
         }
     }
 }
@@ -50,11 +53,18 @@ impl fmt::Display for Error {
                 f,
                 "the update is based on model version {based_on}, but the current version is {current}"
             ),
+            Self::Storage(reason) => write!(f, "the change could not be stored: {reason}"),
         }
     }
 }
 
 impl std::error::Error for Error {}
+
+impl From<std::io::Error> for Error {
+    fn from(error: std::io::Error) -> Self {
+        Self::Storage(error.to_string())
+    }
+}
 
 impl From<CellError> for Error {
     fn from(error: CellError) -> Self {
