@@ -47,6 +47,17 @@ dotnet test adapter/Epiphany.Excel.Tests
 The tests start a real server on a copy of the example model and ask it through the same
 code the worksheet functions use. They do not need Excel.
 
+To check the functions inside Excel itself:
+
+```
+dotnet build adapter/Epiphany.Excel -c Release
+powershell -ExecutionPolicy Bypass -File adapter\check-excel.ps1
+```
+
+It loads the add-in into a hidden Excel of its own, enters a formula for each row of the
+compatibility table against a server on a copy of the example model, and compares what the
+cells show. Port 8080 must be free. It does not cover the Connect window or sign-in.
+
 ## Layout
 
 | File | Purpose |

@@ -300,7 +300,9 @@ practice that means:
     rows still need checking against a real PAfE workbook.
   - The dimension copies are renewed by the Refresh command, not by watching the model
     version; the API has no cheap way to ask for the version alone.
-  - Nothing has been checked inside Excel yet; "every row passes in Excel" is still open.
+  - `adapter/check-excel.ps1` enters a formula for each row of the table in a real Excel
+    and all of them pass, as does Refresh. The Connect window, sign-in and Disconnect have
+    not been tried in Excel; they need a person at the keyboard.
   - See "Not replicated" in the table for the PAfE features left out.
 
 ## 5. Build order
