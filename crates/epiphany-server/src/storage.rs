@@ -136,7 +136,7 @@ fn load_all<T: DeserializeOwned>(directory: &Path) -> Result<Vec<T>, Box<dyn Err
 }
 
 /// Reads a JSON file, or nothing if the file does not exist.
-fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
+pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, String> {
     match fs::read_to_string(path) {
         Ok(text) => Ok(Some(serde_json::from_str(&text).map_err(|e| at(path, &e))?)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -151,7 +151,7 @@ fn at(path: &Path, error: &dyn Error) -> String {
 
 /// Writes a JSON file so that it is either complete or absent: to a temporary file first,
 /// flushed to disk, then renamed into place.
-fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
+pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
     let temporary = path.with_extension("tmp");
     let mut file = File::create(&temporary)?;
     serde_json::to_writer_pretty(&mut file, value)?;

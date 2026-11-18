@@ -150,6 +150,8 @@ pub struct Database {
     cells: Vec<Cells>,
     transactions: HashMap<TransactionId, Transaction>,
     last_transaction: TransactionId,
+    /// Where transaction ids come from, if not counted up from one.
+    ids: Option<fn() -> TransactionId>,
     locks: Locks,
     started: Instant,
     timeout: Duration,
@@ -174,6 +176,7 @@ impl Database {
             model_version,
             transactions: HashMap::new(),
             last_transaction: 0,
+            ids: None,
             locks: Locks::default(),
             started: Instant::now(),
             timeout: DEFAULT_TIMEOUT,
@@ -214,6 +217,12 @@ impl Database {
             }
         }
         named
+    }
+
+    /// Takes transaction ids from a source of its own choosing, such as random numbers that
+    /// cannot be guessed, instead of counting up from one.
+    pub fn set_transaction_ids(&mut self, ids: fn() -> TransactionId) {
+        self.ids = Some(ids);
     }
 
     /// Sets how long a transaction may stay idle before it is rolled back.
@@ -381,13 +390,20 @@ impl Database {
 
     pub fn begin(&mut self) -> TransactionId {
         self.expire();
-        self.last_transaction += 1;
+        // An id is never zero and never one in use.
+        let id = loop {
+            self.last_transaction += 1;
+            let id = self.ids.map_or(self.last_transaction, |next| next());
+            if id != 0 && !self.transactions.contains_key(&id) {
+                break id;
+            }
+        };
         let transaction = Transaction {
             writes: vec![Writes::default(); self.cells.len()],
             used: AtomicU64::new(self.now()),
         };
-        self.transactions.insert(self.last_transaction, transaction);
-        self.last_transaction
+        self.transactions.insert(id, transaction);
+        id
     }
 
     /// Stores a transaction's writes and ends it. If the writes cannot be recorded in the

@@ -1,7 +1,9 @@
 //! The Epiphany HTTP server: a thin JSON layer over `epiphany-core`.
 
 mod api;
+mod auth;
 mod storage;
 
-pub use api::{app, lab, openapi};
+pub use api::{app, app_with, openapi, with_lab};
+pub use auth::{Auth, set_user};
 pub use storage::{load_model, open};

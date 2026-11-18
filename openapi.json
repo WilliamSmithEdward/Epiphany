@@ -34,6 +34,16 @@
               }
             }
           },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The request body is malformed",
             "content": {
@@ -72,6 +82,16 @@
               }
             }
           },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The request body is malformed",
             "content": {
@@ -106,6 +126,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SpreadResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -170,6 +200,16 @@
         "responses": {
           "204": {
             "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown transaction",
@@ -239,6 +279,16 @@
               }
             }
           },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Unknown cube, or a rule failed",
             "content": {
@@ -281,6 +331,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/QueryResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -334,6 +394,16 @@
               }
             }
           },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown dimension",
             "content": {
@@ -368,6 +438,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/QueryResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -409,6 +489,16 @@
                 }
               }
             }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         }
       },
@@ -432,6 +522,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ModelUpdate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -469,6 +569,86 @@
         }
       }
     },
+    "/sessions": {
+      "post": {
+        "summary": "Signs in, starting a session.",
+        "operationId": "sign_in",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SignIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Wrong name or password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The server has no users, so nothing needs signing in to",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      },
+      "delete": {
+        "summary": "Signs out, ending the session whose token is sent.",
+        "operationId": "sign_out",
+        "responses": {
+          "204": {
+            "description": "Signed out"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/transactions": {
       "post": {
         "summary": "Begins a transaction. It is rolled back if left idle.",
@@ -480,6 +660,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TransactionView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -506,6 +696,16 @@
         "responses": {
           "204": {
             "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown transaction",
@@ -560,6 +760,16 @@
           "204": {
             "description": "Done"
           },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown transaction",
             "content": {
@@ -612,6 +822,16 @@
         "responses": {
           "204": {
             "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           },
           "404": {
             "description": "Unknown transaction",
@@ -1422,6 +1642,41 @@
           }
         ]
       },
+      "Session": {
+        "type": "object",
+        "required": [
+          "token",
+          "idle_seconds"
+        ],
+        "properties": {
+          "idle_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The session ends when it has not been used for this many seconds.",
+            "minimum": 0
+          },
+          "token": {
+            "type": "string",
+            "description": "Send this with every request, as `Authorization: Bearer <token>`."
+          }
+        }
+      },
+      "SignIn": {
+        "type": "object",
+        "required": [
+          "name",
+          "password"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "Spread": {
         "type": "object",
         "description": "A value to share out among the leaves of a consolidated cell.",
@@ -1595,6 +1850,17 @@
         },
         "additionalProperties": false
       }
+    },
+    "securitySchemes": {
+      "session": {
+        "type": "http",
+        "scheme": "bearer"
+      }
     }
-  }
+  },
+  "security": [
+    {
+      "session": []
+    }
+  ]
 }

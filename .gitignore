@@ -16,6 +16,7 @@
 /lab/model.next/
 
 # Secrets and local configuration
+users.json
 .env
 .env.*
 !.env.example

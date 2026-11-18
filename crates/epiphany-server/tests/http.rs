@@ -517,7 +517,10 @@ async fn the_committed_contract_matches_the_routes() {
     // response is described.
     fn untyped(value: &Value, path: &str, found: &mut Vec<String>) {
         match value {
-            Value::Object(fields) if fields.is_empty() => found.push(path.to_owned()),
+            // An empty entry under `security` is how a route says it needs no session.
+            Value::Object(fields) if fields.is_empty() && !path.ends_with("/security") => {
+                found.push(path.to_owned())
+            }
             Value::Object(fields) => {
                 for (name, field) in fields {
                     untyped(field, &format!("{path}/{name}"), found);

@@ -1,57 +1,19 @@
+mod common;
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use common::Home;
 use epiphany_core::Scalar;
 use epiphany_core::database::{CellRef, CellWrite, Database};
 use epiphany_server::open;
 use serde_json::{Value as Json, json};
 
 const CUBE: &str = "General Ledger";
-
-/// A database directory holding a copy of the example model, removed when dropped.
-struct Home(PathBuf);
-
-impl Home {
-    fn new(name: &str) -> Self {
-        let home = std::env::temp_dir().join(format!("epiphany-{}-{name}", std::process::id()));
-        let _ = fs::remove_dir_all(&home);
-        let fixture =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../epiphany-core/tests/fixtures/model");
-        copy(&fixture, &home.join("model"));
-        Self(home)
-    }
-
-    fn open(&self) -> Database {
-        open(&self.0).unwrap()
-    }
-
-    fn path(&self, relative: &str) -> PathBuf {
-        self.0.join(relative)
-    }
-}
-
-impl Drop for Home {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-fn copy(from: &Path, to: &Path) {
-    fs::create_dir_all(to).unwrap();
-    for entry in fs::read_dir(from).unwrap() {
-        let entry = entry.unwrap();
-        let target = to.join(entry.file_name());
-        match entry.file_type().unwrap().is_dir() {
-            true => copy(&entry.path(), &target),
-            false => drop(fs::copy(entry.path(), target).unwrap()),
-        }
-    }
-}
 
 fn set(at: [&str; 4], value: f64) -> CellWrite {
     CellWrite {

@@ -253,6 +253,24 @@ practice that means:
 - **Decision (authentication):** users with salted password hashes in a server-side file;
   sign-in returns a bearer token for the session. Per-cube permissions are left out of the
   first version.
+- Done:
+  - Users are in `users.json` in the server's directory, each with an Argon2id hash of the
+    password. `epiphany-server user <directory> <name>` adds a user or changes a password,
+    reading the password from standard input so that it is in no command line.
+  - `POST /sessions` with a name and password gives a random token; every other route
+    needs it as `Authorization: Bearer <token>` and answers 401 without a live one.
+    `DELETE /sessions` signs out. The contract and the lab's test page need no session.
+  - A session ends when unused for thirty minutes. Sessions are in memory, so they also
+    end when the server stops.
+  - A directory with no users asks for no sign-in, and then the server refuses to listen
+    on an address other machines can reach.
+  - A wrong name takes as long to refuse as a wrong password, so the two cannot be told
+    apart.
+  - Transaction ids are random 53-bit numbers, so that knowing one's own does not reveal
+    anyone else's.
+- Not done: per-user or per-cube permissions (every signed-in user can do everything),
+  a limit on sign-in attempts, TLS (put the server behind a proxy that provides it before
+  using it across a network), and tying a transaction to the session that began it.
 
 ## 4. PAfE adapter
 

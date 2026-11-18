@@ -5,8 +5,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Path, Request, State};
-use axum::http::StatusCode;
+use axum::extract::{FromRef, FromRequest, Path, Request, State};
+use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
+use axum::http::{HeaderMap, Method, StatusCode};
+use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -17,18 +19,39 @@ use epiphany_core::database::{
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{AttributeType, ChildDef, Dimension, ElementId, ElementType, ModelDef};
 use serde::{Deserialize, Serialize};
+
+use crate::auth::Auth;
+use utoipa::openapi::RefOr;
+use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
 use utoipa::{OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 type Shared = Arc<RwLock<Database>>;
 
+/// What every request can reach: the database, and the users if the server has any.
+#[derive(Clone)]
+struct AppState {
+    database: Shared,
+    auth: Option<Arc<Auth>>,
+}
+
+impl FromRef<AppState> for Shared {
+    fn from_ref(state: &AppState) -> Self {
+        Arc::clone(&state.database)
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(info(title = "Epiphany", description = "An in-memory OLAP server."))]
 struct Contract;
 
-fn router() -> OpenApiRouter<Shared> {
+/// The name of the security scheme in the contract.
+const SESSION: &str = "session";
+
+fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(Contract::openapi())
+        .routes(routes!(sign_in, sign_out))
         .routes(routes!(get_model, put_model))
         .routes(routes!(get_dimension))
         .routes(routes!(read_cells))
@@ -46,26 +69,168 @@ fn router() -> OpenApiRouter<Shared> {
 
 /// The OpenAPI document describing every route.
 pub fn openapi() -> utoipa::openapi::OpenApi {
-    router().into_openapi()
+    secured(router().into_openapi())
 }
 
-/// The HTTP application serving a database.
+/// Adds to the contract what holds for every route but signing in: a session token is sent,
+/// and without a live one the answer is 401.
+fn secured(mut contract: utoipa::openapi::OpenApi) -> utoipa::openapi::OpenApi {
+    let bearer = Http::new(HttpAuthScheme::Bearer);
+    let components = contract.components.get_or_insert_default();
+    components.add_security_scheme(SESSION, SecurityScheme::Http(bearer));
+    contract.security = Some(vec![SecurityRequirement::new(SESSION, [""; 0])]);
+
+    // Every refusal has the same shape, so the 401 is modelled on one already described.
+    let read = contract.paths.paths["/cells/read"]
+        .post
+        .as_ref()
+        .expect("the route exists");
+    let mut refusal = read.responses.responses["422"].clone();
+    if let RefOr::T(response) = &mut refusal {
+        response.description = "Not signed in, or the session has ended".to_owned();
+    }
+    for (path, item) in &mut contract.paths.paths {
+        let operations = [&mut item.get, &mut item.put, &mut item.delete];
+        let post = (path != "/sessions").then_some(&mut item.post);
+        for operation in operations.into_iter().chain(post).flatten() {
+            let responses = &mut operation.responses.responses;
+            responses.insert("401".to_owned(), refusal.clone());
+        }
+    }
+    contract
+}
+
+/// The HTTP application serving a database to anyone who can reach it.
 pub fn app(database: Database) -> Router {
-    let (router, contract) = router().split_for_parts();
-    router
-        .route("/openapi.json", get(async move || Json(contract)))
-        .with_state(Arc::new(RwLock::new(database)))
+    app_with(database, None)
 }
 
-/// The application plus a test page at `/lab`, read from disk on every request so that it can
-/// be edited while the server runs.
-pub fn lab(database: Database, page: PathBuf) -> Router {
+/// The HTTP application serving a database, to signed-in users only if it is given any.
+pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
+    // A transaction id is all that is needed to use a transaction, so it must not be
+    // guessable. Fifty-three random bits survive a trip through JSON and JavaScript.
+    database.set_transaction_ids(|| {
+        getrandom::u64().expect("the operating system provides randomness") >> 11
+    });
+    let state = AppState {
+        database: Arc::new(RwLock::new(database)),
+        auth: auth.map(Arc::new),
+    };
+    let (router, contract) = router().split_for_parts();
+    let contract = secured(contract);
+    router
+        .layer(from_fn_with_state(state.clone(), require_session))
+        .route("/openapi.json", get(async move || Json(contract)))
+        .with_state(state)
+}
+
+/// Adds a test page at `/lab` to an application, read from disk on every request so that it
+/// can be edited while the server runs.
+pub fn with_lab(application: Router, page: PathBuf) -> Router {
     let serve = move || {
         let page = std::fs::read_to_string(&page);
         let missing = |error: std::io::Error| (StatusCode::NOT_FOUND, error.to_string());
         async move { page.map(Html).map_err(missing) }
     };
-    app(database).route("/lab", get(serve))
+    application.route("/lab", get(serve))
+}
+
+/// The session token a request carries, if it carries one.
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+}
+
+/// Lets a request through if the server has no users, if it is a sign-in, or if it carries
+/// the token of a live session.
+async fn require_session(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let signing_in = request.method() == Method::POST && request.uri().path() == "/sessions";
+    let admitted = state.auth.as_ref().is_none_or(|auth| {
+        signing_in || bearer(request.headers()).is_some_and(|token| auth.admits(token))
+    });
+    if admitted {
+        return next.run(request).await;
+    }
+    let refusal = ApiError::new(
+        StatusCode::UNAUTHORIZED,
+        "not_signed_in",
+        "sign in at POST /sessions and send the token as 'Authorization: Bearer <token>'"
+            .to_owned(),
+    );
+    ([(WWW_AUTHENTICATE, "Bearer")], refusal).into_response()
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct SignIn {
+    name: String,
+    password: String,
+}
+
+#[derive(Serialize, ToSchema)]
+struct Session {
+    /// Send this with every request, as `Authorization: Bearer <token>`.
+    token: String,
+    /// The session ends when it has not been used for this many seconds.
+    idle_seconds: u64,
+}
+
+/// Signs in, starting a session.
+#[utoipa::path(
+    post,
+    path = "/sessions",
+    request_body = SignIn,
+    security(()),
+    responses(
+        (status = CREATED, body = Session, description = "Signed in"),
+        (status = UNAUTHORIZED, body = ApiError, description = "Wrong name or password"),
+        (status = NOT_FOUND, body = ApiError, description = "The server has no users, so nothing needs signing in to"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The request body is malformed")
+    )
+)]
+async fn sign_in(
+    State(state): State<AppState>,
+    Body(request): Body<SignIn>,
+) -> Result<(StatusCode, Json<Session>), ApiError> {
+    let Some(auth) = state.auth else {
+        let message = "this server has no users, so nothing needs signing in to".to_owned();
+        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", message));
+    };
+    let idle_seconds = auth.idle().as_secs();
+    // Checking a password is deliberately slow, so it is kept off the threads that serve
+    // other requests.
+    let checked =
+        tokio::task::spawn_blocking(move || auth.sign_in(&request.name, &request.password));
+    match checked.await.ok().flatten() {
+        Some(token) => Ok((
+            StatusCode::CREATED,
+            Json(Session {
+                token,
+                idle_seconds,
+            }),
+        )),
+        None => Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "wrong_credentials",
+            "wrong name or password".to_owned(),
+        )),
+    }
+}
+
+/// Signs out, ending the session whose token is sent.
+#[utoipa::path(
+    delete,
+    path = "/sessions",
+    responses((status = NO_CONTENT, description = "Signed out"))
+)]
+async fn sign_out(State(state): State<AppState>, headers: HeaderMap) -> StatusCode {
+    if let (Some(auth), Some(token)) = (&state.auth, bearer(&headers)) {
+        auth.sign_out(token);
+    }
+    StatusCode::NO_CONTENT
 }
 
 /// The one error shape used by every route.
