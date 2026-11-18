@@ -9,7 +9,7 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::Value;
+use crate::Scalar;
 use crate::model::{Cube, DimensionId, ElementId, Model, key};
 
 pub(crate) use parser::Query;
@@ -44,7 +44,7 @@ pub(crate) fn check_view(model: &Model, cube: &Cube, text: &str) -> Result<(), M
             query.cube
         )));
     }
-    let empty = |_: &[ElementId]| Value::Number(0.0);
+    let empty = |_: &[ElementId]| Scalar::Number(0.0);
     query.evaluate(model, cube, &empty).map(drop)
 }
 
@@ -91,7 +91,7 @@ pub struct QueryResult {
     /// The members the `WHERE` clause narrows the query to. A dimension that is neither here
     /// nor on an axis stands at its first top element.
     pub slicer: Vec<MemberResult>,
-    pub cells: Vec<Option<Value>>,
+    pub cells: Vec<Option<Scalar>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -112,7 +112,7 @@ pub struct MemberResult {
     /// Zero for a leaf or a calculated member, otherwise one more than the highest child level.
     pub level: u32,
     /// The attributes asked for with `PROPERTIES`, where the member has a value for them.
-    pub properties: BTreeMap<String, Value>,
+    pub properties: BTreeMap<String, Scalar>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

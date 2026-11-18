@@ -4,6 +4,6 @@ pub mod cells;
 pub mod database;
 pub mod mdx;
 pub mod model;
-mod value;
+mod scalar;
 
-pub use value::Value;
+pub use scalar::Scalar;

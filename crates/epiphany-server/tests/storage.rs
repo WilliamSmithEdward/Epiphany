@@ -6,7 +6,7 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use epiphany_core::Value;
+use epiphany_core::Scalar;
 use epiphany_core::database::{CellRef, CellWrite, Database};
 use epiphany_server::open;
 use serde_json::{Value as Json, json};
@@ -57,7 +57,7 @@ fn set(at: [&str; 4], value: f64) -> CellWrite {
     CellWrite {
         cube: CUBE.to_owned(),
         at: at.map(str::to_owned).to_vec(),
-        value: Value::Number(value),
+        value: Scalar::Number(value),
     }
 }
 
@@ -67,7 +67,7 @@ fn get(database: &Database, at: [&str; 4]) -> f64 {
         at: at.map(str::to_owned).to_vec(),
     };
     match database.read(None, &cell) {
-        Ok(Value::Number(number)) => number,
+        Ok(Scalar::Number(number)) => number,
         other => panic!("expected a number, found {other:?}"),
     }
 }

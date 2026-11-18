@@ -4,13 +4,13 @@ use std::fmt;
 
 use rustc_hash::FxHashMap;
 
-use crate::Value;
+use crate::Scalar;
 use crate::model::{Cube, Element, ElementId, ElementType, Model};
 
 /// One element per dimension of a cube, in the cube's dimension order.
 pub(crate) type Coordinate = Box<[ElementId]>;
 /// Values not yet stored, by the coordinate they will be written to.
-pub(crate) type Writes = FxHashMap<Coordinate, Value>;
+pub(crate) type Writes = FxHashMap<Coordinate, Scalar>;
 /// The leaves of one element and the weight of each, ordered by id.
 type Leaves<'a> = &'a [(ElementId, f64)];
 
@@ -25,19 +25,19 @@ pub struct Cells {
 }
 
 impl Cells {
-    pub fn read(&self, model: &Model, cube: &Cube, at: &[ElementId]) -> Value {
+    pub fn read(&self, model: &Model, cube: &Cube, at: &[ElementId]) -> Scalar {
         let elements = elements(model, cube, at);
         if is_text(elements.clone()) {
-            return Value::Text(self.texts.get(at).cloned().unwrap_or_default());
+            return Scalar::Text(self.texts.get(at).cloned().unwrap_or_default());
         }
         if !elements.clone().any(is_consolidated) {
-            return Value::Number(self.numbers.get(at).copied().unwrap_or(0.0));
+            return Scalar::Number(self.numbers.get(at).copied().unwrap_or(0.0));
         }
         let leaves: Vec<Leaves> = elements.map(|e| e.leaves.as_slice()).collect();
         let combinations = leaves
             .iter()
             .try_fold(1usize, |product, l| product.checked_mul(l.len()));
-        Value::Number(match combinations {
+        Scalar::Number(match combinations {
             Some(0) => 0.0,
             Some(n) if n <= self.numbers.len() => self.sum_combinations(&leaves),
             _ => self.sum_stored(&leaves),
@@ -51,37 +51,37 @@ impl Cells {
         cube: &Cube,
         at: &[ElementId],
         pending: &Writes,
-    ) -> Value {
+    ) -> Scalar {
         if let Some(value) = pending.get(at) {
             return value.clone();
         }
         let stored = match self.read(model, cube, at) {
-            Value::Number(stored) => stored,
+            Scalar::Number(stored) => stored,
             text => return text,
         };
         let leaves: Vec<Leaves> = elements(model, cube, at)
             .map(|e| e.leaves.as_slice())
             .collect();
-        let change = |(leaf, value): (&Coordinate, &Value)| {
-            let Value::Number(number) = value else {
+        let change = |(leaf, value): (&Coordinate, &Scalar)| {
+            let Scalar::Number(number) = value else {
                 return None;
             };
             let before = self.numbers.get(leaf).copied().unwrap_or(0.0);
             Some(weight(&leaves, leaf)? * (number - before))
         };
-        Value::Number(stored + pending.iter().filter_map(change).sum::<f64>())
+        Scalar::Number(stored + pending.iter().filter_map(change).sum::<f64>())
     }
 
     /// Every stored cell and its value.
-    pub(crate) fn entries(&self) -> impl Iterator<Item = (&Coordinate, Value)> {
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&Coordinate, Scalar)> {
         let numbers = self
             .numbers
             .iter()
-            .map(|(at, &number)| (at, Value::Number(number)));
+            .map(|(at, &number)| (at, Scalar::Number(number)));
         let texts = self
             .texts
             .iter()
-            .map(|(at, text)| (at, Value::Text(text.clone())));
+            .map(|(at, text)| (at, Scalar::Text(text.clone())));
         numbers.chain(texts)
     }
 
@@ -91,7 +91,7 @@ impl Cells {
         model: &Model,
         cube: &Cube,
         at: &[ElementId],
-        value: Value,
+        value: Scalar,
     ) -> Result<(), CellError> {
         check(model, cube, at, &value)?;
         self.set(at, value);
@@ -99,10 +99,10 @@ impl Cells {
     }
 
     /// Stores a value that has passed [`check`].
-    pub(crate) fn set(&mut self, at: &[ElementId], value: Value) {
+    pub(crate) fn set(&mut self, at: &[ElementId], value: Scalar) {
         match value {
-            Value::Number(number) => store(&mut self.numbers, at, number, |n| *n == 0.0),
-            Value::Text(text) => store(&mut self.texts, at, text, String::is_empty),
+            Scalar::Number(number) => store(&mut self.numbers, at, number, |n| *n == 0.0),
+            Scalar::Text(text) => store(&mut self.texts, at, text, String::is_empty),
         }
     }
 
@@ -175,15 +175,20 @@ pub fn coordinate<S: AsRef<str>>(
 }
 
 /// Whether a value may be written to a cell.
-pub fn check(model: &Model, cube: &Cube, at: &[ElementId], value: &Value) -> Result<(), CellError> {
+pub fn check(
+    model: &Model,
+    cube: &Cube,
+    at: &[ElementId],
+    value: &Scalar,
+) -> Result<(), CellError> {
     let elements = elements(model, cube, at);
     match (is_text(elements.clone()), value) {
-        (true, Value::Text(_)) => Ok(()),
-        (false, Value::Number(number)) if !number.is_finite() => Err(CellError::NotFinite),
-        (false, Value::Number(_)) if elements.clone().any(is_consolidated) => {
+        (true, Scalar::Text(_)) => Ok(()),
+        (false, Scalar::Number(number)) if !number.is_finite() => Err(CellError::NotFinite),
+        (false, Scalar::Number(_)) if elements.clone().any(is_consolidated) => {
             Err(CellError::Consolidated)
         }
-        (false, Value::Number(_)) => Ok(()),
+        (false, Scalar::Number(_)) => Ok(()),
         _ => Err(CellError::WrongType),
     }
 }

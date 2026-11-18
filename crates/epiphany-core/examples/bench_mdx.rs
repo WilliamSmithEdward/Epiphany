@@ -8,7 +8,7 @@ mod common;
 use std::time::Instant;
 
 use common::{Rng, Shape, random_model};
-use epiphany_core::Value;
+use epiphany_core::Scalar;
 use epiphany_core::database::{CellWrite, Database};
 
 const DIMENSIONS: usize = 4;
@@ -27,7 +27,7 @@ fn main() {
         at: (0..DIMENSIONS)
             .map(|_| format!("e{}", rng.below(SHAPE.leaves)))
             .collect(),
-        value: Value::Number(1.0 + index as f64),
+        value: Scalar::Number(1.0 + index as f64),
     };
     let writes: Vec<CellWrite> = (0..WRITES).map(write).collect();
     let start = Instant::now();

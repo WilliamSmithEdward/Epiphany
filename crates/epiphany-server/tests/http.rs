@@ -413,5 +413,33 @@ async fn the_committed_contract_matches_the_routes() {
     assert_eq!(committed, generated);
 
     let (status, served) = call(&example(), "GET", "/openapi.json", None).await;
-    assert_eq!((status, served), (StatusCode::OK, generated));
+    assert_eq!((status, served.clone()), (StatusCode::OK, generated));
+
+    // The contract says what every value is: no schema is left to mean "anything", and every
+    // response is described.
+    fn untyped(value: &Value, path: &str, found: &mut Vec<String>) {
+        match value {
+            Value::Object(fields) if fields.is_empty() => found.push(path.to_owned()),
+            Value::Object(fields) => {
+                for (name, field) in fields {
+                    untyped(field, &format!("{path}/{name}"), found);
+                }
+            }
+            Value::Array(items) => items.iter().for_each(|item| untyped(item, path, found)),
+            _ => {}
+        }
+    }
+    let mut found = Vec::new();
+    untyped(&served, "", &mut found);
+    assert_eq!(found, Vec::<String>::new());
+    for (path, methods) in served["paths"].as_object().unwrap() {
+        for (method, operation) in methods.as_object().unwrap() {
+            for (status, response) in operation["responses"].as_object().unwrap() {
+                let described = response["description"]
+                    .as_str()
+                    .is_some_and(|text| !text.is_empty());
+                assert!(described, "{method} {path} {status} has no description");
+            }
+        }
+    }
 }

@@ -1,4 +1,4 @@
-use epiphany_core::Value;
+use epiphany_core::Scalar;
 use epiphany_core::database::{CellWrite, Database, Error};
 use epiphany_core::model::{Model, ModelDef, ModelError};
 use serde_json::{Value as Json, json};
@@ -147,7 +147,7 @@ fn database() -> Database {
     let write = |at: [&str; 2], value: f64| CellWrite {
         cube: "Sales".to_owned(),
         at: at.map(str::to_owned).to_vec(),
-        value: Value::Number(value),
+        value: Scalar::Number(value),
     };
     let writes = [write(["Jan", "North"], 5.0), write(["Feb", "South"], 7.0)];
     database.write(None, &writes).unwrap();
@@ -158,8 +158,8 @@ fn database() -> Database {
 fn a_view_runs_its_query_and_may_use_subsets() {
     let mut database = database();
     let result = database.view(None, "sales", "by region").unwrap();
-    let cells: Vec<Option<Value>> = [5.0, 5.0, 0.0, 7.0, 0.0, 7.0]
-        .map(|n| Some(Value::Number(n)))
+    let cells: Vec<Option<Scalar>> = [5.0, 5.0, 0.0, 7.0, 0.0, 7.0]
+        .map(|n| Some(Scalar::Number(n)))
         .to_vec();
     assert_eq!(result.cells, cells);
     assert_eq!(result.axes[1].tuples.len(), 2);
@@ -169,13 +169,13 @@ fn a_view_runs_its_query_and_may_use_subsets() {
     let write = CellWrite {
         cube: "Sales".to_owned(),
         at: vec!["Jan".to_owned(), "South".to_owned()],
-        value: Value::Number(1.0),
+        value: Scalar::Number(1.0),
     };
     database.write(Some(transaction), &[write]).unwrap();
     let pending = database
         .view(Some(transaction), "Sales", "By region")
         .unwrap();
-    assert_eq!(pending.cells[0], Some(Value::Number(6.0)));
+    assert_eq!(pending.cells[0], Some(Scalar::Number(6.0)));
 
     let missing = database.view(None, "Sales", "Nope");
     assert_eq!(

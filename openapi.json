@@ -25,10 +25,21 @@
         },
         "responses": {
           "200": {
+            "description": "A value or an error for each cell",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ReadResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -51,7 +62,9 @@
           "required": true
         },
         "responses": {
-          "204": {},
+          "204": {
+            "description": "Done"
+          },
           "404": {
             "description": "Unknown transaction",
             "content": {
@@ -73,7 +86,17 @@
             }
           },
           "422": {
-            "description": "A write is invalid",
+            "description": "A write is invalid, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
             "content": {
               "application/json": {
                 "schema": {
@@ -109,6 +132,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The answer",
             "content": {
               "application/json": {
                 "schema": {
@@ -118,6 +142,17 @@
             }
           },
           "404": {
+            "description": "The cube has no such view",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown cube",
             "content": {
               "application/json": {
                 "schema": {
@@ -146,6 +181,7 @@
         ],
         "responses": {
           "200": {
+            "description": "The dimension",
             "content": {
               "application/json": {
                 "schema": {
@@ -155,6 +191,7 @@
             }
           },
           "404": {
+            "description": "Unknown dimension",
             "content": {
               "application/json": {
                 "schema": {
@@ -182,6 +219,7 @@
         },
         "responses": {
           "200": {
+            "description": "The answer",
             "content": {
               "application/json": {
                 "schema": {
@@ -201,7 +239,7 @@
             }
           },
           "422": {
-            "description": "The query is invalid",
+            "description": "The query is invalid, or the request body is malformed",
             "content": {
               "application/json": {
                 "schema": {
@@ -219,6 +257,7 @@
         "operationId": "get_model",
         "responses": {
           "200": {
+            "description": "The model",
             "content": {
               "application/json": {
                 "schema": {
@@ -244,6 +283,7 @@
         },
         "responses": {
           "200": {
+            "description": "The model was replaced",
             "content": {
               "application/json": {
                 "schema": {
@@ -263,7 +303,17 @@
             }
           },
           "422": {
-            "description": "The definition is invalid",
+            "description": "The definition is invalid, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
             "content": {
               "application/json": {
                 "schema": {
@@ -281,6 +331,7 @@
         "operationId": "begin_transaction",
         "responses": {
           "201": {
+            "description": "The new transaction",
             "content": {
               "application/json": {
                 "schema": {
@@ -302,13 +353,28 @@
             "in": "path",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/u64"
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
             }
           }
         ],
         "responses": {
-          "204": {},
+          "204": {
+            "description": "Done"
+          },
           "404": {
+            "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
             "content": {
               "application/json": {
                 "schema": {
@@ -330,7 +396,9 @@
             "in": "path",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/u64"
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
             }
           }
         ],
@@ -345,8 +413,11 @@
           "required": true
         },
         "responses": {
-          "204": {},
+          "204": {
+            "description": "Done"
+          },
           "404": {
+            "description": "Unknown transaction",
             "content": {
               "application/json": {
                 "schema": {
@@ -357,6 +428,16 @@
           },
           "409": {
             "description": "Another transaction holds a conflicting lock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown cube, or the request body is malformed",
             "content": {
               "application/json": {
                 "schema": {
@@ -378,13 +459,18 @@
             "in": "path",
             "required": true,
             "schema": {
-              "$ref": "#/components/schemas/u64"
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
             }
           }
         ],
         "responses": {
-          "204": {},
+          "204": {
+            "description": "Done"
+          },
           "404": {
+            "description": "Unknown transaction",
             "content": {
               "application/json": {
                 "schema": {
@@ -478,7 +564,9 @@
               "value"
             ],
             "properties": {
-              "value": {}
+              "value": {
+                "$ref": "#/components/schemas/Scalar"
+              }
             }
           },
           {
@@ -512,7 +600,9 @@
           "cube": {
             "type": "string"
           },
-          "value": {}
+          "value": {
+            "$ref": "#/components/schemas/Scalar"
+          }
         },
         "additionalProperties": false
       },
@@ -663,7 +753,9 @@
           "attributes": {
             "type": "object",
             "description": "Attribute values, keyed by attribute name.",
-            "additionalProperties": {},
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Scalar"
+            },
             "propertyNames": {
               "type": "string"
             }
@@ -705,7 +797,9 @@
         "properties": {
           "attributes": {
             "type": "object",
-            "additionalProperties": {},
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Scalar"
+            },
             "propertyNames": {
               "type": "string"
             }
@@ -789,7 +883,9 @@
           "properties": {
             "type": "object",
             "description": "The attributes asked for with `PROPERTIES`, where the member has a value for them.",
-            "additionalProperties": {},
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Scalar"
+            },
             "propertyNames": {
               "type": "string"
             }
@@ -899,15 +995,13 @@
             "description": "The query text, for example `SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]`."
           },
           "transaction": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/u64",
-                "description": "Query within this transaction, seeing its pending writes."
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Query within this transaction, seeing its pending writes.",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -931,7 +1025,16 @@
           },
           "cells": {
             "type": "array",
-            "items": {}
+            "items": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/Scalar"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
           },
           "cube": {
             "type": "string"
@@ -958,15 +1061,13 @@
             }
           },
           "transaction": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/u64",
-                "description": "Read within this transaction, seeing its pending writes."
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Read within this transaction, seeing its pending writes.",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -985,6 +1086,17 @@
             "description": "One result per requested cell, in request order."
           }
         }
+      },
+      "Scalar": {
+        "oneOf": [
+          {
+            "type": "number",
+            "format": "double"
+          },
+          {
+            "type": "string"
+          }
+        ]
       },
       "SubsetDef": {
         "oneOf": [
@@ -1027,7 +1139,9 @@
         ],
         "properties": {
           "transaction": {
-            "$ref": "#/components/schemas/u64"
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -1058,23 +1172,16 @@
             }
           },
           "transaction": {
-            "oneOf": [
-              {
-                "$ref": "#/components/schemas/u64",
-                "description": "Hold the writes in this transaction until it commits. Without it they are committed\nat once."
-              },
-              {
-                "type": "null"
-              }
-            ]
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Hold the writes in this transaction until it commits. Without it they are committed\nat once.",
+            "minimum": 0
           }
         },
         "additionalProperties": false
-      },
-      "u64": {
-        "type": "integer",
-        "format": "int64",
-        "minimum": 0
       }
     }
   }

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::parser::{Axis, Expr, Query};
 use super::{AxisResult, MdxError, MemberResult, MemberType, QueryResult};
-use crate::Value;
+use crate::Scalar;
 use crate::model::{Cube, Dimension, Element, ElementId, ElementType, Model, key};
 
 /// The most cells one query may return.
@@ -59,7 +59,7 @@ struct Calculated<'a> {
 struct Evaluator<'a> {
     model: &'a Model,
     cube: &'a Cube,
-    read: &'a dyn Fn(&[ElementId]) -> Value,
+    read: &'a dyn Fn(&[ElementId]) -> Scalar,
     calculated: Vec<Calculated<'a>>,
     sets: HashMap<String, Vec<Tuple>>,
     /// How many calculated members are being evaluated inside one another.
@@ -72,7 +72,7 @@ fn fail<T>(message: impl Into<String>) -> Evaluated<T> {
 
 /// The elements a set over a one-dimension cube selects, reading every cell as empty.
 pub(super) fn elements(model: &Model, cube: &Cube, set: &Expr) -> Evaluated<Vec<ElementId>> {
-    let empty = |_: &[ElementId]| Value::Number(0.0);
+    let empty = |_: &[ElementId]| Scalar::Number(0.0);
     let evaluator = Evaluator {
         model,
         cube,
@@ -109,7 +109,7 @@ impl Query {
         &self,
         model: &Model,
         cube: &Cube,
-        read: &dyn Fn(&[ElementId]) -> Value,
+        read: &dyn Fn(&[ElementId]) -> Scalar,
     ) -> Evaluated<QueryResult> {
         let mut evaluator = Evaluator {
             model,
@@ -204,8 +204,8 @@ impl Query {
             .collect();
 
         let value = |cell: &Datum| match cell {
-            Datum::Number(number) => Some(Value::Number(*number)),
-            Datum::Text(text) => Some(Value::Text(text.clone())),
+            Datum::Number(number) => Some(Scalar::Number(*number)),
+            Datum::Text(text) => Some(Scalar::Text(text.clone())),
             _ => None,
         };
         let kept_places = Places::new(&kept.iter().map(Vec::len).collect::<Vec<_>>())?;
@@ -991,8 +991,8 @@ impl<'a> Evaluator<'a> {
             }
             ("PARENT_UNIQUE_NAME", Some((_, element))) => first(&element.parents),
             (_, Some((id, _))) => match self.dimension(member.position).attribute_value(id, name) {
-                Some(Value::Number(number)) => Datum::Number(*number),
-                Some(Value::Text(text)) => Datum::Text(text.clone()),
+                Some(Scalar::Number(number)) => Datum::Number(*number),
+                Some(Scalar::Text(text)) => Datum::Text(text.clone()),
                 None => Datum::Null,
             },
             (_, None) => Datum::Null,
@@ -1142,8 +1142,8 @@ impl<'a> Evaluator<'a> {
                 })
                 .collect();
             return Ok(match (self.read)(&at) {
-                Value::Number(number) => Datum::Number(number),
-                Value::Text(text) => Datum::Text(text),
+                Scalar::Number(number) => Datum::Number(number),
+                Scalar::Text(text) => Datum::Text(text),
             });
         };
         if self.depth.get() == DEEPEST {

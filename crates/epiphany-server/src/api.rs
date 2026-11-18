@@ -10,7 +10,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
-use epiphany_core::Value;
+use epiphany_core::Scalar;
 use epiphany_core::database::{
     CellRef, CellWrite, Database, Error, LockMode, ModelUpdate, TransactionId,
 };
@@ -174,7 +174,7 @@ struct ElementView {
     level: u32,
     parents: Vec<String>,
     children: Vec<ChildDef>,
-    attributes: BTreeMap<String, Value>,
+    attributes: BTreeMap<String, Scalar>,
 }
 
 impl From<&Dimension> for DimensionView {
@@ -221,7 +221,7 @@ impl From<&Dimension> for DimensionView {
 #[serde(deny_unknown_fields)]
 struct ReadRequest {
     /// Read within this transaction, seeing its pending writes.
-    transaction: Option<TransactionId>,
+    transaction: Option<u64>,
     cells: Vec<CellRef>,
 }
 
@@ -234,7 +234,7 @@ struct ReadResponse {
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 enum CellResult {
-    Value(Value),
+    Value(Scalar),
     Error(ApiError),
 }
 
@@ -243,7 +243,7 @@ enum CellResult {
 struct WriteRequest {
     /// Hold the writes in this transaction until it commits. Without it they are committed
     /// at once.
-    transaction: Option<TransactionId>,
+    transaction: Option<u64>,
     cells: Vec<CellWrite>,
 }
 
@@ -251,14 +251,14 @@ struct WriteRequest {
 #[serde(deny_unknown_fields)]
 struct QueryRequest {
     /// Query within this transaction, seeing its pending writes.
-    transaction: Option<TransactionId>,
+    transaction: Option<u64>,
     /// The query text, for example `SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]`.
     mdx: String,
 }
 
 #[derive(Serialize, ToSchema)]
 struct TransactionView {
-    transaction: TransactionId,
+    transaction: u64,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -270,7 +270,7 @@ struct LockRequest {
 }
 
 /// The model definition and its version.
-#[utoipa::path(get, path = "/model", responses((status = OK, body = ModelView)))]
+#[utoipa::path(get, path = "/model", responses((status = OK, body = ModelView, description = "The model")))]
 async fn get_model(State(database): State<Shared>) -> Json<ModelView> {
     let database = database.read().unwrap();
     Json(ModelView {
@@ -285,9 +285,10 @@ async fn get_model(State(database): State<Shared>) -> Json<ModelView> {
     path = "/model",
     request_body = ModelPut,
     responses(
-        (status = OK, body = ModelUpdate),
+        (status = OK, body = ModelUpdate, description = "The model was replaced"),
         (status = CONFLICT, body = ApiError, description = "Stale version, or a transaction holds a lock"),
-        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The definition is invalid")
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The definition is invalid, or the request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
     )
 )]
 async fn put_model(
@@ -305,7 +306,10 @@ async fn put_model(
     get,
     path = "/dimensions/{name}",
     params(("name" = String, Path, description = "Dimension name, ignoring case and spaces")),
-    responses((status = OK, body = DimensionView), (status = NOT_FOUND, body = ApiError))
+    responses(
+        (status = OK, body = DimensionView, description = "The dimension"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown dimension")
+    )
 )]
 async fn get_dimension(
     State(database): State<Shared>,
@@ -325,7 +329,10 @@ async fn get_dimension(
     post,
     path = "/cells/read",
     request_body = ReadRequest,
-    responses((status = OK, body = ReadResponse))
+    responses(
+        (status = OK, body = ReadResponse, description = "A value or an error for each cell"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The request body is malformed")
+    )
 )]
 async fn read_cells(
     State(database): State<Shared>,
@@ -347,10 +354,11 @@ async fn read_cells(
     path = "/cells/write",
     request_body = WriteRequest,
     responses(
-        (status = NO_CONTENT),
+        (status = NO_CONTENT, description = "Done"),
         (status = NOT_FOUND, body = ApiError, description = "Unknown transaction"),
         (status = CONFLICT, body = ApiError, description = "Another transaction holds a lock"),
-        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "A write is invalid")
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "A write is invalid, or the request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
     )
 )]
 async fn write_cells(
@@ -368,9 +376,9 @@ async fn write_cells(
     path = "/mdx",
     request_body = QueryRequest,
     responses(
-        (status = OK, body = QueryResult),
+        (status = OK, body = QueryResult, description = "The answer"),
         (status = NOT_FOUND, body = ApiError, description = "Unknown transaction"),
-        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The query is invalid")
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The query is invalid, or the request body is malformed")
     )
 )]
 async fn query(
@@ -386,7 +394,11 @@ async fn query(
     get,
     path = "/cubes/{cube}/views/{view}",
     params(("cube" = String, Path), ("view" = String, Path)),
-    responses((status = OK, body = QueryResult), (status = NOT_FOUND, body = ApiError))
+    responses(
+        (status = OK, body = QueryResult, description = "The answer"),
+        (status = NOT_FOUND, body = ApiError, description = "The cube has no such view"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "Unknown cube")
+    )
 )]
 async fn run_view(
     State(database): State<Shared>,
@@ -396,7 +408,7 @@ async fn run_view(
 }
 
 /// Begins a transaction. It is rolled back if left idle.
-#[utoipa::path(post, path = "/transactions", responses((status = CREATED, body = TransactionView)))]
+#[utoipa::path(post, path = "/transactions", responses((status = CREATED, body = TransactionView, description = "The new transaction")))]
 async fn begin_transaction(State(database): State<Shared>) -> (StatusCode, Json<TransactionView>) {
     let transaction = database.write().unwrap().begin();
     (StatusCode::CREATED, Json(TransactionView { transaction }))
@@ -406,8 +418,12 @@ async fn begin_transaction(State(database): State<Shared>) -> (StatusCode, Json<
 #[utoipa::path(
     post,
     path = "/transactions/{id}/commit",
-    params(("id" = TransactionId, Path)),
-    responses((status = NO_CONTENT), (status = NOT_FOUND, body = ApiError))
+    params(("id" = u64, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Done"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown transaction"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
 )]
 async fn commit_transaction(
     State(database): State<Shared>,
@@ -421,8 +437,11 @@ async fn commit_transaction(
 #[utoipa::path(
     post,
     path = "/transactions/{id}/rollback",
-    params(("id" = TransactionId, Path)),
-    responses((status = NO_CONTENT), (status = NOT_FOUND, body = ApiError))
+    params(("id" = u64, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Done"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown transaction")
+    )
 )]
 async fn rollback_transaction(
     State(database): State<Shared>,
@@ -436,12 +455,13 @@ async fn rollback_transaction(
 #[utoipa::path(
     post,
     path = "/transactions/{id}/locks",
-    params(("id" = TransactionId, Path)),
+    params(("id" = u64, Path)),
     request_body = LockRequest,
     responses(
-        (status = NO_CONTENT),
-        (status = NOT_FOUND, body = ApiError),
-        (status = CONFLICT, body = ApiError, description = "Another transaction holds a conflicting lock")
+        (status = NO_CONTENT, description = "Done"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown transaction"),
+        (status = CONFLICT, body = ApiError, description = "Another transaction holds a conflicting lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "Unknown cube, or the request body is malformed")
     )
 )]
 async fn lock(

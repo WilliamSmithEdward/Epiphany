@@ -5,7 +5,7 @@ use std::thread;
 use std::time::Duration;
 
 use common::{Rng, Shape, random_model};
-use epiphany_core::Value;
+use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
 use epiphany_core::database::{CellRef, CellWrite, Database, Error, LockMode, ModelUpdate};
 use epiphany_core::model::ModelDef;
@@ -49,13 +49,13 @@ fn set(cube: &str, at: [&str; 2], value: f64) -> CellWrite {
     CellWrite {
         cube: cube.to_owned(),
         at: at.map(str::to_owned).to_vec(),
-        value: Value::Number(value),
+        value: Scalar::Number(value),
     }
 }
 
 fn units(database: &Database, transaction: Option<u64>, product: &str) -> f64 {
     match database.read(transaction, &cell("Sales", [product, "Units"])) {
-        Ok(Value::Number(number)) => number,
+        Ok(Scalar::Number(number)) => number,
         other => panic!("expected a number, found {other:?}"),
     }
 }
@@ -143,19 +143,19 @@ fn text_cells_take_part_in_transactions() {
     let write = CellWrite {
         cube: note.cube.clone(),
         at: note.at.clone(),
-        value: Value::Text("draft".to_owned()),
+        value: Scalar::Text("draft".to_owned()),
     };
     let transaction = database.begin();
     database.write(Some(transaction), &[write]).unwrap();
     assert_eq!(
         database.read(Some(transaction), &note),
-        Ok(Value::Text("draft".to_owned()))
+        Ok(Scalar::Text("draft".to_owned()))
     );
-    assert_eq!(database.read(None, &note), Ok(Value::Text(String::new())));
+    assert_eq!(database.read(None, &note), Ok(Scalar::Text(String::new())));
     database.commit(transaction).unwrap();
     assert_eq!(
         database.read(None, &note),
-        Ok(Value::Text("draft".to_owned()))
+        Ok(Scalar::Text("draft".to_owned()))
     );
 }
 
@@ -405,7 +405,7 @@ fn pending_reads_match_committed_reads_on_random_cubes() {
                 at: (0..dimensions)
                     .map(|_| format!("e{}", rng.below(shape.leaves)))
                     .collect(),
-                value: Value::Number((rng.below(2001) as f64 - 1000.0) / 8.0),
+                value: Scalar::Number((rng.below(2001) as f64 - 1000.0) / 8.0),
             };
             (0..count).map(write).collect()
         };
@@ -426,7 +426,7 @@ fn pending_reads_match_committed_reads_on_random_cubes() {
                     .collect(),
             })
             .collect();
-        let read = |database: &Database, transaction| -> Vec<Value> {
+        let read = |database: &Database, transaction| -> Vec<Scalar> {
             cells
                 .iter()
                 .map(|cell| database.read(transaction, cell).unwrap())
@@ -450,7 +450,7 @@ fn a_model_update_keeps_the_cells_that_still_fit() {
     let note = CellWrite {
         cube: "Sales".to_owned(),
         at: vec!["B".to_owned(), "Note".to_owned()],
-        value: Value::Text("keep".to_owned()),
+        value: Scalar::Text("keep".to_owned()),
     };
     let writes = [
         set("Sales", ["A", "Units"], 1.0),
@@ -482,7 +482,7 @@ fn a_model_update_keeps_the_cells_that_still_fit() {
     assert_eq!(units(&database, None, "C"), 0.0);
     assert_eq!(
         database.read(None, &cell("Sales", ["B", "Note"])),
-        Ok(Value::Text("keep".to_owned()))
+        Ok(Scalar::Text("keep".to_owned()))
     );
 }
 
@@ -519,11 +519,11 @@ fn a_cube_with_changed_dimensions_loses_its_cells() {
     assert_eq!(update.dropped_cells, 1);
     assert_eq!(
         database.read(None, &cell("Stock", ["A", "Units"])),
-        Ok(Value::Number(2.0))
+        Ok(Scalar::Number(2.0))
     );
     assert_eq!(
         database.read(None, &cell("Sales", ["Units", "A"])),
-        Ok(Value::Number(0.0))
+        Ok(Scalar::Number(0.0))
     );
 }
 
@@ -578,6 +578,6 @@ fn an_open_transaction_survives_a_model_update_that_adds_a_cube() {
     database.commit(transaction).unwrap();
     assert_eq!(
         database.read(None, &cell("Plan", ["All", "Units"])),
-        Ok(Value::Number(3.0))
+        Ok(Scalar::Number(3.0))
     );
 }

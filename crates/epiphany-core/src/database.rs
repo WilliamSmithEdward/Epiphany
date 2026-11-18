@@ -21,7 +21,7 @@ use std::{fmt, io};
 
 use serde::{Deserialize, Serialize};
 
-use crate::Value;
+use crate::Scalar;
 use crate::cells::{Cells, Writes, check, coordinate};
 use crate::mdx::{self, QueryResult};
 use crate::model::{ElementId, Model, ModelDef, ModelError};
@@ -50,7 +50,7 @@ pub struct CellRef {
 pub struct CellWrite {
     pub cube: String,
     pub at: Vec<String>,
-    pub value: Value,
+    pub value: Scalar,
 }
 
 /// The outcome of a model update.
@@ -180,7 +180,11 @@ impl Database {
 
     /// Reads a cell: its committed value, or within a transaction its value as that
     /// transaction would leave it.
-    pub fn read(&self, transaction: Option<TransactionId>, cell: &CellRef) -> Result<Value, Error> {
+    pub fn read(
+        &self,
+        transaction: Option<TransactionId>,
+        cell: &CellRef,
+    ) -> Result<Scalar, Error> {
         let (cube, at) = self.locate(&cell.cube, &cell.at)?;
         let (cells, definition) = (&self.cells[cube], &self.model.cubes()[cube]);
         Ok(match transaction {
@@ -418,7 +422,7 @@ impl Database {
     }
 
     /// A cell and its value, addressed by name.
-    fn named(&self, cube: usize, at: &[ElementId], value: Value) -> CellWrite {
+    fn named(&self, cube: usize, at: &[ElementId], value: Scalar) -> CellWrite {
         let cube = &self.model.cubes()[cube];
         let name = |(&dimension, &element): (&u32, &ElementId)| {
             let dimension = &self.model.dimensions()[dimension as usize];

@@ -6,7 +6,7 @@ use super::definition::{
     AttributeType, CubeDef, DimensionDef, ElementDef, ElementType, ModelDef, SubsetDef, ViewDef,
 };
 use super::error::ModelError;
-use crate::{Value, mdx};
+use crate::{Scalar, mdx};
 
 /// Position of a dimension in [`Model::dimensions`].
 pub type DimensionId = u32;
@@ -216,7 +216,7 @@ impl Dimension {
 
         for (id, element) in elements.iter().enumerate() {
             for (attribute, value) in attributes.iter().zip(&element.attributes) {
-                let (AttributeType::Alias, Some(Value::Text(alias))) = (attribute.kind, value)
+                let (AttributeType::Alias, Some(Scalar::Text(alias))) = (attribute.kind, value)
                 else {
                     continue;
                 };
@@ -267,7 +267,7 @@ impl Dimension {
         self.element_id(name).map(|id| &self.elements[id as usize])
     }
 
-    pub fn attribute_value(&self, element: ElementId, attribute: &str) -> Option<&Value> {
+    pub fn attribute_value(&self, element: ElementId, attribute: &str) -> Option<&Scalar> {
         let id = *self.attribute_ids.get(&key(attribute))?;
         self.elements[element as usize].attributes[id as usize].as_ref()
     }
@@ -287,7 +287,7 @@ pub struct Element {
     /// A leaf lists itself with weight one.
     pub leaves: Vec<(ElementId, f64)>,
     /// One value per attribute of the dimension, in [`Dimension::attributes`] order.
-    pub attributes: Vec<Option<Value>>,
+    pub attributes: Vec<Option<Scalar>>,
 }
 
 impl Element {
@@ -329,9 +329,9 @@ impl Element {
         for (name, value) in &def.attributes {
             let id = resolve(attribute_ids, "attribute", &within, name)? as usize;
             let fits = match attributes[id].kind {
-                AttributeType::Numeric => matches!(value, Value::Number(_)),
+                AttributeType::Numeric => matches!(value, Scalar::Number(_)),
                 AttributeType::Text | AttributeType::Alias => {
-                    matches!(value, Value::Text(_))
+                    matches!(value, Scalar::Text(_))
                 }
             };
             if !fits {

@@ -9,7 +9,7 @@ use std::hint::black_box;
 use std::time::Instant;
 
 use common::{Rng, Shape, random_model};
-use epiphany_core::Value;
+use epiphany_core::Scalar;
 use epiphany_core::cells::Cells;
 use epiphany_core::model::{ElementId, Model};
 
@@ -42,7 +42,7 @@ fn main() {
 
     time("write leaf", WRITES, || {
         for (index, at) in coordinates.iter().enumerate() {
-            let value = Value::Number(1.0 + index as f64);
+            let value = Scalar::Number(1.0 + index as f64);
             cells.write(&model, cube, at, value).unwrap();
         }
     });

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::Value;
+use crate::Scalar;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -73,7 +73,7 @@ pub struct ElementDef {
     pub children: Vec<ChildDef>,
     /// Attribute values, keyed by attribute name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub attributes: BTreeMap<String, Value>,
+    pub attributes: BTreeMap<String, Scalar>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

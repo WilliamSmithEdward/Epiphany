@@ -1,4 +1,4 @@
-use epiphany_core::Value;
+use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
 use epiphany_core::database::{CellWrite, Database, Error};
 use epiphany_core::mdx::{MemberType, QueryResult};
@@ -10,7 +10,7 @@ fn set(at: [&str; 4], value: f64) -> CellWrite {
     CellWrite {
         cube: CUBE.to_owned(),
         at: at.map(str::to_owned).to_vec(),
-        value: Value::Number(value),
+        value: Scalar::Number(value),
     }
 }
 
@@ -67,9 +67,9 @@ fn names(result: &QueryResult, axis: usize) -> Vec<String> {
 }
 
 fn numbers(result: &QueryResult) -> Vec<Option<f64>> {
-    let number = |cell: &Option<Value>| match cell {
-        Some(Value::Number(number)) => Some(*number),
-        Some(Value::Text(text)) => panic!("expected a number, found '{text}'"),
+    let number = |cell: &Option<Scalar>| match cell {
+        Some(Scalar::Number(number)) => Some(*number),
+        Some(Scalar::Text(text)) => panic!("expected a number, found '{text}'"),
         None => None,
     };
     result.cells.iter().map(number).collect()
@@ -382,7 +382,7 @@ fn members_carry_metadata_and_requested_properties() {
     let rent = &result.axes[1].tuples[1][0];
     assert_eq!(
         rent.properties["AccountCode"],
-        Value::Text("6100".to_owned())
+        Scalar::Text("6100".to_owned())
     );
 }
 
@@ -635,14 +635,14 @@ fn text_cells_are_returned_compared_and_joined() {
     }))
     .unwrap();
     let mut database = Database::new(definition).unwrap();
-    let write = |at: [&str; 2], value: Value| CellWrite {
+    let write = |at: [&str; 2], value: Scalar| CellWrite {
         cube: "Stock".to_owned(),
         at: at.map(str::to_owned).to_vec(),
         value,
     };
     let writes = [
-        write(["A", "Units"], Value::Number(5.0)),
-        write(["A", "Note"], Value::Text("late".to_owned())),
+        write(["A", "Units"], Scalar::Number(5.0)),
+        write(["A", "Note"], Scalar::Text("late".to_owned())),
     ];
     database.write(None, &writes).unwrap();
 
@@ -656,14 +656,14 @@ fn text_cells_are_returned_compared_and_joined() {
             FROM [Stock]",
         )
         .unwrap();
-    let text = |text: &str| Some(Value::Text(text.to_owned()));
+    let text = |text: &str| Some(Scalar::Text(text.to_owned()));
     assert_eq!(
         result.cells,
         [
-            Some(Value::Number(5.0)),
+            Some(Scalar::Number(5.0)),
             text("late"),
             text("A: late"),
-            Some(Value::Number(0.0)),
+            Some(Scalar::Number(0.0)),
             text(""),
             text("B: ")
         ]

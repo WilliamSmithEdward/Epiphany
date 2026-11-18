@@ -3,7 +3,7 @@ mod common;
 use std::collections::HashMap;
 
 use common::{Rng, Shape, random_model};
-use epiphany_core::Value;
+use epiphany_core::Scalar;
 use epiphany_core::cells::{CellError, Cells, coordinate};
 use epiphany_core::model::{Cube, Element, ElementId, Model};
 use serde_json::json;
@@ -69,7 +69,7 @@ fn every_cell_of_random_cubes_matches_the_reference() {
                 .collect();
             let value = (rng.below(2001) as f64 - 1000.0) / 8.0;
             cells
-                .write(&model, cube, &at, Value::Number(value))
+                .write(&model, cube, &at, Scalar::Number(value))
                 .unwrap();
             stored.insert(at, value);
         }
@@ -78,7 +78,7 @@ fn every_cell_of_random_cubes_matches_the_reference() {
         for mut at in every_coordinate(&sizes) {
             let expected = reference(&model, cube, &stored, &mut at);
             let found = cells.read(&model, cube, &at);
-            assert_eq!(found, Value::Number(expected), "seed {seed} at {at:?}");
+            assert_eq!(found, Scalar::Number(expected), "seed {seed} at {at:?}");
         }
     }
 }
@@ -133,53 +133,53 @@ impl Ledger {
         coordinate(&self.model, self.model.cube("C").unwrap(), &names).unwrap()
     }
 
-    fn read(&self, names: [&str; 2]) -> Value {
+    fn read(&self, names: [&str; 2]) -> Scalar {
         let cube = self.model.cube("C").unwrap();
         self.cells.read(&self.model, cube, &self.at(names))
     }
 
-    fn write(&mut self, names: [&str; 2], value: Value) -> Result<(), CellError> {
+    fn write(&mut self, names: [&str; 2], value: Scalar) -> Result<(), CellError> {
         let at = self.at(names);
         let cube = self.model.cube("C").unwrap();
         self.cells.write(&self.model, cube, &at, value)
     }
 }
 
-fn text(text: &str) -> Value {
-    Value::Text(text.to_owned())
+fn text(text: &str) -> Scalar {
+    Scalar::Text(text.to_owned())
 }
 
 #[test]
 fn leaf_cells_are_read_back_and_default_to_zero() {
     let mut ledger = Ledger::new();
-    assert_eq!(ledger.read(["Sales", "Amount"]), Value::Number(0.0));
+    assert_eq!(ledger.read(["Sales", "Amount"]), Scalar::Number(0.0));
     ledger
-        .write(["Sales", "Amount"], Value::Number(100.0))
+        .write(["Sales", "Amount"], Scalar::Number(100.0))
         .unwrap();
-    assert_eq!(ledger.read(["Sales", "Amount"]), Value::Number(100.0));
+    assert_eq!(ledger.read(["Sales", "Amount"]), Scalar::Number(100.0));
     ledger
-        .write(["Sales", "Amount"], Value::Number(0.0))
+        .write(["Sales", "Amount"], Scalar::Number(0.0))
         .unwrap();
-    assert_eq!(ledger.read(["Sales", "Amount"]), Value::Number(0.0));
+    assert_eq!(ledger.read(["Sales", "Amount"]), Scalar::Number(0.0));
 }
 
 #[test]
 fn consolidated_cells_apply_weights() {
     let mut ledger = Ledger::new();
     ledger
-        .write(["Sales", "Amount"], Value::Number(100.0))
+        .write(["Sales", "Amount"], Scalar::Number(100.0))
         .unwrap();
     ledger
-        .write(["Cost", "Amount"], Value::Number(30.0))
+        .write(["Cost", "Amount"], Scalar::Number(30.0))
         .unwrap();
-    assert_eq!(ledger.read(["Total", "Amount"]), Value::Number(70.0));
-    assert_eq!(ledger.read(["Total", "Both"]), Value::Number(70.0));
+    assert_eq!(ledger.read(["Total", "Amount"]), Scalar::Number(70.0));
+    assert_eq!(ledger.read(["Total", "Both"]), Scalar::Number(70.0));
 }
 
 #[test]
 fn consolidated_cells_cannot_be_written() {
     let mut ledger = Ledger::new();
-    let result = ledger.write(["Total", "Amount"], Value::Number(1.0));
+    let result = ledger.write(["Total", "Amount"], Scalar::Number(1.0));
     assert_eq!(result, Err(CellError::Consolidated));
 }
 
@@ -200,7 +200,7 @@ fn text_cells_hold_strings_and_default_to_empty() {
 #[test]
 fn values_must_match_the_cell_type() {
     let mut ledger = Ledger::new();
-    let number_in_text = ledger.write(["Sales", "Comment"], Value::Number(1.0));
+    let number_in_text = ledger.write(["Sales", "Comment"], Scalar::Number(1.0));
     let text_in_number = ledger.write(["Sales", "Amount"], text("x"));
     assert_eq!(number_in_text, Err(CellError::WrongType));
     assert_eq!(text_in_number, Err(CellError::WrongType));
@@ -210,7 +210,7 @@ fn values_must_match_the_cell_type() {
 fn numbers_must_be_finite() {
     let mut ledger = Ledger::new();
     for number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        let result = ledger.write(["Sales", "Amount"], Value::Number(number));
+        let result = ledger.write(["Sales", "Amount"], Scalar::Number(number));
         assert_eq!(result, Err(CellError::NotFinite));
     }
 }

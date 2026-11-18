@@ -1,4 +1,4 @@
-use epiphany_core::Value;
+use epiphany_core::Scalar;
 use epiphany_core::model::{Dimension, Model, ModelDef, ModelError};
 use serde_json::{Value as Json, json};
 
@@ -135,11 +135,11 @@ fn attributes_are_read_by_name() {
     let feb = period.element_id("Feb").unwrap();
     assert_eq!(
         account.attribute_value(rent, "accountcode"),
-        Some(&Value::Text("6100".to_owned()))
+        Some(&Scalar::Text("6100".to_owned()))
     );
     assert_eq!(
         period.attribute_value(feb, "Days"),
-        Some(&Value::Number(28.0))
+        Some(&Scalar::Number(28.0))
     );
     assert_eq!(
         account.attribute_value(account.element_id("Revenue").unwrap(), "AccountCode"),
