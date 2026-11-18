@@ -5,3 +5,15 @@ edition.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+axum = "0.8.9"
+epiphany-core = { path = "../epiphany-core", features = ["openapi"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net"] }
+utoipa = "6.0.0"
+utoipa-axum = "0.3.0"
+
+[dev-dependencies]
+tower = { version = "0.5.3", features = ["util"] }

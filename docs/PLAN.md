@@ -16,6 +16,20 @@ Two Rust crates and one .NET project:
 Everything testable about the engine is testable without a server, and the server stays a
 thin translation layer.
 
+### Runs in user space
+
+The server must run as an ordinary user: no UAC elevation on Windows, no root on Linux. In
+practice that means:
+
+- It listens on a port above 1024, by default `127.0.0.1:8080`.
+- It is a plain executable started by the user. It does not install itself as a service or
+  daemon, and nothing in it needs an installer.
+- It reads and writes only inside the directories it is given (the model directory now, the
+  data directory at milestone 5), never system locations or the registry.
+- It uses no privileged operating-system features: no raw sockets, no drivers, no locked
+  memory, no changes to firewall rules or other machine settings.
+- The Excel add-in is loaded per user and needs no machine-wide registration.
+
 ## 2. Engine
 
 ### 2.1 Model
@@ -113,9 +127,12 @@ thin translation layer.
   committed to the repository, and a test fails when the committed copy differs. The code
   and the contract cannot drift.
 - Resource groups:
-  - `/model`, `/model/dimensions/{name}`, `/model/cubes/{name}`: read and versioned update
-  - `/dimensions/{name}/elements`, attributes, hierarchy navigation
-  - `/cubes/{name}/cells/read`, `/cells/write`, `/cells/spread`: batched
+  - `/model`: read (done) and versioned update
+  - `/dimensions/{name}`: one dimension with each element's level, parents, children and
+    attributes (done)
+  - `/cells/read`, `/cells/write`, `/cells/spread`: batched. Each cell names its cube, so
+    one batch can span cubes, as one worksheet calculation can. A read reports errors per
+    cell; a write is all or nothing and reports the first bad cell (read and write done)
   - `/mdx`: run a query
   - `/subsets`, `/views`: stored selections and stored queries
   - `/transactions`, `/transactions/{id}/commit`, `/rollback`, `/locks`

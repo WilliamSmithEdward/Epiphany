@@ -1,0 +1,474 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Epiphany",
+    "description": "An in-memory OLAP server.",
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/cells/read": {
+      "post": {
+        "summary": "Reads a batch of cells. A cell that cannot be read reports its own error.",
+        "operationId": "read_cells",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cells/write": {
+      "post": {
+        "summary": "Writes a batch of leaf cells: all of them, or none if any is invalid.",
+        "operationId": "write_cells",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WriteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dimensions/{name}": {
+      "get": {
+        "summary": "One dimension, with each element's level, parents, children and attributes.",
+        "operationId": "get_dimension",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Dimension name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DimensionView"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/model": {
+      "get": {
+        "summary": "The model definition.",
+        "operationId": "get_model",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDef"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ApiError": {
+        "type": "object",
+        "description": "The one error shape used by every route.",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "A stable identifier for the kind of error."
+          },
+          "index": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "The position of the offending cell in a batch.",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "AttributeType": {
+        "type": "string",
+        "enum": [
+          "string",
+          "numeric",
+          "alias"
+        ]
+      },
+      "CellRef": {
+        "type": "object",
+        "description": "A cell addressed by cube name and one element name or alias per dimension.",
+        "required": [
+          "cube",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cube": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CellResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "value"
+            ],
+            "properties": {
+              "value": {}
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "$ref": "#/components/schemas/ApiError"
+              }
+            }
+          }
+        ]
+      },
+      "CellWrite": {
+        "type": "object",
+        "description": "A value to write to a leaf cell.",
+        "required": [
+          "cube",
+          "at",
+          "value"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cube": {
+            "type": "string"
+          },
+          "value": {}
+        },
+        "additionalProperties": false
+      },
+      "ChildDef": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CubeDef": {
+        "type": "object",
+        "required": [
+          "name",
+          "dimensions"
+        ],
+        "properties": {
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DimensionDef": {
+        "type": "object",
+        "required": [
+          "name",
+          "elements"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "description": "Declared attributes and their types. Elements may only carry attributes declared here.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeType"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "elements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ElementDef"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/DimensionType"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DimensionType": {
+        "type": "string",
+        "enum": [
+          "standard"
+        ]
+      },
+      "DimensionView": {
+        "type": "object",
+        "description": "A dimension with the hierarchy facts derived from its definition.",
+        "required": [
+          "name",
+          "attributes",
+          "elements"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeType"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "elements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ElementView"
+            },
+            "description": "Elements in declaration order."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "ElementDef": {
+        "type": "object",
+        "required": [
+          "name",
+          "type"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "description": "Attribute values, keyed by attribute name.",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChildDef"
+            },
+            "description": "Weighted children, in order. Present on consolidated elements only."
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/ElementType"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ElementType": {
+        "type": "string",
+        "enum": [
+          "numeric",
+          "string",
+          "consolidated"
+        ]
+      },
+      "ElementView": {
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "level",
+          "parents",
+          "children",
+          "attributes"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {},
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "children": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ChildDef"
+            }
+          },
+          "level": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Zero for a leaf, otherwise one more than the highest child level.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "parents": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "type": {
+            "$ref": "#/components/schemas/ElementType"
+          }
+        }
+      },
+      "ModelDef": {
+        "type": "object",
+        "properties": {
+          "cubes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CubeDef"
+            }
+          },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DimensionDef"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReadRequest": {
+        "type": "object",
+        "required": [
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CellRef"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ReadResponse": {
+        "type": "object",
+        "required": [
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CellResult"
+            },
+            "description": "One result per requested cell, in request order."
+          }
+        }
+      },
+      "WriteRequest": {
+        "type": "object",
+        "required": [
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CellWrite"
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  }
+}

@@ -49,9 +49,13 @@ impl Model {
         Some(&self.dimensions[id as usize])
     }
 
+    /// The position of a cube in [`Model::cubes`].
+    pub fn cube_id(&self, name: &str) -> Option<usize> {
+        self.cube_ids.get(&key(name)).map(|&id| id as usize)
+    }
+
     pub fn cube(&self, name: &str) -> Option<&Cube> {
-        let id = *self.cube_ids.get(&key(name))?;
-        Some(&self.cubes[id as usize])
+        self.cube_id(name).map(|id| &self.cubes[id])
     }
 }
 

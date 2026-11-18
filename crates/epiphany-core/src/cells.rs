@@ -50,21 +50,17 @@ impl Cells {
         at: &[ElementId],
         value: Value,
     ) -> Result<(), CellError> {
-        let elements = elements(model, cube, at);
-        match (is_text(elements.clone()), value) {
-            (true, Value::Text(text)) => store(&mut self.texts, at, text, String::is_empty),
-            (false, Value::Number(number)) => {
-                if !number.is_finite() {
-                    return Err(CellError::NotFinite);
-                }
-                if elements.clone().any(is_consolidated) {
-                    return Err(CellError::Consolidated);
-                }
-                store(&mut self.numbers, at, number, |n| *n == 0.0);
-            }
-            _ => return Err(CellError::WrongType),
-        }
+        check(model, cube, at, &value)?;
+        self.set(at, value);
         Ok(())
+    }
+
+    /// Stores a value that has passed [`check`].
+    pub(crate) fn set(&mut self, at: &[ElementId], value: Value) {
+        match value {
+            Value::Number(number) => store(&mut self.numbers, at, number, |n| *n == 0.0),
+            Value::Text(text) => store(&mut self.texts, at, text, String::is_empty),
+        }
     }
 
     /// Sums a consolidation by looking up every combination of its leaves.
@@ -133,6 +129,20 @@ pub fn coordinate<S: AsRef<str>>(
     cube.dimensions.iter().zip(names).map(resolve).collect()
 }
 
+/// Whether a value may be written to a cell.
+pub fn check(model: &Model, cube: &Cube, at: &[ElementId], value: &Value) -> Result<(), CellError> {
+    let elements = elements(model, cube, at);
+    match (is_text(elements.clone()), value) {
+        (true, Value::Text(_)) => Ok(()),
+        (false, Value::Number(number)) if !number.is_finite() => Err(CellError::NotFinite),
+        (false, Value::Number(_)) if elements.clone().any(is_consolidated) => {
+            Err(CellError::Consolidated)
+        }
+        (false, Value::Number(_)) => Ok(()),
+        _ => Err(CellError::WrongType),
+    }
+}
+
 /// The elements of a coordinate, in dimension order.
 fn elements<'a>(
     model: &'a Model,
@@ -180,12 +190,29 @@ pub enum CellError {
         dimension: String,
         element: String,
     },
+    UnknownCube {
+        cube: String,
+    },
     /// A number was written to a cell with a consolidated element.
     Consolidated,
     /// A number was written to a text cell, or text to a numeric cell.
     WrongType,
     /// The number written was infinite or not a number.
     NotFinite,
+}
+
+impl CellError {
+    /// A stable identifier for the kind of error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Arity { .. } => "wrong_arity",
+            Self::UnknownElement { .. } => "unknown_element",
+            Self::UnknownCube { .. } => "unknown_cube",
+            Self::Consolidated => "consolidated_cell",
+            Self::WrongType => "wrong_type",
+            Self::NotFinite => "not_finite",
+        }
+    }
 }
 
 impl fmt::Display for CellError {
@@ -197,6 +224,7 @@ impl fmt::Display for CellError {
             Self::UnknownElement { dimension, element } => {
                 write!(f, "unknown element '{element}' in dimension '{dimension}'")
             }
+            Self::UnknownCube { cube } => write!(f, "unknown cube '{cube}'"),
             Self::Consolidated => write!(f, "a consolidated cell cannot be written"),
             Self::WrongType => write!(f, "the value has the wrong type for the cell"),
             Self::NotFinite => write!(f, "the number is not finite"),

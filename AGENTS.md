@@ -26,6 +26,10 @@ Rust: Entire server and execution engine.
 
 
 
+User space: The server must run without UAC elevation on Windows, root on Linux, or any equivalent.
+
+
+
 PAfE compatibility adapter: A small integration layer translating existing formula operations into your API in Excel-DNA.
 
 
