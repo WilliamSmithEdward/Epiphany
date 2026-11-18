@@ -12,6 +12,14 @@
   label { display: grid; gap: 2px; font-size: 12px; opacity: .85; }
   select, button, input { font: inherit; }
   select, button { padding: 4px 8px; }
+  #layout { display: flex; flex-wrap: wrap; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .zone { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 180px; min-height: 34px; padding: 6px 8px; border: 1px dashed var(--line); border-radius: 6px; }
+  .zone.over { border-color: Highlight; background: var(--shade); }
+  .zone > b { font-size: 12px; opacity: .7; margin-right: 4px; }
+  .chip { display: inline-flex; gap: 6px; align-items: center; padding: 3px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--shade); cursor: grab; user-select: none; }
+  .chip.dragging { opacity: .4; }
+  .chip select { padding: 1px 4px; }
+  .chip small { opacity: .65; }
   #status { margin: 0; padding: 8px 16px; min-height: 1.4em; }
   #status.error { color: #c0392b; }
   main { padding: 0 16px 24px; overflow: auto; }
@@ -30,16 +38,24 @@
 <header>
   <h1>Epiphany lab</h1>
   <label>Cube <select id="cube"></select></label>
-  <label>Rows <select id="rows"></select></label>
-  <label>Columns <select id="columns"></select></label>
-  <span id="filters" style="display: contents"></span>
   <button id="refresh">Refresh</button>
   <button id="fill">Fill visible leaves</button>
+  <label>Transaction <output id="transaction">none</output></label>
+  <button id="begin">Begin</button>
+  <button id="commit">Commit</button>
+  <button id="rollback">Roll back</button>
   <a href="/openapi.json" target="_blank">OpenAPI</a>
 </header>
+<section id="layout">
+  <div class="zone" data-zone="columns" title="Dimensions across the top"><b>Columns</b></div>
+  <div class="zone" data-zone="rows" title="Dimensions down the side"><b>Rows</b></div>
+  <div class="zone" data-zone="filters" title="Dimensions narrowed to one element you choose"><b>Filters</b></div>
+  <div class="zone" data-zone="unused" title="Dimensions left at their top element"><b>Unused</b></div>
+</section>
 <p id="status"></p>
 <main><table id="grid"></table></main>
 <script>
+const MOST_CELLS = 20000;
 const $ = id => document.getElementById(id);
 const make = (tag, properties = {}, children = []) => {
   const node = Object.assign(document.createElement(tag), properties);
@@ -68,38 +84,119 @@ async function api(method, path, body) {
 let model;                // the model definition
 const dimensions = {};    // dimension views by name, loaded on demand
 let cube;                 // the chosen cube definition
-let slice = {};           // the chosen element of each dimension not on rows or columns
+let layout;               // { columns, rows, filters, unused }: the cube's dimension names by zone
+let slice = {};           // the chosen element of each dimension, used while it is a filter
 let visible = [];         // { at, editable, text } for every cell on screen
+let transaction = null;   // the open transaction, which reads and writes then go through
 
 async function dimension(name) {
   return dimensions[name] ??= await api('GET', `/dimensions/${encodeURIComponent(name)}`);
 }
 
+// Transactions
+
+function showTransaction() {
+  $('transaction').textContent = transaction ?? 'none';
+  $('begin').disabled = transaction !== null;
+  $('commit').disabled = $('rollback').disabled = transaction === null;
+}
+
+async function begin() {
+  try {
+    transaction = (await api('POST', '/transactions')).transaction;
+    status(`Began transaction ${transaction}. Its writes stay pending until you commit.`);
+  } catch (error) {
+    status(error.message, true);
+  }
+  showTransaction();
+}
+
+async function end(action, done) {
+  try {
+    await api('POST', `/transactions/${transaction}/${action}`);
+    status(`${done} transaction ${transaction}.`);
+  } catch (error) {
+    status(error.message, true);
+  }
+  transaction = null;
+  showTransaction();
+  await render();
+}
+
+// Layout: which dimensions are on columns, on rows, filtered to one chosen element, or unused
+
+/** The element an unused dimension stands at: its first element with no parent. */
+const topElement = name => dimensions[name].elements.find(element => !element.parents.length) ?? dimensions[name].elements[0];
+
 async function chooseCube() {
   cube = model.cubes.find(c => c.name === $('cube').value);
   await Promise.all(cube.dimensions.map(dimension));
-  options($('rows'), cube.dimensions, cube.dimensions[0]);
-  options($('columns'), cube.dimensions, cube.dimensions[1] ?? cube.dimensions[0]);
+  const [first, second, ...rest] = cube.dimensions;
+  layout = { columns: second ? [second] : [], rows: [first], filters: rest, unused: [] };
   slice = {};
-  await layout();
-}
-
-async function layout(changed) {
-  if ($('rows').value === $('columns').value && cube.dimensions.length > 1) {
-    const other = changed === $('rows') ? $('columns') : $('rows');
-    other.value = cube.dimensions.find(name => name !== changed?.value) ?? other.value;
-  }
-  const sliced = cube.dimensions.filter(name => name !== $('rows').value && name !== $('columns').value);
-  $('filters').replaceChildren(...sliced.map(name => {
+  for (const name of cube.dimensions) {
     const elements = dimensions[name].elements;
-    const names = elements.map(element => element.name);
-    slice[name] ??= (elements.find(element => element.type !== 'consolidated') ?? elements[0]).name;
-    const select = make('select', { onchange: () => { slice[name] = select.value; render(); } });
-    options(select, names, slice[name]);
-    return make('label', {}, [name, select]);
-  }));
+    slice[name] = (elements.find(element => element.type !== 'consolidated') ?? elements[0]).name;
+  }
+  showLayout();
   await render();
 }
+
+function chip(name, kind) {
+  const node = make('span', { className: 'chip', draggable: true, textContent: name });
+  node.dataset.name = name;
+  node.ondragstart = event => {
+    event.dataTransfer.setData('text/plain', name);
+    event.dataTransfer.effectAllowed = 'move';
+    node.classList.add('dragging');
+  };
+  node.ondragend = () => node.classList.remove('dragging');
+  if (kind === 'filters') {
+    const select = make('select', { onchange: () => { slice[name] = select.value; render(); } });
+    options(select, dimensions[name].elements.map(element => element.name), slice[name]);
+    node.append(select);
+  }
+  if (kind === 'unused') node.append(make('small', { textContent: topElement(name).name }));
+  return node;
+}
+
+function showLayout() {
+  for (const zone of document.querySelectorAll('.zone')) {
+    const kind = zone.dataset.zone;
+    zone.replaceChildren(zone.firstElementChild, ...layout[kind].map(name => chip(name, kind)));
+  }
+}
+
+function move(name, kind, before) {
+  for (const names of Object.values(layout)) {
+    const index = names.indexOf(name);
+    if (index >= 0) names.splice(index, 1);
+  }
+  const index = before ? layout[kind].indexOf(before) : -1;
+  layout[kind].splice(index < 0 ? layout[kind].length : index, 0, name);
+  showLayout();
+  render();
+}
+
+for (const zone of document.querySelectorAll('.zone')) {
+  zone.ondragover = event => { event.preventDefault(); zone.classList.add('over'); };
+  zone.ondragleave = () => zone.classList.remove('over');
+  zone.ondrop = event => {
+    event.preventDefault();
+    zone.classList.remove('over');
+    const name = event.dataTransfer.getData('text/plain');
+    const before = event.target.closest('.chip')?.dataset.name;
+    if (cube.dimensions.includes(name) && before !== name) move(name, zone.dataset.zone, before);
+  };
+}
+
+// Grid
+
+/** Every combination of one element from each of the named dimensions. */
+const tuples = names => names.reduce(
+  (found, name) => found.flatMap(tuple => dimensions[name].elements.map(element => [...tuple, element])),
+  [[]],
+);
 
 function isEditable(elements) {
   const text = elements.at(-1).type === 'string';
@@ -107,12 +204,14 @@ function isEditable(elements) {
 }
 
 async function render() {
-  const rows = dimensions[$('rows').value].elements;
-  const single = cube.dimensions.length === 1;
-  const columns = single ? [null] : dimensions[$('columns').value].elements;
+  const [rows, columns] = [tuples(layout.rows), tuples(layout.columns)];
+  if (rows.length * columns.length > MOST_CELLS) {
+    $('grid').replaceChildren();
+    return status(`That layout has ${(rows.length * columns.length).toLocaleString()} cells; move a dimension to the filters.`, true);
+  }
   const pick = (name, row, column) =>
-    name === $('rows').value ? row : name === $('columns').value ? column
-      : dimensions[name].elements.find(element => element.name === slice[name]);
+    row[layout.rows.indexOf(name)] ?? column[layout.columns.indexOf(name)]
+      ?? (layout.unused.includes(name) ? topElement(name) : dimensions[name].elements.find(element => element.name === slice[name]));
 
   visible = rows.flatMap(row => columns.map(column => {
     const elements = cube.dimensions.map(name => pick(name, row, column));
@@ -121,19 +220,28 @@ async function render() {
   let results;
   try {
     const cells = visible.map(cell => ({ cube: cube.name, at: cell.at }));
-    results = (await api('POST', '/cells/read', { cells })).cells;
+    results = (await api('POST', '/cells/read', { transaction, cells })).cells;
   } catch (error) {
     return status(error.message, true);
   }
 
-  const depth = Math.max(...rows.map(row => row.level));
-  const head = make('tr', {}, [make('th'), ...columns.map(column => make('th', { textContent: column?.name ?? 'Value' }))]);
+  const depth = name => Math.max(...dimensions[name].elements.map(element => element.level));
+  // The row dimension names sit above their labels, on the last header row only.
+  const corner = named => layout.rows.length ? layout.rows.map(name => make('th', { textContent: named ? name : '' })) : [make('th')];
+  const last = layout.columns.length - 1;
+  const head = layout.columns.length
+    ? layout.columns.map((_, k) => make('tr', {}, [...corner(k === last), ...columns.map(column => make('th', { textContent: column[k].name }))]))
+    : [make('tr', {}, [...corner(true), make('th', { textContent: 'Value' })])];
   const body = rows.map((row, r) => {
-    const label = make('th', { textContent: row.name });
-    label.style.paddingLeft = `${8 + 16 * (depth - row.level)}px`;
-    return make('tr', {}, [label, ...columns.map((_, c) => cellNode(visible[r * columns.length + c], results[r * columns.length + c]))]);
+    const labels = row.map((element, k) => {
+      const label = make('th', { textContent: element.name });
+      label.style.paddingLeft = `${8 + 16 * (depth(layout.rows[k]) - element.level)}px`;
+      return label;
+    });
+    const cells = columns.map((_, c) => cellNode(visible[r * columns.length + c], results[r * columns.length + c]));
+    return make('tr', {}, [...(labels.length ? labels : [make('th', { textContent: 'Value' })]), ...cells]);
   });
-  $('grid').replaceChildren(make('thead', {}, [head]), make('tbody', {}, body));
+  $('grid').replaceChildren(make('thead', {}, head), make('tbody', {}, body));
 }
 
 function cellNode(cell, result) {
@@ -150,10 +258,11 @@ function cellNode(cell, result) {
 }
 
 async function write(cells) {
-  if (!cells.length) return status('No numeric leaf cells on screen: slice by leaf elements to edit.', true);
+  if (!cells.length) return status('No numeric leaf cells on screen: put the other dimensions in filters set to leaf elements.', true);
   try {
-    await api('POST', '/cells/write', { cells });
-    status(`Wrote ${cells.length} cell${cells.length === 1 ? '' : 's'}.`);
+    await api('POST', '/cells/write', { transaction, cells });
+    const where = transaction === null ? '' : ` in transaction ${transaction}, not yet committed`;
+    status(`Wrote ${cells.length} cell${cells.length === 1 ? '' : 's'}${where}.`);
   } catch (error) {
     status(error.message, true);
   }
@@ -161,18 +270,23 @@ async function write(cells) {
 }
 
 $('cube').onchange = chooseCube;
-$('rows').onchange = () => layout($('rows'));
-$('columns').onchange = () => layout($('columns'));
 $('refresh').onclick = render;
+$('begin').onclick = begin;
+$('commit').onclick = () => end('commit', 'Committed');
+$('rollback').onclick = () => end('rollback', 'Rolled back');
 $('fill').onclick = () => write(visible.filter(cell => cell.editable && !cell.text)
   .map(cell => ({ cube: cube.name, at: cell.at, value: Math.ceil(Math.random() * 1000) })));
+showTransaction();
 
 (async () => {
   try {
-    model = await api('GET', '/model');
-    options($('cube'), model.cubes.map(c => c.name));
+    model = (await api('GET', '/model')).model;
+    // Open on the first cube that holds numbers rather than text.
+    const lasts = await Promise.all(model.cubes.map(c => dimension(c.dimensions.at(-1))));
+    const numeric = model.cubes.find((_, index) => lasts[index].elements.some(element => element.type !== 'string'));
+    options($('cube'), model.cubes.map(c => c.name), numeric?.name);
     await chooseCube();
-    status('Ready.');
+    status('Ready. Drag dimensions between columns, rows, filters and unused.');
   } catch (error) {
     status(error.message, true);
   }

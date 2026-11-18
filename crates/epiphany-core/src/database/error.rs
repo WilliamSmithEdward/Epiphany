@@ -1,0 +1,69 @@
+//! Why a database operation was refused.
+
+use std::fmt;
+
+use super::TransactionId;
+use crate::cells::CellError;
+use crate::model::ModelError;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    Cell(CellError),
+    /// A write in a batch is invalid; nothing in the batch was written.
+    Write {
+        index: usize,
+        error: CellError,
+    },
+    Model(ModelError),
+    /// The transaction never existed, has finished, or has expired.
+    UnknownTransaction(TransactionId),
+    /// Another transaction holds a conflicting lock on the named thing.
+    Locked(String),
+    /// A model update was based on a version that is no longer current.
+    StaleVersion {
+        based_on: u64,
+        current: u64,
+    },
+}
+
+impl Error {
+    /// A stable identifier for the kind of error.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Cell(error) | Self::Write { error, .. } => error.code(),
+            Self::Model(_) => "invalid_model",
+            Self::UnknownTransaction(_) => "unknown_transaction",
+            Self::Locked(_) => "locked",
+            Self::StaleVersion { .. } => "stale_version",
+        }
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cell(error) | Self::Write { error, .. } => error.fmt(f),
+            Self::Model(error) => error.fmt(f),
+            Self::UnknownTransaction(id) => write!(f, "unknown transaction {id}"),
+            Self::Locked(what) => write!(f, "{what} is locked by another transaction"),
+            Self::StaleVersion { based_on, current } => write!(
+                f,
+                "the update is based on model version {based_on}, but the current version is {current}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<CellError> for Error {
+    fn from(error: CellError) -> Self {
+        Self::Cell(error)
+    }
+}
+
+impl From<ModelError> for Error {
+    fn from(error: ModelError) -> Self {
+        Self::Model(error)
+    }
+}

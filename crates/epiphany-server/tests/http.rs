@@ -126,11 +126,11 @@ async fn the_model_is_served_as_defined() {
             .collect()
     };
     assert_eq!(
-        names(&body["dimensions"]),
+        names(&body["model"]["dimensions"]),
         ["Account", "Entity", "Period", "Version"]
     );
     assert_eq!(
-        body["cubes"],
+        body["model"]["cubes"],
         json!([{ "name": "General Ledger", "dimensions": ["Account", "Entity", "Period", "Version"] }])
     );
 }
@@ -182,6 +182,131 @@ async fn an_unknown_dimension_is_not_found() {
     );
 }
 
+#[tokio::test]
+async fn a_transaction_keeps_its_writes_to_itself_until_it_commits() {
+    let app = example();
+    let at = ["Rent", "US", "Jan", "Actual"];
+    let read = |transaction: Value| json!({ "transaction": transaction, "cells": [cell(at)] });
+    let value = |value: f64| json!({ "cells": [{ "value": value }] });
+
+    let (status, body) = call(&app, "POST", "/transactions", None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let id = body["transaction"].clone();
+    let write = json!({ "transaction": id, "cells": [write(at, json!(25))] });
+    let (status, _) = call(&app, "POST", "/cells/write", Some(write)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, inside) = call(&app, "POST", "/cells/read", Some(read(id.clone()))).await;
+    let (_, outside) = call(&app, "POST", "/cells/read", Some(read(Value::Null))).await;
+    assert_eq!((inside, outside), (value(25.0), value(0.0)));
+
+    let (status, _) = call(&app, "POST", &format!("/transactions/{id}/commit"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, outside) = call(&app, "POST", "/cells/read", Some(read(Value::Null))).await;
+    assert_eq!(outside, value(25.0));
+
+    let (status, body) = call(&app, "POST", &format!("/transactions/{id}/commit"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "unknown_transaction");
+}
+
+#[tokio::test]
+async fn a_rolled_back_transaction_leaves_no_trace() {
+    let app = example();
+    let at = ["Rent", "US", "Jan", "Actual"];
+    let (_, body) = call(&app, "POST", "/transactions", None).await;
+    let id = body["transaction"].clone();
+    let write = json!({ "transaction": id, "cells": [write(at, json!(25))] });
+    call(&app, "POST", "/cells/write", Some(write)).await;
+    let (status, _) = call(&app, "POST", &format!("/transactions/{id}/rollback"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, body) = call(
+        &app,
+        "POST",
+        "/cells/read",
+        Some(json!({ "cells": [cell(at)] })),
+    )
+    .await;
+    assert_eq!(body, json!({ "cells": [{ "value": 0.0 }] }));
+}
+
+#[tokio::test]
+async fn a_locked_cube_refuses_other_writers_with_a_conflict() {
+    let app = example();
+    let (_, body) = call(&app, "POST", "/transactions", None).await;
+    let id = body["transaction"].clone();
+    let lock = json!({ "cube": "General Ledger", "mode": "exclusive" });
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/transactions/{id}/locks"),
+        Some(lock),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let cells = json!({ "cells": [write(["Rent", "US", "Jan", "Actual"], json!(25))] });
+    let (status, body) = call(&app, "POST", "/cells/write", Some(cells.clone())).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        body,
+        json!({
+            "code": "locked",
+            "message": "cube 'General Ledger' is locked by another transaction"
+        })
+    );
+
+    call(&app, "POST", &format!("/transactions/{id}/rollback"), None).await;
+    let (status, _) = call(&app, "POST", "/cells/write", Some(cells)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn the_model_is_updated_against_its_version() {
+    let app = example();
+    let cells = json!({ "cells": [write(["Rent", "US", "Jan", "Actual"], json!(25))] });
+    call(&app, "POST", "/cells/write", Some(cells)).await;
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    assert_eq!(served["version"], 1);
+
+    // Add an entity; everything already stored still fits.
+    let mut model = served["model"].clone();
+    let entity = &mut model["dimensions"][1]["elements"];
+    entity[0]["children"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "name": "FR" }));
+    entity
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "name": "FR", "type": "numeric" }));
+
+    let update = json!({ "based_on": 1, "model": model });
+    let (status, body) = call(&app, "PUT", "/model", Some(update.clone())).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, json!({ "version": 2, "dropped_cells": 0 }));
+
+    let reads = json!({ "cells": [
+        cell(["Rent", "Total Entity", "Jan", "Actual"]),
+        cell(["Rent", "FR", "Jan", "Actual"]),
+    ] });
+    let (_, body) = call(&app, "POST", "/cells/read", Some(reads)).await;
+    assert_eq!(
+        body,
+        json!({ "cells": [{ "value": 25.0 }, { "value": 0.0 }] })
+    );
+
+    let (status, body) = call(&app, "PUT", "/model", Some(update)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "stale_version");
+
+    let broken =
+        json!({ "based_on": 2, "model": { "cubes": [{ "name": "C", "dimensions": [] }] } });
+    let (status, body) = call(&app, "PUT", "/model", Some(broken)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "invalid_model");
+    assert_eq!(call(&app, "GET", "/model", None).await.1["version"], 2);
+}
 #[tokio::test]
 async fn a_malformed_body_uses_the_common_error_shape() {
     let body = json!({ "cells": [{ "cube": "General Ledger", "at": [], "colour": "red" }] });

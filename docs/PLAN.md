@@ -70,10 +70,13 @@ practice that means:
   its own writes. Commit applies the write set in one step and bumps the version; rollback
   discards the write set. Nothing is ever undone in place.
 - Lock modes: intent-shared, intent-exclusive, shared, exclusive, on two levels (server, cube).
-  Cell writes take intent-exclusive on the server and exclusive or intent-exclusive on the
-  cube; model updates take exclusive on the server.
-- Lock requests either succeed or fail after a bounded wait with a conflict response. There
-  is no deadlock detector, because nothing waits forever.
+  A cell write takes intent-exclusive on the server and on the cube, and no two open
+  transactions may have a pending write to the same cell. A client may also lock a cube or
+  the server, shared or exclusive. Model updates need the server exclusively.
+- A lock request succeeds or fails at once with a conflict response; the client retries.
+  Nothing waits, so nothing can deadlock.
+- Reads take no locks: they see committed values plus the transaction's own pending writes.
+  A client that writes a value computed from what it read must lock the cube first.
 - Transactions span REST calls by id, and expire after an idle timeout so an abandoned
   client cannot hold locks.
 - A batch write without a transaction id runs as its own transaction: all cells or none.
@@ -84,9 +87,14 @@ practice that means:
   the version it was based on. A stale base version is rejected.
 - The new definition is validated and compiled off to the side, then swapped in under the
   exclusive server lock. Readers see the old snapshot or the new one, never a mixture.
-- Stored cells are re-keyed to the new element ids. Cells whose element was removed, or
-  turned from leaf to consolidated, are dropped, and the response reports how many.
-- Every committed model version is kept on disk as a numbered copy; the newest is `model/`.
+- Stored cells are re-keyed to the new element ids, matching cubes, dimensions and elements
+  by name. Cells whose element was removed or turned from leaf to consolidated, or whose
+  cube changed its dimensions, are dropped, and the response reports how many. A rename is
+  a removal and an addition, so it drops the cells.
+- An update is refused while any transaction holds a lock.
+- Done so far: whole-model replacement with an in-memory version counter. Updating a single
+  dimension or cube, and keeping every version on disk as a numbered copy, come with
+  persistence at milestone 5.
 
 ### 2.5 Persistence
 

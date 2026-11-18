@@ -11,8 +11,9 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Value;
-use epiphany_core::cells::CellError;
-use epiphany_core::database::{BatchError, CellRef, CellWrite, Database};
+use epiphany_core::database::{
+    CellRef, CellWrite, Database, Error, LockMode, ModelUpdate, TransactionId,
+};
 use epiphany_core::model::{AttributeType, ChildDef, Dimension, ElementId, ElementType, ModelDef};
 use serde::{Deserialize, Serialize};
 use utoipa::{OpenApi, ToSchema};
@@ -27,10 +28,14 @@ struct Contract;
 
 fn router() -> OpenApiRouter<Shared> {
     OpenApiRouter::with_openapi(Contract::openapi())
-        .routes(routes!(get_model))
+        .routes(routes!(get_model, put_model))
         .routes(routes!(get_dimension))
         .routes(routes!(read_cells))
         .routes(routes!(write_cells))
+        .routes(routes!(begin_transaction))
+        .routes(routes!(commit_transaction))
+        .routes(routes!(rollback_transaction))
+        .routes(routes!(lock))
 }
 
 /// The OpenAPI document describing every route.
@@ -70,23 +75,40 @@ struct ApiError {
     index: Option<usize>,
 }
 
-impl From<CellError> for ApiError {
-    fn from(error: CellError) -> Self {
+impl ApiError {
+    fn new(status: StatusCode, code: &'static str, message: String) -> Self {
         Self {
-            status: StatusCode::UNPROCESSABLE_ENTITY,
-            code: error.code(),
-            message: error.to_string(),
+            status,
+            code,
+            message,
             index: None,
         }
     }
 }
 
-impl From<BatchError> for ApiError {
-    fn from(batch: BatchError) -> Self {
+impl From<Error> for ApiError {
+    fn from(error: Error) -> Self {
+        let status = match error {
+            Error::Cell(_) | Error::Write { .. } | Error::Model(_) => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            Error::UnknownTransaction(_) => StatusCode::NOT_FOUND,
+            Error::Locked(_) | Error::StaleVersion { .. } => StatusCode::CONFLICT,
+        };
+        let index = match error {
+            Error::Write { index, .. } => Some(index),
+            _ => None,
+        };
         Self {
-            index: Some(batch.index),
-            ..batch.error.into()
+            index,
+            ..Self::new(status, error.code(), error.to_string())
         }
+    }
+}
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        (self.status, Json(self)).into_response()
     }
 }
 
@@ -102,20 +124,30 @@ where
     async fn from_request(request: Request, state: &S) -> Result<Self, ApiError> {
         match Json::from_request(request, state).await {
             Ok(Json(body)) => Ok(Self(body)),
-            Err(rejection) => Err(ApiError {
-                status: rejection.status(),
-                code: "invalid_request",
-                message: rejection.body_text(),
-                index: None,
-            }),
+            Err(rejection) => Err(ApiError::new(
+                rejection.status(),
+                "invalid_request",
+                rejection.body_text(),
+            )),
         }
     }
 }
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (self.status, Json(self)).into_response()
-    }
+/// The model definition and its version.
+#[derive(Serialize, ToSchema)]
+struct ModelView {
+    /// Counts up by one with every update.
+    version: u64,
+    model: ModelDef,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct ModelPut {
+    /// The version the new definition was edited from. The update is refused if it is no
+    /// longer the current version.
+    based_on: u64,
+    model: ModelDef,
 }
 
 /// A dimension with the hierarchy facts derived from its definition.
@@ -174,6 +206,8 @@ impl From<&Dimension> for DimensionView {
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 struct ReadRequest {
+    /// Read within this transaction, seeing its pending writes.
+    transaction: Option<TransactionId>,
     cells: Vec<CellRef>,
 }
 
@@ -193,13 +227,54 @@ enum CellResult {
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 struct WriteRequest {
+    /// Hold the writes in this transaction until it commits. Without it they are committed
+    /// at once.
+    transaction: Option<TransactionId>,
     cells: Vec<CellWrite>,
 }
 
-/// The model definition.
-#[utoipa::path(get, path = "/model", responses((status = OK, body = ModelDef)))]
-async fn get_model(State(database): State<Shared>) -> Json<ModelDef> {
-    Json(database.read().unwrap().definition().clone())
+#[derive(Serialize, ToSchema)]
+struct TransactionView {
+    transaction: TransactionId,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct LockRequest {
+    /// The cube to lock. Without it the whole server is locked.
+    cube: Option<String>,
+    mode: LockMode,
+}
+
+/// The model definition and its version.
+#[utoipa::path(get, path = "/model", responses((status = OK, body = ModelView)))]
+async fn get_model(State(database): State<Shared>) -> Json<ModelView> {
+    let database = database.read().unwrap();
+    Json(ModelView {
+        version: database.model_version(),
+        model: database.definition().clone(),
+    })
+}
+
+/// Replaces the model in one step. Stored cells that still fit the new model are kept.
+#[utoipa::path(
+    put,
+    path = "/model",
+    request_body = ModelPut,
+    responses(
+        (status = OK, body = ModelUpdate),
+        (status = CONFLICT, body = ApiError, description = "Stale version, or a transaction holds a lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The definition is invalid")
+    )
+)]
+async fn put_model(
+    State(database): State<Shared>,
+    Body(request): Body<ModelPut>,
+) -> Result<Json<ModelUpdate>, ApiError> {
+    let mut database = database.write().unwrap();
+    Ok(Json(
+        database.update_model(request.based_on, request.model)?,
+    ))
 }
 
 /// One dimension, with each element's level, parents, children and attributes.
@@ -214,12 +289,11 @@ async fn get_dimension(
     Path(name): Path<String>,
 ) -> Result<Json<DimensionView>, ApiError> {
     let database = database.read().unwrap();
-    let dimension = database.model().dimension(&name).ok_or_else(|| ApiError {
-        status: StatusCode::NOT_FOUND,
-        code: "unknown_dimension",
-        message: format!("unknown dimension '{name}'"),
-        index: None,
-    })?;
+    let unknown = || {
+        let message = format!("unknown dimension '{name}'");
+        ApiError::new(StatusCode::NOT_FOUND, "unknown_dimension", message)
+    };
+    let dimension = database.model().dimension(&name).ok_or_else(unknown)?;
     Ok(Json(dimension.into()))
 }
 
@@ -235,7 +309,7 @@ async fn read_cells(
     Body(request): Body<ReadRequest>,
 ) -> Json<ReadResponse> {
     let database = database.read().unwrap();
-    let read = |cell: &CellRef| match database.read(cell) {
+    let read = |cell: &CellRef| match database.read(request.transaction, cell) {
         Ok(value) => CellResult::Value(value),
         Err(error) => CellResult::Error(error.into()),
     };
@@ -244,17 +318,82 @@ async fn read_cells(
     })
 }
 
-/// Writes a batch of leaf cells: all of them, or none if any is invalid.
+/// Writes a batch of leaf cells: all of them, or none if any is refused.
 #[utoipa::path(
     post,
     path = "/cells/write",
     request_body = WriteRequest,
-    responses((status = NO_CONTENT), (status = UNPROCESSABLE_ENTITY, body = ApiError))
+    responses(
+        (status = NO_CONTENT),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown transaction"),
+        (status = CONFLICT, body = ApiError, description = "Another transaction holds a lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "A write is invalid")
+    )
 )]
 async fn write_cells(
     State(database): State<Shared>,
     Body(request): Body<WriteRequest>,
 ) -> Result<StatusCode, ApiError> {
-    database.write().unwrap().write(&request.cells)?;
+    let mut database = database.write().unwrap();
+    database.write(request.transaction, &request.cells)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Begins a transaction. It is rolled back if left idle.
+#[utoipa::path(post, path = "/transactions", responses((status = CREATED, body = TransactionView)))]
+async fn begin_transaction(State(database): State<Shared>) -> (StatusCode, Json<TransactionView>) {
+    let transaction = database.write().unwrap().begin();
+    (StatusCode::CREATED, Json(TransactionView { transaction }))
+}
+
+/// Stores a transaction's pending writes in one step and ends it.
+#[utoipa::path(
+    post,
+    path = "/transactions/{id}/commit",
+    params(("id" = TransactionId, Path)),
+    responses((status = NO_CONTENT), (status = NOT_FOUND, body = ApiError))
+)]
+async fn commit_transaction(
+    State(database): State<Shared>,
+    Path(id): Path<TransactionId>,
+) -> Result<StatusCode, ApiError> {
+    database.write().unwrap().commit(id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Discards a transaction's pending writes and ends it.
+#[utoipa::path(
+    post,
+    path = "/transactions/{id}/rollback",
+    params(("id" = TransactionId, Path)),
+    responses((status = NO_CONTENT), (status = NOT_FOUND, body = ApiError))
+)]
+async fn rollback_transaction(
+    State(database): State<Shared>,
+    Path(id): Path<TransactionId>,
+) -> Result<StatusCode, ApiError> {
+    database.write().unwrap().rollback(id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Locks a cube or the whole server for a transaction until it ends.
+#[utoipa::path(
+    post,
+    path = "/transactions/{id}/locks",
+    params(("id" = TransactionId, Path)),
+    request_body = LockRequest,
+    responses(
+        (status = NO_CONTENT),
+        (status = NOT_FOUND, body = ApiError),
+        (status = CONFLICT, body = ApiError, description = "Another transaction holds a conflicting lock")
+    )
+)]
+async fn lock(
+    State(database): State<Shared>,
+    Path(id): Path<TransactionId>,
+    Body(request): Body<LockRequest>,
+) -> Result<StatusCode, ApiError> {
+    let mut database = database.write().unwrap();
+    database.lock(id, request.cube.as_deref(), request.mode)?;
     Ok(StatusCode::NO_CONTENT)
 }

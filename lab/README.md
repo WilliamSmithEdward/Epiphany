@@ -26,10 +26,16 @@ cargo run --release -p epiphany-server -- lab lab
 
 ## Using the page
 
-- Pick a cube, the dimension on rows and the dimension on columns. Every other dimension
-  gets a selector for the one element to slice by.
+- Pick a cube, then drag its dimensions between four zones:
+  - **Columns** and **Rows** lay the dimension's elements across the top or down the side.
+    Several dimensions in one zone are nested.
+  - **Filters** narrows the dimension to the one element you choose.
+  - **Unused** leaves the dimension at its top element, usually its grand total.
 - White cells are leaves: type a value and press Enter or leave the cell to write it.
 - Shaded cells are consolidations, calculated by the server on every refresh.
 - **Fill visible leaves** writes random numbers to every numeric leaf on screen in one batch.
+- **Begin** opens a transaction. Until you **Commit**, your writes are visible only on this
+  page; open the lab in a second tab to see that others do not see them. **Roll back**
+  discards them. A transaction left idle for five minutes is rolled back by the server.
 
 Data lives in memory only for now, so it is gone when the server stops.

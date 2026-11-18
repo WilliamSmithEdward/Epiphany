@@ -38,7 +38,7 @@
     },
     "/cells/write": {
       "post": {
-        "summary": "Writes a batch of leaf cells: all of them, or none if any is invalid.",
+        "summary": "Writes a batch of leaf cells: all of them, or none if any is refused.",
         "operationId": "write_cells",
         "requestBody": {
           "content": {
@@ -52,7 +52,28 @@
         },
         "responses": {
           "204": {},
+          "404": {
+            "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another transaction holds a lock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "422": {
+            "description": "A write is invalid",
             "content": {
               "application/json": {
                 "schema": {
@@ -103,14 +124,180 @@
     },
     "/model": {
       "get": {
-        "summary": "The model definition.",
+        "summary": "The model definition and its version.",
         "operationId": "get_model",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ModelDef"
+                  "$ref": "#/components/schemas/ModelView"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "Replaces the model in one step. Stored cells that still fit the new model are kept.",
+        "operationId": "put_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelUpdate"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale version, or a transaction holds a lock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The definition is invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions": {
+      "post": {
+        "summary": "Begins a transaction. It is rolled back if left idle.",
+        "operationId": "begin_transaction",
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions/{id}/commit": {
+      "post": {
+        "summary": "Stores a transaction's pending writes in one step and ends it.",
+        "operationId": "commit_transaction",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/u64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions/{id}/locks": {
+      "post": {
+        "summary": "Locks a cube or the whole server for a transaction until it ends.",
+        "operationId": "lock",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/u64"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another transaction holds a conflicting lock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions/{id}/rollback": {
+      "post": {
+        "summary": "Discards a transaction's pending writes and ends it.",
+        "operationId": "rollback_transaction",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/u64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {},
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -406,6 +593,33 @@
           }
         }
       },
+      "LockMode": {
+        "type": "string",
+        "description": "A lock a client may ask for.",
+        "enum": [
+          "shared",
+          "exclusive"
+        ]
+      },
+      "LockRequest": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "cube": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The cube to lock. Without it the whole server is locked."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/LockMode"
+          }
+        },
+        "additionalProperties": false
+      },
       "ModelDef": {
         "type": "object",
         "properties": {
@@ -424,6 +638,65 @@
         },
         "additionalProperties": false
       },
+      "ModelPut": {
+        "type": "object",
+        "required": [
+          "based_on",
+          "model"
+        ],
+        "properties": {
+          "based_on": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The version the new definition was edited from. The update is refused if it is no\nlonger the current version.",
+            "minimum": 0
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelDef"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ModelUpdate": {
+        "type": "object",
+        "description": "The outcome of a model update.",
+        "required": [
+          "version",
+          "dropped_cells"
+        ],
+        "properties": {
+          "dropped_cells": {
+            "type": "integer",
+            "description": "Stored cells that have no place in the new model and were discarded.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The new model version.",
+            "minimum": 0
+          }
+        }
+      },
+      "ModelView": {
+        "type": "object",
+        "description": "The model definition and its version.",
+        "required": [
+          "version",
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "$ref": "#/components/schemas/ModelDef"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Counts up by one with every update.",
+            "minimum": 0
+          }
+        }
+      },
       "ReadRequest": {
         "type": "object",
         "required": [
@@ -435,6 +708,17 @@
             "items": {
               "$ref": "#/components/schemas/CellRef"
             }
+          },
+          "transaction": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/u64",
+                "description": "Read within this transaction, seeing its pending writes."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -454,6 +738,17 @@
           }
         }
       },
+      "TransactionView": {
+        "type": "object",
+        "required": [
+          "transaction"
+        ],
+        "properties": {
+          "transaction": {
+            "$ref": "#/components/schemas/u64"
+          }
+        }
+      },
       "WriteRequest": {
         "type": "object",
         "required": [
@@ -465,9 +760,25 @@
             "items": {
               "$ref": "#/components/schemas/CellWrite"
             }
+          },
+          "transaction": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/u64",
+                "description": "Hold the writes in this transaction until it commits. Without it they are committed\nat once."
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
+      },
+      "u64": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
       }
     }
   }

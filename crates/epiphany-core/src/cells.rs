@@ -8,7 +8,9 @@ use crate::Value;
 use crate::model::{Cube, Element, ElementId, ElementType, Model};
 
 /// One element per dimension of a cube, in the cube's dimension order.
-type Coordinate = Box<[ElementId]>;
+pub(crate) type Coordinate = Box<[ElementId]>;
+/// Values not yet stored, by the coordinate they will be written to.
+pub(crate) type Writes = FxHashMap<Coordinate, Value>;
 /// The leaves of one element and the weight of each, ordered by id.
 type Leaves<'a> = &'a [(ElementId, f64)];
 
@@ -40,6 +42,47 @@ impl Cells {
             Some(n) if n <= self.numbers.len() => self.sum_combinations(&leaves),
             _ => self.sum_stored(&leaves),
         })
+    }
+
+    /// Reads a cell as it would be once the pending writes were stored.
+    pub(crate) fn read_with(
+        &self,
+        model: &Model,
+        cube: &Cube,
+        at: &[ElementId],
+        pending: &Writes,
+    ) -> Value {
+        if let Some(value) = pending.get(at) {
+            return value.clone();
+        }
+        let stored = match self.read(model, cube, at) {
+            Value::Number(stored) => stored,
+            text => return text,
+        };
+        let leaves: Vec<Leaves> = elements(model, cube, at)
+            .map(|e| e.leaves.as_slice())
+            .collect();
+        let change = |(leaf, value): (&Coordinate, &Value)| {
+            let Value::Number(number) = value else {
+                return None;
+            };
+            let before = self.numbers.get(leaf).copied().unwrap_or(0.0);
+            Some(weight(&leaves, leaf)? * (number - before))
+        };
+        Value::Number(stored + pending.iter().filter_map(change).sum::<f64>())
+    }
+
+    /// Every stored cell and its value.
+    pub(crate) fn into_entries(self) -> impl Iterator<Item = (Coordinate, Value)> {
+        let numbers = self
+            .numbers
+            .into_iter()
+            .map(|(at, n)| (at, Value::Number(n)));
+        let texts = self
+            .texts
+            .into_iter()
+            .map(|(at, text)| (at, Value::Text(text)));
+        numbers.chain(texts)
     }
 
     /// Writes a leaf cell. Writing zero or an empty string clears it.
@@ -93,17 +136,19 @@ impl Cells {
 
     /// Sums a consolidation by weighing every stored cell.
     fn sum_stored(&self, leaves: &[Leaves]) -> f64 {
-        let weight = |at: &Coordinate| {
-            at.iter().zip(leaves).try_fold(1.0, |weight, (id, l)| {
-                let position = l.binary_search_by_key(id, |&(leaf, _)| leaf).ok()?;
-                Some(weight * l[position].1)
-            })
-        };
         self.numbers
             .iter()
-            .filter_map(|(at, value)| Some(weight(at)? * value))
+            .filter_map(|(at, value)| Some(weight(leaves, at)? * value))
             .sum()
     }
+}
+
+/// The weight a leaf cell carries in a consolidation, if it is part of it.
+fn weight(leaves: &[Leaves], at: &[ElementId]) -> Option<f64> {
+    at.iter().zip(leaves).try_fold(1.0, |weight, (id, l)| {
+        let position = l.binary_search_by_key(id, |&(leaf, _)| leaf).ok()?;
+        Some(weight * l[position].1)
+    })
 }
 
 /// Resolves one element name or alias per dimension of the cube into a coordinate.
