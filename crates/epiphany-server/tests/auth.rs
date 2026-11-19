@@ -8,7 +8,7 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use common::Home;
-use epiphany_server::{Auth, Refusal, Role, app, app_with, openapi, set_user};
+use epiphany_server::{Auth, Grants, Refusal, Role, app, app_with, openapi, set_user};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -16,10 +16,15 @@ use tower::ServiceExt;
 const NAME: &str = "ada";
 const PASSWORD: &str = "test-only-9f2c41";
 
+/// A role that holds on every cube.
+fn role(role: Role) -> Grants {
+    Grants::new(role, Default::default())
+}
+
 /// A server directory with one user, and the application serving it.
 fn secured(name: &str, idle: Option<Duration>) -> (Home, Router) {
     let home = Home::new(name);
-    set_user(&home.0, NAME, PASSWORD, Role::Admin).unwrap();
+    set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();
     let mut auth = Auth::load(&home.0)
         .unwrap()
         .expect("the directory has a user");
@@ -129,7 +134,7 @@ async fn a_user_may_do_only_what_the_role_allows() {
         ("writer", Role::Write),
         ("admin", Role::Admin),
     ] {
-        set_user(&home.0, name, PASSWORD, role).unwrap();
+        set_user(&home.0, name, PASSWORD, &self::role(role)).unwrap();
     }
     let app = app_with(home.open(), Auth::load(&home.0).unwrap());
     let mut tokens = Vec::new();
@@ -191,7 +196,7 @@ async fn a_user_may_do_only_what_the_role_allows() {
 #[tokio::test]
 async fn too_many_wrong_passwords_pause_a_name() {
     let home = Home::new("pause");
-    set_user(&home.0, NAME, PASSWORD, Role::Admin).unwrap();
+    set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();
     let mut auth = Auth::load(&home.0).unwrap().unwrap();
     auth.set_pause(Duration::from_secs(3));
     let app = app_with(home.open(), Some(auth));
@@ -276,8 +281,8 @@ async fn a_server_without_users_asks_for_no_sign_in() {
 #[test]
 fn passwords_are_stored_only_as_salted_hashes() {
     let home = Home::new("users");
-    set_user(&home.0, NAME, PASSWORD, Role::Admin).unwrap();
-    set_user(&home.0, "Grace", PASSWORD, Role::Read).unwrap();
+    set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();
+    set_user(&home.0, "Grace", PASSWORD, &role(Role::Read)).unwrap();
     let stored = fs::read_to_string(home.path("users.json")).unwrap();
     assert!(!stored.contains(PASSWORD));
     let users: Value = serde_json::from_str(&stored).unwrap();
@@ -292,23 +297,143 @@ fn passwords_are_stored_only_as_salted_hashes() {
     assert_ne!(hashes[0], hashes[1]);
 
     // Setting a user again changes the password instead of adding a second user.
-    set_user(&home.0, "ADA", "another-test-only-77", Role::Write).unwrap();
+    set_user(&home.0, "ADA", "another-test-only-77", &role(Role::Write)).unwrap();
     let auth = Auth::load(&home.0).unwrap().unwrap();
-    assert_eq!(auth.sign_in(NAME, PASSWORD), Err(Refusal::Wrong));
-    let role = |name: &str, password: &str| auth.sign_in(name, password).map(|(_, role)| role);
-    assert_eq!(role(NAME, "another-test-only-77"), Ok(Role::Write));
-    assert_eq!(role("grace", PASSWORD), Ok(Role::Read));
-    assert!(set_user(&home.0, " ", PASSWORD, Role::Admin).is_err());
-    assert!(set_user(&home.0, NAME, "", Role::Admin).is_err());
+    assert_eq!(auth.sign_in(NAME, PASSWORD).err(), Some(Refusal::Wrong));
+    let held = |name: &str, password: &str| {
+        let signed_in = auth.sign_in(name, password);
+        signed_in.map(|(_, grants)| grants.role())
+    };
+    assert_eq!(held(NAME, "another-test-only-77"), Ok(Role::Write));
+    assert_eq!(held("grace", PASSWORD), Ok(Role::Read));
+    assert!(set_user(&home.0, " ", PASSWORD, &role(Role::Admin)).is_err());
+    assert!(set_user(&home.0, NAME, "", &role(Role::Admin)).is_err());
 
     // A user recorded before there were roles may do everything, as then.
     let old = json!([{ "name": "Old", "password": hashes[0] }]);
     fs::write(home.path("users.json"), old.to_string()).unwrap();
     let auth = Auth::load(&home.0).unwrap().unwrap();
     assert_eq!(
-        auth.sign_in("old", PASSWORD).map(|(_, role)| role),
+        auth.sign_in("old", PASSWORD)
+            .map(|(_, grants)| grants.role()),
         Ok(Role::Admin)
     );
+}
+
+#[tokio::test]
+async fn a_cube_may_have_a_role_of_its_own() {
+    let home = Home::new("cubes");
+    let plan = json!({ "name": "Plan", "dimensions": ["Entity", "Period"] });
+    fs::write(home.path("model/cubes/plan.json"), plan.to_string()).unwrap();
+    // A clerk reads everything and writes the plan; a guest sees the ledger and nothing else.
+    let on = |cube: &str, role: Role| [(cube.to_owned(), role)].into_iter().collect();
+    let clerk = Grants::new(Role::Read, on("Plan", Role::Write));
+    let guest = Grants::new(Role::None, on("general ledger", Role::Read));
+    set_user(&home.0, "clerk", PASSWORD, &clerk).unwrap();
+    set_user(&home.0, "guest", PASSWORD, &guest).unwrap();
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+
+    let (_, body) = sign_in(&app, "guest", PASSWORD).await;
+    assert_eq!(body["role"], "none");
+    assert_eq!(body["cubes"], json!({ "general ledger": "read" }));
+    let guest = body["token"].as_str().unwrap().to_owned();
+    let (_, body) = sign_in(&app, "clerk", PASSWORD).await;
+    let clerk = body["token"].as_str().unwrap().to_owned();
+
+    let ledger = json!({ "cube": "General Ledger", "at": ["Rent", "UK", "Jan", "Actual"] });
+    let planned = json!({ "cube": "PLAN", "at": ["UK", "Jan"] });
+    let value = |cell: &Value, value: f64| {
+        let mut cell = cell.clone();
+        cell["value"] = json!(value);
+        cell
+    };
+    let post = |token: &str, uri: &str, body: Value| {
+        let (app, token, uri) = (app.clone(), token.to_owned(), uri.to_owned());
+        async move { send(&app, "POST", &uri, Some(&token), Some(body)).await }
+    };
+
+    // Writing: the plan, not the ledger; a batch that touches both is refused whole.
+    let (status, _, _) = post(
+        &clerk,
+        "/cells/write",
+        json!({ "cells": [value(&planned, 5.0)] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let both = json!({ "cells": [value(&planned, 9.0), value(&ledger, 9.0)] });
+    let (status, _, body) = post(&clerk, "/cells/write", both).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "forbidden");
+    assert_eq!(body["index"], 1);
+    assert_eq!(
+        body["message"],
+        "this needs the role 'write' on cube 'General Ledger'"
+    );
+    let spread = json!({ "spread": { "cube": "General Ledger",
+        "at": ["Rent", "Total Entity", "Jan", "Actual"], "value": 10, "method": "equal" } });
+    let (status, _, _) = post(&clerk, "/cells/spread", spread).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let cells = json!({ "cells": [planned, ledger] });
+    let (status, _, body) = post(&clerk, "/cells/read", cells.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({ "cells": [{ "value": 5.0 }, { "value": 0.0 }] })
+    );
+
+    // Locks follow the cube; locking the server takes the role on everything.
+    let (_, _, body) = send(&app, "POST", "/transactions", Some(&clerk), None).await;
+    let locks = format!("/transactions/{}/locks", body["transaction"]);
+    for (cube, expected) in [
+        (json!("Plan"), StatusCode::NO_CONTENT),
+        (json!("General Ledger"), StatusCode::FORBIDDEN),
+        (Value::Null, StatusCode::FORBIDDEN),
+    ] {
+        let lock = json!({ "cube": cube, "mode": "exclusive" });
+        let (status, _, _) = post(&clerk, &locks, lock).await;
+        assert_eq!(status, expected, "{cube}");
+    }
+    let (status, _, _) = send(&app, "POST", "/transactions", Some(&guest), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Reading: each cell answers for its own cube.
+    let (status, _, body) = post(&guest, "/cells/read", cells.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cells"][0]["error"]["code"], "forbidden");
+    assert_eq!(body["cells"][1], json!({ "value": 0.0 }));
+    let (_, _, body) = post(&guest, "/cells/explain", cells).await;
+    assert_eq!(body["cells"][0]["error"]["code"], "forbidden");
+    assert_eq!(body["cells"][1]["cell"]["value"], 0.0);
+    // A query is refused for the cube it selects from, and for any it looks cells up in.
+    let select =
+        |cube: &str| json!({ "mdx": format!("SELECT {{[Entity].[UK]}} ON COLUMNS FROM [{cube}]") });
+    let (status, _, _) = post(&guest, "/mdx", select("General Ledger")).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, body) = post(&guest, "/mdx", select("Plan")).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["message"], "cube 'Plan' may not be read");
+    let lookup = "WITH MEMBER [Account].[X] AS LookupCube('Plan', [Entity].[UK], [Period].[Jan]) \
+                  SELECT {[Account].[X]} ON COLUMNS FROM [General Ledger]";
+    let (status, _, body) = post(&guest, "/mdx", json!({ "mdx": lookup })).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["message"], "cube 'Plan' may not be read");
+    let (status, _, body) = post(&clerk, "/mdx", json!({ "mdx": lookup })).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cells"], json!([5.0]));
+    for (cube, expected) in [
+        ("Plan", StatusCode::FORBIDDEN),
+        ("General%20Ledger", StatusCode::OK),
+    ] {
+        let uri = format!("/cubes/{cube}/feeders/check");
+        let (status, _, _) = send(&app, "GET", &uri, Some(&guest), None).await;
+        assert_eq!(status, expected, "{cube}");
+    }
+    // The model itself is open to anyone who may read something, and changed only by admins.
+    let (status, _, model) = send(&app, "GET", "/model", Some(&guest), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let update = json!({ "based_on": model["version"], "model": model["model"] });
+    let (status, _, _) = send(&app, "PUT", "/model", Some(&clerk), Some(update)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]

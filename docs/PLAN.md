@@ -304,9 +304,19 @@ practice that means:
   - A name given five wrong passwords running is refused for a minute whatever password
     comes with it, with 429 and how long to wait. Names that are not users are counted the
     same way, so the refusal does not tell which names exist.
-- Not done: permissions by cube or by cell, TLS (put the server behind a proxy that
+  - A user may have another role on a cube in place of the one that holds elsewhere:
+    `none`, `read` or `write`. Reads answer for each cell's own cube; a batch of writes
+    is refused whole, with the position of the write that is not allowed; a query is
+    refused for the cube it selects from and for any it looks cells up in; a lock follows
+    its cube, and a lock on the server takes the role that holds everywhere.
+  - **Decision:** what the model's rules, feeders and saved views read is the model's
+    business, not the user's. A rule may read a cube that the user reading its result may
+    not, as a view may; only what the user asks for directly is checked. The model and
+    its dimensions are open to anyone who may read any cube, and changed only by a user
+    whose role everywhere is `admin`.
+- Not done: permissions by cell or by element, TLS (put the server behind a proxy that
   provides it before using it across a network), and tying a transaction to the session
-  that began it. Anyone who knows a name can keep its user out by giving wrong passwords;
+  that began it. Transaction ids are fifty-three random bits, so the last adds little. Anyone who knows a name can keep its user out by giving wrong passwords;
   the pause is short so that this is a nuisance and no more.
 
 ## 4. PAfE adapter

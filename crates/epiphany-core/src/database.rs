@@ -396,10 +396,36 @@ impl Database {
         transaction: Option<TransactionId>,
         text: &str,
     ) -> Result<QueryResult, Error> {
+        self.query_as(transaction, text, &|_| true)
+    }
+
+    /// Answers an MDX query for someone who may read only some cubes: `may_read` says which,
+    /// by name. The query's own cube and any it looks cells up in must be among them. What
+    /// the model's rules read is the model's business and is not asked about.
+    pub fn query_as(
+        &self,
+        transaction: Option<TransactionId>,
+        text: &str,
+        may_read: &dyn Fn(&str) -> bool,
+    ) -> Result<QueryResult, Error> {
         let query = mdx::parse(text)?;
         let cube = self.cube_id(&query.cube)?;
+        let refusal =
+            |cube: usize| format!("cube '{}' may not be read", self.model.cubes()[cube].name);
+        let readable: Vec<bool> = self
+            .model
+            .cubes()
+            .iter()
+            .map(|cube| may_read(&cube.name))
+            .collect();
+        if !readable[cube] {
+            return Err(Error::Forbidden(refusal(cube)));
+        }
         let reader = self.reader(transaction)?;
-        let read = |cube: usize, at: &[ElementId]| reader.read(cube, at);
+        let read = |cube: usize, at: &[ElementId]| match readable[cube] {
+            true => reader.read(cube, at),
+            false => Err(MdxError::new(refusal(cube))),
+        };
         let expect = |cells: &[&[ElementId]]| reader.expect(cube, cells);
         Ok(query.evaluate(&self.model, cube, &read, &expect)?)
     }

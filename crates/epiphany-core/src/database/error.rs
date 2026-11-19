@@ -32,6 +32,8 @@ pub enum Error {
     Rule(String),
     /// Something asked for by name does not exist; the text says what.
     NotFound(String),
+    /// The caller may not do this; the text says what.
+    Forbidden(String),
 }
 
 impl Error {
@@ -47,6 +49,7 @@ impl Error {
             Self::Mdx(_) => "invalid_mdx",
             Self::Rule(_) => "rule_failed",
             Self::NotFound(_) => "not_found",
+            Self::Forbidden(_) => "forbidden",
         }
     }
 }
@@ -65,7 +68,7 @@ impl fmt::Display for Error {
             Self::Storage(reason) => write!(f, "the change could not be stored: {reason}"),
             Self::Mdx(error) => error.fmt(f),
             Self::Rule(reason) => reason.fmt(f),
-            Self::NotFound(what) => what.fmt(f),
+            Self::NotFound(what) | Self::Forbidden(what) => what.fmt(f),
         }
     }
 }

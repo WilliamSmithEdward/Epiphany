@@ -183,7 +183,9 @@ namespace Epiphany.Excel
             {
                 var reply = await Send(HttpMethod.Post, "cells/write", Body(cells, true)).ConfigureAwait(false);
                 var refused = Json.Field(reply.Body, "index");
-                if (reply.Status != 422 || refused == null)
+                // 422 and 403 with a position refuse the one write there: it is invalid, or it
+                // is to a cube the user may not write.
+                if ((reply.Status != 422 && reply.Status != 403) || refused == null)
                 {
                     // 403: the user may read but not write, so every one of them is refused.
                     var failed = reply.Status == 403 ? KeyError : Unavailable;

@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use axum::Extension;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRef, FromRequest, Path, Query, Request, State};
 use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
@@ -22,7 +23,7 @@ use epiphany_core::model::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{Auth, Refusal, Role};
+use crate::auth::{Auth, Grants, Refusal, Role};
 use utoipa::openapi::RefOr;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
 use utoipa::{IntoParams, OpenApi, ToSchema};
@@ -110,9 +111,7 @@ fn secured(mut contract: utoipa::openapi::OpenApi) -> utoipa::openapi::OpenApi {
             };
             let responses = &mut operation.responses.responses;
             responses.insert("401".to_owned(), refusal.clone());
-            if needed(&method, path) > Role::Read {
-                responses.insert("403".to_owned(), forbidden.clone());
-            }
+            responses.insert("403".to_owned(), forbidden.clone());
         }
     }
     contract
@@ -177,20 +176,32 @@ fn needed(method: &Method, path: &str) -> Role {
 
 /// Lets a request through if the server has no users, if it is a sign-in, or if it carries
 /// the token of a live session whose user may do what the route does.
-async fn require_session(State(state): State<AppState>, request: Request, next: Next) -> Response {
+async fn require_session(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let signing_in = request.method() == Method::POST && request.uri().path() == "/sessions";
     let Some(auth) = state.auth.as_ref().filter(|_| !signing_in) else {
+        // A server without users lets everyone do everything.
+        request.extensions_mut().insert(Arc::new(Grants::default()));
         return next.run(request).await;
     };
-    let role = bearer(request.headers()).and_then(|token| auth.admits(token));
+    let grants = bearer(request.headers()).and_then(|token| auth.admits(token));
     let needed = needed(request.method(), request.uri().path());
-    match role {
-        Some(role) if role >= needed => return next.run(request).await,
-        Some(_) => {
-            let message = format!("this needs a user with the role '{needed:?}'").to_lowercase();
+    if let Some(grants) = grants {
+        // The model belongs to no cube, so changing it takes the user's own role. Anything
+        // else is let in by a role on any cube; the route then asks about the cube it names.
+        let held = match needed {
+            Role::Admin => grants.role(),
+            _ => grants.most(),
+        };
+        if held < needed {
+            let message = format!("this needs a user with the role '{needed}'");
             return ApiError::new(StatusCode::FORBIDDEN, "forbidden", message).into_response();
         }
-        None => {}
+        request.extensions_mut().insert(grants);
+        return next.run(request).await;
     }
     let refusal = ApiError::new(
         StatusCode::UNAUTHORIZED,
@@ -216,6 +227,8 @@ struct Session {
     idle_seconds: u64,
     /// What the user may do.
     role: Role,
+    /// The cubes on which the user has another role in place of that one.
+    cubes: BTreeMap<String, Role>,
 }
 
 /// Signs in, starting a session.
@@ -243,11 +256,12 @@ async fn sign_in(State(state): State<AppState>, Body(request): Body<SignIn>) -> 
     let checked =
         tokio::task::spawn_blocking(move || auth.sign_in(&request.name, &request.password));
     match checked.await.unwrap_or(Err(Refusal::Wrong)) {
-        Ok((token, role)) => {
+        Ok((token, grants)) => {
             let session = Session {
                 token,
                 idle_seconds,
-                role,
+                role: grants.role(),
+                cubes: grants.cubes().clone(),
             };
             (StatusCode::CREATED, Json(session)).into_response()
         }
@@ -315,6 +329,7 @@ impl From<Error> for ApiError {
             | Error::Mdx(_)
             | Error::Rule(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Error::UnknownTransaction(_) | Error::NotFound(_) => StatusCode::NOT_FOUND,
+            Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::Locked(_) | Error::StaleVersion { .. } => StatusCode::CONFLICT,
             Error::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -776,6 +791,20 @@ async fn delete_cube(
     })
 }
 
+/// The grants the session layer put with the request.
+type Held = Extension<Arc<Grants>>;
+
+/// Refuses unless the user has at least a role on a cube.
+fn allow(grants: &Grants, cube: &str, needed: Role) -> Result<(), ApiError> {
+    match grants.on(cube) >= needed {
+        true => Ok(()),
+        false => {
+            let message = format!("this needs the role '{needed}' on cube '{cube}'");
+            Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden", message))
+        }
+    }
+}
+
 /// Reads a batch of cells. A cell that cannot be read reports its own error.
 #[utoipa::path(
     post,
@@ -788,16 +817,23 @@ async fn delete_cube(
 )]
 async fn read_cells(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Body(request): Body<ReadRequest>,
 ) -> Json<ReadResponse> {
     let database = database.read().unwrap();
-    let result = |read: Result<Scalar, Error>| match read {
+    let result = |(cell, read): (&CellRef, Result<Scalar, Error>)| match allow(
+        &grants,
+        &cell.cube,
+        Role::Read,
+    )
+    .and_then(|()| Ok(read?))
+    {
         Ok(value) => CellResult::Value(value),
-        Err(error) => CellResult::Error(error.into()),
+        Err(error) => CellResult::Error(error),
     };
     let cells = database.read_many(request.transaction, &request.cells);
     Json(ReadResponse {
-        cells: cells.into_iter().map(result).collect(),
+        cells: request.cells.iter().zip(cells).map(result).collect(),
     })
 }
 
@@ -815,14 +851,18 @@ async fn read_cells(
 )]
 async fn explain_cells(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Body(request): Body<ExplainRequest>,
 ) -> Json<ExplainResponse> {
     let database = database.read().unwrap();
-    let explain =
-        |cell: &CellRef| match database.explain(request.transaction, cell, request.feeders) {
+    let explain = |cell: &CellRef| {
+        let explained = allow(&grants, &cell.cube, Role::Read)
+            .and_then(|()| Ok(database.explain(request.transaction, cell, request.feeders)?));
+        match explained {
             Ok(cell) => ExplainResult::Cell(cell),
-            Err(error) => ExplainResult::Error(error.into()),
-        };
+            Err(error) => ExplainResult::Error(error),
+        }
+    };
     Json(ExplainResponse {
         cells: request.cells.iter().map(explain).collect(),
     })
@@ -843,8 +883,15 @@ async fn explain_cells(
 )]
 async fn write_cells(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Body(request): Body<WriteRequest>,
 ) -> Result<StatusCode, ApiError> {
+    for (index, cell) in request.cells.iter().enumerate() {
+        allow(&grants, &cell.cube, Role::Write).map_err(|refusal| ApiError {
+            index: Some(index),
+            ..refusal
+        })?;
+    }
     let mut database = database.write().unwrap();
     database.write(request.transaction, &request.cells)?;
     Ok(StatusCode::NO_CONTENT)
@@ -866,8 +913,10 @@ async fn write_cells(
 )]
 async fn spread_cells(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Body(request): Body<SpreadRequest>,
 ) -> Result<Json<SpreadResult>, ApiError> {
+    allow(&grants, &request.spread.cube, Role::Write)?;
     let mut database = database.write().unwrap();
     let written = database.spread(request.transaction, &request.spread)?;
     Ok(Json(SpreadResult { written }))
@@ -886,10 +935,16 @@ async fn spread_cells(
 )]
 async fn query(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Body(request): Body<QueryRequest>,
 ) -> Result<Json<QueryResult>, ApiError> {
     let database = database.read().unwrap();
-    Ok(Json(database.query(request.transaction, &request.mdx)?))
+    let may_read = |cube: &str| grants.on(cube) >= Role::Read;
+    Ok(Json(database.query_as(
+        request.transaction,
+        &request.mdx,
+        &may_read,
+    )?))
 }
 
 /// Runs a view saved with a cube.
@@ -905,8 +960,11 @@ async fn query(
 )]
 async fn run_view(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Path((cube, view)): Path<(String, String)>,
 ) -> Result<Json<QueryResult>, ApiError> {
+    // A view is part of the model, so like a rule it may read what its cube's readers may not.
+    allow(&grants, &cube, Role::Read)?;
     Ok(Json(database.read().unwrap().view(None, &cube, &view)?))
 }
 
@@ -925,8 +983,10 @@ async fn run_view(
 )]
 async fn check_feeders(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Path(cube): Path<String>,
 ) -> Result<Json<FeederCheck>, ApiError> {
+    allow(&grants, &cube, Role::Read)?;
     let unfed = database.read().unwrap().unfed(&cube, 100)?;
     Ok(Json(FeederCheck { unfed }))
 }
@@ -990,9 +1050,19 @@ async fn rollback_transaction(
 )]
 async fn lock(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Path(id): Path<TransactionId>,
     Body(request): Body<LockRequest>,
 ) -> Result<StatusCode, ApiError> {
+    match &request.cube {
+        Some(cube) => allow(&grants, cube, Role::Write)?,
+        // Locking the server holds up every cube, so it takes the user's own role.
+        None if grants.role() >= Role::Write => {}
+        None => {
+            let message = "locking the server needs a user with the role 'write'".to_owned();
+            return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden", message));
+        }
+    }
     let mut database = database.write().unwrap();
     database.lock(id, request.cube.as_deref(), request.mode)?;
     Ok(StatusCode::NO_CONTENT)

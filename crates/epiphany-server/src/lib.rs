@@ -5,5 +5,5 @@ mod auth;
 mod storage;
 
 pub use api::{app, app_with, openapi, with_lab};
-pub use auth::{Auth, Refusal, Role, set_user};
+pub use auth::{Auth, Grants, Refusal, Role, set_user};
 pub use storage::{load_model, open};

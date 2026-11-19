@@ -8,11 +8,12 @@
 //! A name that has been given the wrong password several times running is refused for a
 //! while whatever password comes with it, so that passwords cannot be tried by the thousand.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
+use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use argon2::Argon2;
@@ -37,6 +38,8 @@ const PAUSE: Duration = Duration::from_secs(60);
 )]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
+    /// Nothing.
+    None,
     /// Read cells, the model and its dimensions, and run queries.
     Read,
     /// Also write cells, spread values and use transactions and locks.
@@ -51,12 +54,74 @@ impl FromStr for Role {
 
     fn from_str(text: &str) -> Result<Self, String> {
         match text.to_lowercase().as_str() {
+            "none" => Ok(Self::None),
             "read" => Ok(Self::Read),
             "write" => Ok(Self::Write),
             "admin" => Ok(Self::Admin),
-            _ => Err(format!("'{text}' is not a role; use read, write or admin")),
+            _ => Err(format!(
+                "'{text}' is not a role; use none, read, write or admin"
+            )),
         }
     }
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::None => "none",
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Admin => "admin",
+        })
+    }
+}
+
+/// What a signed-in user may do: a role, and for some cubes another role in its place.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Grants {
+    role: Role,
+    /// The cubes with a role of their own, by name as given.
+    cubes: BTreeMap<String, Role>,
+    /// The same, by name in lower case without spaces.
+    found: HashMap<String, Role>,
+}
+
+impl Grants {
+    pub fn new(role: Role, cubes: BTreeMap<String, Role>) -> Self {
+        let found = cubes
+            .iter()
+            .map(|(name, &role)| (key(name), role))
+            .collect();
+        Self { role, cubes, found }
+    }
+
+    /// The role that holds wherever a cube has none of its own. Changing the model takes
+    /// this one to be admin, whatever any cube says.
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    pub fn cubes(&self) -> &BTreeMap<String, Role> {
+        &self.cubes
+    }
+
+    /// The role on one cube.
+    pub fn on(&self, cube: &str) -> Role {
+        self.found.get(&key(cube)).copied().unwrap_or(self.role)
+    }
+
+    /// The highest role held anywhere.
+    pub fn most(&self) -> Role {
+        self.cubes.values().copied().fold(self.role, Role::max)
+    }
+}
+
+/// Cube names are compared as the engine compares them: ignoring case and spaces.
+fn key(name: &str) -> String {
+    name.chars()
+        .filter(|character| !character.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 #[derive(Serialize, Deserialize)]
@@ -67,6 +132,9 @@ struct User {
     /// A user recorded before there were roles may do everything, as then.
     #[serde(default)]
     role: Role,
+    /// Cubes on which the user has another role in place of that one.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    cubes: BTreeMap<String, Role>,
 }
 
 /// Why a sign-in was refused.
@@ -80,14 +148,14 @@ pub enum Refusal {
 
 #[derive(Debug)]
 struct Session {
-    role: Role,
+    grants: Arc<Grants>,
     used: Instant,
 }
 
 #[derive(Debug)]
 pub struct Auth {
-    /// Password hash and role by user name in lower case.
-    users: HashMap<String, (String, Role)>,
+    /// Password hash and grants by user name in lower case.
+    users: HashMap<String, (String, Arc<Grants>)>,
     sessions: Mutex<HashMap<String, Session>>,
     /// Wrong passwords running and when the last was given, by name in lower case.
     failures: Mutex<HashMap<String, (u32, Instant)>>,
@@ -100,9 +168,12 @@ impl Auth {
     /// for no sign-in.
     pub fn load(directory: &Path) -> Result<Option<Self>, Box<dyn Error>> {
         let users: Vec<User> = read_json(&directory.join(FILE))?.unwrap_or_default();
-        let users: HashMap<String, (String, Role)> = users
+        let users: HashMap<String, (String, Arc<Grants>)> = users
             .into_iter()
-            .map(|user| (user.name.to_lowercase(), (user.password, user.role)))
+            .map(|user| {
+                let grants = Arc::new(Grants::new(user.role, user.cubes));
+                (user.name.to_lowercase(), (user.password, grants))
+            })
             .collect();
         Ok((!users.is_empty()).then(|| Self {
             users,
@@ -129,7 +200,7 @@ impl Auth {
 
     /// Starts a session for a user who gives the right password, and returns its token and
     /// what the user may do.
-    pub fn sign_in(&self, name: &str, password: &str) -> Result<(String, Role), Refusal> {
+    pub fn sign_in(&self, name: &str, password: &str) -> Result<(String, Arc<Grants>), Refusal> {
         let name = name.to_lowercase();
         let now = Instant::now();
         {
@@ -155,8 +226,8 @@ impl Auth {
                 .verify_password(password.as_bytes(), &hash)
                 .is_ok()
         });
-        let role = match known {
-            Some(&(_, role)) if right => role,
+        let grants = match known {
+            Some((_, grants)) if right => Arc::clone(grants),
             _ => {
                 let mut failures = self.failures.lock().unwrap();
                 let (count, last) = failures.entry(name).or_insert((0, now));
@@ -170,19 +241,23 @@ impl Auth {
         let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         let mut sessions = self.sessions.lock().unwrap();
         sessions.retain(|_, session| now.duration_since(session.used) <= self.idle);
-        sessions.insert(token.clone(), Session { role, used: now });
-        Ok((token, role))
+        let session = Session {
+            grants: Arc::clone(&grants),
+            used: now,
+        };
+        sessions.insert(token.clone(), session);
+        Ok((token, grants))
     }
 
     /// What the user of a live session may do; the session then counts as used just now.
     /// Nothing if the token belongs to no live session.
-    pub fn admits(&self, token: &str) -> Option<Role> {
+    pub fn admits(&self, token: &str) -> Option<Arc<Grants>> {
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
         match sessions.get_mut(token) {
             Some(session) if now.duration_since(session.used) <= self.idle => {
                 session.used = now;
-                Some(session.role)
+                Some(Arc::clone(&session.grants))
             }
             _ => {
                 sessions.remove(token);
@@ -201,12 +276,12 @@ fn hash(password: &str) -> Result<String, Box<dyn Error>> {
     Ok(hash.map_err(|error| error.to_string())?.to_string())
 }
 
-/// Adds a user to a directory, or changes the password and role of one it already has.
+/// Adds a user to a directory, or changes the password and grants of one it already has.
 pub fn set_user(
     directory: &Path,
     name: &str,
     password: &str,
-    role: Role,
+    grants: &Grants,
 ) -> Result<(), Box<dyn Error>> {
     if name.trim().is_empty() || password.is_empty() {
         return Err("a user needs a name and a password".into());
@@ -217,7 +292,8 @@ pub fn set_user(
     users.push(User {
         name: name.trim().to_owned(),
         password: hash(password)?,
-        role,
+        role: grants.role(),
+        cubes: grants.cubes().clone(),
     });
     Ok(write_json(&path, &users)?)
 }

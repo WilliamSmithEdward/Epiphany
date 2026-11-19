@@ -44,6 +44,16 @@
               }
             }
           },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The request body is malformed",
             "content": {
@@ -84,6 +94,16 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
             "content": {
               "application/json": {
                 "schema": {
@@ -309,6 +329,16 @@
               }
             }
           },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "422": {
             "description": "Unknown cube, or a rule failed",
             "content": {
@@ -357,6 +387,16 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
             "content": {
               "application/json": {
                 "schema": {
@@ -416,6 +456,16 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
             "content": {
               "application/json": {
                 "schema": {
@@ -658,6 +708,16 @@
               }
             }
           },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown dimension",
             "content": {
@@ -891,6 +951,16 @@
               }
             }
           },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown transaction",
             "content": {
@@ -931,6 +1001,16 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
             "content": {
               "application/json": {
                 "schema": {
@@ -1097,6 +1177,16 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
             "content": {
               "application/json": {
                 "schema": {
@@ -2172,6 +2262,7 @@
         "type": "string",
         "description": "What a user may do. Each role may also do what the ones before it may.",
         "enum": [
+          "none",
           "read",
           "write",
           "admin"
@@ -2193,9 +2284,20 @@
         "required": [
           "token",
           "idle_seconds",
-          "role"
+          "role",
+          "cubes"
         ],
         "properties": {
+          "cubes": {
+            "type": "object",
+            "description": "The cubes on which the user has another role in place of that one.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
           "idle_seconds": {
             "type": "integer",
             "format": "int64",

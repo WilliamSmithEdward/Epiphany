@@ -1,8 +1,9 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-use epiphany_server::{Auth, Role, app_with, open, openapi, set_user, with_lab};
+use epiphany_server::{Auth, Grants, Role, app_with, open, openapi, set_user, with_lab};
 use tokio::net::TcpListener;
 
 const ADDRESS: &str = "127.0.0.1:8080";
@@ -10,10 +11,12 @@ const USAGE: &str = "usage:
   epiphany-server serve <directory> [address]   serve the database kept in a directory
   epiphany-server lab <directory> [address]     the same, plus the test page
                                                 <directory>/index.html at /lab
-  epiphany-server user <directory> <name> [role]
+  epiphany-server user <directory> <name> [role] [cube=role ...]
                                                 add a user, or change a user's password and
-                                                role; the password is read from standard input.
-                                                The role is read, write or admin (the default)
+                                                roles; the password is read from standard input.
+                                                The role is none, read, write or admin (the
+                                                default); a cube may be given another in its
+                                                place, as in 'General Ledger=read'
   epiphany-server openapi                       print the OpenAPI document
 
 The directory holds the model in <directory>/model, keeps its data in <directory>/data and
@@ -30,9 +33,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             println!("{}", openapi().to_pretty_json()?);
             return Ok(());
         }
-        ["user", directory, name] => return user(Path::new(directory), name, Role::Admin),
-        ["user", directory, name, role] => {
-            return user(Path::new(directory), name, role.parse()?);
+        ["user", directory, name, grants @ ..] => {
+            return user(Path::new(directory), name, &granted(grants)?);
         }
         [command @ ("serve" | "lab"), directory] => (*command, Path::new(directory), ADDRESS),
         [command @ ("serve" | "lab"), directory, address] => {
@@ -68,7 +70,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 /// Adds a user, reading the password from standard input so that it is in no command line.
-fn user(directory: &Path, name: &str, role: Role) -> Result<(), Box<dyn Error>> {
+/// The grants a command line gives: a role, then any number of `cube=role`.
+fn granted(arguments: &[&str]) -> Result<Grants, Box<dyn Error>> {
+    let (role, cubes) = match arguments.split_first() {
+        Some((role, cubes)) if !role.contains('=') => (role.parse()?, cubes),
+        _ => (Role::Admin, arguments),
+    };
+    let mut named = BTreeMap::new();
+    for cube in cubes {
+        let (name, role) = cube
+            .rsplit_once('=')
+            .ok_or_else(|| format!("'{cube}' should be a cube and a role, as in \"Sales=read\""))?;
+        named.insert(name.trim().to_owned(), role.parse()?);
+    }
+    Ok(Grants::new(role, named))
+}
+
+fn user(directory: &Path, name: &str, grants: &Grants) -> Result<(), Box<dyn Error>> {
     eprint!("Password for {name} (it will be shown as you type): ");
     io::stderr().flush()?;
     let mut password = String::new();
@@ -77,7 +95,7 @@ fn user(directory: &Path, name: &str, role: Role) -> Result<(), Box<dyn Error>> 
     let password = password
         .trim_start_matches('\u{feff}')
         .trim_end_matches(['\r', '\n']);
-    set_user(directory, name, password, role)?;
+    set_user(directory, name, password, grants)?;
     eprintln!("Saved. Restart the server for it to take effect.");
     Ok(())
 }
