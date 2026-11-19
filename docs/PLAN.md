@@ -304,6 +304,9 @@ practice that means:
     and all of them pass, as does Refresh. `adapter/check-excel-signin.ps1` drives the
     Connect window, a refused and an accepted sign-in, and Disconnect. Neither runs in CI,
     which has no Excel.
+  - A value typed over a `DBRW` or `DBR` cell is written to the cube and the formula put
+    back. The add-in notes where each read formula reads from as it is calculated, and the
+    formulas of the selected cells before they can be typed over.
   - Formulas name their environment as PAfE's do (`production:Sales`); each environment is
     a server with its own session, added with Connect.
   - See "Not replicated" in the table for the PAfE features left out.

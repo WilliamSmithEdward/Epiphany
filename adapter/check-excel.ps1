@@ -117,6 +117,23 @@ try {
     $ok = $stale -eq '0' -and $fresh -eq '42'
     if (-not $ok) { $failed++ }
     "{0}  Refresh: before <{1}> after <{2}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $stale, $fresh
+
+    # Typing over a read formula writes the value to the cube and keeps the formula.
+    $typed = @(
+        @(5, 77, '77', 'a number over a leaf'),
+        @(3, 5, '150.5', 'a number over a consolidation is refused'),
+        @(8, 12, '12', 'a number over a string cell is written as text'),
+        @(8, 'hello', 'hello', 'text over a string cell')
+    )
+    foreach ($case in $typed) {
+        $cell = $sheet.Cells.Item($case[0], 1)
+        $cell.Select() | Out-Null
+        if ($case[1] -is [string]) { $cell.Value2 = [string]$case[1] } else { $cell.Value2 = [double]$case[1] }
+        for ($tries = 0; $tries -lt 10; $tries++) { Start-Sleep -Seconds 1; if ([string]$cell.Text -eq $case[2]) { break } }
+        $ok = [string]$cell.Text -eq $case[2] -and ([string]$cell.Formula).StartsWith('=DBRW(')
+        if (-not $ok) { $failed++ }
+        "{0}  Typed: {1} -> <{2}> <{3}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $case[3], $cell.Text, $cell.Formula
+    }
     "$failed failed"
     $script:failures = $failed
     $book.Close($false)

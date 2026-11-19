@@ -37,6 +37,9 @@ default environment. To begin with there is one environment, `local`, at
 - **Disconnect** to sign out of every environment.
 - **Refresh** (Ctrl+Shift+R) to fetch every formula's value again.
 
+Typing a value over a `DBRW` or `DBR` cell writes it to the cube and keeps the formula. If
+the server refuses the value, because the cell is a consolidation, say, the status bar says so.
+
 A cell shows `#N/A` while its value is on its way and when the server cannot be reached, and
 `*KEY_ERR` when the cube or an element it names does not exist.
 
@@ -73,6 +76,7 @@ so run it only before you have connected to anything yourself.
 | `Epiphany.Excel/Functions.cs` | The worksheet functions. |
 | `Epiphany.Excel/Connection.cs` | The server: batched cell reads and writes, dimensions, sign-in. |
 | `Epiphany.Excel/Dimension.cs` | A copy of a dimension and the answers read from it. |
-| `Epiphany.Excel/AddIn.cs` | The menu commands and the sign-in window. |
+| `Epiphany.Excel/AddIn.cs` | The environments, the menu commands and the Connect window. |
+| `Epiphany.Excel/Writeback.cs` | Writing a value typed over a read formula. |
 | `Epiphany.Excel/Json.cs` | JSON reading and writing. |
 | `Epiphany.Excel.Tests/` | The tests. |

@@ -11,6 +11,8 @@
 
   <ItemGroup>
     <PackageReference Include="ExcelDna.AddIn" Version="1.9.0" />
+    <!-- Excel's own object model. Its types are compiled into the add-in, so nothing ships. -->
+    <PackageReference Include="ExcelDna.Interop" Version="15.0.1" />
     <Reference Include="System.Drawing" />
     <Reference Include="System.Net.Http" />
     <Reference Include="System.Web.Extensions" />

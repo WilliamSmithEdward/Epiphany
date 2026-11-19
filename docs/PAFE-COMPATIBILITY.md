@@ -70,6 +70,19 @@ element of the dimension, in the dimension's order.
 `DIMSIZ`, `ELCOMPN` and `ELPARN` are not in the project's list. They are here because
 `DIMNM`, `ELCOMP` and `ELPAR` are of little use without a count to loop to.
 
+## Typing over a read
+
+| Case | Adapter | PAfE |
+| --- | --- | --- |
+| A value typed or pasted over a cell whose formula is one `DBRW` or `DBR` call | The value is written to the cube cell the formula reads, and the formula is put back, showing the new value | Same, unverified |
+| Over a consolidated or calculated cell | Nothing is written, the formula is put back, and the status bar says so | PAfE can spread instead; unverified |
+| A number over a string cell | Written as text | Unverified |
+| Text over a numeric cell | Refused, as above | Unverified |
+| The cell cleared | The formula is put back; nothing is written | Unverified |
+| Other formulas that read the same data | Show the new value after **Refresh** | Unverified |
+| A formula that is more than one read, such as `=DBRW(...)*2` | Is replaced by what was typed, as in any worksheet | Same, unverified |
+| A cell typed over without having been selected first, or a change of more than 5,000 cells | As any worksheet: the formula is replaced | No equivalent |
+
 ## Recalculation
 
 | Behaviour | Adapter | PAfE |
@@ -96,7 +109,6 @@ element of the dimension, in the dimension's order.
 
 ## Not replicated
 
-- Typing a value over a `DBRW` cell to write it back. Write with `DBS`, `DBSW` or `DBSS`.
 - The element picker that PAfE opens on a double click of a `SUBNM` cell.
 - `DBS` to a consolidated cell as a spread. Spreading is available from the API
   (`POST /cells/spread`), not from a worksheet function.

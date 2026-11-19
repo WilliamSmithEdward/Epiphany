@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using ExcelDna.Integration;
@@ -55,6 +54,7 @@ namespace Epiphany.Excel
                 // No settings yet, or settings that cannot be read: start from the defaults.
             }
             fallback = fallback ?? Places.Values.FirstOrDefault() ?? Add(DefaultName, DefaultAddress, "");
+            Writeback.Watch((Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application);
         }
 
         public void AutoClose()
@@ -110,8 +110,7 @@ namespace Epiphany.Excel
                 place.Connection.Refresh();
             }
             // Every formula is calculated again, whether or not Excel holds it to be out of date.
-            var excel = ExcelDnaUtil.Application;
-            excel.GetType().InvokeMember("CalculateFull", BindingFlags.InvokeMethod, null, excel, null);
+            ((Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application).CalculateFull();
         }
 
         [ExcelCommand(MenuName = Menu, MenuText = "Connect...")]
