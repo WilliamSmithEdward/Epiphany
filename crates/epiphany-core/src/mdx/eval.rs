@@ -573,7 +573,13 @@ impl<'a> Evaluator<'a> {
             Expr::Tuple(items) => {
                 let mut tuple = Tuple::new();
                 for item in items {
-                    let member = self.member(item, context)?;
+                    let member = match self.evaluate(item, context)? {
+                        // A place with no member in it, such as the member before the
+                        // first, leaves the tuple without a cell.
+                        Datum::Null => return Ok(Datum::Null),
+                        Datum::Member(member) => member,
+                        _ => return fail("expected a member"),
+                    };
                     if tuple.iter().any(|other| other.position == member.position) {
                         return fail("a tuple has one member per dimension");
                     }
@@ -1043,6 +1049,152 @@ impl<'a> Evaluator<'a> {
                 let value = self.evaluate(&arguments[0], context)?;
                 Ok(Datum::Bool(is_empty(&self.scalar(value, context)?)))
             }
+            "RANK" => {
+                count(2..=3)?;
+                let tuple = match self.evaluate(&arguments[0], context)? {
+                    Datum::Member(member) => vec![member],
+                    Datum::Tuple(tuple) => tuple,
+                    _ => return fail("RANK takes a member or a tuple, then a set"),
+                };
+                let set = self.set(&arguments[1], context)?;
+                let Some(expression) = arguments.get(2) else {
+                    // Without an expression the rank is the tuple's place in the set.
+                    let place = set.iter().position(|other| *other == tuple);
+                    return Ok(Datum::Number(place.map_or(0.0, |place| place as f64 + 1.0)));
+                };
+                if !set.contains(&tuple) {
+                    return Ok(Datum::Number(0.0));
+                }
+                self.foresee(Some(expression), context, &set);
+                let value = |tuple: &Tuple| {
+                    let context = with(context, tuple);
+                    let value = self.evaluate(expression, &context)?;
+                    to_number(&self.scalar(value, &context)?)
+                };
+                // One more than the number of tuples with a greater value, so equals share.
+                let own = value(&tuple)?;
+                let mut rank = 1.0;
+                for other in &set {
+                    rank += f64::from(value(other)? > own);
+                }
+                Ok(Datum::Number(rank))
+            }
+            "STRTOMEMBER" | "STRTOTUPLE" | "STRTOSET" => {
+                count(1..=1)?;
+                let text = self.text(&arguments[0], context)?;
+                let parsed = super::parser::Parser::new(super::lexer::lex(&text)?).set()?;
+                match (function, self.evaluate(&parsed, context)?) {
+                    ("STRTOMEMBER", member @ Datum::Member(_)) => Ok(member),
+                    ("STRTOTUPLE", Datum::Member(member)) => Ok(Datum::Tuple(vec![member])),
+                    ("STRTOTUPLE", tuple @ Datum::Tuple(_)) => Ok(tuple),
+                    ("STRTOSET", _) => self.set(&parsed, context).map(Datum::Set),
+                    _ => fail(format!("{function}: '{text}' is not one")),
+                }
+            }
+            "ABS" | "INT" | "FIX" | "SQR" | "SQRT" | "EXP" | "LOG" | "LOG10" | "SGN" => {
+                count(1..=1)?;
+                let number = self.number(&arguments[0], context)?;
+                let result = match function {
+                    "ABS" => number.abs(),
+                    "INT" => number.floor(),
+                    "FIX" => number.trunc(),
+                    "SQR" | "SQRT" => number.sqrt(),
+                    "EXP" => number.exp(),
+                    "LOG" => number.ln(),
+                    "LOG10" => number.log10(),
+                    _ => match number {
+                        n if n > 0.0 => 1.0,
+                        n if n < 0.0 => -1.0,
+                        _ => 0.0,
+                    },
+                };
+                // Like a division by zero, a root or logarithm that does not exist is no value.
+                Ok(match result.is_finite() {
+                    true => Datum::Number(result),
+                    false => Datum::Null,
+                })
+            }
+            "ROUND" => {
+                count(1..=2)?;
+                let number = self.number(&arguments[0], context)?;
+                let digits = match arguments.get(1) {
+                    Some(digits) => self.number(digits, context)?.trunc(),
+                    None => 0.0,
+                };
+                // Halves round away from zero, as a person rounds them.
+                let scale = 10f64.powf(digits);
+                Ok(Datum::Number((number * scale).round() / scale))
+            }
+            "MOD" | "POWER" => {
+                count(2..=2)?;
+                let left = self.number(&arguments[0], context)?;
+                let right = self.number(&arguments[1], context)?;
+                let result = match function {
+                    "MOD" => left - right * (left / right).floor(),
+                    _ => left.powf(right),
+                };
+                Ok(match result.is_finite() {
+                    true => Datum::Number(result),
+                    false => Datum::Null,
+                })
+            }
+            "LEN" | "UCASE" | "LCASE" | "TRIM" | "VAL" => {
+                count(1..=1)?;
+                let text = self.text(&arguments[0], context)?;
+                Ok(match function {
+                    "LEN" => Datum::Number(text.chars().count() as f64),
+                    "UCASE" => Datum::Text(text.to_uppercase()),
+                    "LCASE" => Datum::Text(text.to_lowercase()),
+                    "TRIM" => Datum::Text(text.trim().to_owned()),
+                    // The number a text begins with, or zero if it begins with none.
+                    _ => Datum::Number(leading_number(text.trim())),
+                })
+            }
+            "STR" | "CSTR" => {
+                count(1..=1)?;
+                self.text(&arguments[0], context).map(Datum::Text)
+            }
+            "LEFT" | "RIGHT" => {
+                count(2..=2)?;
+                let text: Vec<char> = self.text(&arguments[0], context)?.chars().collect();
+                let wanted = whole(&arguments[1])?.min(text.len());
+                let kept = match function {
+                    "LEFT" => &text[..wanted],
+                    _ => &text[text.len() - wanted..],
+                };
+                Ok(Datum::Text(kept.iter().collect()))
+            }
+            "MID" => {
+                count(2..=3)?;
+                let text = self.text(&arguments[0], context)?;
+                // Characters are counted from one.
+                let skipped = whole(&arguments[1])?.saturating_sub(1);
+                let wanted = match arguments.get(2) {
+                    Some(length) => whole(length)?,
+                    None => usize::MAX,
+                };
+                Ok(Datum::Text(
+                    text.chars().skip(skipped).take(wanted).collect(),
+                ))
+            }
+            "INSTR" => {
+                count(2..=2)?;
+                let text = self.text(&arguments[0], context)?;
+                let sought = self.text(&arguments[1], context)?;
+                // The place of the first character of the match, counted from one, or zero.
+                let place = text.find(&sought).map(|at| text[..at].chars().count() + 1);
+                Ok(Datum::Number(place.unwrap_or(0) as f64))
+            }
+            "REPLACE" => {
+                count(3..=3)?;
+                let text = self.text(&arguments[0], context)?;
+                let sought = self.text(&arguments[1], context)?;
+                let with = self.text(&arguments[2], context)?;
+                Ok(Datum::Text(match sought.is_empty() {
+                    true => text,
+                    false => text.replace(&sought, &with),
+                }))
+            }
             _ => fail(format!("unknown function {function}")),
         }
     }
@@ -1077,7 +1229,34 @@ impl<'a> Evaluator<'a> {
                 MdxError::new(format!("member '{}' has no children", self.name(member)))
             })
         };
+        // The member some places before or after this one among those of its level, in the
+        // dimension's order; nothing past either end.
+        let shifted = |by: f64| -> Evaluated<Datum> {
+            let member = member()?;
+            let (id, element) = self.element(member)?;
+            let elements = self.dimension(member.position).elements.iter().enumerate();
+            let level: Vec<usize> = elements
+                .filter(|(_, other)| other.level == element.level)
+                .map(|(id, _)| id)
+                .collect();
+            let place = level.iter().position(|&other| other == id as usize);
+            let place = place.map(|place| place as f64 + by.trunc());
+            let found = place
+                .filter(|&place| place >= 0.0)
+                .and_then(|place| level.get(place as usize));
+            Ok(found.map_or(Datum::Null, |&id| {
+                Datum::Member(one(member.position, id as ElementId))
+            }))
+        };
+        let distance = || match arguments {
+            [distance] => self.number(distance, context),
+            _ => fail(format!(".{method} takes one distance")),
+        };
         match (method, &target) {
+            ("PREVMEMBER", _) => shifted(-1.0),
+            ("NEXTMEMBER", _) => shifted(1.0),
+            ("LAG", _) => shifted(-distance()?),
+            ("LEAD", _) => shifted(distance()?),
             ("MEMBERS", &Datum::Dimension(position)) => {
                 let count = self.dimension(position).elements.len() as ElementId;
                 Ok(Datum::Set(
@@ -1412,6 +1591,17 @@ impl<'a> Evaluator<'a> {
         to_number(&self.scalar(value, context)?)
     }
 
+    /// An expression's value as text; a number is written as briefly as it can be.
+    fn text(&self, expression: &Expr, context: &Context) -> Evaluated<String> {
+        let value = self.evaluate(expression, context)?;
+        match self.scalar(value, context)? {
+            Datum::Text(text) => Ok(text),
+            Datum::Number(number) => Ok(number.to_string()),
+            Datum::Null => Ok(String::new()),
+            _ => fail("expected text"),
+        }
+    }
+
     fn truth(&self, expression: &Expr, context: &Context) -> Evaluated<bool> {
         let value = self.evaluate(expression, context)?;
         match self.scalar(value, context)? {
@@ -1471,6 +1661,15 @@ impl<'a> Evaluator<'a> {
             properties: values,
         }
     }
+}
+
+/// The number at the start of a text, or zero if there is none there.
+fn leading_number(text: &str) -> f64 {
+    let ends = (1..=text.len())
+        .rev()
+        .filter(|&end| text.is_char_boundary(end));
+    let mut numbers = ends.filter_map(|end| text[..end].parse::<f64>().ok());
+    numbers.find(|number| number.is_finite()).unwrap_or(0.0)
 }
 
 fn to_number(datum: &Datum) -> Evaluated<f64> {

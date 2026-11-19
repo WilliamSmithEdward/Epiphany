@@ -187,12 +187,18 @@ practice that means:
     `POST`), `NonEmpty`, and `TM1SubsetAll`, `TM1FilterByLevel`, `TM1FilterByPattern`,
     `TM1Sort`.
   - Members: `[Dimension].[Member]` by name or alias, `.Parent`, `.FirstChild`,
-    `.LastChild`, `.CurrentMember`, `Ancestor`.
+    `.LastChild`, `.CurrentMember`, `Ancestor`, `.PrevMember`, `.NextMember`, `.Lag(n)`,
+    `.Lead(n)`, and `StrToMember`, `StrToTuple`, `StrToSet` for a member, tuple or set
+    given as text.
   - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `NOT`, `IIF`,
     `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`, `Aggregate`, `Avg`, `Min`, `Max`,
     `Count` and `.Count`, tuples as cell references, `.Name`, `.UniqueName`, `.Value`,
     and `.Properties("name")` for an attribute or for `MEMBER_NAME`,
     `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`, `CHILDREN_CARDINALITY`.
+  - `Rank(tuple, set [, expression])`.
+  - Numbers: `Abs`, `Round`, `Int`, `Fix`, `Sqr`, `Exp`, `Log`, `Log10`, `Sgn`, `Mod`,
+    `Power`. Text: `Len`, `Left`, `Right`, `Mid`, `UCase`, `LCase`, `Trim`, `InStr`,
+    `Replace`, `Val`, `Str`, `CStr`.
   - `WITH MEMBER` (calculated members, which may refer to one another, with
     `SOLVE_ORDER`) and `WITH SET`.
   - Numeric and text cells.
@@ -209,8 +215,15 @@ practice that means:
   - Where a cell has several calculated members and no `SOLVE_ORDER` separates them, the
     one in the cube's earlier dimension is applied last.
   - A range runs over elements in the order they are declared in the dimension.
-- Not done: functions outside the lists above (for example `Rank`, `ParallelPeriod`,
-  `StrToMember` and the VBA maths and string functions), `.Levels`, and formatting.
+  - `.PrevMember`, `.NextMember`, `.Lag` and `.Lead` move among the elements of the
+    member's level, in the order they are declared. Past either end there is no member,
+    and a tuple with no member in one of its places has no cell.
+  - `Rank` with an expression is one more than the number of tuples with a greater
+    value, so equal values share a rank; a tuple that is not in the set ranks zero.
+  - `Round` rounds halves away from zero. A root or logarithm that does not exist is null.
+- Not done: functions outside the lists above (for example `ParallelPeriod`, `Cousin`,
+  `PeriodsToDate` and the date functions), `.Levels`, and formatting. The first three
+  need levels named from the top down, which this engine counts from the leaves up.
 
 ### 2.8 Spreading
 

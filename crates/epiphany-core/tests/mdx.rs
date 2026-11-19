@@ -754,3 +754,171 @@ fn mistakes_are_reported() {
         Err(Error::Cell(CellError::UnknownCube { .. }))
     ));
 }
+
+/// What an expression comes to as a calculated member, at US, February, Actual.
+fn value(expression: &str) -> Option<Scalar> {
+    let mdx = format!(
+        "WITH MEMBER [Account].[X] AS {expression} SELECT {{[Account].[X]}} ON COLUMNS \
+         FROM [General Ledger] WHERE ([Entity].[US], [Period].[Feb], [Version].[Actual])"
+    );
+    run(&mdx).cells[0].clone()
+}
+
+fn number(expression: &str) -> Option<f64> {
+    match value(expression) {
+        Some(Scalar::Number(number)) => Some(number),
+        Some(Scalar::Text(text)) => panic!("expected a number, found '{text}'\n{expression}"),
+        None => None,
+    }
+}
+
+fn text(expression: &str) -> String {
+    match value(expression) {
+        Some(Scalar::Text(text)) => text,
+        other => panic!("expected text, found {other:?}\n{expression}"),
+    }
+}
+
+#[test]
+fn members_are_reached_from_their_neighbours() {
+    let revenue = |period: &str| number(&format!("([Account].[Product Revenue], {period})"));
+    assert_eq!(revenue("[Period].CurrentMember.PrevMember"), Some(100.0));
+    assert_eq!(revenue("[Period].CurrentMember.Lag(1)"), Some(100.0));
+    assert_eq!(revenue("[Period].CurrentMember.NextMember"), Some(0.0));
+    assert_eq!(revenue("[Period].[Mar].Lag(2)"), Some(100.0));
+    assert_eq!(revenue("[Period].[Jan].Lead(1)"), Some(20.0));
+    assert_eq!(revenue("[Period].[Mar].Lead(-2)"), Some(100.0));
+    // Neighbours are of the same level: the quarter before Q2, not the month before it.
+    assert_eq!(text("[Period].[Q2].PrevMember.Name"), "Q1");
+    assert_eq!(text("[Period].[Jun].PrevMember.Name"), "May");
+    // Past either end there is no member, and so no cell.
+    assert_eq!(revenue("[Period].[Jan].PrevMember"), None);
+    assert_eq!(revenue("[Period].[Jun].Lead(3)"), None);
+    assert_eq!(revenue("[Period].[H1].NextMember"), None);
+
+    // The change on the month before, down a column of months.
+    let result = run(
+        "WITH MEMBER [Version].[Change] AS [Version].[Actual] - ([Version].[Actual], [Period].CurrentMember.PrevMember) \
+         SELECT {[Period].[Jan], [Period].[Feb], [Period].[Mar]} ON COLUMNS FROM [General Ledger] \
+         WHERE ([Account].[Product Revenue], [Entity].[US], [Version].[Change])",
+    );
+    assert_eq!(numbers(&result), [Some(100.0), Some(-80.0), Some(-20.0)]);
+    assert!(
+        failure("SELECT {[Period].[Jan].Lag()} ON COLUMNS FROM [General Ledger]")
+            .contains(".LAG takes one distance")
+    );
+}
+
+#[test]
+fn rank_places_a_tuple_in_a_set() {
+    let entities = "{[Entity].[US], [Entity].[UK]}";
+    assert_eq!(
+        number(&format!("Rank([Entity].[UK], {entities})")),
+        Some(2.0)
+    );
+    assert_eq!(
+        number(&format!("Rank([Entity].[US], {entities})")),
+        Some(1.0)
+    );
+    assert_eq!(
+        number(&format!("Rank([Entity].[Total Entity], {entities})")),
+        Some(0.0)
+    );
+    // By value the greatest is first: in January the US sold 100 and the UK 50.
+    let by = |entity: &str| {
+        number(&format!(
+            "Rank([Entity].[{entity}], [Entity].Members, ([Account].[Product Revenue], [Period].[Jan]))"
+        ))
+    };
+    assert_eq!(by("Total Entity"), Some(1.0));
+    assert_eq!(by("US"), Some(2.0));
+    assert_eq!(by("UK"), Some(3.0));
+    // Equal values share a rank: in March nobody sold anything.
+    let march =
+        "Rank([Entity].[UK], [Entity].Members, ([Account].[Product Revenue], [Period].[Mar]))";
+    assert_eq!(number(march), Some(1.0));
+}
+
+#[test]
+fn text_is_read_as_a_member_a_tuple_or_a_set() {
+    assert_eq!(
+        number("(StrToMember('[Account].[Product Revenue]'), [Period].[Jan])"),
+        Some(100.0)
+    );
+    assert_eq!(
+        number("StrToTuple('([Account].[Product Revenue], [Period].[Jan], [Entity].[UK])')"),
+        Some(50.0)
+    );
+    assert_eq!(
+        number("Sum(StrToSet('{[Period].[Jan], [Period].[Feb]}'), [Account].[Product Revenue])"),
+        Some(120.0)
+    );
+    // The text may be put together: the month before this one, by name.
+    assert_eq!(
+        number(
+            "(StrToMember('[Period].[' + [Period].CurrentMember.PrevMember.Name + ']'), [Account].[Product Revenue])"
+        ),
+        Some(100.0)
+    );
+    let mistake = failure(
+        "WITH MEMBER [Account].[X] AS StrToMember('[Period].Members') \
+         SELECT {[Account].[X]} ON COLUMNS FROM [General Ledger]",
+    );
+    assert!(
+        mistake.contains("STRTOMEMBER: '[Period].Members' is not one"),
+        "{mistake}"
+    );
+}
+
+#[test]
+fn numbers_are_rounded_rooted_and_raised() {
+    assert_eq!(number("Abs(-2.5)"), Some(2.5));
+    assert_eq!(number("Round(2.567, 2)"), Some(2.57));
+    assert_eq!(number("Round(2.5)"), Some(3.0));
+    assert_eq!(number("Round(-2.5)"), Some(-3.0));
+    assert_eq!(number("Round(1234, -2)"), Some(1200.0));
+    assert_eq!(number("Int(-2.5)"), Some(-3.0));
+    assert_eq!(number("Fix(-2.5)"), Some(-2.0));
+    assert_eq!(number("Sqr(16)"), Some(4.0));
+    assert_eq!(number("Power(2, 10)"), Some(1024.0));
+    assert_eq!(number("Mod(7, 3)"), Some(1.0));
+    assert_eq!(number("Mod(-7, 3)"), Some(2.0));
+    assert_eq!(number("Sgn(-3) + Sgn(0) + Sgn(8) * 10"), Some(9.0));
+    assert_eq!(number("Round(Log(Exp(2)), 9)"), Some(2.0));
+    assert_eq!(number("Round(Log10(1000), 9)"), Some(3.0));
+    // What does not exist is no value, as with a division by zero.
+    assert_eq!(number("Sqr(-1)"), None);
+    assert_eq!(number("Log(0)"), None);
+    assert_eq!(number("Mod(1, 0)"), None);
+    // They work on cells as on numbers.
+    assert_eq!(
+        number("Round(([Account].[Product Revenue], [Period].[Jan]) / 3, 1)"),
+        Some(33.3)
+    );
+}
+
+#[test]
+fn text_is_measured_cut_and_changed() {
+    assert_eq!(number("Len('hello')"), Some(5.0));
+    assert_eq!(text("Left('hello', 2)"), "he");
+    assert_eq!(text("Right('hello', 3)"), "llo");
+    assert_eq!(text("Left('hello', 9)"), "hello");
+    assert_eq!(text("Mid('hello', 2, 3)"), "ell");
+    assert_eq!(text("Mid('hello', 4)"), "lo");
+    assert_eq!(text("UCase('Hello')"), "HELLO");
+    assert_eq!(text("LCase('Hello')"), "hello");
+    assert_eq!(text("Trim('  a b  ')"), "a b");
+    assert_eq!(number("InStr('hello', 'll')"), Some(3.0));
+    assert_eq!(number("InStr('hello', 'z')"), Some(0.0));
+    assert_eq!(text("Replace('a-b-c', '-', '+')"), "a+b+c");
+    assert_eq!(number("Val('12.5kg')"), Some(12.5));
+    assert_eq!(number("Val('kg')"), Some(0.0));
+    assert_eq!(text("Str(12)"), "12");
+    assert_eq!(text("CStr(1.5)"), "1.5");
+    // Characters are counted, not bytes.
+    assert_eq!(number("Len('héllo')"), Some(5.0));
+    assert_eq!(text("Mid('héllo', 2, 2)"), "él");
+    // On the names of members, which is where they are mostly wanted.
+    assert_eq!(text("UCase(Left([Period].CurrentMember.Name, 2))"), "FE");
+    assert_eq!(number("Len([Period].CurrentMember.Parent.Name)"), Some(2.0));
+}

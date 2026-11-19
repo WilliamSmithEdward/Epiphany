@@ -71,7 +71,11 @@ const LEVELS: [&[&str]; 5] = [
 const COMPARISONS: usize = 2;
 
 /// The words that may follow a dot without being part of a name.
-const METHODS: [&str; 14] = [
+const METHODS: [&str; 18] = [
+    "PREVMEMBER",
+    "NEXTMEMBER",
+    "LAG",
+    "LEAD",
     "ALLMEMBERS",
     "SIBLINGS",
     "COUNT",
