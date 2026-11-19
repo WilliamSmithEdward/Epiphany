@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
@@ -141,10 +142,15 @@ namespace Epiphany.Excel
             return Run(function, arguments, connection, () => connection.Ask(name, question));
         }
 
-        /// <summary>Answers a formula once its task is done. Until then, and whenever the
-        /// formula is calculated again with the same arguments while the task runs, Excel
-        /// shows #N/A. An argument that is an error is the answer itself, and an environment
-        /// that is not known is a key error.</summary>
+        // The last answer to each question, shown while the next is on its way. Formulas are
+        // calculated on Excel's one calculation thread, so nothing else touches it.
+        private static readonly Dictionary<string, object> Last = new Dictionary<string, object>();
+        private const int MostKept = 500000;
+
+        /// <summary>Answers a formula once its task is done. Until then the formula shows the
+        /// answer it had last, or #GETTING_DATA if it has had none. A server that cannot be
+        /// reached is #N/A. An argument that is an error is the answer itself, and an
+        /// environment that is not known is a key error.</summary>
         private static object Run(string function, object[] arguments, Connection connection,
             Func<Task<object>> question)
         {
@@ -157,11 +163,21 @@ namespace Epiphany.Excel
             // question asked twice the answer it already has. Counting the refreshes among the
             // arguments makes every formula a new question after Refresh.
             var asked = arguments.Concat(new object[] { AddIn.Refreshes }).ToArray();
-            return ExcelAsyncUtil.RunTask(function, asked, async () =>
+            var answer = ExcelAsyncUtil.RunTask(function, asked, async () =>
             {
-                var answer = await question().ConfigureAwait(false);
-                return ReferenceEquals(answer, Connection.Unavailable) ? ExcelError.ExcelErrorNA : answer;
+                var given = await question().ConfigureAwait(false);
+                // #N/A is what Excel-DNA answers while a task runs, so it cannot be an answer.
+                return ReferenceEquals(given, Connection.Unavailable) ? ExcelError.ExcelErrorNull : given;
             });
+            var key = function + "\u001f" + string.Join("\u001f", arguments);
+            if (Equals(answer, ExcelError.ExcelErrorNA))
+                return Last.TryGetValue(key, out var last) ? last : ExcelError.ExcelErrorGettingData;
+            if (Equals(answer, ExcelError.ExcelErrorNull))
+                answer = ExcelError.ExcelErrorNA;
+            if (Last.Count >= MostKept)
+                Last.Clear();
+            Last[key] = answer;
+            return answer;
         }
 
         /// <summary>An argument as a name. Numbers are names too: a year, say.</summary>

@@ -42,9 +42,11 @@ its subset; type to narrow the list, and the one you choose is written into the 
 
 Typing a value over a `DBRW` or `DBR` cell writes it to the cube and keeps the formula. If
 the server refuses the value, because the cell is a consolidation, say, the status bar says so.
+Once a value is written, every formula asks the server again, so totals over it follow.
 
-A cell shows `#N/A` while its value is on its way and when the server cannot be reached, and
-`*KEY_ERR` when the cube or an element it names does not exist.
+While a value is on its way a cell shows the value it had last, or `#GETTING_DATA` the first
+time. It shows `#N/A` when the server cannot be reached or wants a sign-in, and `*KEY_ERR`
+when the environment, the cube or an element it names does not exist.
 
 ## Test
 

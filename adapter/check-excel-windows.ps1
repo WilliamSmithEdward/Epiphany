@@ -103,11 +103,12 @@ function Excel([scriptblock]$call) {
     }
     throw 'Excel stayed busy'
 }
-function Shown([int]$row) {
+# What a cell shows, once it shows what is expected or time has run out.
+function Shown([int]$row, [string]$expected) {
     for ($tries = 0; $tries -lt 20; $tries++) {
         Start-Sleep -Seconds 1
         $text = Excel { [string]$sheet.Cells.Item($row, 1).Text }
-        if ($text -ne '#N/A') { return $text }
+        if ($text -eq $expected) { return $text }
     }
     return $text
 }
@@ -135,12 +136,12 @@ try {
 
     $checks = [ordered]@{}
     $checks['the window opened, a wrong password was refused, the right one accepted'] = @(Get-Content $log).Count -eq 4
-    $checks['a formula answers once signed in'] = (Shown 1) -eq '0'
+    $checks['a formula answers once signed in'] = (Shown 1 '0') -eq '0'
     $checks['the address and the name were saved, not the password'] = [bool](Excel { $excel.ExecuteExcel4Macro("FILES(`"$settings`")") -is [string] })
 
     # Choosing an element: the list of the whole dimension, narrowed to the months with 'ma'.
     Excel { $sheet.Cells.Item(3, 1).Formula = '=SUBNM("Period","",1)' }
-    $checks['a SUBNM shows the element at its index'] = (Shown 3) -eq 'H1'
+    $checks['a SUBNM shows the element at its index'] = (Shown 3 'H1') -eq 'H1'
     Excel { $sheet.Cells.Item(3, 1).Select() } | Out-Null
     Set-Content -Encoding ascii $log 'started'
     $driver = Start-Process -PassThru -WindowStyle Hidden powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Drive', "`"$log`"", '-Step', 'choose'
@@ -149,12 +150,12 @@ try {
     Get-Content $log | Select-Object -Skip 1
     $checks['the list held every element and typing narrowed it'] = (Get-Content $log)[-1] -eq 'list narrowed from 9 to 2'
     $checks['the element chosen is in the formula'] = (Excel { [string]$sheet.Cells.Item(3, 1).Formula }) -eq '=SUBNM("Period","","Mar")'
-    $checks['and the cell shows it'] = (Shown 3) -eq 'Mar'
+    $checks['and the cell shows it'] = (Shown 3 'Mar') -eq 'Mar'
 
     Excel { $excel.Run('Disconnect') } | Out-Null
     # Not asked for again unasked: after Disconnect a refused formula just shows #N/A.
     Excel { $sheet.Cells.Item(2, 1).Formula = $read -f 'Feb' }
-    $checks['after Disconnect a formula is refused'] = (Shown 2) -eq '#N/A'
+    $checks['after Disconnect a formula is refused'] = (Shown 2 '#N/A') -eq '#N/A'
 
     $failures = 0
     foreach ($check in $checks.GetEnumerator()) {

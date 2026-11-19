@@ -1,4 +1,4 @@
-﻿# Checks the add-in inside Excel: starts a server on a copy of the example model, loads the
+# Checks the add-in inside Excel: starts a server on a copy of the example model, loads the
 # add-in into a hidden Excel of its own, enters one formula per row of the compatibility table
 # (docs/PAFE-COMPATIBILITY.md) and compares what the cells show. Run after
 #   cargo build -p epiphany-server
@@ -81,18 +81,20 @@ try {
         @('=SUBNM("Line","Texts","comment")', 'Comment'),
         @('=SUBNM("Line","Texts","Amount")', ''),
         @('=SUBNM("Line","",1)', 'Comment'),
-        @('=SUBNM("Line","Nope",1)', '*KEY_ERR')
+        @('=SUBNM("Line","Nope",1)', '*KEY_ERR'),
+        # A total over the cell that is typed over further down.
+        @("=DBRW($gl,`"Operating Expenses`",`"Total Entity`",`"H1`",`"Budget`")", '0')
     )
     for ($row = 0; $row -lt $cases.Count; $row++) { $sheet.Cells.Item($row + 1, 1).Formula = $cases[$row][0] }
 
     function Shown { for ($row = 0; $row -lt $cases.Count; $row++) { [string]$sheet.Cells.Item($row + 1, 1).Text } }
     function Settle {
-        # Waits until no cell but the one that is meant to shows #N/A.
+        # Waits until no cell is still fetching its value.
         for ($tries = 0; $tries -lt 30; $tries++) {
             Start-Sleep -Seconds 1
             $now = @(Shown)
             $waiting = 0
-            for ($row = 0; $row -lt $cases.Count; $row++) { if ($now[$row] -eq '#N/A' -and $cases[$row][1] -ne '#N/A') { $waiting++ } }
+            for ($row = 0; $row -lt $cases.Count; $row++) { if ($now[$row] -eq '#GETTING_DATA') { $waiting++ } }
             if ($waiting -eq 0) { return $now }
         }
         return $now
@@ -112,8 +114,9 @@ try {
     Start-Sleep -Seconds 1
     $stale = [string]$sheet.Cells.Item(5, 1).Text
     $excel.Run('Refresh') | Out-Null
-    $now = Settle
-    $fresh = $now[4]
+    # While the new value is fetched the cell goes on showing the old one.
+    for ($tries = 0; $tries -lt 15 -and [string]$sheet.Cells.Item(5, 1).Text -ne '42'; $tries++) { Start-Sleep -Seconds 1 }
+    $fresh = [string]$sheet.Cells.Item(5, 1).Text
     $ok = $stale -eq '0' -and $fresh -eq '42'
     if (-not $ok) { $failed++ }
     "{0}  Refresh: before <{1}> after <{2}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $stale, $fresh
@@ -133,6 +136,14 @@ try {
         $ok = [string]$cell.Text -eq $case[2] -and ([string]$cell.Formula).StartsWith('=DBRW(')
         if (-not $ok) { $failed++ }
         "{0}  Typed: {1} -> <{2}> <{3}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $case[3], $cell.Text, $cell.Formula
+        if ($case[0] -eq 5) {
+            # The total over that leaf follows without being asked to.
+            $total = $sheet.Cells.Item($cases.Count, 1)
+            for ($tries = 0; $tries -lt 10 -and [string]$total.Text -ne '77'; $tries++) { Start-Sleep -Seconds 1 }
+            $ok = [string]$total.Text -eq '77'
+            if (-not $ok) { $failed++ }
+            "{0}  Typed: a total over that leaf follows -> <{1}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $total.Text
+        }
     }
     "$failed failed"
     $script:failures = $failed

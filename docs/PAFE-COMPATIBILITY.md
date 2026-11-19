@@ -20,7 +20,8 @@ corrected and the adapter with it.
   default environment. An environment that is not known gives `*KEY_ERR`.
 - Indexes count from 1.
 - `*KEY_ERR` is the text PAfE shows for a reference that cannot be resolved.
-- `#N/A` is shown while a result is on its way, and when there is no connection or no session.
+- While a result is on its way a formula shows the result it had last, or `#GETTING_DATA` if
+  it has had none. `#N/A` means there is no connection or no session.
 
 ## Cell functions
 
@@ -44,7 +45,7 @@ corrected and the adapter with it.
 | `DBS`/`DBSW` to a cell decided by a rule | `*KEY_ERR`; nothing is written | Refused, unverified |
 | `DBS`/`DBSW` to a string cell, `DBSS` to a numeric cell | `*KEY_ERR`; nothing is written | Refused, unverified |
 | `DBS` with a value that is not a number | `#VALUE!`, from Excel | Unverified |
-| The cube is locked by another transaction | `#N/A`; recalculate to try again | No equivalent |
+| The cube is locked by another transaction | `#N/A`; **Refresh** to try again | No equivalent |
 | No connection, or the session has ended | `#N/A`, and the sign-in window opens once | Unverified |
 
 ## Dimension functions
@@ -87,7 +88,7 @@ element of the dimension, in the dimension's order.
 | A number over a string cell | Written as text | Unverified |
 | Text over a numeric cell | Refused, as above | Unverified |
 | The cell cleared | The formula is put back; nothing is written | Unverified |
-| Other formulas that read the same data | Show the new value after **Refresh** | Unverified |
+| Other formulas that read the same data | Every formula asks the server again once the value is written, so totals over it follow | Unverified |
 | A formula that is more than one read, such as `=DBRW(...)*2` | Is replaced by what was typed, as in any worksheet | Same, unverified |
 | A cell typed over without having been selected first, or a change of more than 5,000 cells | As any worksheet: the formula is replaced | No equivalent |
 
@@ -100,7 +101,8 @@ element of the dimension, in the dimension's order.
 | F9 | Recalculates only what Excel holds to be out of date, so it does not fetch new data | Unverified |
 | Reads in one calculation | Collected and sent as one `/cells/read` request | Same for `DBRW` |
 | Writes in one calculation | Collected and sent as one `/cells/write` request, before the reads of the same calculation. The writes that can be made are made together or not at all; a write the server refuses gets `*KEY_ERR` and does not stop the others | Unverified |
-| A `DBS` formula | Writes each time it is calculated | Same |
+| A `DBS` formula | Writes each time it is calculated, which includes every **Refresh** and every value typed over a read | Same for calculation; the rest unverified |
+| A formula whose value is being fetched | Shows the value it had last, so a refresh does not blank the sheet | Unverified |
 | Dimension functions | Answered from a copy of the dimension held by the adapter, fetched once and again after **Refresh** | PAfE also caches metadata; unverified |
 
 ## Connection and sign-in

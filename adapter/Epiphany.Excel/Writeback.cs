@@ -24,9 +24,6 @@ namespace Epiphany.Excel
             public string[] At;
         }
 
-        // The answer to a write that was made only at a second attempt, after the formulas
-        // had been read again.
-        private static readonly object Late = new object();
         private static readonly object Gate = new object();
         // By worksheet cell, as "[Book]Sheet!R1C1".
         private static readonly Dictionary<string, Source> Sources = new Dictionary<string, Source>();
@@ -149,15 +146,14 @@ namespace Epiphany.Excel
             var answer = await source.Connection.Write(source.Cube, source.At, value).ConfigureAwait(false);
             if (!Equals(answer, Connection.KeyError) || !(value is double number))
                 return answer;
-            answer = await source.Connection
+            return await source.Connection
                 .Write(source.Cube, source.At, number.ToString("R", CultureInfo.InvariantCulture))
                 .ConfigureAwait(false);
-            // The formula was read again before this second write, so it shows the old text.
-            return Equals(answer, Connection.KeyError) ? answer : Late;
         }
 
         /// <summary>Says in the status bar how many of the values could not be written, or
-        /// clears what was said last time.</summary>
+        /// clears what was said last time, and has every formula ask the server again, so
+        /// that those which read what was written show it.</summary>
         private static async void Report(List<Task<object>> writes)
         {
             try
@@ -168,11 +164,10 @@ namespace Epiphany.Excel
                 var message = refused + lost == 0 ? null
                     : "Epiphany: " + (refused + lost) + " of " + answers.Length + " values not written ("
                         + (refused > 0 ? "the cell is consolidated, calculated or of another type" : "no connection") + ")";
-                var late = answers.Any(answer => ReferenceEquals(answer, Late));
                 ExcelAsyncUtil.QueueAsMacro(() =>
                 {
                     excel.StatusBar = message ?? (object)false;
-                    if (late)
+                    if (refused + lost < answers.Length)
                         AddIn.Refresh();
                 });
             }
