@@ -38,7 +38,7 @@ try {
     $gl = '"General Ledger"'
     $cases = @(
         @("=DBS(100,$gl,`"Product Revenue`",`"US`",`"Jan`",`"Actual`")", '100'),
-        @("=DBSW(50.5,`"srv:General Ledger`",`"servicerevenue`",`"uk`",`"M02`",`"ACTUAL`")", '50.5'),
+        @("=DBSW(50.5,`"local:General Ledger`",`"servicerevenue`",`"uk`",`"M02`",`"ACTUAL`")", '50.5'),
         @("=DBRW($gl,`"Revenue`",`"Total Entity`",`"Q1`",`"Actual`")", '150.5'),
         @("=DBR($gl,`"Product Revenue`",`"US`",`"Jan`",`"Actual`")", '100'),
         @("=DBRW($gl,`"Rent`",`"UK`",`"Jun`",`"Budget`")", '0'),
@@ -59,6 +59,9 @@ try {
         @('=DIMIX("Period","M01")', '4'),
         @('=DIMIX("Period","Smarch")', '0'),
         @('=DIMSIZ("Period")', '9'),
+        @('=DIMSIZ("LOCAL:Period")', '9'),
+        @('=DIMSIZ("nowhere:Period")', '*KEY_ERR'),
+        @('=DBRW("nowhere:General Ledger","Rent","UK","Jan","Actual")', '*KEY_ERR'),
         @('=DIMSIZ("Planet")', '*KEY_ERR'),
         @('=ELLEV("Period","H1")', '2'),
         @('=ELLEV("Period","Smarch")', '*KEY_ERR'),

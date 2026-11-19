@@ -27,11 +27,14 @@ installed beside Excel, and no administrator rights.
    =DBRW("General Ledger", "Revenue", "Total Entity", "Q1", "Actual")
    ```
 
-The add-in looks for the server at `http://127.0.0.1:8080`. The **Epiphany** menu, on Excel's
-Add-ins tab, has:
+A cube or dimension can name its environment, as PAfE workbooks do: `"production:Sales"` is
+the cube Sales on the server called production, and a plain `"Sales"` is looked for in the
+default environment. To begin with there is one environment, `local`, at
+`http://127.0.0.1:8080`. The **Epiphany** menu, on Excel's Add-ins tab, has:
 
-- **Connect...** to name another server and to sign in.
-- **Disconnect** to sign out.
+- **Connect...** to add an environment or change one (its name, its server, who signs in),
+  and to sign in. The environment connected becomes the default.
+- **Disconnect** to sign out of every environment.
 - **Refresh** (Ctrl+Shift+R) to fetch every formula's value again.
 
 A cell shows `#N/A` while its value is on its way and when the server cannot be reached, and
@@ -56,7 +59,12 @@ powershell -ExecutionPolicy Bypass -File adapter\check-excel.ps1
 
 It loads the add-in into a hidden Excel of its own, enters a formula for each row of the
 compatibility table against a server on a copy of the example model, and compares what the
-cells show. Port 8080 must be free. It does not cover the Connect window or sign-in.
+cells show. Port 8080 must be free.
+
+`adapter\check-excel-signin.ps1` does the same for sign-in, on a server with one made-up
+user: a second process types a wrong password and then the right one into the Connect
+window, and the check then disconnects. It removes the settings file that signing in saves,
+so run it only before you have connected to anything yourself.
 
 ## Layout
 

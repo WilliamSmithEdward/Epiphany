@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -8,63 +9,106 @@ using ExcelDna.Integration;
 
 namespace Epiphany.Excel
 {
-    /// <summary>The add-in itself: the one connection the worksheet functions use, and the
-    /// commands of the Epiphany menu.</summary>
+    /// <summary>The add-in itself: the environments the worksheet functions can name, each a
+    /// server with its own session, and the commands of the Epiphany menu.</summary>
     public sealed class AddIn : IExcelAddIn
     {
+        private const string DefaultName = "local";
         private const string DefaultAddress = "http://127.0.0.1:8080";
         private const string Menu = "Epiphany";
 
         private static readonly string SettingsFile = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Epiphany", "adapter.json");
 
-        internal static Connection Connection { get; private set; }
+        /// <summary>A server under the name formulas know it by, as in "production:Sales".</summary>
+        private sealed class Place
+        {
+            public string Name;
+            public string User;
+            public Connection Connection;
+            // The user closed the sign-in window without signing in; do not open it again unasked.
+            public bool Declined;
+        }
 
-        private static string user = "";
+        private static readonly object Gate = new object();
+        private static readonly Dictionary<string, Place> Places = new Dictionary<string, Place>();
+        // The environment of a formula that names none.
+        private static Place fallback;
+        /// <summary>How many times Refresh has run.</summary>
+        internal static double Refreshes { get; private set; }
+
         // The sign-in window is open or on its way.
         private static bool asking;
-        // The user closed the sign-in window without signing in; do not open it again unasked.
-        private static bool declined;
 
         public void AutoOpen()
         {
-            var address = DefaultAddress;
             try
             {
                 var settings = Json.Read(File.ReadAllText(SettingsFile));
-                address = Json.Field(settings, "address") as string ?? address;
-                user = Json.Field(settings, "user") as string ?? "";
+                var saved = Json.Field(settings, "environments") as Dictionary<string, object>;
+                foreach (var place in saved ?? new Dictionary<string, object>())
+                    Add(place.Key, (string)Json.Field(place.Value, "address"), Json.Field(place.Value, "user") as string ?? "");
+                Places.TryGetValue(Dimension.Key(Json.Field(settings, "default") as string), out fallback);
             }
             catch (Exception)
             {
                 // No settings yet, or settings that cannot be read: start from the defaults.
             }
-            Use(address);
+            fallback = fallback ?? Places.Values.FirstOrDefault() ?? Add(DefaultName, DefaultAddress, "");
         }
 
         public void AutoClose()
         {
-            Connection?.Dispose();
+            foreach (var place in Places.Values)
+                place.Connection.Dispose();
         }
 
-        private static void Use(string address)
+        /// <summary>The connection a formula's cube or dimension asks for, and the name without
+        /// its environment: "production:Sales" is Sales in production, "Sales" is Sales in the
+        /// default environment. Null when there is no environment of that name.</summary>
+        internal static Connection For(ref string name)
         {
-            Connection?.Dispose();
-            Connection = new Connection(address);
-            Connection.SignInNeeded += () =>
+            var colon = name.IndexOf(':');
+            var environment = colon < 0 ? null : Dimension.Key(name.Substring(0, colon));
+            name = name.Substring(colon + 1);
+            lock (Gate)
             {
-                if (asking || declined)
+                var place = fallback;
+                if (environment != null)
+                    Places.TryGetValue(environment, out place);
+                return place?.Connection;
+            }
+        }
+
+        /// <summary>Adds an environment, or replaces the one of the same name.</summary>
+        private static Place Add(string name, string address, string user, Connection connection = null)
+        {
+            var place = new Place { Name = name, User = user, Connection = connection ?? new Connection(address) };
+            place.Connection.SignInNeeded += () =>
+            {
+                if (asking || place.Declined)
                     return;
                 asking = true;
-                ExcelAsyncUtil.QueueAsMacro(Connect);
+                ExcelAsyncUtil.QueueAsMacro(() => Connect(place));
             };
+            lock (Gate)
+            {
+                if (Places.TryGetValue(Dimension.Key(name), out var replaced))
+                    replaced.Connection.Dispose();
+                Places[Dimension.Key(name)] = place;
+            }
+            return place;
         }
 
         [ExcelCommand(MenuName = Menu, MenuText = "Refresh", ShortCut = "^R")]
         public static void Refresh()
         {
-            declined = false;
-            Connection.Refresh();
+            Refreshes++;
+            foreach (var place in Places.Values)
+            {
+                place.Declined = false;
+                place.Connection.Refresh();
+            }
             // Every formula is calculated again, whether or not Excel holds it to be out of date.
             var excel = ExcelDnaUtil.Application;
             excel.GetType().InvokeMember("CalculateFull", BindingFlags.InvokeMethod, null, excel, null);
@@ -73,34 +117,26 @@ namespace Epiphany.Excel
         [ExcelCommand(MenuName = Menu, MenuText = "Connect...")]
         public static void Connect()
         {
+            Connect(fallback);
+        }
+
+        /// <summary>Asks where an environment's server is and who is signing in, until the
+        /// server accepts or the user gives up. The environment connected becomes the default.</summary>
+        private static void Connect(Place place)
+        {
+            var values = new[] { place.Name, place.Connection.Address, place.User, "" };
             try
             {
                 while (true)
                 {
-                    string address, name, password;
-                    if (!Ask(out address, out name, out password))
+                    if (!Ask(values))
                     {
-                        declined = true;
+                        place.Declined = true;
                         return;
                     }
-                    string problem = null;
-                    try
-                    {
-                        Use(address);
-                        var connection = Connection;
-                        if (!Task.Run(() => connection.SignIn(name, password)).Result)
-                            problem = "The server at " + address + " could not be reached, or the name or password is wrong.";
-                    }
-                    catch (UriFormatException)
-                    {
-                        problem = "'" + address + "' is not an address. It should look like " + DefaultAddress + ".";
-                    }
+                    var problem = SignIn(values[0], values[1], values[2], values[3]);
                     if (problem == null)
-                    {
-                        user = name;
-                        Save(address);
                         break;
-                    }
                     MessageBox.Show(problem, Menu, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
             }
@@ -108,24 +144,52 @@ namespace Epiphany.Excel
             {
                 asking = false;
             }
+            Save();
             Refresh();
+        }
+
+        /// <summary>Signs in and takes the environment into use. Null, or what went wrong.</summary>
+        private static string SignIn(string name, string address, string user, string password)
+        {
+            if (Dimension.Key(name) == "" || name.Contains(":"))
+                return "The environment needs a name, without a colon. Formulas use it as in \"" + DefaultName + ":Cube\".";
+            Connection connection;
+            try
+            {
+                connection = new Connection(address);
+            }
+            catch (UriFormatException)
+            {
+                return "'" + address + "' is not an address. It should look like " + DefaultAddress + ".";
+            }
+            if (!Task.Run(() => connection.SignIn(user, password)).Result)
+            {
+                connection.Dispose();
+                return "The server at " + address + " could not be reached, or the name or password is wrong.";
+            }
+            fallback = Add(name, address, user, connection);
+            return null;
         }
 
         [ExcelCommand(MenuName = Menu, MenuText = "Disconnect")]
         public static void Disconnect()
         {
-            var connection = Connection;
-            Task.Run(() => connection.SignOut()).Wait();
-            declined = true;
+            foreach (var place in Places.Values.ToArray())
+            {
+                Task.Run(() => place.Connection.SignOut()).Wait();
+                place.Declined = true;
+            }
         }
 
-        /// <summary>Remembers where the server is and who signs in. Never the password.</summary>
-        private static void Save(string address)
+        /// <summary>Remembers each environment's server and who signs in. Never a password.</summary>
+        private static void Save()
         {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(SettingsFile));
-                var settings = new Dictionary<string, object> { ["address"] = address, ["user"] = user };
+                var environments = Places.Values.ToDictionary(place => place.Name, place => (object)
+                    new Dictionary<string, object> { ["address"] = place.Connection.Address, ["user"] = place.User });
+                var settings = new Dictionary<string, object> { ["default"] = fallback.Name, ["environments"] = environments };
                 File.WriteAllText(SettingsFile, Json.Write(settings));
             }
             catch (Exception)
@@ -134,48 +198,43 @@ namespace Epiphany.Excel
             }
         }
 
-        /// <summary>The window that asks where the server is and who is signing in.</summary>
-        private static bool Ask(out string address, out string name, out string password)
+        /// <summary>The window that asks for an environment, its server, a name and a password,
+        /// starting from the values given and leaving in them what was typed.</summary>
+        private static bool Ask(string[] values)
         {
+            var labels = new[] { "Environment", "Server", "Name", "Password" };
             using (var form = new Form())
             {
                 form.Text = "Connect to Epiphany";
                 form.FormBorderStyle = FormBorderStyle.FixedDialog;
                 form.StartPosition = FormStartPosition.CenterScreen;
                 form.MinimizeBox = form.MaximizeBox = false;
-                form.ClientSize = new System.Drawing.Size(360, 150);
+                form.ClientSize = new System.Drawing.Size(360, 180);
 
-                var fields = new[]
+                var boxes = new TextBox[labels.Length];
+                for (var row = 0; row < labels.Length; row++)
                 {
-                    Field(form, "Server", Connection.Address, 0),
-                    Field(form, "Name", user, 1),
-                    Field(form, "Password", "", 2),
-                };
-                fields[2].UseSystemPasswordChar = true;
-                var ok = new Button { Text = "Connect", DialogResult = DialogResult.OK, Left = 184, Top = 112, Width = 80 };
-                var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 270, Top = 112, Width = 80 };
+                    var top = 14 + row * 30;
+                    form.Controls.Add(new Label { Text = labels[row], Left = 10, Top = top + 3, Width = 80 });
+                    boxes[row] = new TextBox { Text = values[row], Left = 94, Top = top, Width = 256 };
+                    form.Controls.Add(boxes[row]);
+                }
+                boxes[3].UseSystemPasswordChar = true;
+                var ok = new Button { Text = "Connect", DialogResult = DialogResult.OK, Left = 184, Top = 142, Width = 80 };
+                var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Left = 270, Top = 142, Width = 80 };
                 form.Controls.Add(ok);
                 form.Controls.Add(cancel);
                 form.AcceptButton = ok;
                 form.CancelButton = cancel;
                 // With a name already known, the password is what is left to type.
-                form.ActiveControl = fields[user == "" ? 1 : 2];
+                form.ActiveControl = boxes[values[2] == "" ? 2 : 3];
 
                 var accepted = form.ShowDialog() == DialogResult.OK;
-                address = fields[0].Text.Trim();
-                name = fields[1].Text.Trim();
-                password = fields[2].Text;
+                for (var row = 0; row < 3; row++)
+                    values[row] = boxes[row].Text.Trim();
+                values[3] = boxes[3].Text;
                 return accepted;
             }
-        }
-
-        private static TextBox Field(Form form, string label, string text, int row)
-        {
-            var top = 14 + row * 30;
-            form.Controls.Add(new Label { Text = label, Left = 10, Top = top + 3, Width = 70 });
-            var box = new TextBox { Text = text, Left = 84, Top = top, Width = 266 };
-            form.Controls.Add(box);
-            return box;
         }
     }
 }

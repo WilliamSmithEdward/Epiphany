@@ -301,8 +301,11 @@ practice that means:
   - The dimension copies are renewed by the Refresh command, not by watching the model
     version; the API has no cheap way to ask for the version alone.
   - `adapter/check-excel.ps1` enters a formula for each row of the table in a real Excel
-    and all of them pass, as does Refresh. The Connect window, sign-in and Disconnect have
-    not been tried in Excel; they need a person at the keyboard.
+    and all of them pass, as does Refresh. `adapter/check-excel-signin.ps1` drives the
+    Connect window, a refused and an accepted sign-in, and Disconnect. Neither runs in CI,
+    which has no Excel.
+  - Formulas name their environment as PAfE's do (`production:Sales`); each environment is
+    a server with its own session, added with Connect.
   - See "Not replicated" in the table for the PAfE features left out.
 
 ## 5. Build order

@@ -14,8 +14,10 @@ corrected and the adapter with it.
 - Names of cubes, dimensions, elements, attributes and subsets are matched ignoring case and
   spaces.
 - An element may be given by its name or by any of its aliases.
-- A cube may be written `server:cube`, as PAfE workbooks do. The adapter has one connection,
-  so the part before the colon is ignored.
+- A cube or dimension is written `environment:name`, as PAfE workbooks do:
+  `"production:Sales"` is the cube Sales in the environment called production. Each
+  environment is a server with its own session. A name without a colon is looked for in the
+  default environment. An environment that is not known gives `*KEY_ERR`.
 - Indexes count from 1.
 - `*KEY_ERR` is the text PAfE shows for a reference that cannot be resolved.
 - `#N/A` is shown while a result is on its way, and when there is no connection or no session.
@@ -73,7 +75,7 @@ element of the dimension, in the dimension's order.
 | Behaviour | Adapter | PAfE |
 | --- | --- | --- |
 | A formula recalculates when one of its arguments changes | Yes; Excel does this | Same |
-| Refreshing data without changing any argument | **Refresh** in the Epiphany menu, or Ctrl+Shift+R, recalculates every formula in every open workbook | PAfE refreshes from its ribbon; unverified |
+| Refreshing data without changing any argument | **Refresh** in the Epiphany menu, or Ctrl+Shift+R, asks the server again for every formula in every open workbook | PAfE refreshes from its ribbon; unverified |
 | F9 | Recalculates only what Excel holds to be out of date, so it does not fetch new data | Unverified |
 | Reads in one calculation | Collected and sent as one `/cells/read` request | Same for `DBRW` |
 | Writes in one calculation | Collected and sent as one `/cells/write` request, before the reads of the same calculation. The writes that can be made are made together or not at all; a write the server refuses gets `*KEY_ERR` and does not stop the others | Unverified |
@@ -84,17 +86,18 @@ element of the dimension, in the dimension's order.
 
 | Behaviour | Adapter |
 | --- | --- |
-| Where the server is | `http://127.0.0.1:8080` until changed with **Connect** in the Epiphany menu. The address and the user's name are remembered in `%APPDATA%\Epiphany\adapter.json`; the password is never stored |
+| Environments | To begin with there is one, `local`, at `http://127.0.0.1:8080`. **Connect** in the Epiphany menu asks for an environment's name, its server, a user name and a password; it adds the environment, or changes the one of that name, and makes it the default |
+| What is remembered | Each environment's server and user name, and which is the default, in `%APPDATA%\Epiphany\adapter.json`. A password is never stored |
 | A server that asks for no sign-in | Works without one |
-| A server with users | The first refused request opens the sign-in window. The session's token is kept in memory only |
-| A session that has ended | The next request is refused, and the sign-in window opens again |
-| **Disconnect** | Signs out and forgets the token |
+| A server with users | The first refused request opens the Connect window for that environment. The session's token is kept in memory only |
+| A session that has ended | The next request is refused, and the window opens again |
+| The window closed without signing in | It is not opened again unasked until **Refresh** or **Connect** |
+| **Disconnect** | Signs out of every environment and forgets the tokens |
 
 ## Not replicated
 
 - Typing a value over a `DBRW` cell to write it back. Write with `DBS`, `DBSW` or `DBSS`.
 - The element picker that PAfE opens on a double click of a `SUBNM` cell.
-- Several servers in one workbook.
 - `DBS` to a consolidated cell as a spread. Spreading is available from the API
   (`POST /cells/spread`), not from a worksheet function.
 - `VIEW`, `TM1RPTROW` and the other functions of PAfE's reports.

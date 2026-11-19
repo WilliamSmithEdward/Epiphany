@@ -122,33 +122,40 @@ namespace Epiphany.Excel
         /// <summary>Reads a cell, or writes it when there is a value.</summary>
         private static object Cell(string function, object value, object cube, object[] elements)
         {
-            var connection = AddIn.Connection;
-            // PAfE writes a cube as server:cube; there is one server here.
             var name = Text(cube);
-            name = name.Substring(name.IndexOf(':') + 1);
+            var connection = AddIn.For(ref name);
             var at = elements.Select(Text).ToArray();
             var arguments = new[] { value, cube }.Concat(elements).ToArray();
-            return Run(function, arguments,
+            return Run(function, arguments, connection,
                 () => value == null ? connection.Read(name, at) : connection.Write(name, at, value));
         }
 
         private static object Ask(string function, object dimension, Func<Dimension, object> question,
             params object[] others)
         {
-            var connection = AddIn.Connection;
+            var name = Text(dimension);
+            var connection = AddIn.For(ref name);
             var arguments = new[] { dimension }.Concat(others).ToArray();
-            return Run(function, arguments, () => connection.Ask(Text(dimension), question));
+            return Run(function, arguments, connection, () => connection.Ask(name, question));
         }
 
         /// <summary>Answers a formula once its task is done. Until then, and whenever the
         /// formula is calculated again with the same arguments while the task runs, Excel
-        /// shows #N/A. An argument that is an error is the answer itself.</summary>
-        private static object Run(string function, object[] arguments, Func<Task<object>> question)
+        /// shows #N/A. An argument that is an error is the answer itself, and an environment
+        /// that is not known is a key error.</summary>
+        private static object Run(string function, object[] arguments, Connection connection,
+            Func<Task<object>> question)
         {
             var error = arguments.FirstOrDefault(argument => argument is ExcelError);
             if (error != null)
                 return error;
-            return ExcelAsyncUtil.RunTask(function, arguments, async () =>
+            if (connection == null)
+                return Connection.KeyError;
+            // Excel-DNA tells one question from another by function and arguments, and hands a
+            // question asked twice the answer it already has. Counting the refreshes among the
+            // arguments makes every formula a new question after Refresh.
+            var asked = arguments.Concat(new object[] { AddIn.Refreshes }).ToArray();
+            return ExcelAsyncUtil.RunTask(function, asked, async () =>
             {
                 var answer = await question().ConfigureAwait(false);
                 return ReferenceEquals(answer, Connection.Unavailable) ? ExcelError.ExcelErrorNA : answer;
