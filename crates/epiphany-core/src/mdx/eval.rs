@@ -68,11 +68,19 @@ pub(super) struct Evaluator<'a> {
     pub(super) cube_id: usize,
     pub(super) cube: &'a Cube,
     read: Read<'a>,
+    /// Told which cells of the cube are about to be read, so that they can be added up together.
+    expect: Expect<'a>,
     calculated: Vec<Calculated<'a>>,
     sets: HashMap<String, Vec<Tuple>>,
     /// How many calculated members are being evaluated inside one another.
     depth: Cell<u32>,
 }
+
+/// Takes the cells of a cube that are about to be read.
+pub(crate) type Expect<'a> = &'a dyn Fn(&[&[ElementId]]);
+
+/// For work whose cells are read one at a time.
+pub(super) fn unexpected(_: &[&[ElementId]]) {}
 
 pub(super) fn fail<T>(message: impl Into<String>) -> Evaluated<T> {
     Err(MdxError::new(message))
@@ -116,10 +124,11 @@ impl Query {
         model: &Model,
         cube_id: usize,
         read: Read,
-        expect: &dyn Fn(&[&[ElementId]]),
+        expect: Expect,
     ) -> Evaluated<QueryResult> {
         let cube = &model.cubes()[cube_id];
         let mut evaluator = Evaluator::new(model, cube_id, cube, read);
+        evaluator.expect = expect;
         for member in &self.members {
             let [dimension, .., name] = member.name.as_slice() else {
                 return fail("a calculated member is named [Dimension].[Name]");
@@ -335,6 +344,7 @@ impl<'a> Evaluator<'a> {
             cube_id,
             cube,
             read,
+            expect: &unexpected,
             calculated: Vec::new(),
             sets: HashMap::new(),
             depth: Cell::new(0),
@@ -692,7 +702,9 @@ impl<'a> Evaluator<'a> {
                 // As everywhere in the engine, a cell holding zero is an empty cell, so the
                 // average, least and greatest are taken over the cells that hold something.
                 let mut values = Vec::new();
-                for tuple in self.set(&arguments[0], context)? {
+                let set = self.set(&arguments[0], context)?;
+                self.foresee(arguments.get(1), context, &set);
+                for tuple in set {
                     let value = measure(&tuple)?;
                     if !is_empty(&value) {
                         values.push(to_number(&value)?);
@@ -713,6 +725,7 @@ impl<'a> Evaluator<'a> {
                 let counted = match flag(arguments.get(1)).as_deref() {
                     None | Some("INCLUDEEMPTY") => set.len(),
                     Some("EXCLUDEEMPTY") => {
+                        self.foresee(None, context, &set);
                         let mut filled = 0;
                         for tuple in &set {
                             filled += usize::from(!is_empty(&self.cell(&with(context, tuple))?));
@@ -772,7 +785,11 @@ impl<'a> Evaluator<'a> {
             "TOPCOUNT" | "BOTTOMCOUNT" => {
                 count(2..=3)?;
                 let mut keyed = Vec::new();
-                for tuple in self.set(&arguments[0], context)? {
+                let set = self.set(&arguments[0], context)?;
+                if arguments.len() == 3 {
+                    self.foresee(arguments.get(2), context, &set);
+                }
+                for tuple in set {
                     let value = match arguments.get(2) {
                         Some(expression) => {
                             let context = with(context, &tuple);
@@ -904,7 +921,9 @@ impl<'a> Evaluator<'a> {
             "FILTER" => {
                 count(2..=2)?;
                 let mut kept = Vec::new();
-                for tuple in self.set(&arguments[0], context)? {
+                let set = self.set(&arguments[0], context)?;
+                self.foresee(arguments.get(1), context, &set);
+                for tuple in set {
                     if self.truth(&arguments[1], &with(context, &tuple))? {
                         kept.push(tuple);
                     }
@@ -918,7 +937,11 @@ impl<'a> Evaluator<'a> {
                     None => vec![Tuple::new()],
                 };
                 let mut kept = Vec::new();
-                for tuple in self.set(&arguments[0], context)? {
+                let set = self.set(&arguments[0], context)?;
+                for other in &across {
+                    self.foresee(None, &with(context, other), &set);
+                }
+                for tuple in set {
                     let context = with(context, &tuple);
                     let mut cells = across.iter().map(|other| self.cell(&with(&context, other)));
                     if cells.try_fold(false, |any, cell| Ok(any || !is_empty(&cell?)))? {
@@ -1194,6 +1217,7 @@ impl<'a> Evaluator<'a> {
             Some("BDESC") => (true, false),
             Some(other) => return fail(format!("unknown ORDER flag {other}")),
         };
+        self.foresee(arguments.get(1), context, &set);
         let value = |tuple: &Tuple| {
             let context = with(context, tuple);
             let value = self.evaluate(&arguments[1], &context)?;
@@ -1289,6 +1313,49 @@ impl<'a> Evaluator<'a> {
             .into_iter()
             .map(|place| place.unwrap_or(usize::MAX))
             .collect()
+    }
+
+    /// Says which cells evaluating an expression at each tuple of a set is about to read: the
+    /// cell of every member or tuple the expression names outright, or with no expression the
+    /// tuple's own cell. Cells it cannot foresee are simply read when their turn comes.
+    fn foresee(&self, expression: Option<&Expr>, context: &Context, set: &[Tuple]) {
+        let mut named = Vec::new();
+        match expression {
+            Some(expression) => self.named(expression, context, &mut named),
+            None => named.push(Tuple::new()),
+        }
+        let element = |id: &Id| match id {
+            Id::Element(element) => Some(*element),
+            Id::Calculated(_) => None,
+        };
+        let cells: Vec<Vec<ElementId>> = set
+            .iter()
+            .flat_map(|tuple| {
+                let context = with(context, tuple);
+                let at = |named: &Tuple| with(&context, named).iter().map(element).collect();
+                named.iter().filter_map(at).collect::<Vec<_>>()
+            })
+            .collect();
+        (self.expect)(&cells.iter().map(Vec::as_slice).collect::<Vec<_>>());
+    }
+
+    /// The members and tuples an expression names outright, through arithmetic and comparisons.
+    fn named(&self, expression: &Expr, context: &Context, found: &mut Vec<Tuple>) {
+        match expression {
+            Expr::Binary(left, _, right) => {
+                self.named(left, context, found);
+                self.named(right, context, found);
+            }
+            Expr::Not(inner) | Expr::Negate(inner) => self.named(inner, context, found),
+            Expr::Name(_) | Expr::Member(..) | Expr::Tuple(_) => {
+                match self.evaluate(expression, context) {
+                    Ok(Datum::Member(member)) => found.push(vec![member]),
+                    Ok(Datum::Tuple(tuple)) => found.push(tuple),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
     }
 
     /// The value of the cell at a context. A calculated member there is evaluated first.

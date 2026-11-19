@@ -33,13 +33,12 @@ The same cube and data, queried through the database.
 | 10,000 leaf cells | 100 by 100 leaves at one leaf of the other two dimensions | 2.1 ms (0.2 µs a cell) | 3.0 ms | 1.7 ms |
 | 400 cells, each totalling two dimensions | 20 by 20 leaves at the grand total of the other two | 84 ms (210 µs a cell) | 5.1 ms (13 µs a cell) | 0.1 ms |
 | 113 cells, each totalling three dimensions | Every element of one dimension at the grand total of the rest | 102 ms (0.9 ms a cell) | 8.8 ms (78 µs a cell) | 0.04 ms |
-| The 10 largest of 100 totals | `TopCount` over totals, then the cells | 72 ms | 46 ms | 0.2 ms |
+| The 10 largest of 100 totals | `TopCount` over totals, then the cells | 72 ms | 4.3 ms | 0.2 ms |
 
 At milestone 6 every consolidated cell passed over the stored cells by itself. Now the cells
-of a query's axes are added up in one pass, and a consolidated cell once worked out is kept
-until the next commit, so the same query asked again reads what was kept. The totals that
-`TopCount` reads to choose its tuples are still added up one by one, which is the time left
-in the last row.
+of a query's axes, and those a set function such as `TopCount` reads to choose its tuples,
+are added up in one pass, and a consolidated cell once worked out is kept until the next
+commit, so the same query asked again reads what was kept.
 
 ## Rules and feeders
 

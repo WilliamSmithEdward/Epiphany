@@ -65,10 +65,11 @@ practice that means:
   its own neither uses nor adds to what is kept.
 - Cells read together are added up together. Where the totals among them would each pass
   over the stored cells, one pass gives every stored cell to all the totals it counts
-  towards. This serves `/cells/read` batches and the cells of an MDX query's axes.
-- Not done: the one pass in cubes with rules, and for the totals a set function such as
-  `TopCount` or `Filter` reads while choosing its tuples; both still add up cell by cell.
-  What is kept is not adjusted by a write but dropped, so a workload that alternates writes
+  towards. This serves `/cells/read` batches, the cells of an MDX query's axes, and the
+  cells that `Sum`, `Avg`, `Min`, `Max`, `Count`, `TopCount`, `BottomCount`, `Filter`,
+  `NonEmpty` and `Order` read at each tuple of their set, where the expression names its
+  members outright.
+- Not done: the one pass in cubes with rules, which still add up cell by cell. What is kept is not adjusted by a write but dropped, so a workload that alternates writes
   and reads of totals gains only from the one pass.
 
 ### 2.3 Transactions and locks
