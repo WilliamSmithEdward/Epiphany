@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRef, FromRequest, Path, Request, State};
+use axum::extract::{FromRef, FromRequest, Path, Query, Request, State};
 use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
@@ -17,13 +17,15 @@ use epiphany_core::database::{
     CellRef, CellWrite, Database, Error, Explanation, LockMode, ModelUpdate, Spread, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
-use epiphany_core::model::{AttributeType, ChildDef, Dimension, ElementId, ElementType, ModelDef};
+use epiphany_core::model::{
+    AttributeType, ChildDef, CubeDef, Dimension, DimensionDef, ElementId, ElementType, ModelDef,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{Auth, Refusal, Role};
 use utoipa::openapi::RefOr;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
-use utoipa::{OpenApi, ToSchema};
+use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
@@ -53,7 +55,8 @@ fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(Contract::openapi())
         .routes(routes!(sign_in, sign_out))
         .routes(routes!(get_model, put_model))
-        .routes(routes!(get_dimension))
+        .routes(routes!(get_dimension, put_dimension, delete_dimension))
+        .routes(routes!(get_cube, put_cube, delete_cube))
         .routes(routes!(read_cells))
         .routes(routes!(write_cells))
         .routes(routes!(explain_cells))
@@ -162,10 +165,11 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
 /// What a user must be allowed to do to call a route.
 fn needed(method: &Method, path: &str) -> Role {
     let reads = ["/cells/read", "/cells/explain", "/mdx"];
-    if method == Method::PUT && path == "/model" {
-        Role::Admin
-    } else if method == Method::GET || path == "/sessions" || reads.contains(&path) {
+    if method == Method::GET || path == "/sessions" || reads.contains(&path) {
         Role::Read
+    } else if method == Method::PUT || method == Method::DELETE {
+        // Every other PUT or DELETE changes the model.
+        Role::Admin
     } else {
         Role::Write
     }
@@ -583,6 +587,193 @@ async fn get_dimension(
     };
     let dimension = database.model().dimension(&name).ok_or_else(unknown)?;
     Ok(Json(dimension.into()))
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct DimensionPut {
+    /// The model version the dimension was edited from.
+    based_on: u64,
+    dimension: DimensionDef,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct CubePut {
+    /// The model version the cube was edited from.
+    based_on: u64,
+    cube: CubeDef,
+}
+
+#[derive(Deserialize, IntoParams)]
+struct Based {
+    /// The model version the removal was decided from.
+    based_on: u64,
+}
+
+fn unknown(what: &'static str, name: &str) -> ApiError {
+    let code = match what {
+        "cube" => "unknown_cube",
+        _ => "unknown_dimension",
+    };
+    ApiError::new(
+        StatusCode::NOT_FOUND,
+        code,
+        format!("unknown {what} '{name}'"),
+    )
+}
+
+/// Changes one part of the model definition and puts the whole in place in one step, so that
+/// a change to a part is as atomic and as versioned as a change of everything.
+fn change(
+    database: &Shared,
+    based_on: u64,
+    edit: impl FnOnce(&Database, &mut ModelDef) -> Result<(), ApiError>,
+) -> Result<Json<ModelUpdate>, ApiError> {
+    let mut database = database.write().unwrap();
+    let mut definition = database.definition().clone();
+    edit(&database, &mut definition)?;
+    Ok(Json(database.update_model(based_on, definition)?))
+}
+
+/// Where a dimension is in the definition, by its name ignoring case and spaces.
+fn dimension_at(database: &Database, definition: &ModelDef, name: &str) -> Option<usize> {
+    let found = &database.model().dimension(name)?.name;
+    definition.dimensions.iter().position(|d| &d.name == found)
+}
+
+/// Where a cube is in the definition, by its name ignoring case and spaces.
+fn cube_at(database: &Database, definition: &ModelDef, name: &str) -> Option<usize> {
+    let found = &database.model().cubes()[database.model().cube_id(name)?].name;
+    definition.cubes.iter().position(|c| &c.name == found)
+}
+
+/// Replaces one dimension, or adds it if the model has none of that name. Stored cells that
+/// still fit are kept.
+#[utoipa::path(
+    put,
+    path = "/dimensions/{name}",
+    params(("name" = String, Path, description = "The dimension to replace, ignoring case and spaces")),
+    request_body = DimensionPut,
+    responses(
+        (status = OK, body = ModelUpdate, description = "The dimension was replaced or added"),
+        (status = CONFLICT, body = ApiError, description = "Stale version, or a transaction holds a lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The model would be invalid, or the request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
+)]
+async fn put_dimension(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+    Body(request): Body<DimensionPut>,
+) -> Result<Json<ModelUpdate>, ApiError> {
+    change(&database, request.based_on, |database, definition| {
+        match dimension_at(database, definition, &name) {
+            Some(at) => definition.dimensions[at] = request.dimension,
+            None => definition.dimensions.push(request.dimension),
+        }
+        Ok(())
+    })
+}
+
+/// Removes one dimension. It is refused while a cube uses the dimension.
+#[utoipa::path(
+    delete,
+    path = "/dimensions/{name}",
+    params(("name" = String, Path, description = "Dimension name, ignoring case and spaces"), Based),
+    responses(
+        (status = OK, body = ModelUpdate, description = "The dimension was removed"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown dimension"),
+        (status = CONFLICT, body = ApiError, description = "Stale version, or a transaction holds a lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "A cube uses the dimension"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
+)]
+async fn delete_dimension(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+    Query(based): Query<Based>,
+) -> Result<Json<ModelUpdate>, ApiError> {
+    change(&database, based.based_on, |database, definition| {
+        let at =
+            dimension_at(database, definition, &name).ok_or_else(|| unknown("dimension", &name))?;
+        definition.dimensions.remove(at);
+        Ok(())
+    })
+}
+
+/// One cube as the model defines it: its dimensions, views, rules and feeders.
+#[utoipa::path(
+    get,
+    path = "/cubes/{name}",
+    params(("name" = String, Path, description = "Cube name, ignoring case and spaces")),
+    responses(
+        (status = OK, body = CubeDef, description = "The cube"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown cube")
+    )
+)]
+async fn get_cube(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+) -> Result<Json<CubeDef>, ApiError> {
+    let database = database.read().unwrap();
+    let definition = database.definition();
+    let at = cube_at(&database, definition, &name).ok_or_else(|| unknown("cube", &name))?;
+    Ok(Json(definition.cubes[at].clone()))
+}
+
+/// Replaces one cube, or adds it if the model has none of that name. This is how a view, a
+/// rule or a feeder is saved without sending the whole model. Stored cells that still fit are
+/// kept.
+#[utoipa::path(
+    put,
+    path = "/cubes/{name}",
+    params(("name" = String, Path, description = "The cube to replace, ignoring case and spaces")),
+    request_body = CubePut,
+    responses(
+        (status = OK, body = ModelUpdate, description = "The cube was replaced or added"),
+        (status = CONFLICT, body = ApiError, description = "Stale version, or a transaction holds a lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The model would be invalid, or the request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
+)]
+async fn put_cube(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+    Body(request): Body<CubePut>,
+) -> Result<Json<ModelUpdate>, ApiError> {
+    change(&database, request.based_on, |database, definition| {
+        match cube_at(database, definition, &name) {
+            Some(at) => definition.cubes[at] = request.cube,
+            None => definition.cubes.push(request.cube),
+        }
+        Ok(())
+    })
+}
+
+/// Removes one cube and the cells stored in it.
+#[utoipa::path(
+    delete,
+    path = "/cubes/{name}",
+    params(("name" = String, Path, description = "Cube name, ignoring case and spaces"), Based),
+    responses(
+        (status = OK, body = ModelUpdate, description = "The cube was removed"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown cube"),
+        (status = CONFLICT, body = ApiError, description = "Stale version, or a transaction holds a lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "A rule or feeder of another cube reads the cube"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
+)]
+async fn delete_cube(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+    Query(based): Query<Based>,
+) -> Result<Json<ModelUpdate>, ApiError> {
+    change(&database, based.based_on, |database, definition| {
+        let at = cube_at(database, definition, &name).ok_or_else(|| unknown("cube", &name))?;
+        definition.cubes.remove(at);
+        Ok(())
+    })
 }
 
 /// Reads a batch of cells. A cell that cannot be read reports its own error.

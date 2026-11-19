@@ -105,7 +105,10 @@ practice that means:
   a removal and an addition, so it drops the cells.
 - An update is refused while any transaction holds a lock.
 - Done: whole-model replacement, with the version and every earlier model kept on disk.
-  Updating a single dimension or cube is not done yet.
+- Done: `PUT` and `DELETE` of `/dimensions/{name}` and `/cubes/{name}`, and `GET /cubes/{name}`.
+  Each changes that one part of the current definition and then goes the way of a
+  whole-model update, so it is checked against the version, validated as a whole and
+  swapped in at once. A `PUT` to a name the model does not have adds the part.
 
 ### 2.5 Persistence
 
@@ -239,8 +242,9 @@ practice that means:
 - `GET /dimensions/{name}` lists each subset's elements; `GET /cubes/{cube}/views/{view}`
   runs a view.
 - A model update that changes only subsets and views leaves the stored cells untouched.
-- Not done: saving one subset or view without sending the whole model, subsets that depend
-  on cell values, and private (per-user) subsets and views.
+- A subset is saved by putting its dimension, and a view by putting its cube; neither has
+  a route of its own.
+- Not done: subsets that depend on cell values, and private (per-user) subsets and views.
 
 ## 3. API
 

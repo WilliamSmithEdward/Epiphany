@@ -544,3 +544,84 @@ async fn the_committed_contract_matches_the_routes() {
         }
     }
 }
+
+#[tokio::test]
+async fn one_dimension_or_cube_is_changed_without_sending_the_model() {
+    let app = example();
+    let cells = json!({ "cells": [write(["Rent", "US", "Jan", "Actual"], json!(25))] });
+    call(&app, "POST", "/cells/write", Some(cells)).await;
+    let updated = |version: u64| json!({ "version": version, "dropped_cells": 0 });
+
+    // A cube is served as defined, and saved again with a view added.
+    let (status, mut cube) = call(&app, "GET", "/cubes/general%20ledger", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cube["name"], "General Ledger");
+    assert_eq!(cube["dimensions"].as_array().unwrap().len(), 4);
+    cube["views"] =
+        json!({ "US": { "mdx": "SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]" } });
+    let put = json!({ "based_on": 1, "cube": cube });
+    let (status, body) = call(&app, "PUT", "/cubes/GeneralLedger", Some(put.clone())).await;
+    assert_eq!((status, body), (StatusCode::OK, updated(2)));
+    let (status, _) = call(&app, "GET", "/cubes/General%20Ledger/views/US", None).await;
+    assert_eq!(status, StatusCode::OK);
+    // It is checked against the model's version like any other change.
+    let (status, body) = call(&app, "PUT", "/cubes/GeneralLedger", Some(put)).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "stale_version");
+
+    // A dimension is saved with a subset added; the cell stored before is still there.
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    let dimensions = served["model"]["dimensions"].as_array().unwrap();
+    let mut version = dimensions
+        .iter()
+        .find(|dimension| dimension["name"] == "Version")
+        .unwrap()
+        .clone();
+    version["subsets"] = json!({ "Real": { "elements": ["Actual"] } });
+    let put = json!({ "based_on": 2, "dimension": version });
+    let (status, body) = call(&app, "PUT", "/dimensions/version", Some(put)).await;
+    assert_eq!((status, body), (StatusCode::OK, updated(3)));
+    let (_, served) = call(&app, "GET", "/dimensions/Version", None).await;
+    assert_eq!(served["subsets"]["Real"], json!(["Actual"]));
+    let reads = json!({ "cells": [cell(["Rent", "Total Entity", "Jan", "Actual"])] });
+    let (_, body) = call(&app, "POST", "/cells/read", Some(reads)).await;
+    assert_eq!(body, json!({ "cells": [{ "value": 25.0 }] }));
+
+    // A name the model does not have yet adds the dimension or the cube.
+    let scenario = json!({ "name": "Scenario", "type": "standard",
+        "elements": [{ "name": "Base", "type": "numeric" }] });
+    let put = json!({ "based_on": 3, "dimension": scenario });
+    let (status, body) = call(&app, "PUT", "/dimensions/Scenario", Some(put)).await;
+    assert_eq!((status, body), (StatusCode::OK, updated(4)));
+    let plan = json!({ "name": "Plan", "dimensions": ["Scenario", "Period"] });
+    let put = json!({ "based_on": 4, "cube": plan });
+    let (status, body) = call(&app, "PUT", "/cubes/Plan", Some(put)).await;
+    assert_eq!((status, body), (StatusCode::OK, updated(5)));
+    // A change that would leave the model invalid is refused whole.
+    let broken = json!({ "based_on": 5, "cube": { "name": "Plan", "dimensions": ["Nowhere"] } });
+    let (status, body) = call(&app, "PUT", "/cubes/Plan", Some(broken)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "invalid_model");
+
+    // A dimension goes only once no cube uses it.
+    let (status, body) = call(&app, "DELETE", "/dimensions/Scenario?based_on=5", None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "invalid_model");
+    let (status, body) = call(&app, "DELETE", "/cubes/plan?based_on=5", None).await;
+    assert_eq!((status, body), (StatusCode::OK, updated(6)));
+    let (status, body) = call(&app, "DELETE", "/dimensions/Scenario?based_on=6", None).await;
+    assert_eq!((status, body), (StatusCode::OK, updated(7)));
+    for (uri, code) in [
+        ("/cubes/Plan?based_on=7", "unknown_cube"),
+        ("/dimensions/Scenario?based_on=7", "unknown_dimension"),
+    ] {
+        let (status, body) = call(&app, "DELETE", uri, None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["code"], code);
+    }
+    assert_eq!(
+        call(&app, "GET", "/cubes/Plan", None).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(call(&app, "GET", "/model", None).await.1["version"], 7);
+}
