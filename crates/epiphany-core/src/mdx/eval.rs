@@ -50,6 +50,9 @@ pub(super) enum Datum {
     Bool(bool),
     /// A dimension of the cube, by position.
     Dimension(usize),
+    /// A level of a dimension: the dimension's position, and the level counted up from the
+    /// leaves, which are level zero.
+    Level(usize, u32),
     Member(Member),
     Tuple(Tuple),
     Set(Vec<Tuple>),
@@ -1028,8 +1031,21 @@ impl<'a> Evaluator<'a> {
             "ANCESTOR" | "ANCESTORS" => {
                 count(2..=2)?;
                 let mut member = self.member(&arguments[0], context)?;
-                for _ in 0..self.number(&arguments[1], context)? as usize {
-                    member = self.parent(member)?;
+                // Up to a level, or up a number of steps.
+                match self.evaluate(&arguments[1], context)? {
+                    Datum::Level(_, level) => {
+                        member = self.ancestor_at(member, level)?.ok_or_else(|| {
+                            let name = self.name(member);
+                            MdxError::new(format!(
+                                "member '{name}' has no ancestor at level {level}"
+                            ))
+                        })?;
+                    }
+                    steps => {
+                        for _ in 0..to_number(&self.scalar(steps, context)?)? as usize {
+                            member = self.parent(member)?;
+                        }
+                    }
                 }
                 Ok(match function {
                     "ANCESTOR" => Datum::Member(member),
@@ -1195,8 +1211,158 @@ impl<'a> Evaluator<'a> {
                     false => text.replace(&sought, &with),
                 }))
             }
+            "COUSIN" => {
+                count(2..=2)?;
+                let member = self.member(&arguments[0], context)?;
+                let other = self.member(&arguments[1], context)?;
+                // The member's own ancestor at the level of the one given, then the same
+                // way down from the one given.
+                let level = self.element(other)?.1.level;
+                let cousin = match self.ancestor_at(member, level)? {
+                    Some(ancestor) => self.cousin(member, ancestor, other)?,
+                    None => None,
+                };
+                Ok(cousin.map_or(Datum::Null, Datum::Member))
+            }
+            "PARALLELPERIOD" => {
+                count(1..=3)?;
+                let (position, level) = self.level(&arguments[0], context)?;
+                let back = match arguments.get(1) {
+                    Some(back) => self.number(back, context)?,
+                    None => 1.0,
+                };
+                let member = self.member_of(arguments.get(2), position, context)?;
+                // The member in the same place under the ancestor that many places back.
+                let mut parallel = None;
+                if let Some(ancestor) = self.ancestor_at(member, level)?
+                    && let Some(earlier) = self.shift(ancestor, -back)?
+                {
+                    parallel = self.cousin(member, ancestor, earlier)?;
+                }
+                Ok(parallel.map_or(Datum::Null, Datum::Member))
+            }
+            "PERIODSTODATE" => {
+                count(1..=2)?;
+                let (position, level) = self.level(&arguments[0], context)?;
+                let member = self.member_of(arguments.get(1), position, context)?;
+                let (id, element) = self.element(member)?;
+                // The members of the member's own level beneath its ancestor, in the order
+                // of the hierarchy, as far as the member itself.
+                let mut periods = Vec::new();
+                if let Some(ancestor) = self.ancestor_at(member, level)? {
+                    let elements = &self.dimension(position).elements;
+                    let mut waiting = vec![self.element(ancestor)?.0];
+                    while let Some(next) = waiting.pop() {
+                        let other = &elements[next as usize];
+                        if other.level == element.level && !periods.contains(&next) {
+                            periods.push(next);
+                        }
+                        if next == id {
+                            break;
+                        }
+                        if other.level > element.level {
+                            waiting.extend(other.children.iter().rev().map(|&(child, _)| child));
+                        }
+                    }
+                }
+                let one = |id: ElementId| {
+                    vec![Member {
+                        position,
+                        id: Id::Element(id),
+                    }]
+                };
+                Ok(Datum::Set(periods.into_iter().map(one).collect()))
+            }
             _ => fail(format!("unknown function {function}")),
         }
+    }
+
+    /// A level given as an argument: the position of its dimension, and the level.
+    fn level(&self, expression: &Expr, context: &Context) -> Evaluated<(usize, u32)> {
+        match self.evaluate(expression, context)? {
+            Datum::Level(position, level) => Ok((position, level)),
+            _ => fail("expected a level, such as [Period].Levels(1) or [Period].[Q1].Level"),
+        }
+    }
+
+    /// A member given as an argument, or without one the current member of a dimension.
+    fn member_of(
+        &self,
+        expression: Option<&Expr>,
+        position: usize,
+        context: &Context,
+    ) -> Evaluated<Member> {
+        match expression {
+            Some(expression) => self.member(expression, context),
+            None => Ok(Member {
+                position,
+                id: context[position],
+            }),
+        }
+    }
+
+    /// The member some places after this one, or before it if the number is negative, among
+    /// those of its level in the dimension's order. Nothing past either end.
+    fn shift(&self, member: Member, by: f64) -> Evaluated<Option<Member>> {
+        let (id, element) = self.element(member)?;
+        let elements = self.dimension(member.position).elements.iter().enumerate();
+        let level: Vec<usize> = elements
+            .filter(|(_, other)| other.level == element.level)
+            .map(|(id, _)| id)
+            .collect();
+        let place = level.iter().position(|&other| other == id as usize);
+        let place = place.map(|place| place as f64 + by.trunc());
+        let found = place
+            .filter(|&place| place >= 0.0)
+            .and_then(|place| level.get(place as usize));
+        Ok(found.map(|&id| Member {
+            position: member.position,
+            id: Id::Element(id as ElementId),
+        }))
+    }
+
+    /// The member itself or the ancestor of it that is at a level, going up by first parents.
+    /// Nothing if that way up passes the level by or ends beneath it.
+    fn ancestor_at(&self, mut member: Member, level: u32) -> Evaluated<Option<Member>> {
+        loop {
+            let (_, element) = self.element(member)?;
+            if element.level == level {
+                return Ok(Some(member));
+            }
+            if element.level > level || element.parents.is_empty() {
+                return Ok(None);
+            }
+            member = self.parent(member)?;
+        }
+    }
+
+    /// The member reached from `other` by the way that leads from `ancestor` down to
+    /// `member`: the same child at every step. Nothing if `other` has no such child.
+    fn cousin(&self, member: Member, ancestor: Member, other: Member) -> Evaluated<Option<Member>> {
+        let mut steps = Vec::new();
+        let mut at = member;
+        while at != ancestor {
+            let parent = self.parent(at)?;
+            let children = &self.element(parent)?.1.children;
+            steps.push(
+                children
+                    .iter()
+                    .position(|&(id, _)| Id::Element(id) == at.id),
+            );
+            at = parent;
+        }
+        let mut found = other;
+        for step in steps.into_iter().rev() {
+            let children = &self.element(found)?.1.children;
+            let Some(&(id, _)) = step.and_then(|step| children.get(step)) else {
+                return Ok(None);
+            };
+            found = Member {
+                position: found.position,
+                id: Id::Element(id),
+            };
+        }
+        Ok(Some(found))
     }
 
     fn method(
@@ -1232,21 +1398,8 @@ impl<'a> Evaluator<'a> {
         // The member some places before or after this one among those of its level, in the
         // dimension's order; nothing past either end.
         let shifted = |by: f64| -> Evaluated<Datum> {
-            let member = member()?;
-            let (id, element) = self.element(member)?;
-            let elements = self.dimension(member.position).elements.iter().enumerate();
-            let level: Vec<usize> = elements
-                .filter(|(_, other)| other.level == element.level)
-                .map(|(id, _)| id)
-                .collect();
-            let place = level.iter().position(|&other| other == id as usize);
-            let place = place.map(|place| place as f64 + by.trunc());
-            let found = place
-                .filter(|&place| place >= 0.0)
-                .and_then(|place| level.get(place as usize));
-            Ok(found.map_or(Datum::Null, |&id| {
-                Datum::Member(one(member.position, id as ElementId))
-            }))
+            let found = self.shift(member()?, by)?;
+            Ok(found.map_or(Datum::Null, Datum::Member))
         };
         let distance = || match arguments {
             [distance] => self.number(distance, context),
@@ -1257,6 +1410,23 @@ impl<'a> Evaluator<'a> {
             ("NEXTMEMBER", _) => shifted(1.0),
             ("LAG", _) => shifted(-distance()?),
             ("LEAD", _) => shifted(distance()?),
+            ("LEVEL", _) => {
+                let member = member()?;
+                Ok(Datum::Level(member.position, self.element(member)?.1.level))
+            }
+            ("LEVELS", &Datum::Dimension(position)) => {
+                Ok(Datum::Level(position, distance()?.max(0.0) as u32))
+            }
+            ("LEVELS", _) => fail(".LEVELS applies to a dimension"),
+            ("ORDINAL", &Datum::Level(_, level)) => Ok(Datum::Number(f64::from(level))),
+            ("MEMBERS", &Datum::Level(position, level)) => {
+                let elements = self.dimension(position).elements.iter().enumerate();
+                let at = elements.filter(|(_, element)| element.level == level);
+                Ok(Datum::Set(
+                    at.map(|(id, _)| vec![one(position, id as ElementId)])
+                        .collect(),
+                ))
+            }
             ("MEMBERS", &Datum::Dimension(position)) => {
                 let count = self.dimension(position).elements.len() as ElementId;
                 Ok(Datum::Set(
@@ -1581,7 +1751,9 @@ impl<'a> Evaluator<'a> {
         match datum {
             Datum::Member(member) => self.cell(&with(context, &vec![member])),
             Datum::Tuple(tuple) => self.cell(&with(context, &tuple)),
-            Datum::Set(_) | Datum::Dimension(_) => fail("expected a value, found a set"),
+            Datum::Set(_) | Datum::Dimension(_) | Datum::Level(..) => {
+                fail("expected a value, found a set")
+            }
             scalar => Ok(scalar),
         }
     }

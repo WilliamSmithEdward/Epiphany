@@ -922,3 +922,91 @@ fn text_is_measured_cut_and_changed() {
     assert_eq!(text("UCase(Left([Period].CurrentMember.Name, 2))"), "FE");
     assert_eq!(number("Len([Period].CurrentMember.Parent.Name)"), Some(2.0));
 }
+
+#[test]
+fn levels_count_up_from_the_leaves() {
+    let columns = |set: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [General Ledger]");
+        names(&run(&mdx), 0)
+    };
+    assert_eq!(columns("{[Period].Levels(1).Members}"), ["Q1", "Q2"]);
+    assert_eq!(columns("[Period].Levels(2).Members"), ["H1"]);
+    assert_eq!(
+        columns("[Period].[Feb].Level.Members"),
+        ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]
+    );
+    assert_eq!(columns("[Period].Levels(7).Members"), [""; 0]);
+    assert_eq!(number("[Period].[Q1].Level.Ordinal"), Some(1.0));
+    assert_eq!(number("[Period].CurrentMember.Level.Ordinal"), Some(0.0));
+    // An ancestor is found by level as well as by distance.
+    assert_eq!(
+        text("Ancestor([Period].[May], [Period].Levels(2)).Name"),
+        "H1"
+    );
+    assert_eq!(
+        text("Ancestor([Period].[May], [Period].[Q1].Level).Name"),
+        "Q2"
+    );
+    assert_eq!(text("Ancestor([Period].[May], 1).Name"), "Q2");
+    let mistake = failure(
+        "SELECT {Ancestor([Period].[H1], [Period].Levels(0))} ON COLUMNS FROM [General Ledger]",
+    );
+    assert!(
+        mistake.contains("member 'H1' has no ancestor at level 0"),
+        "{mistake}"
+    );
+}
+
+#[test]
+fn a_member_has_cousins_and_parallel_periods() {
+    assert_eq!(text("Cousin([Period].[Feb], [Period].[Q2]).Name"), "May");
+    assert_eq!(text("Cousin([Period].[Jun], [Period].[Q1]).Name"), "Mar");
+    // Under its own ancestor a member is its own cousin.
+    assert_eq!(text("Cousin([Period].[Q2], [Period].[H1]).Name"), "Q2");
+    // The same month of the quarter before, or of the quarter after.
+    let parallel = |arguments: &str| format!("ParallelPeriod([Period].Levels(1){arguments})");
+    assert_eq!(
+        text(&format!("{}.Name", parallel(", 1, [Period].[May]"))),
+        "Feb"
+    );
+    assert_eq!(
+        text(&format!("{}.Name", parallel(", -1, [Period].[Jan]"))),
+        "Apr"
+    );
+    assert_eq!(
+        text(&format!("{}.Name", parallel(", 0, [Period].[Jan]"))),
+        "Jan"
+    );
+    // With nothing else said: one back from the current member, here February.
+    let revenue = |period: &str| number(&format!("([Account].[Product Revenue], {period})"));
+    assert_eq!(revenue(&parallel(", 1, [Period].[May]")), Some(20.0));
+    assert_eq!(revenue(&parallel("")), None);
+    assert_eq!(revenue(&parallel(", -1")), Some(0.0));
+    let mistake = failure("SELECT {ParallelPeriod(1)} ON COLUMNS FROM [General Ledger]");
+    assert!(mistake.contains("expected a level"), "{mistake}");
+}
+
+#[test]
+fn periods_run_to_date_within_an_ancestor() {
+    let columns = |set: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [General Ledger]");
+        names(&run(&mdx), 0)
+    };
+    let quarter = "PeriodsToDate([Period].Levels(1), [Period].[May])";
+    assert_eq!(columns(quarter), ["Apr", "May"]);
+    let half = "PeriodsToDate([Period].Levels(2), [Period].[May])";
+    assert_eq!(columns(half), ["Jan", "Feb", "Mar", "Apr", "May"]);
+    assert_eq!(
+        columns("PeriodsToDate([Period].Levels(2), [Period].[Q2])"),
+        ["Q1", "Q2"]
+    );
+    assert_eq!(
+        columns("PeriodsToDate([Period].Levels(0), [Period].[May])"),
+        ["May"]
+    );
+    // The half year to date, at the current member: January and February.
+    assert_eq!(
+        number("Sum(PeriodsToDate([Period].Levels(2)), [Account].[Product Revenue])"),
+        Some(120.0)
+    );
+}
