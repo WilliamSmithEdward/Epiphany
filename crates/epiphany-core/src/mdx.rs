@@ -54,7 +54,9 @@ pub(crate) fn check_view(model: &Model, cube_id: usize, text: &str) -> Result<()
             query.cube
         )));
     }
-    query.evaluate(model, cube_id, &eval::no_cells).map(drop)
+    query
+        .evaluate(model, cube_id, &eval::no_cells, &|_| ())
+        .map(drop)
 }
 
 /// Why a query could not be parsed or evaluated.

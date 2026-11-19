@@ -60,8 +60,16 @@ practice that means:
 - A consolidated cell is computed on read from the flattened leaf weights, by whichever is
   smaller: walking the cross product of leaf sets with point lookups, or scanning the cube's
   populated cells and testing membership.
-- No caching in the first version. A consolidation cache keyed by data version is added only
-  if benchmarks show the need.
+- Consolidated cells are kept once worked out, and all forgotten at the next commit or model
+  update, whichever cube it touches: a rule may read any cube. A transaction with writes of
+  its own neither uses nor adds to what is kept.
+- Cells read together are added up together. Where the totals among them would each pass
+  over the stored cells, one pass gives every stored cell to all the totals it counts
+  towards. This serves `/cells/read` batches and the cells of an MDX query's axes.
+- Not done: the one pass in cubes with rules, and for the totals a set function such as
+  `TopCount` or `Filter` reads while choosing its tuples; both still add up cell by cell.
+  What is kept is not adjusted by a write but dropped, so a workload that alternates writes
+  and reads of totals gains only from the one pass.
 
 ### 2.3 Transactions and locks
 

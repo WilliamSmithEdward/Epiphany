@@ -70,12 +70,16 @@ fn main() {
             ),
         ),
     ];
-    for (label, mdx) in queries {
-        let start = Instant::now();
-        let result = database.query(None, &mdx).unwrap();
-        let took = millis(start);
-        let each = took * 1000.0 / result.cells.len() as f64;
-        println!("{label:<52} {took:>9.1} ms  {each:>9.1} us/cell");
+    for (label, mdx) in &queries {
+        // Each query starts with no totals kept from the one before.
+        database.write(None, &writes[..1]).unwrap();
+        for label in [label.to_string(), format!("{label}, again")] {
+            let start = Instant::now();
+            let result = database.query(None, mdx).unwrap();
+            let took = millis(start);
+            let each = took * 1000.0 / result.cells.len() as f64;
+            println!("{label:<52} {took:>9.1} ms  {each:>9.1} us/cell");
+        }
     }
 }
 

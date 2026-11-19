@@ -29,7 +29,7 @@ use crate::cells::CellError;
 use crate::cells::{Cells, Writes, check, coordinate};
 use crate::mdx::{self, MdxError, QueryResult};
 use crate::model::{ElementId, Model, ModelDef, ModelError};
-use crate::reader::{Fed, Reader, feed};
+use crate::reader::{Fed, Reader, Totals, feed};
 use locks::{Locks, Mode, Resource};
 
 pub use error::Error;
@@ -158,6 +158,8 @@ pub struct Database {
     journal: Option<Box<dyn Journal>>,
     /// The cells the feeders feed, worked out when first needed after the data changes.
     fed: OnceLock<Result<Fed, MdxError>>,
+    /// The consolidated cells worked out since the data last changed.
+    totals: Totals,
 }
 
 impl Database {
@@ -182,6 +184,7 @@ impl Database {
             timeout: DEFAULT_TIMEOUT,
             journal: None,
             fed: OnceLock::new(),
+            totals: Totals::default(),
         })
     }
 
@@ -199,7 +202,7 @@ impl Database {
                 Err(_) => skipped += 1,
             }
         }
-        self.fed = OnceLock::new();
+        self.changed();
         skipped
     }
 
@@ -249,9 +252,38 @@ impl Database {
         transaction: Option<TransactionId>,
         cell: &CellRef,
     ) -> Result<Scalar, Error> {
-        let (cube, at) = self.locate(&cell.cube, &cell.at)?;
-        let value = self.reader(transaction)?.read(cube, &at);
-        value.map_err(|error| Error::Rule(error.to_string()))
+        self.read_many(transaction, std::slice::from_ref(cell))
+            .remove(0)
+    }
+
+    /// Reads many cells, each as [`Database::read`] would. The totals among them are added
+    /// up together where that is less work than adding up each by itself.
+    pub fn read_many(
+        &self,
+        transaction: Option<TransactionId>,
+        cells: &[CellRef],
+    ) -> Vec<Result<Scalar, Error>> {
+        let reader = match self.reader(transaction) {
+            Ok(reader) => reader,
+            Err(error) => return vec![Err(error); cells.len()],
+        };
+        let located: Vec<_> = cells
+            .iter()
+            .map(|cell| self.locate(&cell.cube, &cell.at))
+            .collect();
+        let mut expected: Vec<Vec<&[ElementId]>> = vec![Vec::new(); self.cells.len()];
+        for (cube, at) in located.iter().flatten() {
+            expected[*cube].push(at);
+        }
+        for (cube, cells) in expected.iter().enumerate() {
+            reader.expect(cube, cells);
+        }
+        let read = |located: &Result<(usize, Vec<ElementId>), CellError>| {
+            let (cube, at) = located.as_ref().map_err(Clone::clone)?;
+            let value = reader.read(*cube, at);
+            value.map_err(|error| Error::Rule(error.to_string()))
+        };
+        located.iter().map(read).collect()
     }
 
     /// The leaf cells of a fed cube that a rule gives a value but nothing feeds, so that
@@ -340,19 +372,21 @@ impl Database {
         let rule_error = |error: &MdxError| Error::Rule(error.to_string());
         // What is fed depends on what is stored, so a transaction with writes of its own
         // has it worked out afresh; everyone else shares one answer until the data changes.
-        let fed = match pending.filter(|pending| pending.iter().any(|writes| !writes.is_empty())) {
-            Some(pending) => {
-                let fed = feed(&self.model, &self.cells, Some(pending));
-                Cow::Owned(fed.map_err(|error| rule_error(&error))?)
-            }
-            None => {
-                let fed = self
-                    .fed
-                    .get_or_init(|| feed(&self.model, &self.cells, None));
-                Cow::Borrowed(fed.as_ref().map_err(rule_error)?)
-            }
-        };
-        Ok(Reader::new(&self.model, &self.cells, pending, fed))
+        let (fed, totals) =
+            match pending.filter(|pending| pending.iter().any(|writes| !writes.is_empty())) {
+                Some(pending) => {
+                    let fed = feed(&self.model, &self.cells, Some(pending));
+                    (Cow::Owned(fed.map_err(|error| rule_error(&error))?), None)
+                }
+                None => {
+                    let fed = self
+                        .fed
+                        .get_or_init(|| feed(&self.model, &self.cells, None));
+                    let fed = Cow::Borrowed(fed.as_ref().map_err(rule_error)?);
+                    (fed, Some(&self.totals))
+                }
+            };
+        Ok(Reader::new(&self.model, &self.cells, pending, fed, totals))
     }
 
     /// Answers an MDX query from committed values, or within a transaction from the values
@@ -366,7 +400,8 @@ impl Database {
         let cube = self.cube_id(&query.cube)?;
         let reader = self.reader(transaction)?;
         let read = |cube: usize, at: &[ElementId]| reader.read(cube, at);
-        Ok(query.evaluate(&self.model, cube, &read)?)
+        let expect = |cells: &[&[ElementId]]| reader.expect(cube, cells);
+        Ok(query.evaluate(&self.model, cube, &read, &expect)?)
     }
 
     /// Writes every cell, or none of them if any write is refused. Within a transaction the
@@ -428,7 +463,7 @@ impl Database {
                 cells.set(&at, value);
             }
         }
-        self.fed = OnceLock::new();
+        self.changed();
         if self
             .journal
             .as_ref()
@@ -506,7 +541,7 @@ impl Database {
         self.model = model;
         self.definition = definition;
         self.model_version += 1;
-        self.fed = OnceLock::new();
+        self.changed();
         let mut dropped_cells = 0;
         if let Some((cells, dropped)) = moved {
             for transaction in self.transactions.values_mut() {
@@ -584,6 +619,12 @@ impl Database {
     /// Replaces the journal's recorded commits with a snapshot. The commits already recorded
     /// say the same thing, so if the snapshot fails they are kept and it is tried again after
     /// a later commit.
+    /// Forgets what was worked out from the cells and the model as they were.
+    fn changed(&mut self) {
+        self.fed = OnceLock::new();
+        self.totals = Totals::default();
+    }
+
     fn snapshot(&mut self) {
         let cells = self.cells();
         if let Some(journal) = &mut self.journal {

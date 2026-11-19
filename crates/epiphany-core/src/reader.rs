@@ -8,6 +8,7 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -26,7 +27,36 @@ const MOST_FED: usize = 10_000_000;
 /// How deeply cells may depend on one another through rules.
 const DEEPEST: usize = 256;
 
+/// The most consolidated cells kept for one cube; past it they are forgotten and kept afresh.
+const MOST_KEPT: usize = 1_000_000;
+
 type Read<T> = Result<T, MdxError>;
+
+/// Consolidated cells worked out from the committed cells of each cube. They hold only until
+/// a cell or the model changes, when whoever owns them starts again with none.
+#[derive(Debug, Default)]
+pub(crate) struct Totals(Mutex<Vec<FxHashMap<Coordinate, Scalar>>>);
+
+impl Totals {
+    fn kept(&self) -> MutexGuard<'_, Vec<FxHashMap<Coordinate, Scalar>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn get(&self, cube: usize, at: &[ElementId]) -> Option<Scalar> {
+        self.kept().get(cube)?.get(at).cloned()
+    }
+
+    fn keep(&self, cube: usize, at: &[ElementId], value: &Scalar) {
+        let mut kept = self.kept();
+        if kept.len() <= cube {
+            kept.resize_with(cube + 1, FxHashMap::default);
+        }
+        if kept[cube].len() >= MOST_KEPT {
+            kept[cube].clear();
+        }
+        kept[cube].insert(Coordinate::from(at), value.clone());
+    }
+}
 
 pub(crate) struct Reader<'a> {
     model: &'a Model,
@@ -34,6 +64,9 @@ pub(crate) struct Reader<'a> {
     /// The writes of the transaction being read in, by cube.
     pending: Option<&'a [Writes]>,
     fed: Cow<'a, Fed>,
+    /// Consolidated cells others have worked out; none when reading a transaction's own
+    /// writes, which only it can see.
+    totals: Option<&'a Totals>,
     /// Cells of cubes with rules that have been worked out already.
     known: RefCell<FxHashMap<(usize, Coordinate), Scalar>>,
     /// The cells being worked out, each because the one before it needs it.
@@ -46,21 +79,67 @@ impl<'a> Reader<'a> {
         cells: &'a [Cells],
         pending: Option<&'a [Writes]>,
         fed: Cow<'a, Fed>,
+        totals: Option<&'a Totals>,
     ) -> Self {
         Self {
             model,
             cells,
             pending,
             fed,
+            totals,
             known: RefCell::default(),
             working: RefCell::default(),
         }
     }
 
     pub(crate) fn read(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {
-        if self.model.cubes()[cube].rules.is_empty() {
-            return Ok(self.stored(cube, at));
+        let ruled = !self.model.cubes()[cube].rules.is_empty();
+        // A leaf is quicker to look up where it is stored than among the totals.
+        let totals = self.totals.filter(|_| self.kind(cube, at).1);
+        if let Some(kept) = totals.and_then(|totals| totals.get(cube, at)) {
+            return Ok(kept);
         }
+        let value = match ruled {
+            true => self.work_out(cube, at)?,
+            false => self.stored(cube, at),
+        };
+        if let Some(totals) = totals {
+            totals.keep(cube, at, &value);
+        }
+        Ok(value)
+    }
+
+    /// Says which cells of a cube are about to be read. Where adding up the totals among them
+    /// one by one would pass over the stored cells more than once, they are all added up in a
+    /// single pass and kept, and the reads that follow find them there.
+    pub(crate) fn expect(&self, cube: usize, cells: &[&[ElementId]]) {
+        let definition = &self.model.cubes()[cube];
+        let Some(totals) = self.totals.filter(|_| definition.rules.is_empty()) else {
+            return;
+        };
+        let stored = &self.cells[cube];
+        let mut wanted: Vec<&[ElementId]> = Vec::new();
+        let mut seen = FxHashSet::default();
+        let mut work = 0usize;
+        for &at in cells {
+            let total = self.kind(cube, at).1 && totals.get(cube, at).is_none();
+            if total && seen.insert(at) {
+                wanted.push(at);
+                work = work.saturating_add(stored.work(self.model, definition, at));
+            }
+        }
+        if work <= stored.stored() {
+            return;
+        }
+        if let Some(sums) = stored.sum_many(self.model, definition, &wanted) {
+            for (at, sum) in wanted.iter().zip(sums) {
+                totals.keep(cube, at, &Scalar::Number(sum));
+            }
+        }
+    }
+
+    /// Reads a cell of a cube with rules, remembering it for as long as this reader lasts.
+    fn work_out(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {
         let key = (cube, Coordinate::from(at));
         if let Some(known) = self.known.borrow().get(&key) {
             return Ok(known.clone());

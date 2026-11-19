@@ -1,5 +1,6 @@
 //! The cells of one cube: stored leaf values, and consolidated values computed on read.
 
+use std::collections::hash_map::Entry;
 use std::fmt;
 
 use rustc_hash::FxHashMap;
@@ -155,6 +156,103 @@ impl Cells {
             .iter()
             .filter_map(|(at, value)| Some(weight(leaves, at)? * value))
             .sum()
+    }
+
+    /// How many numbers are stored.
+    pub(crate) fn stored(&self) -> usize {
+        self.numbers.len()
+    }
+
+    /// How many stored cells reading a numeric cell looks at or looks up.
+    pub(crate) fn work(&self, model: &Model, cube: &Cube, at: &[ElementId]) -> usize {
+        let combinations = elements(model, cube, at)
+            .try_fold(1usize, |product, e| product.checked_mul(e.leaves.len()));
+        combinations.map_or(self.numbers.len(), |n| n.min(self.numbers.len()))
+    }
+
+    /// Sums many numeric cells in one pass over the stored cells, giving each stored cell to
+    /// every one of them it counts towards. Nothing if the cells are too varied to number.
+    pub(crate) fn sum_many(
+        &self,
+        model: &Model,
+        cube: &Cube,
+        cells: &[&[ElementId]],
+    ) -> Option<Vec<f64>> {
+        // In each dimension the elements asked for are numbered as they are met, and every
+        // leaf knows the numbers of those it counts towards, with its weight in each.
+        let dimensions: Vec<&[Element]> = cube
+            .dimensions
+            .iter()
+            .map(|&d| model.dimensions()[d as usize].elements.as_slice())
+            .collect();
+        let mut asked: Vec<FxHashMap<ElementId, u64>> =
+            vec![FxHashMap::default(); dimensions.len()];
+        let mut towards: Vec<Vec<Vec<(u64, f64)>>> = dimensions
+            .iter()
+            .map(|d| vec![Vec::new(); d.len()])
+            .collect();
+        for at in cells {
+            for (dimension, &element) in at.iter().enumerate() {
+                let number = asked[dimension].len() as u64;
+                if let Entry::Vacant(new) = asked[dimension].entry(element) {
+                    new.insert(number);
+                    for &(leaf, weight) in &dimensions[dimension][element as usize].leaves {
+                        towards[dimension][leaf as usize].push((number, weight));
+                    }
+                }
+            }
+        }
+        // A cell asked for is known by one number: its element's number in each dimension,
+        // each dimension counting in units as large as the dimensions before it together.
+        let mut units = Vec::with_capacity(dimensions.len());
+        let mut size = 1u64;
+        for asked in &asked {
+            units.push(size);
+            size = size.checked_mul(asked.len() as u64)?;
+        }
+        let number = |at: &[ElementId]| -> u64 {
+            let parts = at.iter().zip(&asked).zip(&units);
+            parts
+                .map(|((element, asked), unit)| asked[element] * unit)
+                .sum()
+        };
+        let mut totals: FxHashMap<u64, f64> = cells.iter().map(|at| (number(at), 0.0)).collect();
+
+        let mut lists: Vec<&[(u64, f64)]> = Vec::with_capacity(dimensions.len());
+        let mut positions = vec![0; dimensions.len()];
+        for (at, value) in &self.numbers {
+            lists.clear();
+            lists.extend(
+                at.iter()
+                    .zip(&towards)
+                    .map(|(&leaf, t)| t[leaf as usize].as_slice()),
+            );
+            if lists.iter().any(|list| list.is_empty()) {
+                continue;
+            }
+            positions.fill(0);
+            // Every combination of one element asked for per dimension that the cell counts
+            // towards; most are a cell asked for.
+            'combinations: loop {
+                let (mut cell, mut weight) = (0, 1.0);
+                for ((list, &position), unit) in lists.iter().zip(&positions).zip(&units) {
+                    cell += list[position].0 * unit;
+                    weight *= list[position].1;
+                }
+                if let Some(total) = totals.get_mut(&cell) {
+                    *total += weight * value;
+                }
+                for (position, list) in positions.iter_mut().zip(&lists) {
+                    *position += 1;
+                    if *position < list.len() {
+                        continue 'combinations;
+                    }
+                    *position = 0;
+                }
+                break;
+            }
+        }
+        Some(cells.iter().map(|at| totals[&number(at)]).collect())
     }
 }
 

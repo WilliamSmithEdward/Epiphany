@@ -65,6 +65,87 @@ fn locked(what: &str) -> Result<(), Error> {
 }
 
 #[test]
+fn a_total_read_before_follows_every_change() {
+    let mut database = database();
+    database
+        .write(None, &[set("Sales", ["A", "Units"], 10.0)])
+        .unwrap();
+    assert_eq!(units(&database, None, "All"), 10.0);
+    assert_eq!(units(&database, None, "All"), 10.0);
+
+    // A transaction sees its own writes in the total, and nobody else does.
+    let transaction = database.begin();
+    assert_eq!(units(&database, Some(transaction), "All"), 10.0);
+    database
+        .write(Some(transaction), &[set("Sales", ["B", "Units"], 5.0)])
+        .unwrap();
+    assert_eq!(units(&database, Some(transaction), "All"), 15.0);
+    assert_eq!(units(&database, None, "All"), 10.0);
+    database.rollback(transaction).unwrap();
+    assert_eq!(units(&database, None, "All"), 10.0);
+
+    let transaction = database.begin();
+    database
+        .write(Some(transaction), &[set("Sales", ["B", "Units"], 7.0)])
+        .unwrap();
+    database.commit(transaction).unwrap();
+    assert_eq!(units(&database, None, "All"), 17.0);
+
+    // A change of the model changes what the total adds up.
+    let mut model = definition();
+    model.dimensions[0].elements[0].children.pop();
+    let version = database.model_version();
+    database.update_model(version, model).unwrap();
+    assert_eq!(units(&database, None, "All"), 10.0);
+}
+
+#[test]
+fn cells_read_together_equal_cells_read_one_by_one() {
+    const SHAPE: Shape = Shape {
+        leaves: 6,
+        groups: 4,
+        fan: 3,
+    };
+    for seed in 0..25 {
+        let mut rng = Rng::new(seed);
+        let model = random_model(&mut rng, 3, &SHAPE);
+        let name = |rng: &mut Rng, limit: usize| match rng.below(limit + 1) {
+            id if id == limit => "all".to_owned(),
+            id => format!("e{id}"),
+        };
+        let writes: Vec<CellWrite> = (0..60)
+            .map(|_| CellWrite {
+                cube: "C".to_owned(),
+                at: (0..3).map(|_| name(&mut rng, SHAPE.leaves - 1)).collect(),
+                value: Scalar::Number(rng.below(1000) as f64 - 500.0),
+            })
+            .filter(|write| !write.at.contains(&"all".to_owned()))
+            .collect();
+        // Leaves, consolidations and grand totals, some of them more than once.
+        let cells: Vec<CellRef> = (0..300)
+            .map(|_| CellRef {
+                cube: "C".to_owned(),
+                at: (0..3)
+                    .map(|_| name(&mut rng, SHAPE.leaves + SHAPE.groups))
+                    .collect(),
+            })
+            .collect();
+
+        let mut together = Database::new(model.clone()).unwrap();
+        together.write(None, &writes).unwrap();
+        let mut one_by_one = Database::new(model).unwrap();
+        one_by_one.write(None, &writes).unwrap();
+        let expected: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(None, cell))
+            .collect();
+        assert_eq!(together.read_many(None, &cells), expected, "seed {seed}");
+        // Asked again, they come from what was kept.
+        assert_eq!(together.read_many(None, &cells), expected, "seed {seed}");
+    }
+}
+
+#[test]
 fn pending_writes_are_visible_only_inside_their_transaction() {
     let mut database = database();
     database

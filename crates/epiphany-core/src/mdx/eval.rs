@@ -109,12 +109,14 @@ pub(super) fn elements(model: &Model, cube: &Cube, set: &Expr) -> Evaluated<Vec<
 }
 
 impl Query {
-    /// Runs the query against a cube, reading stored and consolidated cells through `read`.
+    /// Runs the query against a cube, reading stored and consolidated cells through `read`,
+    /// after saying through `expect` which cells of the cube the axes will ask for.
     pub(crate) fn evaluate(
         &self,
         model: &Model,
         cube_id: usize,
         read: Read,
+        expect: &dyn Fn(&[&[ElementId]]),
     ) -> Evaluated<QueryResult> {
         let cube = &model.cubes()[cube_id];
         let mut evaluator = Evaluator::new(model, cube_id, cube, read);
@@ -173,14 +175,30 @@ impl Query {
         // One cell per combination of a tuple from each axis, the first axis varying fastest.
         let sizes: Vec<usize> = sets.iter().map(Vec::len).collect();
         let places = Places::new(&sizes)?;
-        let mut cells = Vec::with_capacity(places.count);
-        for index in 0..places.count {
-            let mut context = context.clone();
-            for (set, place) in sets.iter().zip(places.of(index)) {
-                context = with(&context, &set[place]);
-            }
-            cells.push(evaluator.cell(&context)?);
-        }
+        let contexts: Vec<Vec<Id>> = (0..places.count)
+            .map(|index| {
+                let tuples = sets.iter().zip(places.of(index));
+                tuples.fold(context.clone(), |context, (set, place)| {
+                    with(&context, &set[place])
+                })
+            })
+            .collect();
+        // The cells that are cells of the cube, and not worked out by a calculated member.
+        let stored: Vec<Vec<ElementId>> = contexts
+            .iter()
+            .filter_map(|context| {
+                let element = |id: &Id| match id {
+                    Id::Element(element) => Some(*element),
+                    Id::Calculated(_) => None,
+                };
+                context.iter().map(element).collect()
+            })
+            .collect();
+        expect(&stored.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        let cells = contexts
+            .iter()
+            .map(|context| evaluator.cell(context))
+            .collect::<Evaluated<Vec<Datum>>>()?;
 
         // NON EMPTY drops the tuples of an axis whose cells are all empty.
         let mut filled: Vec<Vec<bool>> = sizes.iter().map(|&size| vec![false; size]).collect();

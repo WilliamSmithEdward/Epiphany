@@ -555,12 +555,13 @@ async fn read_cells(
     Body(request): Body<ReadRequest>,
 ) -> Json<ReadResponse> {
     let database = database.read().unwrap();
-    let read = |cell: &CellRef| match database.read(request.transaction, cell) {
+    let result = |read: Result<Scalar, Error>| match read {
         Ok(value) => CellResult::Value(value),
         Err(error) => CellResult::Error(error.into()),
     };
+    let cells = database.read_many(request.transaction, &request.cells);
     Json(ReadResponse {
-        cells: request.cells.iter().map(read).collect(),
+        cells: cells.into_iter().map(result).collect(),
     })
 }
 

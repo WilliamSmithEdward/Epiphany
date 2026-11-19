@@ -195,6 +195,9 @@ fn a_rule_reads_another_cube() {
     assert_eq!(read(&database, ["World", "Q1", "Tax"]), 50.0 + 20.0 + 20.0);
     // A member worked out in this cube is carried across too: February's bonus is January's.
     assert_eq!(read(&database, ["South", "Feb", "Margin"]), 7.0);
+    // A total already worked out follows a change in the cube its rule reads.
+    write(&mut database, "Rates", &["Jan", "Tax"], 1.0);
+    assert_eq!(read(&database, ["World", "Q1", "Tax"]), 100.0 + 20.0 + 40.0);
 }
 
 #[test]
