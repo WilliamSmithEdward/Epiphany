@@ -114,7 +114,7 @@ impl<'a> Reader<'a> {
     /// single pass and kept, and the reads that follow find them there.
     pub(crate) fn expect(&self, cube: usize, cells: &[&[ElementId]]) {
         let definition = &self.model.cubes()[cube];
-        let Some(totals) = self.totals.filter(|_| definition.rules.is_empty()) else {
+        let Some(totals) = self.totals else {
             return;
         };
         let stored = &self.cells[cube];
@@ -122,7 +122,7 @@ impl<'a> Reader<'a> {
         let mut seen = FxHashSet::default();
         let mut work = 0usize;
         for &at in cells {
-            let total = self.kind(cube, at).1 && totals.get(cube, at).is_none();
+            let total = self.plain(cube, at) && totals.get(cube, at).is_none();
             if total && seen.insert(at) {
                 wanted.push(at);
                 work = work.saturating_add(stored.work(self.model, definition, at));
@@ -136,6 +136,43 @@ impl<'a> Reader<'a> {
                 totals.keep(cube, at, &Scalar::Number(sum));
             }
         }
+    }
+
+    /// Whether a leaf rule covers any leaf cell beneath a consolidation, given the leaves of
+    /// its element in each dimension.
+    fn reached(&self, cube: &Cube, leaves: &[Leaves]) -> bool {
+        let holds = |leaves: Leaves, id: ElementId| {
+            leaves.binary_search_by_key(&id, |&(leaf, _)| leaf).is_ok()
+        };
+        let reaches = |area: &[Option<ElementId>]| {
+            let fits = |(wanted, leaves): (&Option<ElementId>, &Leaves)| {
+                wanted.is_none_or(|w| holds(leaves, w))
+            };
+            area.iter().zip(leaves).all(fits)
+        };
+        let mut leaf_rules = cube.rules.iter().filter(|rule| rule.decides_leaves());
+        leaf_rules.any(|rule| reaches(&rule.area))
+    }
+
+    /// Whether a cell is a consolidation of stored cells and nothing else: no rule covers it,
+    /// and no leaf rule covers a cell beneath it.
+    fn plain(&self, cube: usize, at: &[ElementId]) -> bool {
+        let definition = &self.model.cubes()[cube];
+        if !self.kind(cube, at).1 {
+            return false;
+        }
+        if definition.rules.is_empty() {
+            return true;
+        }
+        let leaves: Vec<Leaves> = self
+            .elements(definition, at)
+            .map(|e| e.leaves.as_slice())
+            .collect();
+        let covered = definition
+            .rules
+            .iter()
+            .any(|rule| rule.covers(at, false, true));
+        !covered && !self.reached(definition, &leaves)
     }
 
     /// Reads a cell of a cube with rules, remembering it for as long as this reader lasts.
@@ -308,17 +345,8 @@ impl<'a> Reader<'a> {
             .elements(definition, at)
             .map(|e| e.leaves.as_slice())
             .collect();
-        let holds = |leaves: Leaves, id: ElementId| {
-            leaves.binary_search_by_key(&id, |&(leaf, _)| leaf).is_ok()
-        };
-        let reaches = |area: &[Option<ElementId>]| {
-            let fits = |(wanted, leaves): (&Option<ElementId>, &Leaves)| {
-                wanted.is_none_or(|w| holds(leaves, w))
-            };
-            area.iter().zip(&leaves).all(fits)
-        };
         let leaf_rules = || definition.rules.iter().filter(|rule| rule.decides_leaves());
-        if !leaf_rules().any(|rule| reaches(&rule.area)) {
+        if !self.reached(definition, &leaves) {
             return Ok(self.stored(cube, at));
         }
 

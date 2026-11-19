@@ -69,7 +69,10 @@ practice that means:
   cells that `Sum`, `Avg`, `Min`, `Max`, `Count`, `TopCount`, `BottomCount`, `Filter`,
   `NonEmpty` and `Order` read at each tuple of their set, where the expression names its
   members outright.
-- Not done: the one pass in cubes with rules, which still add up cell by cell. What is kept is not adjusted by a write but dropped, so a workload that alternates writes
+- In a cube with rules the one pass takes the totals that are sums of stored cells and
+  nothing else: those no rule covers and no leaf rule reaches beneath.
+- Not done: the one pass for totals a leaf rule reaches, which still add up cell by cell from
+  the stored and fed cells. What is kept is not adjusted by a write but dropped, so a workload that alternates writes
   and reads of totals gains only from the one pass.
 
 ### 2.3 Transactions and locks

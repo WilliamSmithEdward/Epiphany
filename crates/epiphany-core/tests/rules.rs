@@ -179,6 +179,48 @@ fn the_first_rule_that_covers_a_cell_decides_unless_it_passes() {
 }
 
 #[test]
+fn cells_of_a_cube_with_rules_read_together_equal_cells_read_one_by_one() {
+    let rules = json!([
+        "N: [Account].[Tax] = [Account].[Revenue] * 0.5",
+        "C: ([Region].[World], [Account].[Units]) = 7",
+        "C: [Account].[Price] = STET"
+    ]);
+    let regions = ["World", "North", "South"];
+    let months = ["Q1", "Jan", "Feb"];
+    let accounts = [
+        "Profit", "Revenue", "Cost", "Margin", "Units", "Price", "Tax", "Note",
+    ];
+    let mut cells = Vec::new();
+    for region in regions {
+        for month in months {
+            for account in accounts {
+                cells.push(cell("Sales", &[region, month, account]));
+            }
+        }
+    }
+    for feeders in [json!([]), json!(["[Account].[Revenue] => [Account].[Tax]"])] {
+        let filled = || {
+            let mut database = database(rules.clone(), feeders.clone());
+            figures(&mut database);
+            write(&mut database, "Sales", &["North", "Jan", "Units"], 3.0);
+            write(&mut database, "Sales", &["South", "Feb", "Price"], 2.5);
+            database
+        };
+        let (together, one_by_one) = (filled(), filled());
+        let expected: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(None, cell))
+            .collect();
+        assert_eq!(together.read_many(None, &cells), expected);
+        // Totals a rule decides or reaches, and those it does not, each as before.
+        assert_eq!(read(&together, ["World", "Q1", "Units"]), 7.0);
+        assert_eq!(read(&together, ["World", "Q1", "Tax"]), 110.0);
+        assert_eq!(read(&together, ["World", "Q1", "Price"]), 2.5);
+        assert_eq!(read(&together, ["World", "Q1", "Profit"]), 100.0);
+    }
+}
+
+#[test]
 fn a_rule_reads_another_cube() {
     let rules = json!([
         "N: [Account].[Tax] = [Account].[Revenue] * LookupCube('Rates', [Rate].[Tax])",
