@@ -1,11 +1,13 @@
-﻿# Checks sign-in inside Excel: starts a server with one made-up user on a copy of the example
-# model, loads the add-in into a hidden Excel of its own, and lets a second process type into
-# the Connect window as a person would: first a wrong password, then the right one. Run after
+# Checks the add-in's own windows inside Excel: starts a server with one made-up user on a copy
+# of the example model, loads the add-in into a hidden Excel of its own, and lets a second
+# process type into the windows as a person would. Into the Connect window goes first a wrong
+# password, then the right one; in the window that chooses a SUBNM's element the list is
+# narrowed by typing and the element left is chosen. Run after
 #   cargo build -p epiphany-server
 #   dotnet build adapter/Epiphany.Excel -c Release
 # The add-in must be looking for the server at its default address, port 8080 must be free,
 # and there must be no settings file yet: the check removes the one that signing in saves.
-param([string]$Drive)
+param([string]$Drive, [string]$Step)
 
 $ErrorActionPreference = 'Stop'
 $window = 'Connect to Epiphany'
@@ -49,6 +51,20 @@ if ($Drive) {
         return $shown
     }
     try {
+        if ($Step -eq 'choose') {
+            $form = Find 'Choose an element'
+            $all = $form.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
+            $box = @($all | Where-Object { $_.Current.ClassName -like '*.EDIT.*' })[0]
+            $list = @($all | Where-Object { $_.Current.ClassName -like '*.LISTBOX.*' })[0]
+            # LB_GETCOUNT: how many elements the list holds, before and after narrowing it.
+            $before = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x018B, [IntPtr]::Zero, $null)
+            [void][Native.Control]::SendMessage([IntPtr]$box.Current.NativeWindowHandle, 0x000C, [IntPtr]::Zero, 'ma')
+            Start-Sleep -Milliseconds 300
+            $after = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x018B, [IntPtr]::Zero, $null)
+            Add-Content $Drive "list narrowed from $before to $after"
+            Press $form 'OK'
+            return
+        }
         $server = Fill 'not-the-password'
         Add-Content $Drive "window opened, server shown as $server"
         Start-Sleep -Milliseconds 500
@@ -121,6 +137,19 @@ try {
     $checks['the window opened, a wrong password was refused, the right one accepted'] = @(Get-Content $log).Count -eq 4
     $checks['a formula answers once signed in'] = (Shown 1) -eq '0'
     $checks['the address and the name were saved, not the password'] = [bool](Excel { $excel.ExecuteExcel4Macro("FILES(`"$settings`")") -is [string] })
+
+    # Choosing an element: the list of the whole dimension, narrowed to the months with 'ma'.
+    Excel { $sheet.Cells.Item(3, 1).Formula = '=SUBNM("Period","",1)' }
+    $checks['a SUBNM shows the element at its index'] = (Shown 3) -eq 'H1'
+    Excel { $sheet.Cells.Item(3, 1).Select() } | Out-Null
+    Set-Content -Encoding ascii $log 'started'
+    $driver = Start-Process -PassThru -WindowStyle Hidden powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSCommandPath`"", '-Drive', "`"$log`"", '-Step', 'choose'
+    try { $excel.Run('Choose') | Out-Null } catch {}
+    $driver.WaitForExit(60000) | Out-Null
+    Get-Content $log | Select-Object -Skip 1
+    $checks['the list held every element and typing narrowed it'] = (Get-Content $log)[-1] -eq 'list narrowed from 9 to 2'
+    $checks['the element chosen is in the formula'] = (Excel { [string]$sheet.Cells.Item(3, 1).Formula }) -eq '=SUBNM("Period","","Mar")'
+    $checks['and the cell shows it'] = (Shown 3) -eq 'Mar'
 
     Excel { $excel.Run('Disconnect') } | Out-Null
     # Not asked for again unasked: after Disconnect a refused formula just shows #N/A.

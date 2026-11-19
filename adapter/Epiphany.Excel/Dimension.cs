@@ -162,6 +162,20 @@ namespace Epiphany.Excel
             return Shown(members.Contains(name) ? name : "", alias);
         }
 
+        /// <summary>The elements SUBNM chooses among, each with what it is shown as: its name,
+        /// or its alias when an alias attribute is named.</summary>
+        public object Members(string subset, string alias)
+        {
+            var members = elements.Select(element => element.Name).ToArray();
+            if (Key(subset) != "" && !subsets.TryGetValue(Key(subset), out members))
+                return Connection.KeyError;
+            if (Key(alias) != "" && (!attributes.TryGetValue(Key(alias), out var kind) || kind != "alias"))
+                return Connection.KeyError;
+            return members
+                .Select(name => new KeyValuePair<string, string>(name, (string)Shown(name, alias)))
+                .ToList();
+        }
+
         /// <summary>The name at a position counted from one, or empty text beyond either end.</summary>
         private static string At(string[] names, double index)
         {

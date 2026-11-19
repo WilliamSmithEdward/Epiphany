@@ -37,6 +37,9 @@ default environment. To begin with there is one environment, `local`, at
 - **Disconnect** to sign out of every environment.
 - **Refresh** (Ctrl+Shift+R) to fetch every formula's value again.
 
+Double-clicking a `SUBNM` cell, or **Choose element...** in the menu, lists the elements of
+its subset; type to narrow the list, and the one you choose is written into the formula.
+
 Typing a value over a `DBRW` or `DBR` cell writes it to the cube and keeps the formula. If
 the server refuses the value, because the cell is a consolidation, say, the status bar says so.
 
@@ -64,10 +67,11 @@ It loads the add-in into a hidden Excel of its own, enters a formula for each ro
 compatibility table against a server on a copy of the example model, and compares what the
 cells show. Port 8080 must be free.
 
-`adapter\check-excel-signin.ps1` does the same for sign-in, on a server with one made-up
-user: a second process types a wrong password and then the right one into the Connect
-window, and the check then disconnects. It removes the settings file that signing in saves,
-so run it only before you have connected to anything yourself.
+`adapter\check-excel-windows.ps1` does the same for the add-in's own windows, on a server with
+one made-up user: a second process types a wrong password and then the right one into the
+Connect window, narrows the list that chooses a `SUBNM`'s element and chooses one, and the
+check then disconnects. It removes the settings file that signing in saves, so run it only
+before you have connected to anything yourself.
 
 ## Layout
 
@@ -78,5 +82,7 @@ so run it only before you have connected to anything yourself.
 | `Epiphany.Excel/Dimension.cs` | A copy of a dimension and the answers read from it. |
 | `Epiphany.Excel/AddIn.cs` | The environments, the menu commands and the Connect window. |
 | `Epiphany.Excel/Writeback.cs` | Writing a value typed over a read formula. |
+| `Epiphany.Excel/Picker.cs` | Choosing the element of a `SUBNM` formula. |
+| `Epiphany.Excel/Formula.cs` | Reading a formula as a function call and its arguments. |
 | `Epiphany.Excel/Json.cs` | JSON reading and writing. |
 | `Epiphany.Excel.Tests/` | The tests. |

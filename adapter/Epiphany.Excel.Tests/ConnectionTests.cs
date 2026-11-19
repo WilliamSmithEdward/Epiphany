@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Xunit;
@@ -177,6 +178,42 @@ namespace Epiphany.Excel.Tests
             Assert.Equal("Comment", Line(line => line.SubsetName("", 1.0, "")));
             Assert.Equal("Amt", Line(line => line.SubsetName("", "amount", "Short")));
             Assert.Equal(Connection.KeyError, Line(line => line.SubsetName("No Such Subset", 1.0, "")));
+        }
+
+        [Fact]
+        public async Task ASubsetListsItsElementsForChoosing()
+        {
+            var names = await connection.Ask("Line", line => line.Members("Backwards", ""));
+            Assert.Equal(
+                new[] { "Amount=Amount", "Comment=Comment" },
+                ((List<KeyValuePair<string, string>>)names).Select(member => member.Key + "=" + member.Value).ToArray());
+            // With an alias, each element is shown by it, or by its name where it has none.
+            var aliases = await connection.Ask("Line", line => line.Members("", "Short"));
+            Assert.Equal(
+                new[] { "Comment=Comment", "Amount=Amt" },
+                ((List<KeyValuePair<string, string>>)aliases).Select(member => member.Key + "=" + member.Value).ToArray());
+            Assert.Equal(Connection.KeyError, await connection.Ask("Line", line => line.Members("Nope", "")));
+            Assert.Equal(Connection.KeyError, await connection.Ask("Line", line => line.Members("", "Nope")));
+        }
+
+        [Fact]
+        public void AFormulaIsReadAsOneCallOrNotAtAll()
+        {
+            Assert.Equal(new[] { "SUBNM", "\"Period\"", "\"\"", "1" }, Formula.Call("=SUBNM(\"Period\",\"\",1)"));
+            // Commas and brackets inside text or inside another call belong to the argument.
+            Assert.Equal(
+                new[] { "DBRW", "\"a,b)\"", "IF(A1>0,B1,C1)", "{1,2}", "$D$4" },
+                Formula.Call("=dbrw( \"a,b)\" , IF(A1>0,B1,C1), {1,2}, $D$4)"));
+            Assert.Equal(new[] { "NOW" }, Formula.Call("=NOW()"));
+            Assert.Null(Formula.Call("=DBRW(\"a\",\"b\")*2"));
+            Assert.Null(Formula.Call("=A1+DBRW(\"a\",\"b\")"));
+            Assert.Null(Formula.Call("12"));
+            Assert.Null(Formula.Call("=DBRW(\"a\""));
+
+            var call = Formula.Call("=SUBNM(\"Period\",\"Months\",1,\"Code\")");
+            Assert.Equal("=SUBNM(\"Period\",\"Months\",\"Mar\",\"Code\")", Formula.With(call, 3, Formula.Quote("Mar")));
+            Assert.Equal("=SUBNM(\"Period\",\"\",\"5\"\" disk\")",
+                Formula.With(Formula.Call("=SUBNM(\"Period\",\"\")"), 3, Formula.Quote("5\" disk")));
         }
 
         [Fact]

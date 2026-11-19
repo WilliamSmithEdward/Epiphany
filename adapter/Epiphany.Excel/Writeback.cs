@@ -67,23 +67,8 @@ namespace Epiphany.Excel
         /// <summary>True for a formula that is one DBRW or DBR call and nothing else.</summary>
         internal static bool IsRead(string formula)
         {
-            var open = formula.IndexOf('(');
-            var name = open < 0 ? "" : formula.Substring(0, open).ToUpperInvariant();
-            if (name != "=DBRW" && name != "=DBR")
-                return false;
-            var depth = 0;
-            var quoted = false;
-            for (var index = open; index < formula.Length; index++)
-            {
-                var character = formula[index];
-                if (character == '"')
-                    quoted = !quoted;
-                else if (!quoted && character == '(')
-                    depth++;
-                else if (!quoted && character == ')' && --depth == 0)
-                    return index == formula.Length - 1;
-            }
-            return false;
+            var function = Formula.Call(formula)?[0];
+            return function == "DBRW" || function == "DBR";
         }
 
         /// <summary>Remembers the read formulas of the cells now selected.</summary>

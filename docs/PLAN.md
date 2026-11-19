@@ -310,8 +310,9 @@ practice that means:
   - The dimension copies are renewed by the Refresh command, not by watching the model
     version; the API has no cheap way to ask for the version alone.
   - `adapter/check-excel.ps1` enters a formula for each row of the table in a real Excel
-    and all of them pass, as does Refresh. `adapter/check-excel-signin.ps1` drives the
-    Connect window, a refused and an accepted sign-in, and Disconnect. Neither runs in CI,
+    and all of them pass, as does Refresh. `adapter/check-excel-windows.ps1` drives the
+    Connect window, a refused and an accepted sign-in, the window that chooses a `SUBNM`'s
+    element, and Disconnect. Neither runs in CI,
     which has no Excel.
   - A value typed over a `DBRW` or `DBR` cell is written to the cube and the formula put
     back. The add-in notes where each read formula reads from as it is calculated, and the

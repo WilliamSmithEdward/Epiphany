@@ -54,7 +54,17 @@ namespace Epiphany.Excel
                 // No settings yet, or settings that cannot be read: start from the defaults.
             }
             fallback = fallback ?? Places.Values.FirstOrDefault() ?? Add(DefaultName, DefaultAddress, "");
-            Writeback.Watch((Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application);
+            var excel = (Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application;
+            Writeback.Watch(excel);
+            Picker.Watch(excel);
+        }
+
+        [ExcelCommand(MenuName = Menu, MenuText = "Choose element...")]
+        public static void Choose()
+        {
+            var excel = (Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application;
+            if (!Picker.Pick(excel.ActiveCell))
+                MessageBox.Show("Select a cell whose formula is a SUBNM first.", Menu);
         }
 
         public void AutoClose()

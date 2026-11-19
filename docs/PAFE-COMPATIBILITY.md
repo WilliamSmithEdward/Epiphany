@@ -70,6 +70,14 @@ element of the dimension, in the dimension's order.
 `DIMSIZ`, `ELCOMPN` and `ELPARN` are not in the project's list. They are here because
 `DIMNM`, `ELCOMP` and `ELPAR` are of little use without a count to loop to.
 
+## Choosing an element
+
+| Case | Adapter | PAfE |
+| --- | --- | --- |
+| A double click on a cell whose formula is one `SUBNM` call, or **Choose element** in the Epiphany menu | A window lists the elements of the formula's subset, shown by the alias if the formula names one. Typing narrows the list. The element chosen is written into the formula by name | PAfE opens its set editor; unverified |
+| The dimension, subset or alias given as a reference or a formula | Worked out by Excel first | Unverified |
+| A cell whose formula is anything else, or whose subset cannot be listed | The double click edits the cell, as in any worksheet | Unverified |
+
 ## Typing over a read
 
 | Case | Adapter | PAfE |
@@ -109,7 +117,6 @@ element of the dimension, in the dimension's order.
 
 ## Not replicated
 
-- The element picker that PAfE opens on a double click of a `SUBNM` cell.
 - `DBS` to a consolidated cell as a spread. Spreading is available from the API
   (`POST /cells/spread`), not from a worksheet function.
 - `VIEW`, `TM1RPTROW` and the other functions of PAfE's reports.
