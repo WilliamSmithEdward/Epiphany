@@ -1,13 +1,17 @@
-//! Users, their passwords, and the sessions they sign in to.
+//! Users, their passwords, what each may do, and the sessions they sign in to.
 //!
 //! Users are kept in `users.json` in the server's directory, each with a salted Argon2 hash of
 //! the password; the password itself is never stored. Signing in gives a random token, which
 //! the client sends with every request. A session ends when it is signed out of or has not
 //! been used for a while. Sessions live in memory, so they end when the server stops.
+//!
+//! A name that has been given the wrong password several times running is refused for a
+//! while whatever password comes with it, so that passwords cannot be tried by the thousand.
 
 use std::collections::HashMap;
 use std::error::Error;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -15,27 +19,80 @@ use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::storage::{read_json, write_json};
 
 const FILE: &str = "users.json";
 /// How long a session lasts without being used, unless set otherwise.
 const IDLE: Duration = Duration::from_secs(30 * 60);
+/// How many wrong passwords running a name may be given before it is refused for a while.
+const ATTEMPTS: u32 = 5;
+/// How long such a name is refused, counted from the last wrong password.
+const PAUSE: Duration = Duration::from_secs(60);
+
+/// What a user may do. Each role may also do what the ones before it may.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// Read cells, the model and its dimensions, and run queries.
+    Read,
+    /// Also write cells, spread values and use transactions and locks.
+    Write,
+    /// Also change the model.
+    #[default]
+    Admin,
+}
+
+impl FromStr for Role {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        match text.to_lowercase().as_str() {
+            "read" => Ok(Self::Read),
+            "write" => Ok(Self::Write),
+            "admin" => Ok(Self::Admin),
+            _ => Err(format!("'{text}' is not a role; use read, write or admin")),
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 struct User {
     name: String,
     /// The Argon2 hash of the password, with its salt and settings.
     password: String,
+    /// A user recorded before there were roles may do everything, as then.
+    #[serde(default)]
+    role: Role,
+}
+
+/// Why a sign-in was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// The name or the password is wrong.
+    Wrong,
+    /// The name has been given too many wrong passwords and is refused for this long yet.
+    Paused(Duration),
+}
+
+#[derive(Debug)]
+struct Session {
+    role: Role,
+    used: Instant,
 }
 
 #[derive(Debug)]
 pub struct Auth {
-    /// Password hashes by user name in lower case.
-    users: HashMap<String, String>,
-    /// When each session was last used, by token.
-    sessions: Mutex<HashMap<String, Instant>>,
+    /// Password hash and role by user name in lower case.
+    users: HashMap<String, (String, Role)>,
+    sessions: Mutex<HashMap<String, Session>>,
+    /// Wrong passwords running and when the last was given, by name in lower case.
+    failures: Mutex<HashMap<String, (u32, Instant)>>,
     idle: Duration,
+    pause: Duration,
 }
 
 impl Auth {
@@ -43,14 +100,16 @@ impl Auth {
     /// for no sign-in.
     pub fn load(directory: &Path) -> Result<Option<Self>, Box<dyn Error>> {
         let users: Vec<User> = read_json(&directory.join(FILE))?.unwrap_or_default();
-        let users: HashMap<String, String> = users
+        let users: HashMap<String, (String, Role)> = users
             .into_iter()
-            .map(|user| (user.name.to_lowercase(), user.password))
+            .map(|user| (user.name.to_lowercase(), (user.password, user.role)))
             .collect();
         Ok((!users.is_empty()).then(|| Self {
             users,
             sessions: Mutex::default(),
+            failures: Mutex::default(),
             idle: IDLE,
+            pause: PAUSE,
         }))
     }
 
@@ -63,44 +122,73 @@ impl Auth {
         self.idle
     }
 
-    /// Starts a session for a user who gives the right password, and returns its token.
-    pub fn sign_in(&self, name: &str, password: &str) -> Option<String> {
+    /// Sets how long a name is refused after too many wrong passwords.
+    pub fn set_pause(&mut self, pause: Duration) {
+        self.pause = pause;
+    }
+
+    /// Starts a session for a user who gives the right password, and returns its token and
+    /// what the user may do.
+    pub fn sign_in(&self, name: &str, password: &str) -> Result<(String, Role), Refusal> {
+        let name = name.to_lowercase();
+        let now = Instant::now();
+        {
+            // Names that are not users are counted like any other, so that a refusal does
+            // not tell which names exist. Counts older than the pause are forgotten, which
+            // also keeps the list short.
+            let mut failures = self.failures.lock().unwrap();
+            failures.retain(|_, (_, last)| now.duration_since(*last) < self.pause);
+            if let Some((ATTEMPTS.., last)) = failures.get(&name) {
+                return Err(Refusal::Paused(self.pause - now.duration_since(*last)));
+            }
+        }
         // An unknown name is checked against a hash too, so that it takes as long to refuse
         // as a wrong password and the two cannot be told apart by timing.
         static NOBODY: OnceLock<String> = OnceLock::new();
-        let known = self.users.get(&name.to_lowercase());
-        let hash =
-            known.unwrap_or_else(|| NOBODY.get_or_init(|| hash("nobody").expect("hashing works")));
+        let known = self.users.get(&name);
+        let hash = match known {
+            Some((hash, _)) => hash,
+            None => NOBODY.get_or_init(|| hash("nobody").expect("hashing works")),
+        };
         let right = PasswordHash::new(hash).is_ok_and(|hash| {
             Argon2::default()
                 .verify_password(password.as_bytes(), &hash)
                 .is_ok()
         });
-        if known.is_none() || !right {
-            return None;
-        }
+        let role = match known {
+            Some(&(_, role)) if right => role,
+            _ => {
+                let mut failures = self.failures.lock().unwrap();
+                let (count, last) = failures.entry(name).or_insert((0, now));
+                (*count, *last) = (*count + 1, now);
+                return Err(Refusal::Wrong);
+            }
+        };
+        self.failures.lock().unwrap().remove(&name);
         let mut random = [0u8; 32];
         getrandom::fill(&mut random).expect("the operating system provides randomness");
         let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
         let mut sessions = self.sessions.lock().unwrap();
-        let now = Instant::now();
-        sessions.retain(|_, used| now.duration_since(*used) <= self.idle);
-        sessions.insert(token.clone(), now);
-        Some(token)
+        sessions.retain(|_, session| now.duration_since(session.used) <= self.idle);
+        sessions.insert(token.clone(), Session { role, used: now });
+        Ok((token, role))
     }
 
-    /// Whether a token belongs to a live session, which then counts as used just now.
-    pub fn admits(&self, token: &str) -> bool {
+    /// What the user of a live session may do; the session then counts as used just now.
+    /// Nothing if the token belongs to no live session.
+    pub fn admits(&self, token: &str) -> Option<Role> {
         let mut sessions = self.sessions.lock().unwrap();
         let now = Instant::now();
-        let live = sessions
-            .get(token)
-            .is_some_and(|used| now.duration_since(*used) <= self.idle);
-        match live {
-            true => sessions.insert(token.to_owned(), now),
-            false => sessions.remove(token),
-        };
-        live
+        match sessions.get_mut(token) {
+            Some(session) if now.duration_since(session.used) <= self.idle => {
+                session.used = now;
+                Some(session.role)
+            }
+            _ => {
+                sessions.remove(token);
+                None
+            }
+        }
     }
 
     pub fn sign_out(&self, token: &str) {
@@ -113,8 +201,13 @@ fn hash(password: &str) -> Result<String, Box<dyn Error>> {
     Ok(hash.map_err(|error| error.to_string())?.to_string())
 }
 
-/// Adds a user to a directory, or changes the password of one it already has.
-pub fn set_user(directory: &Path, name: &str, password: &str) -> Result<(), Box<dyn Error>> {
+/// Adds a user to a directory, or changes the password and role of one it already has.
+pub fn set_user(
+    directory: &Path,
+    name: &str,
+    password: &str,
+    role: Role,
+) -> Result<(), Box<dyn Error>> {
     if name.trim().is_empty() || password.is_empty() {
         return Err("a user needs a name and a password".into());
     }
@@ -124,6 +217,7 @@ pub fn set_user(directory: &Path, name: &str, password: &str) -> Result<(), Box<
     users.push(User {
         name: name.trim().to_owned(),
         password: hash(password)?,
+        role,
     });
     Ok(write_json(&path, &users)?)
 }

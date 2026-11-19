@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRef, FromRequest, Path, Request, State};
-use axum::http::header::{AUTHORIZATION, WWW_AUTHENTICATE};
+use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{Html, IntoResponse, Response};
@@ -20,7 +20,7 @@ use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{AttributeType, ChildDef, Dimension, ElementId, ElementType, ModelDef};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::Auth;
+use crate::auth::{Auth, Refusal, Role};
 use utoipa::openapi::RefOr;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
 use utoipa::{OpenApi, ToSchema};
@@ -89,12 +89,27 @@ fn secured(mut contract: utoipa::openapi::OpenApi) -> utoipa::openapi::OpenApi {
     if let RefOr::T(response) = &mut refusal {
         response.description = "Not signed in, or the session has ended".to_owned();
     }
+    let mut forbidden = refusal.clone();
+    if let RefOr::T(response) = &mut forbidden {
+        response.description = "The user may not do this".to_owned();
+    }
     for (path, item) in &mut contract.paths.paths {
-        let operations = [&mut item.get, &mut item.put, &mut item.delete];
-        let post = (path != "/sessions").then_some(&mut item.post);
-        for operation in operations.into_iter().chain(post).flatten() {
+        let operations = [
+            (Method::GET, &mut item.get),
+            (Method::PUT, &mut item.put),
+            (Method::DELETE, &mut item.delete),
+            (Method::POST, &mut item.post),
+        ];
+        for (method, operation) in operations {
+            let signing_in = method == Method::POST && path == "/sessions";
+            let Some(operation) = operation.as_mut().filter(|_| !signing_in) else {
+                continue;
+            };
             let responses = &mut operation.responses.responses;
             responses.insert("401".to_owned(), refusal.clone());
+            if needed(&method, path) > Role::Read {
+                responses.insert("403".to_owned(), forbidden.clone());
+            }
         }
     }
     contract
@@ -144,15 +159,34 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .strip_prefix("Bearer ")
 }
 
+/// What a user must be allowed to do to call a route.
+fn needed(method: &Method, path: &str) -> Role {
+    let reads = ["/cells/read", "/cells/explain", "/mdx"];
+    if method == Method::PUT && path == "/model" {
+        Role::Admin
+    } else if method == Method::GET || path == "/sessions" || reads.contains(&path) {
+        Role::Read
+    } else {
+        Role::Write
+    }
+}
+
 /// Lets a request through if the server has no users, if it is a sign-in, or if it carries
-/// the token of a live session.
+/// the token of a live session whose user may do what the route does.
 async fn require_session(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let signing_in = request.method() == Method::POST && request.uri().path() == "/sessions";
-    let admitted = state.auth.as_ref().is_none_or(|auth| {
-        signing_in || bearer(request.headers()).is_some_and(|token| auth.admits(token))
-    });
-    if admitted {
+    let Some(auth) = state.auth.as_ref().filter(|_| !signing_in) else {
         return next.run(request).await;
+    };
+    let role = bearer(request.headers()).and_then(|token| auth.admits(token));
+    let needed = needed(request.method(), request.uri().path());
+    match role {
+        Some(role) if role >= needed => return next.run(request).await,
+        Some(_) => {
+            let message = format!("this needs a user with the role '{needed:?}'").to_lowercase();
+            return ApiError::new(StatusCode::FORBIDDEN, "forbidden", message).into_response();
+        }
+        None => {}
     }
     let refusal = ApiError::new(
         StatusCode::UNAUTHORIZED,
@@ -176,6 +210,8 @@ struct Session {
     token: String,
     /// The session ends when it has not been used for this many seconds.
     idle_seconds: u64,
+    /// What the user may do.
+    role: Role,
 }
 
 /// Signs in, starting a session.
@@ -187,36 +223,45 @@ struct Session {
     responses(
         (status = CREATED, body = Session, description = "Signed in"),
         (status = UNAUTHORIZED, body = ApiError, description = "Wrong name or password"),
+        (status = TOO_MANY_REQUESTS, body = ApiError, description = "The name has been given too many wrong passwords; the Retry-After header says how many seconds to wait"),
         (status = NOT_FOUND, body = ApiError, description = "The server has no users, so nothing needs signing in to"),
         (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The request body is malformed")
     )
 )]
-async fn sign_in(
-    State(state): State<AppState>,
-    Body(request): Body<SignIn>,
-) -> Result<(StatusCode, Json<Session>), ApiError> {
+async fn sign_in(State(state): State<AppState>, Body(request): Body<SignIn>) -> Response {
     let Some(auth) = state.auth else {
         let message = "this server has no users, so nothing needs signing in to".to_owned();
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", message));
+        return ApiError::new(StatusCode::NOT_FOUND, "not_found", message).into_response();
     };
     let idle_seconds = auth.idle().as_secs();
     // Checking a password is deliberately slow, so it is kept off the threads that serve
     // other requests.
     let checked =
         tokio::task::spawn_blocking(move || auth.sign_in(&request.name, &request.password));
-    match checked.await.ok().flatten() {
-        Some(token) => Ok((
-            StatusCode::CREATED,
-            Json(Session {
+    match checked.await.unwrap_or(Err(Refusal::Wrong)) {
+        Ok((token, role)) => {
+            let session = Session {
                 token,
                 idle_seconds,
-            }),
-        )),
-        None => Err(ApiError::new(
+                role,
+            };
+            (StatusCode::CREATED, Json(session)).into_response()
+        }
+        Err(Refusal::Wrong) => ApiError::new(
             StatusCode::UNAUTHORIZED,
             "wrong_credentials",
             "wrong name or password".to_owned(),
-        )),
+        )
+        .into_response(),
+        Err(Refusal::Paused(pause)) => {
+            let seconds = pause.as_secs() + 1;
+            let refusal = ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too_many_attempts",
+                format!("too many wrong passwords for this name; try again in {seconds} seconds"),
+            );
+            ([(RETRY_AFTER, seconds.to_string())], refusal).into_response()
+        }
     }
 }
 

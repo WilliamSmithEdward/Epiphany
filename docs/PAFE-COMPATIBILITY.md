@@ -44,6 +44,7 @@ corrected and the adapter with it.
 | `DBS`/`DBSW` to a consolidated cell | `*KEY_ERR`; nothing is written | Refused. PAfE can spread instead when asked to; unverified |
 | `DBS`/`DBSW` to a cell decided by a rule | `*KEY_ERR`; nothing is written | Refused, unverified |
 | `DBS`/`DBSW` to a string cell, `DBSS` to a numeric cell | `*KEY_ERR`; nothing is written | Refused, unverified |
+| A write by a user who may only read | `*KEY_ERR`; nothing is written | Unverified |
 | `DBS` with a value that is not a number | `#VALUE!`, from Excel | Unverified |
 | The cube is locked by another transaction | `#N/A`; **Refresh** to try again | No equivalent |
 | No connection, or the session has ended | `#N/A`, and the sign-in window opens once | Unverified |

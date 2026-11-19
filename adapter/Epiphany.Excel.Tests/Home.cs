@@ -10,6 +10,7 @@ namespace Epiphany.Excel.Tests
     {
         // Made up for these tests; they open nothing else.
         public const string User = "ada";
+        public const string Reader = "grace";
         public const string Password = "test-only-5d81e0";
 
         private const string Line = @"{
@@ -50,9 +51,10 @@ namespace Epiphany.Excel.Tests
                 Path.Combine(directory, "model"));
             File.WriteAllText(Path.Combine(directory, "model", "dimensions", "line.json"), Line);
             File.WriteAllText(Path.Combine(directory, "model", "cubes", "notes.json"), Notes);
-            if (withUser)
+            // One user who may do everything, and one who may only read.
+            foreach (var user in withUser ? new[] { User, Reader + " read" } : new string[0])
             {
-                var adding = Start(binary, "user \"" + directory + "\" " + User);
+                var adding = Start(binary, "user \"" + directory + "\" " + user);
                 adding.StandardInput.WriteLine(Password);
                 adding.StandardInput.Close();
                 adding.WaitForExit();

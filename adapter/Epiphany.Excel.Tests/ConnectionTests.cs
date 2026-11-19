@@ -247,6 +247,23 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task AUserWhoMayOnlyReadIsRefusedAWrite()
+        {
+            var at = new[] { "Rent", "UK", "Feb", "Actual" };
+            using (var connection = new Connection(home.Address))
+            {
+                var asked = 0;
+                connection.SignInNeeded += () => asked++;
+                Assert.True(await connection.SignIn(Home.Reader, Home.Password));
+                Assert.Equal(0.0, await connection.Read("General Ledger", at));
+                // Refused, as a write to a consolidation is; the session itself is good.
+                Assert.Equal(Connection.KeyError, await connection.Write("General Ledger", at, 5.0));
+                Assert.Equal(0.0, await connection.Read("General Ledger", at));
+                Assert.Equal(0, asked);
+            }
+        }
+
+        [Fact]
         public async Task ASessionIsNeededAndCanBeEnded()
         {
             var at = new[] { "Rent", "UK", "Jan", "Actual" };

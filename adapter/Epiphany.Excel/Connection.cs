@@ -185,8 +185,10 @@ namespace Epiphany.Excel
                 var refused = Json.Field(reply.Body, "index");
                 if (reply.Status != 422 || refused == null)
                 {
+                    // 403: the user may read but not write, so every one of them is refused.
+                    var failed = reply.Status == 403 ? KeyError : Unavailable;
                     foreach (var cell in cells)
-                        cell.Answer.SetResult(reply.Ok ? cell.Value : Unavailable);
+                        cell.Answer.SetResult(reply.Ok ? cell.Value : failed);
                     return;
                 }
                 var index = Convert.ToInt32(refused);

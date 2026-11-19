@@ -2,7 +2,7 @@ use std::error::Error;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-use epiphany_server::{Auth, app_with, open, openapi, set_user, with_lab};
+use epiphany_server::{Auth, Role, app_with, open, openapi, set_user, with_lab};
 use tokio::net::TcpListener;
 
 const ADDRESS: &str = "127.0.0.1:8080";
@@ -10,8 +10,10 @@ const USAGE: &str = "usage:
   epiphany-server serve <directory> [address]   serve the database kept in a directory
   epiphany-server lab <directory> [address]     the same, plus the test page
                                                 <directory>/index.html at /lab
-  epiphany-server user <directory> <name>       add a user, or change a user's password;
-                                                the password is read from standard input
+  epiphany-server user <directory> <name> [role]
+                                                add a user, or change a user's password and
+                                                role; the password is read from standard input.
+                                                The role is read, write or admin (the default)
   epiphany-server openapi                       print the OpenAPI document
 
 The directory holds the model in <directory>/model, keeps its data in <directory>/data and
@@ -28,7 +30,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
             println!("{}", openapi().to_pretty_json()?);
             return Ok(());
         }
-        ["user", directory, name] => return user(Path::new(directory), name),
+        ["user", directory, name] => return user(Path::new(directory), name, Role::Admin),
+        ["user", directory, name, role] => {
+            return user(Path::new(directory), name, role.parse()?);
+        }
         [command @ ("serve" | "lab"), directory] => (*command, Path::new(directory), ADDRESS),
         [command @ ("serve" | "lab"), directory, address] => {
             (*command, Path::new(directory), *address)
@@ -63,7 +68,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 }
 
 /// Adds a user, reading the password from standard input so that it is in no command line.
-fn user(directory: &Path, name: &str) -> Result<(), Box<dyn Error>> {
+fn user(directory: &Path, name: &str, role: Role) -> Result<(), Box<dyn Error>> {
     eprint!("Password for {name} (it will be shown as you type): ");
     io::stderr().flush()?;
     let mut password = String::new();
@@ -72,7 +77,7 @@ fn user(directory: &Path, name: &str) -> Result<(), Box<dyn Error>> {
     let password = password
         .trim_start_matches('\u{feff}')
         .trim_end_matches(['\r', '\n']);
-    set_user(directory, name, password)?;
+    set_user(directory, name, password, role)?;
     eprintln!("Saved. Restart the server for it to take effect.");
     Ok(())
 }

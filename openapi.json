@@ -140,6 +140,16 @@
               }
             }
           },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown transaction",
             "content": {
@@ -203,6 +213,16 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
             "content": {
               "application/json": {
                 "schema": {
@@ -536,6 +556,16 @@
               }
             }
           },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "409": {
             "description": "Stale version, or a transaction holds a lock",
             "content": {
@@ -623,6 +653,16 @@
                 }
               }
             }
+          },
+          "429": {
+            "description": "The name has been given too many wrong passwords; the Retry-After header says how many seconds to wait",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -673,6 +713,16 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         }
       }
@@ -699,6 +749,16 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
             "content": {
               "application/json": {
                 "schema": {
@@ -770,6 +830,16 @@
               }
             }
           },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Unknown transaction",
             "content": {
@@ -825,6 +895,16 @@
           },
           "401": {
             "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
             "content": {
               "application/json": {
                 "schema": {
@@ -1631,6 +1711,15 @@
           }
         }
       },
+      "Role": {
+        "type": "string",
+        "description": "What a user may do. Each role may also do what the ones before it may.",
+        "enum": [
+          "read",
+          "write",
+          "admin"
+        ]
+      },
       "Scalar": {
         "oneOf": [
           {
@@ -1646,7 +1735,8 @@
         "type": "object",
         "required": [
           "token",
-          "idle_seconds"
+          "idle_seconds",
+          "role"
         ],
         "properties": {
           "idle_seconds": {
@@ -1654,6 +1744,10 @@
             "format": "int64",
             "description": "The session ends when it has not been used for this many seconds.",
             "minimum": 0
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "What the user may do."
           },
           "token": {
             "type": "string",

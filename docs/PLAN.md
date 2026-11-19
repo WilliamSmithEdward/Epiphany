@@ -280,9 +280,17 @@ practice that means:
     apart.
   - Transaction ids are random 53-bit numbers, so that knowing one's own does not reveal
     anyone else's.
-- Not done: per-user or per-cube permissions (every signed-in user can do everything),
-  a limit on sign-in attempts, TLS (put the server behind a proxy that provides it before
-  using it across a network), and tying a transaction to the session that began it.
+  - Each user has a role: `read` may read cells, the model and run queries; `write` may
+    also write cells, spread and use transactions and locks; `admin` may also change the
+    model. A request beyond the role is answered 403. A user recorded before there were
+    roles is an admin.
+  - A name given five wrong passwords running is refused for a minute whatever password
+    comes with it, with 429 and how long to wait. Names that are not users are counted the
+    same way, so the refusal does not tell which names exist.
+- Not done: permissions by cube or by cell, TLS (put the server behind a proxy that
+  provides it before using it across a network), and tying a transaction to the session
+  that began it. Anyone who knows a name can keep its user out by giving wrong passwords;
+  the pause is short so that this is a nuisance and no more.
 
 ## 4. PAfE adapter
 

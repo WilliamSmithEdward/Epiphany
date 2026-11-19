@@ -8,7 +8,7 @@ use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use common::Home;
-use epiphany_server::{Auth, app, app_with, openapi, set_user};
+use epiphany_server::{Auth, Refusal, Role, app, app_with, openapi, set_user};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
@@ -19,7 +19,7 @@ const PASSWORD: &str = "test-only-9f2c41";
 /// A server directory with one user, and the application serving it.
 fn secured(name: &str, idle: Option<Duration>) -> (Home, Router) {
     let home = Home::new(name);
-    set_user(&home.0, NAME, PASSWORD).unwrap();
+    set_user(&home.0, NAME, PASSWORD, Role::Admin).unwrap();
     let mut auth = Auth::load(&home.0)
         .unwrap()
         .expect("the directory has a user");
@@ -122,6 +122,118 @@ async fn signing_in_needs_the_right_name_and_password() {
 }
 
 #[tokio::test]
+async fn a_user_may_do_only_what_the_role_allows() {
+    let home = Home::new("roles");
+    for (name, role) in [
+        ("reader", Role::Read),
+        ("writer", Role::Write),
+        ("admin", Role::Admin),
+    ] {
+        set_user(&home.0, name, PASSWORD, role).unwrap();
+    }
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let mut tokens = Vec::new();
+    for (name, role) in [("reader", "read"), ("writer", "write"), ("admin", "admin")] {
+        let (status, body) = sign_in(&app, name, PASSWORD).await;
+        assert_eq!(status, StatusCode::CREATED);
+        assert_eq!(body["role"], role);
+        tokens.push(body["token"].as_str().unwrap().to_owned());
+    }
+    let [reader, writer, admin] = tokens.try_into().unwrap();
+
+    let at = json!(["Rent", "UK", "Jan", "Actual"]);
+    let read = json!({ "cells": [{ "cube": "General Ledger", "at": at }] });
+    let write = json!({ "cells": [{ "cube": "General Ledger", "at": at, "value": 1 }] });
+    let query = json!({ "mdx": "SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]" });
+    let (_, _, model) = send(&app, "GET", "/model", Some(&reader), None).await;
+    let update = json!({ "based_on": model["version"], "model": model["model"] });
+
+    // Reading is open to all three.
+    for token in [&reader, &writer, &admin] {
+        for (method, uri, body) in [
+            ("GET", "/model", None),
+            ("GET", "/dimensions/Period", None),
+            ("POST", "/cells/read", Some(read.clone())),
+            ("POST", "/cells/explain", Some(read.clone())),
+            ("POST", "/mdx", Some(query.clone())),
+        ] {
+            let (status, _, _) = send(&app, method, uri, Some(token), body).await;
+            assert_eq!(status, StatusCode::OK, "{method} {uri}");
+        }
+    }
+    // Writing and transactions need the write role.
+    for (method, uri, body) in [
+        ("POST", "/cells/write", Some(write.clone())),
+        ("POST", "/transactions", None),
+    ] {
+        let (status, _, body_) = send(&app, method, uri, Some(&reader), body.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(body_["code"], "forbidden");
+        assert_eq!(body_["message"], "this needs a user with the role 'write'");
+        let (status, _, _) = send(&app, method, uri, Some(&writer), body).await;
+        assert!(status.is_success(), "{method} {uri}");
+    }
+    // What was refused was not done.
+    let (_, _, cells) = send(&app, "POST", "/cells/read", Some(&reader), Some(read)).await;
+    assert_eq!(cells["cells"][0]["value"], 1.0);
+    // Changing the model needs the admin role.
+    for token in [&reader, &writer] {
+        let (status, _, _) = send(&app, "PUT", "/model", Some(token), Some(update.clone())).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+    let (status, _, _) = send(&app, "PUT", "/model", Some(&admin), Some(update)).await;
+    assert!(status.is_success());
+    // Anyone may sign out.
+    let (status, _, _) = send(&app, "DELETE", "/sessions", Some(&reader), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn too_many_wrong_passwords_pause_a_name() {
+    let home = Home::new("pause");
+    set_user(&home.0, NAME, PASSWORD, Role::Admin).unwrap();
+    let mut auth = Auth::load(&home.0).unwrap().unwrap();
+    auth.set_pause(Duration::from_secs(3));
+    let app = app_with(home.open(), Some(auth));
+
+    // A right password among the wrong ones starts the count again.
+    for password in ["1", "2", "3", "4", PASSWORD, "1", "2", "3", "4", "5"] {
+        let (status, _) = sign_in(&app, NAME, password).await;
+        let expected = match password == PASSWORD {
+            true => StatusCode::CREATED,
+            false => StatusCode::UNAUTHORIZED,
+        };
+        assert_eq!(status, expected);
+    }
+    // After five running, even the right password is refused, and told how long to wait.
+    let credentials = json!({ "name": "ADA", "password": PASSWORD });
+    let request = Request::builder()
+        .method("POST")
+        .uri("/sessions")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(credentials.to_string()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let wait: u64 = response.headers()[header::RETRY_AFTER]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=3).contains(&wait), "{wait}");
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(body["code"], "too_many_attempts");
+    // Other names are not held up.
+    let (status, _) = sign_in(&app, "nobody", PASSWORD).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    tokio::time::sleep(Duration::from_millis(3100)).await;
+    let (status, _) = sign_in(&app, NAME, PASSWORD).await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
 async fn signing_out_ends_the_session() {
     let (_home, app) = secured("sign-out", None);
     let (first, second) = (token(&app).await, token(&app).await);
@@ -136,10 +248,11 @@ async fn signing_out_ends_the_session() {
 
 #[tokio::test]
 async fn a_session_left_unused_ends_and_a_used_one_lives_on() {
-    let (_home, app) = secured("idle", Some(Duration::from_millis(400)));
+    // The times leave room for the other tests, which keep the processor busy with passwords.
+    let (_home, app) = secured("idle", Some(Duration::from_secs(2)));
     let (idle, busy) = (token(&app).await, token(&app).await);
-    for _ in 0..4 {
-        tokio::time::sleep(Duration::from_millis(150)).await;
+    for _ in 0..6 {
+        tokio::time::sleep(Duration::from_millis(400)).await;
         let (status, _, _) = send(&app, "GET", "/model", Some(&busy), None).await;
         assert_eq!(status, StatusCode::OK);
     }
@@ -163,8 +276,8 @@ async fn a_server_without_users_asks_for_no_sign_in() {
 #[test]
 fn passwords_are_stored_only_as_salted_hashes() {
     let home = Home::new("users");
-    set_user(&home.0, NAME, PASSWORD).unwrap();
-    set_user(&home.0, "Grace", PASSWORD).unwrap();
+    set_user(&home.0, NAME, PASSWORD, Role::Admin).unwrap();
+    set_user(&home.0, "Grace", PASSWORD, Role::Read).unwrap();
     let stored = fs::read_to_string(home.path("users.json")).unwrap();
     assert!(!stored.contains(PASSWORD));
     let users: Value = serde_json::from_str(&stored).unwrap();
@@ -179,13 +292,23 @@ fn passwords_are_stored_only_as_salted_hashes() {
     assert_ne!(hashes[0], hashes[1]);
 
     // Setting a user again changes the password instead of adding a second user.
-    set_user(&home.0, "ADA", "another-test-only-77").unwrap();
+    set_user(&home.0, "ADA", "another-test-only-77", Role::Write).unwrap();
     let auth = Auth::load(&home.0).unwrap().unwrap();
-    assert!(auth.sign_in(NAME, PASSWORD).is_none());
-    assert!(auth.sign_in(NAME, "another-test-only-77").is_some());
-    assert!(auth.sign_in("grace", PASSWORD).is_some());
-    assert!(set_user(&home.0, " ", PASSWORD).is_err());
-    assert!(set_user(&home.0, NAME, "").is_err());
+    assert_eq!(auth.sign_in(NAME, PASSWORD), Err(Refusal::Wrong));
+    let role = |name: &str, password: &str| auth.sign_in(name, password).map(|(_, role)| role);
+    assert_eq!(role(NAME, "another-test-only-77"), Ok(Role::Write));
+    assert_eq!(role("grace", PASSWORD), Ok(Role::Read));
+    assert!(set_user(&home.0, " ", PASSWORD, Role::Admin).is_err());
+    assert!(set_user(&home.0, NAME, "", Role::Admin).is_err());
+
+    // A user recorded before there were roles may do everything, as then.
+    let old = json!([{ "name": "Old", "password": hashes[0] }]);
+    fs::write(home.path("users.json"), old.to_string()).unwrap();
+    let auth = Auth::load(&home.0).unwrap().unwrap();
+    assert_eq!(
+        auth.sign_in("old", PASSWORD).map(|(_, role)| role),
+        Ok(Role::Admin)
+    );
 }
 
 #[tokio::test]
@@ -263,7 +386,7 @@ fn the_command_line_reads_a_password_from_standard_input() {
     assert!(child.wait().unwrap().success());
 
     let auth = Auth::load(&home.0).unwrap().unwrap();
-    assert!(auth.sign_in(NAME, PASSWORD).is_some());
+    assert!(auth.sign_in(NAME, PASSWORD).is_ok());
 }
 
 #[test]

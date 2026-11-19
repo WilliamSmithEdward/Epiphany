@@ -106,6 +106,9 @@ target\release\epiphany-server.exe user lab yourname
 ```
 
 It asks for a password and stores only a hash of it, in `lab/users.json`, which git ignores.
+A role after the name limits what the user may do: `read` only reads, `write` also writes
+cells, and `admin`, the default, also changes the model. Five wrong passwords running keep
+a name out for a minute.
 The page then asks you to sign in, and **Sign out** appears in the top bar. Delete
 `users.json` to go back to no sign-in.
 
