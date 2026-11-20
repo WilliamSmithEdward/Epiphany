@@ -368,6 +368,10 @@ practice that means:
   - A value typed over a `DBRW` or `DBR` cell is written to the cube and the formula put
     back. The add-in notes where each read formula reads from as it is calculated, and the
     formulas of the selected cells before they can be typed over.
+  - Begin transaction, Commit and Roll back in the menu: the connection then makes every
+    read, write and spread within one server transaction. A transaction the server has
+    rolled back for want of use is noticed at the next request; reads go on without it,
+    and a write meant for it is not made, since made then it would be final.
   - Formulas name their environment as PAfE's do (`production:Sales`); each environment is
     a server with its own session, added with Connect.
   - See "Not replicated" in the table for the PAfE features left out.

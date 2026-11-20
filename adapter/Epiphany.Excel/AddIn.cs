@@ -104,6 +104,13 @@ namespace Epiphany.Excel
             // A changed model changes what the dimension functions answer, so every formula
             // asks again.
             place.Connection.ModelChanged += () => ExcelAsyncUtil.QueueAsMacro(Refresh);
+            // Left unused, a transaction is rolled back by the server. What was entered in
+            // it is gone, and the sheet goes back to showing what is stored.
+            place.Connection.TransactionLost += () => ExcelAsyncUtil.QueueAsMacro(() =>
+            {
+                Say("Epiphany: the transaction was left too long and the server rolled it back.");
+                Refresh();
+            });
             lock (Gate)
             {
                 if (Places.TryGetValue(Dimension.Key(name), out var replaced))
@@ -124,6 +131,56 @@ namespace Epiphany.Excel
             }
             // Every formula is calculated again, whether or not Excel holds it to be out of date.
             ((Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application).CalculateFull();
+        }
+
+        /// <summary>What the status bar says when there is nothing else to say: that changes
+        /// are being held in a transaction, or nothing, which gives the bar back to Excel.</summary>
+        internal static object Standing => fallback.Connection.InTransaction
+            ? "Epiphany: in a transaction. What you enter is yours alone until Commit; Roll back discards it."
+            : (object)false;
+
+        private static void Say(string message)
+        {
+            var excel = (Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application;
+            excel.StatusBar = message ?? Standing;
+        }
+
+        [ExcelCommand(MenuName = Menu, MenuText = "Begin transaction")]
+        public static void BeginTransaction()
+        {
+            var connection = fallback.Connection;
+            if (connection.InTransaction)
+                MessageBox.Show("There is a transaction already. Commit it or roll it back first.", Menu);
+            else if (!Task.Run(() => connection.Begin()).Result)
+                MessageBox.Show("The server would not begin a transaction.", Menu);
+            Say(null);
+        }
+
+        [ExcelCommand(MenuName = Menu, MenuText = "Commit")]
+        public static void CommitTransaction()
+        {
+            End(true);
+        }
+
+        [ExcelCommand(MenuName = Menu, MenuText = "Roll back")]
+        public static void RollbackTransaction()
+        {
+            End(false);
+        }
+
+        private static void End(bool commit)
+        {
+            var connection = fallback.Connection;
+            if (!connection.InTransaction)
+            {
+                MessageBox.Show("There is no transaction. Begin one first.", Menu);
+                return;
+            }
+            var problem = Task.Run(() => connection.End(commit)).Result;
+            if (problem != null)
+                MessageBox.Show("The transaction was not " + (commit ? "committed" : "rolled back") + ": " + problem, Menu);
+            Say(null);
+            Refresh();
         }
 
         [ExcelCommand(MenuName = Menu, MenuText = "Connect...")]

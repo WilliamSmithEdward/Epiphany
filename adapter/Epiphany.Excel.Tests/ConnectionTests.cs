@@ -88,6 +88,72 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task ATransactionKeepsItsWritesUntilItIsCommitted()
+        {
+            var at = At("Rent", "US", "May", "Budget");
+            using (var other = new Connection(connection.Address))
+            {
+                Assert.False(connection.InTransaction);
+                Assert.True(await connection.Begin());
+                Assert.True(connection.InTransaction);
+                Assert.Equal(9.0, await connection.Write(Ledger, at, 9.0));
+                Assert.Equal(9.0, await connection.Read(Ledger, at));
+                Assert.Equal(0.0, await other.Read(Ledger, at));
+                Assert.Null(await connection.End(commit: true));
+                Assert.False(connection.InTransaction);
+                Assert.Equal(9.0, await other.Read(Ledger, at));
+
+                // Rolled back, what was written and spread in it never was.
+                Assert.True(await connection.Begin());
+                Assert.Equal(5.0, await connection.Write(Ledger, at, 5.0));
+                Assert.Equal(40.0, await connection.Spread(Ledger, At("Rent", "Total Entity", "May", "Budget"), 40.0, "equal"));
+                Assert.Equal(20.0, await connection.Read(Ledger, at));
+                Assert.Null(await connection.End(commit: false));
+                Assert.Equal(9.0, await connection.Read(Ledger, at));
+            }
+        }
+
+        [Fact]
+        public async Task ATransactionTheServerHasEndedIsNoticed()
+        {
+            var at = At("Salaries", "US", "May", "Budget");
+            var lost = 0;
+            connection.TransactionLost += () => lost++;
+            await connection.Write(Ledger, at, 3.0);
+
+            // The server rolls back a transaction left unused; here it is ended behind the
+            // connection's back, which comes to the same.
+            async Task Vanish()
+            {
+                Assert.True(await connection.Begin());
+                var field = typeof(Connection).GetField("transaction",
+                    System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                using (var http = new System.Net.Http.HttpClient())
+                {
+                    var path = connection.Address + "/transactions/" + field.GetValue(connection) + "/rollback";
+                    Assert.True((await http.PostAsync(path, null)).IsSuccessStatusCode);
+                }
+            }
+
+            // A read is answered all the same, from what is stored.
+            await Vanish();
+            Assert.Equal(3.0, await connection.Read(Ledger, at));
+            Assert.Equal(1, lost);
+            Assert.False(connection.InTransaction);
+
+            // A write meant to be held back is not made at all.
+            await Vanish();
+            Assert.Same(Connection.Unavailable, await connection.Write(Ledger, at, 8.0));
+            Assert.Equal(2, lost);
+            Assert.Equal(3.0, await connection.Read(Ledger, at));
+
+            // And ending it says why it could not be.
+            await Vanish();
+            Assert.Contains("unknown transaction", await connection.End(commit: true));
+            Assert.False(connection.InTransaction);
+        }
+
+        [Fact]
         public async Task WhatCannotBeResolvedIsAKeyError()
         {
             var cube = connection.Read("No Such Cube", At("Rent", "UK", "Jan", "Actual"));

@@ -200,7 +200,7 @@ namespace Epiphany.Excel
                         + (refused > 0 ? "the cell is consolidated, calculated or of another type" : "no connection") + ")";
                 ExcelAsyncUtil.QueueAsMacro(() =>
                 {
-                    excel.StatusBar = message ?? (object)false;
+                    excel.StatusBar = message ?? AddIn.Standing;
                     if (refused + lost < answers.Length)
                         AddIn.Refresh();
                 });

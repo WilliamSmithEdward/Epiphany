@@ -42,6 +42,9 @@ default environment. To begin with there is one environment, `local`, at
   and to sign in. The environment connected becomes the default.
 - **Disconnect** to sign out of every environment.
 - **Refresh** (Ctrl+Shift+R) to fetch every formula's value again.
+- **Begin transaction**, **Commit** and **Roll back**. In a transaction, what you enter shows
+  in your Excel and nowhere else until you commit; rolling back discards it. The server
+  rolls back a transaction left unused for five minutes.
 
 Double-clicking a `SUBNM` cell, or **Choose element...** in the menu, lists the elements of
 its subset; type to narrow the list, and the one you choose is written into the formula.

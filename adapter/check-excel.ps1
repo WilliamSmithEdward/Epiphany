@@ -162,9 +162,39 @@ try {
         }
     }
 
+    # A transaction: what is typed in it shows in Excel and nowhere else, until it is
+    # committed; rolled back, the sheet goes back to what is stored.
+    $leaf = $sheet.Cells.Item(5, 1)
+    $stored = {
+        $ask = '{"cells":[{"cube":"General Ledger","at":["Rent","UK","Jun","Budget"]}]}'
+        [string][double](Invoke-RestMethod -Method Post -Uri "$address/cells/read" -ContentType 'application/json' -Body $ask).cells[0].value
+    }
+    $shows = { param($expected) for ($tries = 0; $tries -lt 15 -and [string]$leaf.Text -ne $expected; $tries++) { Start-Sleep -Seconds 1 }; [string]$leaf.Text }
+    $steps = @()
+    $excel.Run('BeginTransaction') | Out-Null
+    $leaf.Select() | Out-Null; $leaf.Value2 = [double]55
+    $steps += @(,@('typed in a transaction, Excel shows it', (& $shows '55'), '55'))
+    $steps += @(,@('and the server still holds the old value', (& $stored), '77'))
+    $excel.Run('RollbackTransaction') | Out-Null
+    $steps += @(,@('rolled back, Excel shows the old value', (& $shows '77'), '77'))
+    $excel.Run('BeginTransaction') | Out-Null
+    $leaf.Select() | Out-Null; $leaf.Value2 = [double]66
+    $steps += @(,@('typed in another, Excel shows it', (& $shows '66'), '66'))
+    $excel.Run('CommitTransaction') | Out-Null
+    $steps += @(,@('committed, the server holds it', (& $stored), '66'))
+    $steps += @(,@('and Excel still shows it', (& $shows '66'), '66'))
+    foreach ($step in $steps) {
+        $ok = $step[1] -eq $step[2]
+        if (-not $ok) { $failed++ }
+        "{0}  Transaction: {1} -> <{2}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $step[0], $step[1]
+    }
+
     # A change of the model is noticed at the add-in's next request, without Refresh: a month
     # is added behind Excel's back, and one new read of a cell makes the count of months
     # follow. A dimension function alone would not do: it is answered from the copy held.
+    # First let the refresh that followed the commit finish, or its answers would be the ones
+    # to bring the news.
+    Start-Sleep -Seconds 6
     $model = Invoke-RestMethod "$address/model"
     $period = $model.model.dimensions | Where-Object name -eq 'Period'
     $period.elements += [pscustomobject]@{ name = 'Jul'; type = 'numeric' }

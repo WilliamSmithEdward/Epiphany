@@ -62,6 +62,49 @@ namespace Epiphany.Excel
         // The model version the last answer came from, as the server's header gave it.
         private string version;
 
+        /// <summary>Raised when the server no longer knows the transaction, which it rolls
+        /// back if it is left unused for some minutes. There is none from then on.</summary>
+        public event Action TransactionLost;
+
+        // The transaction every read and write is made in, if one has been begun.
+        private object transaction;
+
+        public bool InTransaction => transaction != null;
+
+        /// <summary>Begins a transaction: from now on writes are kept to this connection, and
+        /// its reads see them, until <see cref="End"/>. False if the server refuses.</summary>
+        public async Task<bool> Begin()
+        {
+            var reply = await Send(HttpMethod.Post, "transactions", null).ConfigureAwait(false);
+            if (reply.Ok)
+                transaction = Json.Field(reply.Body, "transaction");
+            return reply.Ok;
+        }
+
+        /// <summary>Ends the transaction, storing its writes for everyone or discarding them.
+        /// Null if that was done, otherwise why it was not.</summary>
+        public async Task<string> End(bool commit)
+        {
+            var path = "transactions/" + transaction + (commit ? "/commit" : "/rollback");
+            var reply = await Send(HttpMethod.Post, path, null).ConfigureAwait(false);
+            // Whatever the answer, a transaction the server has ended or lost is over.
+            if (reply.Ok || reply.Status == 404)
+                transaction = null;
+            return reply.Ok ? null
+                : Json.Field(reply.Body, "message") as string ?? "the server could not be reached";
+        }
+
+        /// <summary>Whether an answer says the server no longer knows the transaction; if so
+        /// there is none from here on, and whoever listens is told.</summary>
+        private bool Lost(object error)
+        {
+            if (transaction == null || Json.Field(error, "code") as string != "unknown_transaction")
+                return false;
+            transaction = null;
+            TransactionLost?.Invoke();
+            return true;
+        }
+
         /// <summary>How many requests have been sent; the tests count them.</summary>
         public int Requests;
 
@@ -155,8 +198,9 @@ namespace Epiphany.Excel
             {
                 ["cube"] = cube, ["at"] = at, ["value"] = value, ["method"] = method,
             };
-            var body = new Dictionary<string, object> { ["spread"] = spread };
+            var body = Within(new Dictionary<string, object> { ["spread"] = spread });
             var reply = await Send(HttpMethod.Post, "cells/spread", body).ConfigureAwait(false);
+            Lost(reply.Body);
             return reply.Ok ? value : reply.Status == 422 || reply.Status == 403 ? KeyError : Unavailable;
         }
 
@@ -204,6 +248,9 @@ namespace Epiphany.Excel
             {
                 var reply = await Send(HttpMethod.Post, "cells/write", Body(cells, true)).ConfigureAwait(false);
                 var refused = Json.Field(reply.Body, "index");
+                // Meant to be held back in a transaction that is gone, the writes are not
+                // made at all: made now, they would be final.
+                Lost(reply.Body);
                 // 422 and 403 with a position refuse the one write there: it is invalid, or it
                 // is to a cube the user may not write.
                 if ((reply.Status != 422 && reply.Status != 403) || refused == null)
@@ -226,6 +273,12 @@ namespace Epiphany.Excel
                 return;
             var reply = await Send(HttpMethod.Post, "cells/read", Body(cells, false)).ConfigureAwait(false);
             var results = Json.Items(Json.Field(reply.Body, "cells"));
+            // Read in a transaction that is gone, every cell says so; read again without it.
+            if (results.Length > 0 && Lost(Json.Field(results[0], "error")))
+            {
+                reply = await Send(HttpMethod.Post, "cells/read", Body(cells, false)).ConfigureAwait(false);
+                results = Json.Items(Json.Field(reply.Body, "cells"));
+            }
             for (var index = 0; index < cells.Count; index++)
             {
                 var value = index < results.Length ? Json.Field(results[index], "value") : null;
@@ -234,7 +287,15 @@ namespace Epiphany.Excel
             }
         }
 
-        private static object Body(List<Cell> cells, bool values)
+        /// <summary>A request body, made part of the transaction if there is one.</summary>
+        private Dictionary<string, object> Within(Dictionary<string, object> body)
+        {
+            if (transaction != null)
+                body["transaction"] = transaction;
+            return body;
+        }
+
+        private object Body(List<Cell> cells, bool values)
         {
             var items = cells.Select(cell =>
             {
@@ -243,7 +304,7 @@ namespace Epiphany.Excel
                     item["value"] = cell.Value;
                 return item;
             });
-            return new Dictionary<string, object> { ["cells"] = items.ToArray() };
+            return Within(new Dictionary<string, object> { ["cells"] = items.ToArray() });
         }
 
         /// <summary>Sends one request. A server that cannot be reached gives status zero.</summary>

@@ -112,6 +112,16 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 | A formula that is more than one read, such as `=DBRW(...)*2` | Is replaced by what was typed, as in any worksheet | Same, unverified |
 | A cell typed over without having been selected first, or a change of more than 5,000 cells | As any worksheet: the formula is replaced | No equivalent |
 
+## Transactions
+
+| Case | Adapter | PAfE |
+| --- | --- | --- |
+| **Begin transaction** in the Epiphany menu | From then on what is written, by `DBS`, by typing over a read or by a spread, is kept to this Excel, and its formulas show it; nobody else sees it. The status bar says a transaction is open | PAfE's sandboxes are the nearest thing; unverified |
+| **Commit** | The writes are stored for everyone in one step, and every formula asks again | Unverified |
+| **Roll back** | The writes are discarded, and the sheet shows what is stored again | Unverified |
+| A transaction left unused for five minutes | The server rolls it back. The adapter learns of it at its next request: the status bar says so, reads show what is stored, and a write that was meant for the transaction is not made | No equivalent |
+| Several environments | The commands act on the default environment | No equivalent |
+
 ## Recalculation
 
 | Behaviour | Adapter | PAfE |
