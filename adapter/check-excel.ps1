@@ -145,6 +145,25 @@ try {
             "{0}  Typed: a total over that leaf follows -> <{1}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $total.Text
         }
     }
+
+    # A change of the model is noticed at the add-in's next request, without Refresh: a month
+    # is added behind Excel's back, and one new read of a cell makes the count of months
+    # follow. A dimension function alone would not do: it is answered from the copy held.
+    $model = Invoke-RestMethod "$address/model"
+    $period = $model.model.dimensions | Where-Object name -eq 'Period'
+    $period.elements += [pscustomobject]@{ name = 'Jul'; type = 'numeric' }
+    $put = @{ based_on = $model.version; dimension = $period } | ConvertTo-Json -Depth 20
+    Invoke-RestMethod -Method Put -Uri "$address/dimensions/Period" -ContentType 'application/json' -Body $put | Out-Null
+    $row = 0
+    for ($index = 0; $index -lt $cases.Count; $index++) { if ($cases[$index][0] -eq '=DIMSIZ("Period")') { $row = $index + 1 } }
+    $size = $sheet.Cells.Item($row, 1)
+    $before = [string]$size.Text
+    $added = $sheet.Cells.Item($cases.Count + 1, 1)
+    $added.Formula = '=DBRW("General Ledger","Rent","US","Jul","Actual")'
+    for ($tries = 0; $tries -lt 15 -and ([string]$size.Text -ne '10' -or [string]$added.Text -ne '0'); $tries++) { Start-Sleep -Seconds 1 }
+    $ok = $before -eq '9' -and [string]$size.Text -eq '10' -and [string]$added.Text -eq '0'
+    if (-not $ok) { $failed++ }
+    "{0}  Model change: months counted <{1}> then <{2}>, the new month reads <{3}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $before, $size.Text, $added.Text
     "$failed failed"
     $script:failures = $failed
     $book.Close($false)
