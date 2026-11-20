@@ -306,16 +306,14 @@ impl<'a> Reader<'a> {
 
     /// Whether a cell is a text cell, and whether it is a consolidated one.
     pub(crate) fn kind(&self, cube: usize, at: &[ElementId]) -> (bool, bool) {
-        let definition = &self.model.cubes()[cube];
-        let mut elements = self.elements(definition, at);
-        let text = elements
-            .next_back()
-            .is_some_and(|e| e.kind == ElementType::Text);
-        let consolidated = !text
-            && self
-                .elements(definition, at)
-                .any(|e| e.kind == ElementType::Consolidated);
-        (text, consolidated)
+        // Asked of every cell read, so the elements are gone through once.
+        let (mut text, mut consolidated) = (false, false);
+        for element in self.elements(&self.model.cubes()[cube], at) {
+            // Left standing by the last element, which is the one that makes a cell text.
+            text = element.kind == ElementType::Text;
+            consolidated |= element.kind == ElementType::Consolidated;
+        }
+        (text, consolidated && !text)
     }
 
     /// The rule that decides a cell, by its position among the cube's rules, and the value it

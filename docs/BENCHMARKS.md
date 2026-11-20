@@ -40,6 +40,10 @@ of a query's axes, and those a set function such as `TopCount` reads to choose i
 are added up in one pass, and a consolidated cell once worked out is kept until the next
 commit, so the same query asked again reads what was kept.
 
+Keeping totals costs the leaf cells a check of whether each is one. That took the grid of
+10,000 leaf cells from 2.1 ms to 3.0 ms at first; with the check made in one pass over the
+cell's elements, and leaves no longer announced before they are read, it is 2.5 ms.
+
 ## Rules and feeders
 
 ```

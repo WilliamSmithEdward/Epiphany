@@ -195,18 +195,11 @@ impl Query {
                 })
             })
             .collect();
-        // The cells that are cells of the cube, and not worked out by a calculated member.
-        let stored: Vec<Vec<ElementId>> = contexts
+        let totals: Vec<Vec<ElementId>> = contexts
             .iter()
-            .filter_map(|context| {
-                let element = |id: &Id| match id {
-                    Id::Element(element) => Some(*element),
-                    Id::Calculated(_) => None,
-                };
-                context.iter().map(element).collect()
-            })
+            .filter_map(|context| evaluator.total_at(context))
             .collect();
-        expect(&stored.iter().map(Vec::as_slice).collect::<Vec<_>>());
+        expect(&totals.iter().map(Vec::as_slice).collect::<Vec<_>>());
         let cells = contexts
             .iter()
             .map(|context| evaluator.cell(context))
@@ -1673,19 +1666,36 @@ impl<'a> Evaluator<'a> {
             Some(expression) => self.named(expression, context, &mut named),
             None => named.push(Tuple::new()),
         }
-        let element = |id: &Id| match id {
-            Id::Element(element) => Some(*element),
-            Id::Calculated(_) => None,
-        };
         let cells: Vec<Vec<ElementId>> = set
             .iter()
             .flat_map(|tuple| {
                 let context = with(context, tuple);
-                let at = |named: &Tuple| with(&context, named).iter().map(element).collect();
+                let at = |named: &Tuple| self.total_at(&with(&context, named));
                 named.iter().filter_map(at).collect::<Vec<_>>()
             })
             .collect();
         (self.expect)(&cells.iter().map(Vec::as_slice).collect::<Vec<_>>());
+    }
+
+    /// The coordinate of the cell at a context, if it is a cell of the cube that is added
+    /// up: every member an element, and one of them at least a consolidation. Those are the
+    /// cells worth saying are about to be read; a leaf is read as quickly unannounced.
+    fn total_at(&self, context: &Context) -> Option<Vec<ElementId>> {
+        let consolidated = |(position, id): (usize, &Id)| match id {
+            Id::Element(id) => {
+                let element = &self.dimension(position).elements[*id as usize];
+                element.kind == ElementType::Consolidated
+            }
+            Id::Calculated(_) => false,
+        };
+        if !context.iter().enumerate().any(consolidated) {
+            return None;
+        }
+        let element = |id: &Id| match id {
+            Id::Element(element) => Some(*element),
+            Id::Calculated(_) => None,
+        };
+        context.iter().map(element).collect()
     }
 
     /// The members and tuples an expression names outright, through arithmetic and comparisons.
