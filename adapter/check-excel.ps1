@@ -125,7 +125,11 @@ try {
     $typed = @(
         @(5, 77, '77', 'a number over a leaf'),
         @(3, 5, '150.5', 'a number over a consolidation is refused'),
+        # The last formula is the total over the leaf that now holds 77.
+        @($cases.Count, 'P154', '154', 'a letter and a number over a consolidation spread the number'),
+        @(5, 'p77', '77', 'in either case, and over a leaf too'),
         @(8, 12, '12', 'a number over a string cell is written as text'),
+        @(8, 'S100', 'S100', 'what looks like a spread is text in a string cell'),
         @(8, 'hello', 'hello', 'text over a string cell')
     )
     foreach ($case in $typed) {

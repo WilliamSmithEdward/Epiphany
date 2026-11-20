@@ -140,15 +140,49 @@ namespace Epiphany.Excel
             }
         }
 
-        /// <summary>Writes a typed value. A number typed into a string cell is written as text.</summary>
+        // What may be typed to spread a value over a consolidation, as TM1's clients have it:
+        // a letter for the method and then the value, "P1200" say.
+        private static readonly Dictionary<char, string> Methods = new Dictionary<char, string>
+        {
+            ['P'] = "proportional", ['S'] = "equal", ['R'] = "repeat",
+        };
+
+        /// <summary>The method and value of a typed spread, or null for anything else.</summary>
+        internal static KeyValuePair<string, double>? Spreading(object typed)
+        {
+            var text = (typed as string ?? "").Trim().ToUpperInvariant();
+            if (text.Length < 2 || !Methods.TryGetValue(text[0], out var method)
+                || !double.TryParse(text.Substring(1), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
+                return null;
+            return new KeyValuePair<string, double>(method, value);
+        }
+
+        /// <summary>Writes a typed value. A number typed into a string cell is written as text,
+        /// and a letter and a number typed over a consolidation spread the number.</summary>
         private static async Task<object> Write(Source source, object value)
         {
-            var answer = await source.Connection.Write(source.Cube, source.At, value).ConfigureAwait(false);
-            if (!Equals(answer, Connection.KeyError) || !(value is double number))
+            // What was typed can be meant in more than one way, and only the server knows which
+            // fits the cell. Each is tried in turn until one is taken: a spread, where it has
+            // the form of one; the value as typed; and then the number of a spread written to
+            // a leaf, or a number written to a string cell as text.
+            var spread = Spreading(value);
+            var answer = (object)Connection.KeyError;
+            if (spread.HasValue)
+                answer = await source.Connection
+                    .Spread(source.Cube, source.At, spread.Value.Value, spread.Value.Key)
+                    .ConfigureAwait(false);
+            if (Equals(answer, Connection.KeyError))
+                answer = await source.Connection.Write(source.Cube, source.At, value).ConfigureAwait(false);
+            if (!Equals(answer, Connection.KeyError))
                 return answer;
-            return await source.Connection
-                .Write(source.Cube, source.At, number.ToString("R", CultureInfo.InvariantCulture))
-                .ConfigureAwait(false);
+            object other = null;
+            if (spread.HasValue)
+                other = spread.Value.Value;
+            else if (value is double number)
+                other = number.ToString("R", CultureInfo.InvariantCulture);
+            return other == null
+                ? answer
+                : await source.Connection.Write(source.Cube, source.At, other).ConfigureAwait(false);
         }
 
         /// <summary>Says in the status bar how many of the values could not be written, or

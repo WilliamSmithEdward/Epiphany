@@ -146,6 +146,20 @@ namespace Epiphany.Excel
             http.DefaultRequestHeaders.Authorization = null;
         }
 
+        /// <summary>Shares a value out among the leaves of a consolidated cell, by one of the
+        /// server's methods: proportional, equal or repeat. Answers with the value, or with
+        /// <see cref="KeyError"/> if the server refuses the spread.</summary>
+        public async Task<object> Spread(string cube, string[] at, double value, string method)
+        {
+            var spread = new Dictionary<string, object>
+            {
+                ["cube"] = cube, ["at"] = at, ["value"] = value, ["method"] = method,
+            };
+            var body = new Dictionary<string, object> { ["spread"] = spread };
+            var reply = await Send(HttpMethod.Post, "cells/spread", body).ConfigureAwait(false);
+            return reply.Ok ? value : reply.Status == 422 || reply.Status == 403 ? KeyError : Unavailable;
+        }
+
         private Task<object> Queue(Cell cell)
         {
             lock (gate)

@@ -86,7 +86,10 @@ element of the dimension, in the dimension's order.
 | Case | Adapter | PAfE |
 | --- | --- | --- |
 | A value typed or pasted over a cell whose formula is one `DBRW` or `DBR` call | The value is written to the cube cell the formula reads, and the formula is put back, showing the new value | Same, unverified |
-| Over a consolidated or calculated cell | Nothing is written, the formula is put back, and the status bar says so | PAfE can spread instead; unverified |
+| A number over a consolidated or calculated cell | Nothing is written, the formula is put back, and the status bar says so | Unverified |
+| `P`, `S` or `R` and a number over a consolidated cell, `P1200` say | The number is spread over the leaves beneath: `P` in proportion to what they hold, `S` in equal shares, `R` the number itself to each | TM1's spreading shortcuts, of which these are three; unverified |
+| The same over a leaf | The number is written | Unverified |
+| The same over a string cell | It is text, and written as typed | Unverified |
 | A number over a string cell | Written as text | Unverified |
 | Text over a numeric cell | Refused, as above | Unverified |
 | The cell cleared | The formula is put back; nothing is written | Unverified |
@@ -121,6 +124,7 @@ element of the dimension, in the dimension's order.
 
 ## Not replicated
 
-- `DBS` to a consolidated cell as a spread. Spreading is available from the API
-  (`POST /cells/spread`), not from a worksheet function.
+- `DBS` to a consolidated cell as a spread. A value is spread by typing it with its letter
+  over a `DBRW`, not by a worksheet function.
+- TM1's other spreading shortcuts: directions, relative and percentage changes, holds.
 - `VIEW`, `TM1RPTROW` and the other functions of PAfE's reports.

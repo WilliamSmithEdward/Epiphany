@@ -67,6 +67,27 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task AValueIsSpreadOverAConsolidation()
+        {
+            Func<string, string, string[]> at = (account, entity) => At(account, entity, "Apr", "Budget");
+            await connection.Write(Ledger, at("Salaries", "US"), 10.0);
+            await connection.Write(Ledger, at("Salaries", "UK"), 30.0);
+            // In proportion to what the leaves hold.
+            Assert.Equal(80.0, await connection.Spread(Ledger, at("Salaries", "Total Entity"), 80.0, "proportional"));
+            Assert.Equal(20.0, await connection.Read(Ledger, at("Salaries", "US")));
+            Assert.Equal(60.0, await connection.Read(Ledger, at("Salaries", "UK")));
+            // The same to each, or the value itself to each.
+            Assert.Equal(50.0, await connection.Spread(Ledger, at("Rent", "Total Entity"), 50.0, "equal"));
+            Assert.Equal(25.0, await connection.Read(Ledger, at("Rent", "UK")));
+            Assert.Equal(7.0, await connection.Spread(Ledger, at("Rent", "Total Entity"), 7.0, "repeat"));
+            Assert.Equal(14.0, await connection.Read(Ledger, at("Rent", "Total Entity")));
+            // What the server refuses is a key error, as for a write.
+            Assert.Equal(Connection.KeyError, await connection.Spread(Ledger, at("Rent", "Mars"), 1.0, "equal"));
+            Assert.Equal(Connection.KeyError, await connection.Spread(Ledger, at("Rent", "UK"), 1.0, "sideways"));
+            Assert.Equal(Connection.KeyError, await connection.Spread("Notes", At("Total Entity", "Comment"), 1.0, "equal"));
+        }
+
+        [Fact]
         public async Task WhatCannotBeResolvedIsAKeyError()
         {
             var cube = connection.Read("No Such Cube", At("Rent", "UK", "Jan", "Actual"));
