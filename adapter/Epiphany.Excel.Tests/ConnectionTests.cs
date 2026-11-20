@@ -264,6 +264,48 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task AChangedModelIsNoticedWithoutBeingAskedAbout()
+        {
+            var at = new[] { "Rent", "UK", "Mar", "Actual" };
+            using (var connection = new Connection(home.Address))
+            using (var http = new System.Net.Http.HttpClient())
+            {
+                var changes = 0;
+                connection.ModelChanged += () => changes++;
+                Assert.True(await connection.SignIn(Home.User, Home.Password));
+                // A dimension the model does not have, and the answer is held.
+                Assert.Equal(Connection.KeyError, await connection.Ask("Extra", extra => extra.Size()));
+                Assert.Equal(Connection.KeyError, await connection.Ask("Extra", extra => extra.Size()));
+                Assert.Equal(0, changes);
+
+                // Someone else adds it. Nothing tells this connection, until its next answer
+                // from the server comes from the new version of the model.
+                var token = await SignIn(http);
+                http.DefaultRequestHeaders.Add("Authorization", "Bearer " + token);
+                var extra = "{\"based_on\":1,\"dimension\":{\"name\":\"Extra\",\"elements\":[{\"name\":\"X\",\"type\":\"numeric\"}]}}";
+                var put = new System.Net.Http.StringContent(extra, System.Text.Encoding.UTF8, "application/json");
+                var response = await http.PutAsync(home.Address + "/dimensions/Extra", put);
+                Assert.True(response.IsSuccessStatusCode);
+                Assert.Equal(0, changes);
+
+                Assert.Equal(0.0, await connection.Read("General Ledger", at));
+                Assert.Equal(1, changes);
+                Assert.Equal(1.0, await connection.Ask("Extra", found => found.Size()));
+                Assert.Equal(1, changes);
+            }
+        }
+
+        private async Task<string> SignIn(System.Net.Http.HttpClient http)
+        {
+            var credentials = "{\"name\":\"" + Home.User + "\",\"password\":\"" + Home.Password + "\"}";
+            var body = new System.Net.Http.StringContent(credentials, System.Text.Encoding.UTF8, "application/json");
+            var response = await http.PostAsync(home.Address + "/sessions", body);
+            var text = await response.Content.ReadAsStringAsync();
+            var from = text.IndexOf("\"token\":\"", StringComparison.Ordinal) + 9;
+            return text.Substring(from, text.IndexOf('"', from) - from);
+        }
+
+        [Fact]
         public async Task ASessionIsNeededAndCanBeEnded()
         {
             var at = new[] { "Rent", "UK", "Jan", "Actual" };

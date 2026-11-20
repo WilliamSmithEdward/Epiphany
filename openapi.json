@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Epiphany",
-    "description": "An in-memory OLAP server.",
+    "description": "An in-memory OLAP server. Every response carries the header Epiphany-Model-Version, the version of the model it was answered from, so that a client holding a copy of a dimension knows when to fetch it again.",
     "license": {
       "name": ""
     },

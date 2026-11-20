@@ -354,8 +354,10 @@ practice that means:
 - Not done, or done differently:
   - The table is recalled, not observed: no PAfE installation was at hand. Its unverified
     rows still need checking against a real PAfE workbook.
-  - The dimension copies are renewed by the Refresh command, not by watching the model
-    version; the API has no cheap way to ask for the version alone.
+  - Every response of the server carries the model's version in a header. When an answer
+    comes from another version than the one before it, the add-in forgets its copies of
+    the dimensions and has every formula ask again. A change is therefore noticed at the
+    add-in's next request, whatever it is for, and not before.
   - `adapter/check-excel.ps1` enters a formula for each row of the table in a real Excel
     and all of them pass, as does Refresh. `adapter/check-excel-windows.ps1` drives the
     Connect window, a refused and an accepted sign-in, the window that chooses a `SUBNM`'s

@@ -8,7 +8,7 @@ use axum::Extension;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{FromRef, FromRequest, Path, Query, Request, State};
 use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
-use axum::http::{HeaderMap, Method, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
@@ -46,7 +46,10 @@ impl FromRef<AppState> for Shared {
 }
 
 #[derive(OpenApi)]
-#[openapi(info(title = "Epiphany", description = "An in-memory OLAP server."))]
+#[openapi(info(
+    title = "Epiphany",
+    description = "An in-memory OLAP server. Every response carries the header Epiphany-Model-Version, the version of the model it was answered from, so that a client holding a copy of a dimension knows when to fetch it again."
+))]
 struct Contract;
 
 /// The name of the security scheme in the contract.
@@ -137,6 +140,7 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
     let contract = secured(contract);
     router
         .layer(from_fn_with_state(state.clone(), require_session))
+        .layer(from_fn_with_state(state.clone(), stamp))
         .route("/openapi.json", get(async move || Json(contract)))
         .with_state(state)
 }
@@ -159,6 +163,19 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .to_str()
         .ok()?
         .strip_prefix("Bearer ")
+}
+
+/// The header every response carries: the version of the model it was answered from.
+const MODEL_VERSION: &str = "epiphany-model-version";
+
+/// Puts the model's version on a response, refusals included.
+async fn stamp(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let version = state.database.read().unwrap().model_version();
+    response
+        .headers_mut()
+        .insert(MODEL_VERSION, HeaderValue::from(version));
+    response
 }
 
 /// What a user must be allowed to do to call a route.

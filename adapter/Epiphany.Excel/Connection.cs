@@ -55,6 +55,13 @@ namespace Epiphany.Excel
         /// <summary>Raised when the server refuses a request for want of a session.</summary>
         public event Action SignInNeeded;
 
+        /// <summary>Raised when an answer comes from another version of the model than the
+        /// one before it did. The dimensions held have been forgotten by then.</summary>
+        public event Action ModelChanged;
+
+        // The model version the last answer came from, as the server's header gave it.
+        private string version;
+
         /// <summary>How many requests have been sent; the tests count them.</summary>
         public int Requests;
 
@@ -240,6 +247,15 @@ namespace Epiphany.Excel
                     var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                     reply.Status = (int)response.StatusCode;
                     reply.Body = text == "" ? null : Json.Read(text);
+                    if (response.Headers.TryGetValues("Epiphany-Model-Version", out var versions))
+                    {
+                        var before = Interlocked.Exchange(ref version, versions.First());
+                        if (before != null && before != version)
+                        {
+                            Refresh();
+                            ModelChanged?.Invoke();
+                        }
+                    }
                 }
             }
             catch (Exception error) when (error is HttpRequestException || error is OperationCanceledException

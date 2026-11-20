@@ -625,3 +625,26 @@ async fn one_dimension_or_cube_is_changed_without_sending_the_model() {
     );
     assert_eq!(call(&app, "GET", "/model", None).await.1["version"], 7);
 }
+
+#[tokio::test]
+async fn every_response_says_which_model_version_answered() {
+    let app = example();
+    let version = |uri: &'static str| {
+        let app = app.clone();
+        async move {
+            let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let header = &response.headers()["epiphany-model-version"];
+            header.to_str().unwrap().to_owned()
+        }
+    };
+    assert_eq!(version("/dimensions/Period").await, "1");
+    // A refusal carries it too.
+    assert_eq!(version("/dimensions/Nowhere").await, "1");
+
+    let extra = json!({ "based_on": 1, "dimension":
+        { "name": "Extra", "elements": [{ "name": "X", "type": "numeric" }] } });
+    let (status, _) = call(&app, "PUT", "/dimensions/Extra", Some(extra)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(version("/dimensions/Period").await, "2");
+}

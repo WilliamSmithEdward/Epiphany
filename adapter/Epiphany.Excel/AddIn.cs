@@ -101,6 +101,9 @@ namespace Epiphany.Excel
                 asking = true;
                 ExcelAsyncUtil.QueueAsMacro(() => Connect(place));
             };
+            // A changed model changes what the dimension functions answer, so every formula
+            // asks again.
+            place.Connection.ModelChanged += () => ExcelAsyncUtil.QueueAsMacro(Refresh);
             lock (Gate)
             {
                 if (Places.TryGetValue(Dimension.Key(name), out var replaced))

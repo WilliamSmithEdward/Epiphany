@@ -105,7 +105,7 @@ element of the dimension, in the dimension's order.
 | Writes in one calculation | Collected and sent as one `/cells/write` request, before the reads of the same calculation. The writes that can be made are made together or not at all; a write the server refuses gets `*KEY_ERR` and does not stop the others | Unverified |
 | A `DBS` formula | Writes each time it is calculated, which includes every **Refresh** and every value typed over a read | Same for calculation; the rest unverified |
 | A formula whose value is being fetched | Shows the value it had last, so a refresh does not blank the sheet | Unverified |
-| Dimension functions | Answered from a copy of the dimension held by the adapter, fetched once and again after **Refresh** | PAfE also caches metadata; unverified |
+| Dimension functions | Answered from a copy of the dimension held by the adapter, fetched once and again after **Refresh**. When the model changes on the server, the adapter notices at its next request and refreshes by itself | PAfE also caches metadata; unverified |
 
 ## Connection and sign-in
 
