@@ -28,3 +28,13 @@ jobs:
           persist-credentials: false
       - run: cargo build -p epiphany-server
       - run: dotnet test adapter/Epiphany.Excel.Tests
+      # What a Windows user needs, kept with the run: the server and the add-in.
+      - run: cargo build --release -p epiphany-server
+      - run: dotnet build adapter/Epiphany.Excel -c Release
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: epiphany-windows
+          path: |
+            target/release/epiphany-server.exe
+            adapter/Epiphany.Excel/bin/Release/net472/publish/*.xll
+          if-no-files-found: error

@@ -5,6 +5,12 @@ rest) against an Epiphany server. It holds no OLAP logic: every function is a qu
 the server's API. What each function takes and returns is in
 [docs/PAFE-COMPATIBILITY.md](../docs/PAFE-COMPATIBILITY.md).
 
+## Get it
+
+Every run of the repository's CI on GitHub keeps an `epiphany-windows` artifact with the
+add-in (`Epiphany64-packed.xll` for 64-bit Excel) and `epiphany-server.exe`, so neither has to
+be built to be tried. They are not signed.
+
 ## Build
 
 Needs the .NET SDK. From the repository root:
