@@ -61,5 +61,32 @@ fn main() {
             let took = start.elapsed().as_secs_f64() * 1000.0;
             println!("{label:<16} {what:<34} {took:>9.1} ms  {value:?}");
         }
+
+        // Every element of the first dimension at the total of the second, for the calculated
+        // element: 113 totals a leaf rule reaches, read one at a time and then together.
+        let names = (0..SHAPE.leaves + SHAPE.groups).map(|id| format!("e{id}"));
+        let cells: Vec<CellRef> = names
+            .chain(["all".to_owned()])
+            .map(|name| CellRef {
+                cube: "C".to_owned(),
+                at: vec![name, "all".to_owned(), "e0".to_owned()],
+            })
+            .collect();
+        for together in [false, true] {
+            // A write empties what was kept, so each way starts with nothing worked out.
+            database.write(None, &writes[..1]).unwrap();
+            let start = Instant::now();
+            let read = match together {
+                true => database.read_many(None, &cells),
+                false => cells.iter().map(|cell| database.read(None, cell)).collect(),
+            };
+            let took = start.elapsed().as_secs_f64() * 1000.0;
+            assert!(read.iter().all(Result::is_ok));
+            let what = match together {
+                true => "113 such totals, read together",
+                false => "113 such totals, one at a time",
+            };
+            println!("{label:<16} {what:<34} {took:>9.1} ms");
+        }
     }
 }

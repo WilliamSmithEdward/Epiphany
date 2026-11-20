@@ -121,21 +121,62 @@ impl<'a> Reader<'a> {
         let mut wanted: Vec<&[ElementId]> = Vec::new();
         let mut seen = FxHashSet::default();
         let mut work = 0usize;
+        // Totals that a leaf rule reaches are another matter, taken up below.
+        let mut reached: Vec<&[ElementId]> = Vec::new();
         for &at in cells {
-            let total = self.plain(cube, at) && totals.get(cube, at).is_none();
-            if total && seen.insert(at) {
-                wanted.push(at);
-                work = work.saturating_add(stored.work(self.model, definition, at));
+            let Some(plain) = self.total(cube, at) else {
+                continue;
+            };
+            if totals.get(cube, at).is_some() || !seen.insert(at) {
+                continue;
+            }
+            match plain {
+                true => {
+                    wanted.push(at);
+                    work = work.saturating_add(stored.work(self.model, definition, at));
+                }
+                false => reached.push(at),
             }
         }
-        if work <= stored.stored() {
-            return;
-        }
-        if let Some(sums) = stored.sum_many(self.model, definition, &wanted) {
-            for (at, sum) in wanted.iter().zip(sums) {
+        let keep = |cells: &[&[ElementId]], sums: Option<Vec<f64>>| {
+            for (at, sum) in cells.iter().zip(sums.into_iter().flatten()) {
                 totals.keep(cube, at, &Scalar::Number(sum));
             }
+        };
+        if work > stored.stored() {
+            keep(&wanted, stored.sum_many(self.model, definition, &wanted));
         }
+
+        // In a fed cube such a total counts each stored cell as it is, or as its rule makes
+        // it, and each fed cell that a rule covers. Read by itself, every total passes over
+        // all of them; here each is worked out once and shared out among the totals.
+        let (Some(fed), true) = (&self.fed[cube], reached.len() > 1) else {
+            return;
+        };
+        let leaf_rules = || definition.rules.iter().filter(|rule| rule.decides_leaves());
+        let ruled = |leaf: &[ElementId]| leaf_rules().any(|rule| matches(&rule.area, leaf));
+        let mut leaves: Vec<(&[ElementId], f64)> = Vec::new();
+        for (leaf, held) in stored.numbers_with(None) {
+            let value = match ruled(leaf) {
+                true => self.number(cube, leaf),
+                false => Ok(held),
+            };
+            // A rule that fails is left to fail where its cell is read.
+            let Ok(value) = value else {
+                return;
+            };
+            leaves.push((leaf, value));
+        }
+        for leaf in fed {
+            if stored.number_with(leaf, None) == 0.0 && ruled(leaf) {
+                let Ok(value) = self.number(cube, leaf) else {
+                    return;
+                };
+                leaves.push((leaf, value));
+            }
+        }
+        let sums = Cells::share(self.model, definition, &reached, leaves.into_iter());
+        keep(&reached, sums);
     }
 
     /// Whether a leaf rule covers any leaf cell beneath a consolidation, given the leaves of
@@ -154,15 +195,16 @@ impl<'a> Reader<'a> {
         leaf_rules.any(|rule| reaches(&rule.area))
     }
 
-    /// Whether a cell is a consolidation of stored cells and nothing else: no rule covers it,
-    /// and no leaf rule covers a cell beneath it.
-    fn plain(&self, cube: usize, at: &[ElementId]) -> bool {
+    /// For a consolidated cell that no rule covers, whether it is a sum of stored cells and
+    /// nothing else: true if no leaf rule covers a cell beneath it, false if one does.
+    /// Nothing for any other cell.
+    fn total(&self, cube: usize, at: &[ElementId]) -> Option<bool> {
         let definition = &self.model.cubes()[cube];
         if !self.kind(cube, at).1 {
-            return false;
+            return None;
         }
         if definition.rules.is_empty() {
-            return true;
+            return Some(true);
         }
         let leaves: Vec<Leaves> = self
             .elements(definition, at)
@@ -172,7 +214,7 @@ impl<'a> Reader<'a> {
             .rules
             .iter()
             .any(|rule| rule.covers(at, false, true));
-        !covered && !self.reached(definition, &leaves)
+        (!covered).then(|| !self.reached(definition, &leaves))
     }
 
     /// Reads a cell of a cube with rules, remembering it for as long as this reader lasts.

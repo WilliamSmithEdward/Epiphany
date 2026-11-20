@@ -16,7 +16,7 @@ consolidation over every leaf; 200,000 leaf cells written at random coordinates.
 | --- | --- | --- |
 | Write leaf | One leaf write into a growing store | 108 ns |
 | Read leaf | One leaf read from the full store | 58 ns |
-| Read consolidation by combinations | A cell whose leaf combinations (at most 10,000) are fewer than the stored cells, so each is looked up | 79 µs |
+| Read consolidation by combinations | A cell whose leaf combinations (at most 10,000) are fewer than the stored cells, so each is looked up | 79 Âµs |
 | Read consolidation by stored cells | The grand total (100,000,000 leaf combinations), so each of the 200,000 stored cells is weighed | 6.4 ms |
 
 ## MDX
@@ -30,9 +30,9 @@ The same cube and data, queried through the database.
 | Query | What it measures | Milestone 6 (2026-11-18) | Totals together and kept (2026-11-19) | Asked again |
 | --- | --- | --- | --- | --- |
 | Write 200,000 cells in one batch | Name lookup, checks and storing, with no journal | 202 ms | 206 ms | |
-| 10,000 leaf cells | 100 by 100 leaves at one leaf of the other two dimensions | 2.1 ms (0.2 µs a cell) | 3.0 ms | 1.7 ms |
-| 400 cells, each totalling two dimensions | 20 by 20 leaves at the grand total of the other two | 84 ms (210 µs a cell) | 5.1 ms (13 µs a cell) | 0.1 ms |
-| 113 cells, each totalling three dimensions | Every element of one dimension at the grand total of the rest | 102 ms (0.9 ms a cell) | 8.8 ms (78 µs a cell) | 0.04 ms |
+| 10,000 leaf cells | 100 by 100 leaves at one leaf of the other two dimensions | 2.1 ms (0.2 Âµs a cell) | 3.0 ms | 1.7 ms |
+| 400 cells, each totalling two dimensions | 20 by 20 leaves at the grand total of the other two | 84 ms (210 Âµs a cell) | 5.1 ms (13 Âµs a cell) | 0.1 ms |
+| 113 cells, each totalling three dimensions | Every element of one dimension at the grand total of the rest | 102 ms (0.9 ms a cell) | 8.8 ms (78 Âµs a cell) | 0.04 ms |
 | The 10 largest of 100 totals | `TopCount` over totals, then the cells | 72 ms | 4.3 ms | 0.2 ms |
 
 At milestone 6 every consolidated cell passed over the stored cells by itself. Now the cells
@@ -53,10 +53,16 @@ calculated by a leaf rule as twice another, and 50,000 cells of that other eleme
 | --- | --- | --- |
 | Total of the calculated element (10,000 leaves beneath it) | 4.3 ms | 8.0 ms, including working out what is fed |
 | Grand total (1,000,000 leaves beneath it) | 401 ms | 5.0 ms |
+| 113 totals of the calculated element, one at a time (2026-11-19) | 14 ms | 36 ms |
+| The same 113 totals read together (2026-11-19) | 6 ms | 9 ms |
 
 Both give the same values. Without feeders a consolidation that a leaf rule can reach visits
 every leaf beneath it; with them it visits only the stored and fed cells. What is fed is
 worked out once after each change to the data, which is the extra time on the first read.
+
+Read one at a time, each total of a fed cube passes over every stored and fed cell. Read
+together, as the cells of a query or of one `/cells/read` are, each of those cells is worked
+out once and shared out among the totals it counts towards.
 
 ## Notes
 

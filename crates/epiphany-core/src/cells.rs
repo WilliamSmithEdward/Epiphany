@@ -178,6 +178,19 @@ impl Cells {
         cube: &Cube,
         cells: &[&[ElementId]],
     ) -> Option<Vec<f64>> {
+        let stored = self.numbers.iter().map(|(at, &value)| (&**at, value));
+        Self::share(model, cube, cells, stored)
+    }
+
+    /// Sums many numeric cells of a cube from leaf cells and their values, each leaf given
+    /// once: every leaf is shared out to each of the cells it counts towards, by its weight
+    /// there. Nothing if the cells are too varied to number.
+    pub(crate) fn share<'a>(
+        model: &Model,
+        cube: &Cube,
+        cells: &[&[ElementId]],
+        leaves: impl Iterator<Item = (&'a [ElementId], f64)>,
+    ) -> Option<Vec<f64>> {
         // In each dimension the elements asked for are numbered as they are met, and every
         // leaf knows the numbers of those it counts towards, with its weight in each.
         let dimensions: Vec<&[Element]> = cube
@@ -220,7 +233,7 @@ impl Cells {
 
         let mut lists: Vec<&[(u64, f64)]> = Vec::with_capacity(dimensions.len());
         let mut positions = vec![0; dimensions.len()];
-        for (at, value) in &self.numbers {
+        for (at, value) in leaves {
             lists.clear();
             lists.extend(
                 at.iter()

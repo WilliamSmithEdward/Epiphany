@@ -71,8 +71,10 @@ practice that means:
   members outright.
 - In a cube with rules the one pass takes the totals that are sums of stored cells and
   nothing else: those no rule covers and no leaf rule reaches beneath.
-- Not done: the one pass for totals a leaf rule reaches, which still add up cell by cell from
-  the stored and fed cells. What is kept is not adjusted by a write but dropped, so a workload that alternates writes
+- In a fed cube the totals a leaf rule reaches are added up together too: each stored or
+  fed leaf is worked out once and shared out among the totals it counts towards.
+- Not done: the one pass for such totals in a cube that is not fed, where each total
+  visits every leaf beneath it. What is kept is not adjusted by a write but dropped, so a workload that alternates writes
   and reads of totals gains only from the one pass.
 
 ### 2.3 Transactions and locks
