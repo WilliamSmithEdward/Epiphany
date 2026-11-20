@@ -67,11 +67,26 @@ corrected and the adapter with it.
 | `ATTRN` | dimension, element, attribute | The attribute's value as a number | No value: `0`. An attribute that is not numeric: `*KEY_ERR` | Unverified |
 | `SUBNM` | dimension, subset, index or element, [alias] | The subset's element at the index, or the named element if the subset holds it; with an alias attribute, its alias | Not in the subset: empty text | Same, unverified |
 
+| Function | Arguments | Returns | PAfE |
+| --- | --- | --- | --- |
+| `DNLEV` | dimension | The number of levels, the leaves' included | Same |
+| `DNEXT` | dimension, element | The element after it in the dimension; empty text after the last | Same |
+| `DTYPE` | dimension, element | `N`, `S` or `C` | Same |
+| `ELISCOMP` | dimension, element, parent | Whether the element is a child of the parent | Same |
+| `ELISPAR` | dimension, element, child | Whether the element is a parent of the child | Same |
+| `ELISANC` | dimension, element, other | Whether the element is above the other, at any distance | Same |
+| `ELWEIGHT` | dimension, parent, child | The child's weight in the parent; `0` if it is not a child of it | Same, unverified |
+| `SUBSIZ` | dimension, subset | The number of elements in the subset | Same |
+
+In these an unknown element gives `*KEY_ERR`.
+
 An unknown dimension, attribute or subset gives `*KEY_ERR`. An empty subset name means every
 element of the dimension, in the dimension's order.
 
 `DIMSIZ`, `ELCOMPN` and `ELPARN` are not in the project's list. They are here because
-`DIMNM`, `ELCOMP` and `ELPAR` are of little use without a count to loop to.
+`DIMNM`, `ELCOMP` and `ELPAR` are of little use without a count to loop to. The functions of
+the second table are not in the list either; they are TM1 worksheet functions that workbooks
+use beside the listed ones, and cost nothing to answer from the copy of the dimension.
 
 ## Choosing an element
 

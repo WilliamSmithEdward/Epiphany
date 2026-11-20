@@ -82,6 +82,18 @@ try {
         @('=SUBNM("Line","Texts","Amount")', ''),
         @('=SUBNM("Line","",1)', 'Comment'),
         @('=SUBNM("Line","Nope",1)', '*KEY_ERR'),
+        @('=DNLEV("Period")', '3'),
+        @('=DNEXT("Period","H1")', 'Q1'),
+        @('=DNEXT("Period","Jun")', ''),
+        @('=DTYPE("Period","Q1")', 'C'),
+        @('=DTYPE("Line","Comment")', 'S'),
+        @('=ELISCOMP("Period","Jan","Q1")', 'TRUE'),
+        @('=ELISCOMP("Period","Jan","H1")', 'FALSE'),
+        @('=ELISPAR("Period","Q1","Jan")', 'TRUE'),
+        @('=ELISANC("Period","H1","Jan")', 'TRUE'),
+        @('=ELWEIGHT("Account","Net Income","Operating Expenses")', '-1'),
+        @('=SUBSIZ("Line","Backwards")', '2'),
+        @('=SUBSIZ("Line","Nope")', '*KEY_ERR'),
         # A total over the cell that is typed over further down.
         @("=DBRW($gl,`"Operating Expenses`",`"Total Entity`",`"H1`",`"Budget`")", '0')
     )

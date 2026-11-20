@@ -61,6 +61,58 @@ namespace Epiphany.Excel
             return Ask(nameof(DIMSIZ), dimension, found => found.Size());
         }
 
+        [ExcelFunction(Category = Category, Description = "The number of levels in a dimension")]
+        public static object DNLEV(object dimension)
+        {
+            return Ask(nameof(DNLEV), dimension, found => found.Levels());
+        }
+
+        [ExcelFunction(Category = Category, Description = "The element after one in its dimension")]
+        public static object DNEXT(object dimension, object element)
+        {
+            return Ask(nameof(DNEXT), dimension, found => found.Next(Text(element)), element);
+        }
+
+        [ExcelFunction(Category = Category, Description = "The type of an element: N, S or C")]
+        public static object DTYPE(object dimension, object element)
+        {
+            return Ask(nameof(DTYPE), dimension, found => found.Type(Text(element)), element);
+        }
+
+        [ExcelFunction(Category = Category, Description = "Whether an element is a child of another")]
+        public static object ELISCOMP(object dimension, object element, object parent)
+        {
+            return Ask(nameof(ELISCOMP), dimension,
+                found => found.IsChild(Text(element), Text(parent)), element, parent);
+        }
+
+        [ExcelFunction(Category = Category, Description = "Whether an element is a parent of another")]
+        public static object ELISPAR(object dimension, object element, object child)
+        {
+            return Ask(nameof(ELISPAR), dimension,
+                found => found.IsChild(Text(child), Text(element)), element, child);
+        }
+
+        [ExcelFunction(Category = Category, Description = "Whether an element is an ancestor of another")]
+        public static object ELISANC(object dimension, object element, object below)
+        {
+            return Ask(nameof(ELISANC), dimension,
+                found => found.IsAncestor(Text(element), Text(below)), element, below);
+        }
+
+        [ExcelFunction(Category = Category, Description = "The weight of a child in a consolidation")]
+        public static object ELWEIGHT(object dimension, object parent, object child)
+        {
+            return Ask(nameof(ELWEIGHT), dimension,
+                found => found.Weight(Text(parent), Text(child)), parent, child);
+        }
+
+        [ExcelFunction(Category = Category, Description = "The number of elements in a subset")]
+        public static object SUBSIZ(object dimension, object subset)
+        {
+            return Ask(nameof(SUBSIZ), dimension, found => found.SubsetSize(Text(subset)), subset);
+        }
+
         [ExcelFunction(Category = Category, Description = "The level of an element; a leaf is 0")]
         public static object ELLEV(object dimension, object element)
         {
@@ -169,7 +221,11 @@ namespace Epiphany.Excel
                 // #N/A is what Excel-DNA answers while a task runs, so it cannot be an answer.
                 return ReferenceEquals(given, Connection.Unavailable) ? ExcelError.ExcelErrorNull : given;
             });
-            var key = function + "\u001f" + string.Join("\u001f", arguments);
+            // Each argument is made text here and not left to string.Join, which on the .NET
+            // Framework gives nothing at all for a list whose first item is null, as a read's
+            // is: every read would then share one last answer.
+            var texts = arguments.Select(argument => Convert.ToString(argument, CultureInfo.InvariantCulture) ?? "");
+            var key = function + "\u001f" + string.Join("\u001f", texts);
             if (Equals(answer, ExcelError.ExcelErrorNA))
                 return Last.TryGetValue(key, out var last) ? last : ExcelError.ExcelErrorGettingData;
             if (Equals(answer, ExcelError.ExcelErrorNull))

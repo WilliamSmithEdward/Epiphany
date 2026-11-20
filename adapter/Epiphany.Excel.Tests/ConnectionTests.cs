@@ -159,6 +159,37 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task ElementsAreToldApartAndRelated()
+        {
+            object Period(Func<Dimension, object> question) => connection.Ask("Period", question).Result;
+            await connection.Ask("Period", period => period.Size());
+
+            Assert.Equal(3.0, Period(period => period.Levels()));
+            Assert.Equal("Q1", Period(period => period.Next("H1")));
+            Assert.Equal("", Period(period => period.Next("Jun")));
+            Assert.Equal(Connection.KeyError, Period(period => period.Next("Smarch")));
+            Assert.Equal("C", Period(period => period.Type("Q1")));
+            Assert.Equal("N", Period(period => period.Type("M01")));
+            Assert.Equal("S", await connection.Ask("Line", line => line.Type("Comment")));
+
+            Assert.Equal(true, Period(period => period.IsChild("Jan", "Q1")));
+            Assert.Equal(false, Period(period => period.IsChild("Jan", "H1")));
+            Assert.Equal(false, Period(period => period.IsChild("Q1", "Jan")));
+            Assert.Equal(true, Period(period => period.IsAncestor("H1", "jan")));
+            Assert.Equal(true, Period(period => period.IsAncestor("Q1", "Jan")));
+            Assert.Equal(false, Period(period => period.IsAncestor("Jan", "H1")));
+            Assert.Equal(false, Period(period => period.IsAncestor("Q2", "Jan")));
+            Assert.Equal(Connection.KeyError, Period(period => period.IsChild("Jan", "Smarch")));
+
+            Assert.Equal(-1.0, await connection.Ask("Account", a => a.Weight("Net Income", "Operating Expenses")));
+            Assert.Equal(1.0, await connection.Ask("Account", a => a.Weight("Net Income", "Revenue")));
+            // Not a child of it, though beneath it.
+            Assert.Equal(0.0, await connection.Ask("Account", a => a.Weight("Net Income", "Rent")));
+            Assert.Equal(2.0, await connection.Ask("Line", line => line.SubsetSize("backwards")));
+            Assert.Equal(Connection.KeyError, await connection.Ask("Line", line => line.SubsetSize("Nope")));
+        }
+
+        [Fact]
         public async Task AttributesReadAsTextOrNumbers()
         {
             object Period(Func<Dimension, object> question) => connection.Ask("Period", question).Result;

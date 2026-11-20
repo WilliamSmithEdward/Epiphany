@@ -12,6 +12,10 @@ namespace Epiphany.Excel
         public double Level;
         public string[] Parents;
         public string[] Children;
+        /// <summary>The weight of each child, in the order of <see cref="Children"/>.</summary>
+        public double[] Weights;
+        /// <summary>"numeric", "string" or "consolidated".</summary>
+        public string Type;
         /// <summary>The values the element has, by attribute key.</summary>
         public Dictionary<string, object> Attributes;
     }
@@ -48,6 +52,8 @@ namespace Epiphany.Excel
                     Level = Convert.ToDouble(Json.Field(item, "level")),
                     Parents = Names(Json.Field(item, "parents")),
                     Children = children.Select(child => (string)Json.Field(child, "name")).ToArray(),
+                    Weights = children.Select(child => Convert.ToDouble(Json.Field(child, "weight"))).ToArray(),
+                    Type = (string)Json.Field(item, "type"),
                     Attributes = Fields(item, "attributes")
                         .ToDictionary(value => Key(value.Key), value => Json.Scalar(value.Value)),
                 });
@@ -69,6 +75,70 @@ namespace Epiphany.Excel
         private static string[] Names(object json)
         {
             return Json.Items(json).Cast<string>().ToArray();
+        }
+
+        /// <summary>DNLEV: how many levels the dimension has, the leaves' included.</summary>
+        public object Levels()
+        {
+            return elements.Count == 0 ? 0.0 : elements.Max(element => element.Level) + 1;
+        }
+
+        /// <summary>DNEXT: the element after this one in the dimension, or empty text.</summary>
+        public object Next(string element)
+        {
+            return positions.TryGetValue(Key(element), out var position)
+                ? At(elements.Select(other => other.Name).ToArray(), position + 2.0)
+                : Connection.KeyError;
+        }
+
+        /// <summary>DTYPE: N for a numeric element, S for a string, C for a consolidation.</summary>
+        public object Type(string element)
+        {
+            return With(element, found => found.Type.Substring(0, 1).ToUpperInvariant());
+        }
+
+        /// <summary>ELISCOMP: whether an element is a child of another.</summary>
+        public object IsChild(string element, string parent)
+        {
+            return With(element, child => With(parent, found => found.Children.Contains(child.Name)));
+        }
+
+        /// <summary>ELISANC: whether an element is above another, at any distance.</summary>
+        public object IsAncestor(string element, string below)
+        {
+            return With(element, ancestor => With(below, found =>
+            {
+                // Up by every parent, for an element may have several.
+                var waiting = new Stack<string>(found.Parents);
+                var seen = new HashSet<string>();
+                while (waiting.Count > 0)
+                {
+                    var name = waiting.Pop();
+                    if (name == ancestor.Name)
+                        return true;
+                    if (seen.Add(name))
+                        foreach (var parent in elements[positions[Key(name)]].Parents)
+                            waiting.Push(parent);
+                }
+                return (object)false;
+            }));
+        }
+
+        /// <summary>ELWEIGHT: the weight of a child in a consolidation, or zero if it is not
+        /// a child of it.</summary>
+        public object Weight(string parent, string child)
+        {
+            return With(parent, found => With(child, other =>
+            {
+                var at = Array.IndexOf(found.Children, other.Name);
+                return at < 0 ? 0.0 : found.Weights[at];
+            }));
+        }
+
+        /// <summary>SUBSIZ: how many elements a subset holds.</summary>
+        public object SubsetSize(string subset)
+        {
+            return subsets.TryGetValue(Key(subset), out var members) ? (double)members.Length : (object)Connection.KeyError;
         }
 
         /// <summary>DIMSIZ.</summary>
