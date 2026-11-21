@@ -316,11 +316,17 @@ impl Query {
             .zip(&sets)
             .zip(&kept)
             .map(|((axis, set), kept)| {
+                // A member stands in many tuples of a long axis, and is described once.
+                let mut described: HashMap<Member, MemberResult> = HashMap::new();
                 let tuple = |&index: &usize| {
                     let members = set[index].iter();
-                    members
-                        .map(|&member| evaluator.describe(member, &axis.properties))
-                        .collect()
+                    let describe = |&member: &Member| {
+                        let known = described.entry(member);
+                        known
+                            .or_insert_with(|| evaluator.describe(member, &axis.properties))
+                            .clone()
+                    };
+                    members.map(describe).collect()
                 };
                 AxisResult {
                     tuples: kept.iter().map(tuple).collect(),

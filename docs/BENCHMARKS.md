@@ -65,7 +65,8 @@ length. Its tuples that hold something are now found by looking through the stor
 the 200,000 cells give 36,461 rows in 69 ms, and in 57 ms with each tuple known by one
 number in place of a list. Of that, finding the rows takes 5 ms, adding up their totals
 15 ms, and describing the 109,383 members of the answer 17 ms: a name, a unique name and
-a dimension's name written out for each. Looking through the cells costs a pass
+a dimension's name written out for each. They are 339 different members, and with each
+described once and copied where it stands again the query takes 47 ms (2026-11-21). Looking through the cells costs a pass
 over all of them, so it is done only where the cross join is long beside them: the cross
 join of two dimensions, 12,769 tuples, is still written out, in 6 ms (2026-11-21).
 
