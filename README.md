@@ -140,6 +140,7 @@ limit is refused with an ordinary error that says which.
 | Cells a query returns | 1,000,000 |
 | Tuples in a set while a query is worked out | 1,000,000 |
 | Expressions inside one another | 32 deep |
+| Levels in a hierarchy | 100 |
 | Steps to work out one query, or one rule at one cell | 100,000,000 (about three seconds) |
 | Characters in a text an expression builds | 1,000,000 |
 | A request body | 64 MiB to write cells or change the model; 4 MiB to ask for anything; 16 KiB to sign in |

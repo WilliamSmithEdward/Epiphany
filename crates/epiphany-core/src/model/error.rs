@@ -57,6 +57,16 @@ pub enum ModelError {
     NoDimensions {
         cube: String,
     },
+    /// A dimension has no elements, so that no cell of a cube could stand anywhere in it.
+    NoElements {
+        dimension: String,
+    },
+    /// A hierarchy has more levels than one may have.
+    TooDeep {
+        dimension: String,
+        element: String,
+        most: usize,
+    },
 }
 
 impl fmt::Display for ModelError {
@@ -95,6 +105,15 @@ impl fmt::Display for ModelError {
             ),
             Self::Mdx { within, error } => write!(f, "invalid MDX in {within}: {error}"),
             Self::NoDimensions { cube } => write!(f, "cube '{cube}' has no dimensions"),
+            Self::NoElements { dimension } => write!(f, "dimension '{dimension}' has no elements"),
+            Self::TooDeep {
+                dimension,
+                element,
+                most,
+            } => write!(
+                f,
+                "the hierarchy of dimension '{dimension}' is more than {most} levels deep at element '{element}'"
+            ),
         }
     }
 }

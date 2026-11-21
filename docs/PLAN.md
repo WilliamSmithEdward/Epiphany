@@ -39,7 +39,11 @@ practice that means:
   interned to integer ids per dimension, parent and child arrays, levels, alias lookup, and
   for every consolidated element its flattened list of `(leaf, weight)` pairs.
 - Validation rejects: duplicate names, aliases that collide with names or each other, unknown
-  children, cycles, consolidations with no children, cubes naming unknown dimensions.
+  children, cycles, consolidations with no children, cubes naming unknown dimensions,
+  dimensions with no elements (a cube over one would have no cell to stand at, and a query
+  of it failed in the evaluator), and hierarchies more than 100 levels deep (working one
+  out goes as deep as it does, and one of fifty thousand levels ran the thread out of
+  stack). Both were found by a test of odd and extreme definitions.
 - A cube is an ordered list of dimensions and nothing else. There are no measures: a cell is
   exactly one element per dimension, which is also how DBRW-style formulas address it.
 - Element types are `numeric`, `string` and `consolidated`.

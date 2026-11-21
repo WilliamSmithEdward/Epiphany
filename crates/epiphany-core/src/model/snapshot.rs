@@ -228,6 +228,11 @@ pub struct Dimension {
 impl Dimension {
     fn compile(def: &DimensionDef) -> Result<Self, ModelError> {
         let within = format!("dimension '{}'", def.name);
+        if def.elements.is_empty() {
+            return Err(ModelError::NoElements {
+                dimension: def.name.clone(),
+            });
+        }
         let element_names = def.elements.iter().map(|e| e.name.as_str());
         let mut element_ids = index("element", &within, element_names)?;
         let attribute_ids = index(
@@ -286,7 +291,7 @@ impl Dimension {
 
         let mut marks = vec![Mark::New; elements.len()];
         for id in 0..elements.len() {
-            roll_up(&mut elements, &mut marks, id, &def.name)?;
+            roll_up(&mut elements, &mut marks, id, &def.name, 0)?;
         }
         // Two levels cannot share a name. A level and an element can, since the top of a
         // calendar is as likely as not called Year: there the name means the element.
@@ -422,13 +427,28 @@ enum Mark {
     Done,
 }
 
-/// Sets the level and leaves of an element after those of its children, rejecting cycles.
+/// How many levels a hierarchy may have. Working a hierarchy out goes as deep as it does, here
+/// and wherever it is walked afterwards, and one of thousands of levels, which nothing a
+/// person would draw comes near, would run a thread out of stack.
+const MOST_LEVELS: usize = 100;
+
+/// Sets the level and leaves of an element after those of its children, rejecting cycles
+/// and hierarchies too deep. `above` is how many elements stand above this one on the way
+/// here.
 fn roll_up(
     elements: &mut [Element],
     marks: &mut [Mark],
     id: usize,
     dimension: &str,
+    above: usize,
 ) -> Result<(), ModelError> {
+    if above > MOST_LEVELS {
+        return Err(ModelError::TooDeep {
+            dimension: dimension.to_owned(),
+            element: elements[id].name.clone(),
+            most: MOST_LEVELS,
+        });
+    }
     match marks[id] {
         Mark::Done => return Ok(()),
         Mark::Open => {
@@ -446,7 +466,7 @@ fn roll_up(
         leaves.insert(id as ElementId, 1.0);
     }
     for (child, weight) in elements[id].children.clone() {
-        roll_up(elements, marks, child as usize, dimension)?;
+        roll_up(elements, marks, child as usize, dimension, above + 1)?;
         let child = &elements[child as usize];
         level = level.max(child.level + 1);
         if child.kind != ElementType::Text {
@@ -456,6 +476,15 @@ fn roll_up(
         }
     }
 
+    // Reached from the top the depth is counted on the way down, and from anywhere else it
+    // is the level, counted on the way back up.
+    if level as usize > MOST_LEVELS {
+        return Err(ModelError::TooDeep {
+            dimension: dimension.to_owned(),
+            element: elements[id].name.clone(),
+            most: MOST_LEVELS,
+        });
+    }
     let element = &mut elements[id];
     element.level = level;
     element.leaves = leaves.into_iter().collect();
