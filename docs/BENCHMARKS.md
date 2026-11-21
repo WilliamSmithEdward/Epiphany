@@ -49,6 +49,10 @@ an `IIF`, took 6.7 ms (0.7 µs a cell) while the names in the member's expressio
 looked up at every cell. With the names settled once for the query it takes 2.4 ms (0.24 µs
 a cell), about the cost of the three cells each one reads (2026-11-21).
 
+The same holds for the expressions of the axes, the slicer and the named sets: a `Filter`
+over 10,000 tuples that compares two cells of each took 10.0 ms and takes 3.3 ms
+(2026-11-21).
+
 ## Rules and feeders
 
 ```

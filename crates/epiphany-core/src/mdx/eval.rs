@@ -157,16 +157,16 @@ impl Query {
 
         // Every dimension starts at its first top element; the slicer then narrows some.
         let mut context = evaluator.top();
+        // The names in an expression are settled once, just before it is first worked out,
+        // and not again at every cell or tuple it is worked out for.
         for (name, expression) in &self.sets {
-            let set = evaluator.set(expression, &context)?;
+            let set = evaluator.set(&evaluator.settled(expression), &context)?;
             evaluator.sets.insert(key(name), set);
-        } // With every member and set known, the names in the members' expressions are settled
-        // once and not again at every cell. One that cannot be settled is left to fail where
-        // it is used.
+        }
+        // Those of the calculated members wait until every member and set is known.
         for index in 0..evaluator.calculated.len() {
-            if let Ok(bound) = evaluator.bind(&evaluator.calculated[index].expression) {
-                evaluator.calculated[index].expression = bound;
-            }
+            let settled = evaluator.settled(&evaluator.calculated[index].expression);
+            evaluator.calculated[index].expression = settled;
         }
         let mut used = HashSet::new();
         let mut claim = |tuple: &Tuple| match tuple.iter().all(|m| used.insert(m.position)) {
@@ -175,7 +175,7 @@ impl Query {
         };
         let mut slicer = Tuple::new();
         if let Some(expression) = &self.slicer {
-            slicer = match evaluator.evaluate(expression, &context)? {
+            slicer = match evaluator.evaluate(&evaluator.settled(expression), &context)? {
                 Datum::Member(member) => vec![member],
                 Datum::Tuple(tuple) => tuple,
                 _ => return fail("WHERE takes a member or a tuple"),
@@ -195,7 +195,7 @@ impl Query {
         }
         let mut sets = Vec::new();
         for axis in &axes {
-            let set = evaluator.set(&axis.set, &context)?;
+            let set = evaluator.set(&evaluator.settled(&axis.set), &context)?;
             if let Some(tuple) = set.first() {
                 claim(tuple)?;
             }
@@ -373,6 +373,12 @@ impl<'a> Evaluator<'a> {
             Id::Element(top.unwrap_or(0) as ElementId)
         };
         self.dimensions().map(top).collect()
+    }
+
+    /// An expression with its names settled, or as it stands if one of them means nothing:
+    /// that one is then left to fail where it is used, if it ever is.
+    fn settled(&self, expression: &Expr) -> Expr {
+        self.bind(expression).unwrap_or_else(|_| expression.clone())
     }
 
     /// A copy of an expression with every name that can be settled now replaced by what it

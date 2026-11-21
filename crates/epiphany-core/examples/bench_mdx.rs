@@ -59,6 +59,14 @@ fn main() {
             ),
         ),
         (
+            "10,000 tuples filtered by a comparison of two cells",
+            format!(
+                "SELECT Filter({} * {}, [d2].[e0] > [d2].[e1]) ON COLUMNS FROM [C] WHERE [d3].[e0]",
+                leaves(0),
+                leaves(1)
+            ),
+        ),
+        (
             "400 cells, each totalling two dimensions",
             format!(
                 "SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d2].[all], [d3].[all])",
