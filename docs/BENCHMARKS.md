@@ -92,6 +92,10 @@ Every name in a batch was still lowered into a new text before it was looked up.
 is now written over the last one, and the batch of 200,000 takes 89 ms; the request of
 50,000 through a server, 56 to 60 ms (2026-11-21).
 
+Cells read by name are found the same way. One request reading 5,000 cells through a
+server, as many as the add-in asks for at a time, took 7.3 ms at the start of these
+changes and takes 5.5 ms (2026-11-21).
+
 It is not all gain. In the cube with a rule and feeders, the first total read after a
 write, which includes working out what is fed, takes 10.7 ms where it took 8.8 ms with
 the coordinate kept apart, and 113 such totals read together 11.6 ms where they took 10.0
