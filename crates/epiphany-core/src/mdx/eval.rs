@@ -20,6 +20,24 @@ const MOST_TUPLES: usize = 1_000_000;
 const MOST_STEPS: u64 = 100_000_000;
 /// The most characters a text worked out may hold, which the same doubling would outgrow.
 const MOST_TEXT: usize = 1_000_000;
+/// The words that tell a function how to go about its work. Where one of them stands alone
+/// it is that word, even in a model with a dimension of the same name; the dimension is
+/// then written in brackets with its hierarchy, as `[Desc].[Desc]`.
+const FLAGS: [&str; 13] = [
+    "ALL",
+    "ASC",
+    "DESC",
+    "BASC",
+    "BDESC",
+    "POST",
+    "RECURSIVE",
+    "SELF",
+    "AFTER",
+    "SELF_AND_AFTER",
+    "LEAVES",
+    "INCLUDEEMPTY",
+    "EXCLUDEEMPTY",
+];
 /// How deeply calculated members may refer to one another.
 const DEEPEST: u32 = 32;
 
@@ -397,6 +415,7 @@ impl<'a> Evaluator<'a> {
                 ([word], _) if ["STET", "CONTINUE"].contains(&&*word.to_uppercase()) => {
                     Expr::Call(word.to_uppercase(), Vec::new())
                 }
+                ([word], _) if FLAGS.contains(&&*word.to_uppercase()) => expression.clone(),
                 (
                     _,
                     Ok(Datum::Member(Member {
@@ -1497,12 +1516,13 @@ impl<'a> Evaluator<'a> {
                 // That many members of the level ending at the member, or for a negative
                 // number beginning at it; fewer where the level ends first.
                 let mut found = Vec::new();
-                for step in 0..periods.abs() as usize {
-                    let by = step as f64 * -periods.signum();
-                    match self.shift(member, by)? {
-                        Some(period) => found.push(vec![period]),
-                        None => break,
-                    }
+                let mut next = (periods != 0.0).then_some(member);
+                while let Some(period) = next {
+                    found.push(vec![period]);
+                    next = match found.len() < periods.abs() as usize {
+                        true => self.shift(period, -periods.signum())?,
+                        false => None,
+                    };
                 }
                 if periods > 0.0 {
                     found.reverse();

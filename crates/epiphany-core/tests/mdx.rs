@@ -1386,6 +1386,44 @@ fn work_that_doubles_is_refused_once_it_is_too_much() {
 }
 
 #[test]
+fn a_flag_is_a_flag_even_beside_a_dimension_of_its_name() {
+    // The example cube with one more dimension, called Desc.
+    let mut definition = database().definition().clone();
+    let desc =
+        serde_json::json!({ "name": "Desc", "elements": [{ "name": "Only", "type": "numeric" }] });
+    definition
+        .dimensions
+        .push(serde_json::from_value(desc).unwrap());
+    definition.cubes[0].dimensions.push("Desc".to_owned());
+    let mut named = Database::new(definition).unwrap();
+    for (period, value) in [("Jan", 1.0), ("Feb", 3.0), ("Mar", 2.0)] {
+        let write = CellWrite {
+            cube: "General Ledger".to_owned(),
+            at: ["Rent", "US", period, "Actual", "Only"]
+                .map(str::to_owned)
+                .to_vec(),
+            value: Scalar::Number(value),
+        };
+        named.write(None, &[write]).unwrap();
+    }
+    let ordered = |flag: &str| {
+        let mdx = format!(
+            "WITH MEMBER [Version].[Rank] AS Rank([Period].CurrentMember, \
+             Order({{[Period].[Jan], [Period].[Feb], [Period].[Mar]}}, [Version].[Actual], {flag})) \
+             SELECT Order({{[Period].[Jan], [Period].[Feb], [Period].[Mar]}}, [Version].[Actual], {flag}) \
+             ON COLUMNS FROM [General Ledger] WHERE ([Account].[Rent], [Entity].[US])"
+        );
+        names(&named.query(None, &mdx).unwrap(), 0)
+    };
+    assert_eq!(ordered("BDESC"), ["Feb", "Mar", "Jan"]);
+    assert_eq!(ordered("DESC"), ["Feb", "Mar", "Jan"]);
+    assert_eq!(ordered("ASC"), ["Jan", "Mar", "Feb"]);
+    // The dimension is still reached by its name in full.
+    let mdx = "SELECT [Desc].[Desc].Members ON COLUMNS FROM [General Ledger]";
+    assert_eq!(names(&named.query(None, mdx).unwrap(), 0), ["Only"]);
+}
+
+#[test]
 fn dimensions_are_taken_out_of_a_set() {
     let crossed = "{[Entity].[US], [Entity].[UK]} * {[Period].[Jan], [Period].[Feb]}";
     let columns = |set: &str| {
