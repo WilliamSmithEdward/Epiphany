@@ -142,7 +142,7 @@ limit is refused with an ordinary error that says which.
 | Expressions inside one another | 32 deep |
 | Steps to work out one query, or one rule at one cell | 100,000,000 (about three seconds) |
 | Characters in a text an expression builds | 1,000,000 |
-| A request body | 64 MiB; 16 KiB to sign in |
+| A request body | 64 MiB to write cells or change the model; 4 MiB to ask for anything; 16 KiB to sign in |
 | Sign-ins waiting or being checked | 64, four checked at a time; one more is told to come back in a second |
 
 [docs/PLAN.md](docs/PLAN.md) gives the reasons.

@@ -369,9 +369,13 @@ practice that means:
   one more is answered 429 with the code `busy` and `Retry-After: 1`. A crowd of
   sign-ins can then take neither the machine's memory nor all of its threads. The add-in
   asks again after a second, up to ten times, before it reports that signing in failed.
-- A request body holds at most 64 MiB, room for a model of large dimensions or some
-  hundreds of thousands of cells in one write; a larger one is refused with 413 before it
-  is read. A request to sign in, the one request anybody may send, holds at most 16 KiB.
+- A request body that writes cells or changes the model holds at most 64 MiB, room for a
+  model of large dimensions or some hundreds of thousands of cells in one write; a larger
+  one is refused with 413 before it is read. A request that only asks for something holds
+  at most 4 MiB: bodies wait in memory, and those who may only read are not given the room
+  that writing needs. A request to sign in, the one request anybody may send, holds at
+  most 16 KiB. The add-in reads five thousand cells to a request, however many a
+  workbook asks for in one calculation.
 - Each request is handled on a thread of the pool kept for work that takes time, not on
   one of the few that take requests in, so that as many slow queries as the machine has
   processors do not make a quick request wait for one of them to finish. Writes still

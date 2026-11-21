@@ -56,9 +56,14 @@ struct Contract;
 /// The name of the security scheme in the contract.
 const SESSION: &str = "session";
 
-/// The most bytes a request may carry: room for a model of large dimensions, or some
-/// hundreds of thousands of cells in one write. A larger body is refused before it is read.
+/// The most bytes a request that writes cells or changes the model may carry: room for a
+/// model of large dimensions, or some hundreds of thousands of cells in one write. A larger
+/// body is refused before it is read.
 const MOST_BODY: usize = 64 * 1024 * 1024;
+/// The most a request that only asks for something may carry: room for a query of any
+/// length a person would write, or tens of thousands of cells to read. Bodies wait in
+/// memory, and those who may only read are not given the room that writing needs.
+const MOST_ASKED: usize = 4 * 1024 * 1024;
 /// The most a request to sign in may carry. It is the one request that anybody may send, so
 /// it is given room for a name and a password and no more.
 const MOST_SIGN_IN: usize = 16 * 1024;
@@ -168,9 +173,10 @@ async fn survive(State(database): State<Shared>, request: Request, next: Next) -
     // The body is taken in first, here where waiting for it holds up nothing: a request
     // handed over while its body was still on its way would keep a thread for as long as
     // the sender cared to take, and a few hundred senders in no hurry would have them all.
-    let most = match request.uri().path() {
-        "/sessions" => MOST_SIGN_IN,
-        _ => MOST_BODY,
+    let most = match (request.method(), request.uri().path()) {
+        (_, "/sessions") => MOST_SIGN_IN,
+        (&Method::PUT, _) | (_, "/cells/write") => MOST_BODY,
+        _ => MOST_ASKED,
     };
     let (head, body) = request.into_parts();
     let Ok(body) = axum::body::to_bytes(body, most).await else {

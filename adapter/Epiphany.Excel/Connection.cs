@@ -168,6 +168,8 @@ namespace Epiphany.Excel
                 dimensions = new Dictionary<string, Task<Reply>>();
         }
 
+        /// <summary>The most cells read in one request: some half a megabyte of them.</summary>
+        private const int ReadsARequest = 5000;
         private const int BusyRetries = 10;
         private static readonly TimeSpan BusyWait = TimeSpan.FromSeconds(1);
 
@@ -251,7 +253,14 @@ namespace Epiphany.Excel
                     writes = new List<Cell>();
                 }
                 await SendWrites(writing).ConfigureAwait(false);
-                await SendReads(reading).ConfigureAwait(false);
+                // A large workbook asks for more cells in one calculation than one request
+                // should carry, so they go a few thousand at a time. Writes are few, and
+                // stay together: a batch of them is all written or none.
+                for (var sent = 0; sent < reading.Count; sent += ReadsARequest)
+                {
+                    var some = reading.GetRange(sent, Math.Min(ReadsARequest, reading.Count - sent));
+                    await SendReads(some).ConfigureAwait(false);
+                }
             }
             finally
             {

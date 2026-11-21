@@ -743,3 +743,23 @@ async fn a_large_write_is_taken_in_one_request() {
     let (_, body) = call(&app, "POST", "/cells/read", Some(read)).await;
     assert_eq!(body, json!({ "cells": [{ "value": 59_999.0 }] }));
 }
+
+#[tokio::test]
+async fn a_request_that_only_asks_is_given_less_room_than_one_that_writes() {
+    let app = example();
+    // Five megabytes of cells to read: more than asking is given, less than writing is.
+    let cells: Vec<Value> = (0..70_000)
+        .map(|_| cell(["Rent", "US", "Jan", "Actual"]))
+        .collect();
+    let body = json!({ "cells": cells });
+    assert!(body.to_string().len() > 4 * 1024 * 1024);
+    let (status, refusal) = call(&app, "POST", "/cells/read", Some(body)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(refusal["code"], "invalid_request");
+    // A tenth of them is an ordinary request.
+    let cells: Vec<Value> = (0..7_000)
+        .map(|_| cell(["Rent", "US", "Jan", "Actual"]))
+        .collect();
+    let (status, _) = call(&app, "POST", "/cells/read", Some(json!({ "cells": cells }))).await;
+    assert_eq!(status, StatusCode::OK);
+}

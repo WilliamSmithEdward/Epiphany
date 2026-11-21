@@ -38,6 +38,22 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task ManyReadsTravelAFewThousandAtATime()
+        {
+            // As many as a large workbook asks for in one calculation.
+            var months = new[] { "Jan", "Feb", "Mar", "Apr", "May", "Jun" };
+            var reads = Enumerable.Range(0, 12000)
+                .Select(index => connection.Read(Ledger, At("Rent", "UK", months[index % 6], "Budget")));
+            var values = await Task.WhenAll(reads.ToArray());
+            Assert.Equal(12000, values.Length);
+            // Every one is answered with a number, and the same cell with the same one.
+            Assert.All(values, value => Assert.IsType<double>(value));
+            Assert.All(Enumerable.Range(6, 11994), index => Assert.Equal(values[index % 6], values[index]));
+            // At five thousand a request, no fewer than three.
+            Assert.True(connection.Requests >= 3, connection.Requests + " requests");
+        }
+
+        [Fact]
         public async Task AReadSeesAWriteOfTheSameCalculation()
         {
             // Asked for in the order a worksheet might calculate them: the read first.
