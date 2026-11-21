@@ -191,6 +191,13 @@ name before any was stored, and a server that holds 104 MB once started reached 
 on the way. The snapshot is now read and stored ten thousand cells at a time, and the
 start peaks at 182 MB, in the same 1.7 seconds (2026-11-21).
 
+The cells a cube stores are listed a page of 10,000 at a time, in a fixed order. Each
+page put in order every cell up to its end, so the later pages of a large cube were the
+slowest: through a server holding 1.5 million cells the first page took 97 ms and the
+last 244 ms, and all 150 pages 34.6 s. Each page now orders only its own cells: the last
+takes 107 ms and all of them 24.0 s. These are times seen by a PowerShell client, which
+takes most of the 97 ms itself to read a page's JSON (2026-11-21).
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.
