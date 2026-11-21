@@ -193,17 +193,21 @@ impl Cells {
         cells: &[&[ElementId]],
     ) -> Option<Vec<f64>> {
         let stored = self.numbers.iter().map(|(at, &value)| (&**at, value));
-        Self::share(model, cube, cells, stored)
+        Self::share(model, cube, cells, stored, |_, value| Some(value))
     }
 
-    /// Sums many numeric cells of a cube from leaf cells and their values, each leaf given
-    /// once: every leaf is shared out to each of the cells it counts towards, by its weight
-    /// there. Nothing if the cells are too varied to number.
-    pub(crate) fn share<'a>(
+    /// Sums many numeric cells of a cube from its leaf cells, each leaf given once: every
+    /// leaf is shared out to each of the cells it counts towards, by its weight there. A
+    /// leaf comes with whatever is known of it, and `value` makes its number of that, but is
+    /// asked only for a leaf that counts towards one of the cells: where a rule has to work
+    /// the number out, the leaves beside the point cost nothing. Nothing if the cells are too
+    /// varied to number, or if `value` has none to give.
+    pub(crate) fn share<'a, Known>(
         model: &Model,
         cube: &Cube,
         cells: &[&[ElementId]],
-        leaves: impl Iterator<Item = (&'a [ElementId], f64)>,
+        leaves: impl Iterator<Item = (&'a [ElementId], Known)>,
+        mut value: impl FnMut(&[ElementId], Known) -> Option<f64>,
     ) -> Option<Vec<f64>> {
         // In each dimension the elements asked for are numbered as they are met, and every
         // leaf knows the numbers of those it counts towards, with its weight in each.
@@ -247,7 +251,7 @@ impl Cells {
 
         let mut lists: Vec<&[(u64, f64)]> = Vec::with_capacity(dimensions.len());
         let mut positions = vec![0; dimensions.len()];
-        for (at, value) in leaves {
+        for (at, known) in leaves {
             lists.clear();
             lists.extend(
                 at.iter()
@@ -257,6 +261,7 @@ impl Cells {
             if lists.iter().any(|list| list.is_empty()) {
                 continue;
             }
+            let value = value(at, known)?;
             positions.fill(0);
             // Every combination of one element asked for per dimension that the cell counts
             // towards; most are a cell asked for.

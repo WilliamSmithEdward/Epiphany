@@ -65,8 +65,10 @@ every leaf beneath it; with them it visits only the stored and fed cells. What i
 worked out once after each change to the data, which is the extra time on the first read.
 
 Read one at a time, each total of a fed cube passes over every stored and fed cell. Read
-together, as the cells of a query or of one `/cells/read` are, each of those cells is worked
-out once and shared out among the totals it counts towards.
+together, as the cells of a query or of one `/cells/read` are, each of those cells that counts
+towards one of the totals is worked out once and shared out among them; a rule is not asked
+about a cell that counts towards none. In this benchmark every cell counts, so it shows no
+gain from that.
 
 ## Notes
 

@@ -155,27 +155,23 @@ impl<'a> Reader<'a> {
         };
         let leaf_rules = || definition.rules.iter().filter(|rule| rule.decides_leaves());
         let ruled = |leaf: &[ElementId]| leaf_rules().any(|rule| matches(&rule.area, leaf));
-        let mut leaves: Vec<(&[ElementId], f64)> = Vec::new();
-        for (leaf, held) in stored.numbers_with(None) {
-            let value = match ruled(leaf) {
-                true => self.number(cube, leaf),
-                false => Ok(held),
-            };
-            // A rule that fails is left to fail where its cell is read.
-            let Ok(value) = value else {
-                return;
-            };
-            leaves.push((leaf, value));
-        }
-        for leaf in fed {
-            if stored.number_with(leaf, None) == 0.0 && ruled(leaf) {
-                let Ok(value) = self.number(cube, leaf) else {
-                    return;
-                };
-                leaves.push((leaf, value));
-            }
-        }
-        let sums = Cells::share(self.model, definition, &reached, leaves.into_iter());
+        // The stored cells with what they hold, then the fed cells that hold nothing.
+        let held = stored
+            .numbers_with(None)
+            .map(|(leaf, held)| (leaf, Some(held)));
+        let empty = fed
+            .iter()
+            .map(|leaf| &**leaf)
+            .filter(|leaf| stored.number_with(leaf, None) == 0.0);
+        let leaves = held.chain(empty.map(|leaf| (leaf, None)));
+        // A leaf a rule covers is what the rule makes it; any other is what it holds. A rule
+        // is only asked about a leaf beneath one of the totals, and one that fails is left to
+        // fail where its cell is read: nothing is kept then.
+        let value = |leaf: &[ElementId], held: Option<f64>| match ruled(leaf) {
+            true => self.number(cube, leaf).ok(),
+            false => Some(held.unwrap_or(0.0)),
+        };
+        let sums = Cells::share(self.model, definition, &reached, leaves, value);
         keep(&reached, sums);
     }
 
