@@ -88,6 +88,10 @@ server keeps a journal, so it gains from the first and third only: one request w
 50,000 cells, 3.8 MB of JSON, took 75 ms through a server on this machine and takes 66 ms,
 its body read, its commit written to the journal and flushed (2026-11-21).
 
+Every name in a batch was still lowered into a new text before it was looked up. The key
+is now written over the last one, and the batch of 200,000 takes 89 ms; the request of
+50,000 through a server, 56 to 60 ms (2026-11-21).
+
 It is not all gain. In the cube with a rule and feeders, the first total read after a
 write, which includes working out what is fed, takes 10.7 ms where it took 8.8 ms with
 the coordinate kept apart, and 113 such totals read together 11.6 ms where they took 10.0

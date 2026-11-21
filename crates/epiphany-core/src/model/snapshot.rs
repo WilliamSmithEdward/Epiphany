@@ -129,7 +129,7 @@ impl Model {
 
     /// The position of a cube in [`Model::cubes`].
     pub fn cube_id(&self, name: &str) -> Option<usize> {
-        self.cube_ids.get(&key(name)).map(|&id| id as usize)
+        by_key(name, |key| self.cube_ids.get(key).map(|&id| id as usize))
     }
 
     pub fn cube(&self, name: &str) -> Option<&Cube> {
@@ -326,7 +326,7 @@ impl Dimension {
 
     /// Finds an element by name or alias, ignoring case and spaces.
     pub fn element_id(&self, name: &str) -> Option<ElementId> {
-        self.element_ids.get(&key(name)).copied()
+        by_key(name, |key| self.element_ids.get(key).copied())
     }
 
     /// Finds an element by name or alias, ignoring case and spaces.
@@ -335,7 +335,7 @@ impl Dimension {
     }
 
     pub fn attribute_value(&self, element: ElementId, attribute: &str) -> Option<&Scalar> {
-        let id = *self.attribute_ids.get(&key(attribute))?;
+        let id = by_key(attribute, |key| self.attribute_ids.get(key).copied())?;
         self.elements[element as usize].attributes[id as usize].as_ref()
     }
 }
@@ -497,18 +497,39 @@ fn roll_up(
 
 /// The form in which names are compared: case and spaces are ignored.
 pub(crate) fn key(name: &str) -> String {
-    // Most names are plain letters and digits, which are lowered a byte at a time.
-    if name.is_ascii() {
-        let kept = name
-            .bytes()
-            .filter(|&byte| !char::from(byte).is_whitespace());
-        let lowered = kept.map(|byte| byte.to_ascii_lowercase()).collect();
-        return String::from_utf8(lowered).expect("ASCII is UTF-8");
+    let mut key = String::with_capacity(name.len());
+    write_key(name, &mut key);
+    key
+}
+
+/// Looks something up by the key of a name. The key is written where the last one was, so
+/// that the lookups of every cell read or written by name make no new text each.
+fn by_key<T>(name: &str, find: impl FnOnce(&str) -> T) -> T {
+    thread_local! {
+        static KEY: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
     }
-    name.chars()
-        .filter(|c| !c.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect()
+    KEY.with(|key| {
+        let mut key = key.borrow_mut();
+        key.clear();
+        write_key(name, &mut key);
+        find(&key)
+    })
+}
+
+fn write_key(name: &str, key: &mut String) {
+    // Most names are plain letters and digits, which are lowered a byte at a time.
+    match name.is_ascii() {
+        true => {
+            let kept = name
+                .bytes()
+                .filter(|&byte| !char::from(byte).is_whitespace());
+            key.extend(kept.map(|byte| char::from(byte.to_ascii_lowercase())));
+        }
+        false => {
+            let kept = name.chars().filter(|c| !c.is_whitespace());
+            key.extend(kept.flat_map(char::to_lowercase));
+        }
+    }
 }
 
 /// Maps the key of each name to its position, rejecting empty and duplicate names.
