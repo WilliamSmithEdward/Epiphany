@@ -260,7 +260,7 @@ practice that means:
     worked out, and so does a rule at one cell; a text worked out holds at most 1,000,000
     characters. Calculated members that each use the one before twice double the work
     and the text at every member, and thirty of them would otherwise never finish. The
-    limit is reached after about half a minute of one processor (release build, measured
+    limit is reached after about three seconds of one processor (release build, measured
     2026-11-21).
   - Expressions sit at most 32 deep inside one another, in a query, a rule, a feeder or a
     subset alike. Reading and working out an expression go as deep as it does, and the

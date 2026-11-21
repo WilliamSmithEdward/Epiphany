@@ -18,6 +18,9 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      # The engine again as it is shipped: its limits on stack and on work depend on the
+      # build, and one test of them is too slow to run without optimisation.
+      - run: cargo test --release -p epiphany-core
 
   # The Excel adapter: built, then tested against a real server. Excel itself is not needed.
   adapter:

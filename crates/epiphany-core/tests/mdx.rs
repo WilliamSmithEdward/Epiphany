@@ -1377,7 +1377,7 @@ fn text_that_doubles_is_refused_once_it_is_too_long() {
     );
 }
 
-/// A hundred million steps take a debug build the better part of a minute.
+/// A hundred million steps take a debug build ten seconds, and an optimised one three.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "slow without optimisation")]
 fn work_that_doubles_is_refused_once_it_is_too_much() {
