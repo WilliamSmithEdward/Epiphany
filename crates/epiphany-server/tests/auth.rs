@@ -253,11 +253,13 @@ async fn signing_out_ends_the_session() {
 
 #[tokio::test]
 async fn a_session_left_unused_ends_and_a_used_one_lives_on() {
-    // The times leave room for the other tests, which keep the processor busy with passwords.
-    let (_home, app) = secured("idle", Some(Duration::from_secs(2)));
+    // The times leave room for the other tests, which keep the processor busy with passwords:
+    // a session lasts five seconds unused, and the one in use is used every half second,
+    // which the busiest machine yet seen has stretched to under two.
+    let (_home, app) = secured("idle", Some(Duration::from_secs(5)));
     let (idle, busy) = (token(&app).await, token(&app).await);
-    for _ in 0..6 {
-        tokio::time::sleep(Duration::from_millis(400)).await;
+    for _ in 0..12 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let (status, _, _) = send(&app, "GET", "/model", Some(&busy), None).await;
         assert_eq!(status, StatusCode::OK);
     }
