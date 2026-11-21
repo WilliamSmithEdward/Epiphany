@@ -268,10 +268,14 @@ impl Query {
         let places = Places::new(&sizes)?;
         let contexts: Vec<Vec<Id>> = (0..places.count)
             .map(|index| {
-                let tuples = sets.iter().zip(places.of(index));
-                tuples.fold(context.clone(), |context, (set, place)| {
-                    with(&context, &set[place])
-                })
+                // One copy of the slicer's cell, with each axis's tuple put into it.
+                let mut cell = context.clone();
+                for (set, place) in sets.iter().zip(places.of(index)) {
+                    for member in &set[place] {
+                        cell[member.position] = member.id;
+                    }
+                }
+                cell
             })
             .collect();
         let totals: Vec<Vec<ElementId>> = contexts
