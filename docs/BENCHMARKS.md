@@ -44,6 +44,11 @@ Keeping totals costs the leaf cells a check of whether each is one. That took th
 10,000 leaf cells from 2.1 ms to 3.0 ms at first; with the check made in one pass over the
 cell's elements, and leaves no longer announced before they are read, it is 2.5 ms.
 
+A grid of 10,000 cells of a calculated member, a share worked out from two leaf cells with
+an `IIF`, took 6.7 ms (0.7 µs a cell) while the names in the member's expression were
+looked up at every cell. With the names settled once for the query it takes 2.4 ms (0.24 µs
+a cell), about the cost of the three cells each one reads (2026-11-21).
+
 ## Rules and feeders
 
 ```

@@ -70,7 +70,7 @@ pub(super) enum Datum {
 struct Calculated<'a> {
     position: usize,
     name: &'a str,
-    expression: &'a Expr,
+    expression: Expr,
     solve_order: f64,
 }
 
@@ -150,7 +150,7 @@ impl Query {
             evaluator.calculated.push(Calculated {
                 position: evaluator.position(dimension)?,
                 name,
-                expression: &member.expression,
+                expression: member.expression.clone(),
                 solve_order: member.solve_order,
             });
         }
@@ -160,6 +160,13 @@ impl Query {
         for (name, expression) in &self.sets {
             let set = evaluator.set(expression, &context)?;
             evaluator.sets.insert(key(name), set);
+        } // With every member and set known, the names in the members' expressions are settled
+        // once and not again at every cell. One that cannot be settled is left to fail where
+        // it is used.
+        for index in 0..evaluator.calculated.len() {
+            if let Ok(bound) = evaluator.bind(&evaluator.calculated[index].expression) {
+                evaluator.calculated[index].expression = bound;
+            }
         }
         let mut used = HashSet::new();
         let mut claim = |tuple: &Tuple| match tuple.iter().all(|m| used.insert(m.position)) {
@@ -391,6 +398,13 @@ impl<'a> Evaluator<'a> {
                         id: Id::Element(id),
                     })),
                 ) => Expr::Member(position, id),
+                (
+                    _,
+                    Ok(Datum::Member(Member {
+                        position,
+                        id: Id::Calculated(index),
+                    })),
+                ) => Expr::Calculated(position, index),
                 (_, Ok(Datum::Dimension(position))) => Expr::Dimension(position),
                 // A single word that names nothing may be a flag such as DESC.
                 ([_], Err(_)) => expression.clone(),
@@ -410,9 +424,11 @@ impl<'a> Evaluator<'a> {
             Expr::Not(operand) => Expr::Not(one(operand)?),
             Expr::Negate(operand) => Expr::Negate(one(operand)?),
             Expr::Binary(left, operator, right) => Expr::Binary(one(left)?, operator, one(right)?),
-            Expr::Number(_) | Expr::Text(_) | Expr::Member(..) | Expr::Dimension(_) => {
-                expression.clone()
-            }
+            Expr::Number(_)
+            | Expr::Text(_)
+            | Expr::Member(..)
+            | Expr::Calculated(..)
+            | Expr::Dimension(_) => expression.clone(),
         })
     }
 
@@ -572,6 +588,10 @@ impl<'a> Evaluator<'a> {
             &Expr::Member(position, id) => Datum::Member(Member {
                 position,
                 id: Id::Element(id),
+            }),
+            &Expr::Calculated(position, index) => Datum::Member(Member {
+                position,
+                id: Id::Calculated(index),
             }),
             &Expr::Dimension(position) => Datum::Dimension(position),
             Expr::Set(items) => {
@@ -2282,7 +2302,7 @@ impl<'a> Evaluator<'a> {
             return fail(format!("calculated member '{name}' refers to itself"));
         }
         self.depth.set(self.depth.get() + 1);
-        let value = self.evaluate(calculated.expression, context);
+        let value = self.evaluate(&calculated.expression, context);
         let value = value.and_then(|value| self.scalar(value, context));
         self.depth.set(self.depth.get() - 1);
         value

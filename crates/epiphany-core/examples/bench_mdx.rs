@@ -50,6 +50,15 @@ fn main() {
             ),
         ),
         (
+            "10,000 cells of a calculated member",
+            format!(
+                "WITH MEMBER [d2].[share] AS IIF([d2].[e1] = 0, 0, ([d2].[e0] - [d2].[e1]) / [d2].[e1]) \
+                 SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d2].[share], [d3].[e0])",
+                leaves(0),
+                leaves(1)
+            ),
+        ),
+        (
             "400 cells, each totalling two dimensions",
             format!(
                 "SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d2].[all], [d3].[all])",

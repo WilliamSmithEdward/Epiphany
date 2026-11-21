@@ -12,6 +12,9 @@ pub(crate) enum Expr {
     Name(Vec<String>),
     /// A name already found to be an element of the dimension at a position in the cube.
     Member(usize, ElementId),
+    /// A name already found to be a calculated member of the dimension at a position in the
+    /// cube: the position, and the member's place among those of the query.
+    Calculated(usize, usize),
     /// A name already found to be the dimension at a position in the cube.
     Dimension(usize),
     /// `{ a, b, ... }`
