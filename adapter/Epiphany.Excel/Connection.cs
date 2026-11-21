@@ -168,12 +168,27 @@ namespace Epiphany.Excel
                 dimensions = new Dictionary<string, Task<Reply>>();
         }
 
+        private const int BusyRetries = 10;
+        private static readonly TimeSpan BusyWait = TimeSpan.FromSeconds(1);
+
+        private static bool Busy(Reply reply)
+        {
+            return reply.Status == 429 && Json.Field(reply.Body, "code") as string == "busy";
+        }
+
         /// <summary>Starts a session. True if the server accepted the name and password, or
         /// asks for no sign-in at all.</summary>
         public async Task<bool> SignIn(string name, string password)
         {
             var credentials = new Dictionary<string, object> { ["name"] = name, ["password"] = password };
             var reply = await Send(HttpMethod.Post, "sessions", credentials, quietly: true).ConfigureAwait(false);
+            // A server checking a crowd of passwords says it is busy and to come back in a
+            // second. That is no refusal of this name, so it is asked again, a few times.
+            for (var again = 0; again < BusyRetries && Busy(reply); again++)
+            {
+                await Task.Delay(BusyWait).ConfigureAwait(false);
+                reply = await Send(HttpMethod.Post, "sessions", credentials, quietly: true).ConfigureAwait(false);
+            }
             if (reply.Ok)
                 http.DefaultRequestHeaders.Authorization =
                     new AuthenticationHeaderValue("Bearer", (string)Json.Field(reply.Body, "token"));

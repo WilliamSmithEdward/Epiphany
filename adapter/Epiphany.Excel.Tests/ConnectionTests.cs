@@ -348,6 +348,61 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task SigningInAsksAgainWhenTheServerIsBusy()
+        {
+            // A stand-in for the server: busy the first time it is asked, then willing.
+            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            var asked = 0;
+            var serving = Task.Run(async () =>
+            {
+                while (asked < 2)
+                {
+                    using (var client = await listener.AcceptTcpClientAsync())
+                    {
+                        var stream = client.GetStream();
+                        var buffer = new byte[8192];
+                        var request = "";
+                        // The head, and then as much body as it says there is.
+                        while (!Whole(request))
+                            request += System.Text.Encoding.ASCII.GetString(buffer, 0, await stream.ReadAsync(buffer, 0, buffer.Length));
+                        asked++;
+                        var body = asked == 1
+                            ? "{\"code\":\"busy\",\"message\":\"too many sign-ins are waiting\"}"
+                            : "{\"token\":\"abc\",\"idle_seconds\":60,\"role\":\"admin\",\"cubes\":{}}";
+                        var status = asked == 1 ? "429 Too Many Requests" : "201 Created";
+                        var reply = "HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: "
+                            + body.Length + "\r\nConnection: close\r\n\r\n" + body;
+                        var bytes = System.Text.Encoding.ASCII.GetBytes(reply);
+                        await stream.WriteAsync(bytes, 0, bytes.Length);
+                    }
+                }
+            });
+            using (var busy = new Connection("http://127.0.0.1:" + port))
+            {
+                Assert.True(await busy.SignIn(Home.User, Home.Password));
+                Assert.True(busy.SignedIn);
+            }
+            await serving;
+            listener.Stop();
+            Assert.Equal(2, asked);
+        }
+
+        /// <summary>Whether the text of a request holds its head and all of its body.</summary>
+        private static bool Whole(string request)
+        {
+            var head = request.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+            if (head < 0)
+                return false;
+            var length = request.Substring(0, head).Split('\n')
+                .Where(line => line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                .Select(line => int.Parse(line.Substring(15).Trim()))
+                .FirstOrDefault();
+            return request.Length >= head + 4 + length;
+        }
+
+        [Fact]
         public async Task AServerWithoutUsersNeedsNoSignIn()
         {
             Assert.True(await connection.SignIn(Home.User, Home.Password));

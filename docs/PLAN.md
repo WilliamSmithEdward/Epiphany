@@ -353,7 +353,8 @@ practice that means:
 - Checking a password is slow and takes some 19 MiB on purpose, and anybody may ask for
   it. Four are checked at once and 64 sign-ins in all may be waiting or being checked;
   one more is answered 429 with the code `busy` and `Retry-After: 1`. A crowd of
-  sign-ins can then take neither the machine's memory nor all of its threads.
+  sign-ins can then take neither the machine's memory nor all of its threads. The add-in
+  asks again after a second, up to ten times, before it reports that signing in failed.
 - A request body holds at most 64 MiB, room for a model of large dimensions or some
   hundreds of thousands of cells in one write; a larger one is refused with 413 before it
   is read. A request to sign in, the one request anybody may send, holds at most 16 KiB.
