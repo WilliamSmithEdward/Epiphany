@@ -102,6 +102,7 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 | Case | Adapter | PAfE |
 | --- | --- | --- |
 | A value typed or pasted over a cell whose formula is one `DBRW` or `DBR` call | The value is written to the cube cell the formula reads, and the formula is put back, showing the new value | Same, unverified |
+| A formula whose arguments are cells, on this sheet or another, whatever the other sheet is called | The value goes to the cube cell those cells name at that moment. A sheet's name in single quotes is read whole, its commas and brackets with it | Unverified |
 | A number over a consolidated or calculated cell | Nothing is written, the formula is put back, and the status bar says so | Unverified |
 | `P`, `S` or `R` and a number over a consolidated cell, `P1200` say | The number is spread over the leaves beneath: `P` in proportion to what they hold, `S` in equal shares, `R` the number itself to each | TM1's spreading shortcuts, of which these are three; unverified |
 | The same over a leaf | The number is written | Unverified |
@@ -130,7 +131,7 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 | A formula recalculates when one of its arguments changes | Yes; Excel does this | Same |
 | Refreshing data without changing any argument | **Refresh** in the Epiphany menu, or Ctrl+Shift+R, asks the server again for every formula in every open workbook | PAfE refreshes from its ribbon; unverified |
 | F9 | Recalculates only what Excel holds to be out of date, so it does not fetch new data | Unverified |
-| Reads in one calculation | Collected and sent as one `/cells/read` request | Same for `DBRW` |
+| Reads in one calculation | Collected and sent together: as one `/cells/read` request, or where there are more than 5,000 of them as one request for every 5,000 | Same for `DBRW`; the size of PAfE's requests unverified |
 | Writes in one calculation | Collected and sent as one `/cells/write` request, before the reads of the same calculation. The writes that can be made are made together or not at all; a write the server refuses gets `*KEY_ERR` and does not stop the others | Unverified |
 | A `DBS` formula | Writes each time it is calculated, which includes every **Refresh** and every value typed over a read | Same for calculation; the rest unverified |
 | A formula whose value is being fetched | Shows the value it had last, so a refresh does not blank the sheet | Unverified |
@@ -146,6 +147,7 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 | A server with users | The first refused request opens the Connect window for that environment. The session's token is kept in memory only |
 | A session that has ended | The next request is refused, and the window opens again |
 | The window closed without signing in | It is not opened again unasked until **Refresh** or **Connect** |
+| A server too busy checking passwords to take another | It says so and when to come back; the adapter asks again after a second, up to ten times, before it reports that signing in failed |
 | **Disconnect** | Signs out of every environment and forgets the tokens |
 
 ## Not replicated
