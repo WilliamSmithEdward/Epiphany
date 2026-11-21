@@ -202,7 +202,9 @@ practice that means:
     `Count` and `.Count`, tuples as cell references, `.Name`, `.UniqueName`, `.Value`,
     and `.Properties("name")` for an attribute or for `MEMBER_NAME`,
     `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`, `CHILDREN_CARDINALITY`.
-  - `Rank(tuple, set [, expression])`.
+  - `Rank(tuple, set [, expression])`, and `TopSum`, `BottomSum`, `TopPercent` and
+    `BottomPercent` beside `TopCount` and `BottomCount`.
+  - `Median`, `Var`, `VarP`, `Stdev` and `StdevP` beside `Sum`, `Avg`, `Min` and `Max`.
   - Numbers: `Abs`, `Round`, `Int`, `Fix`, `Sqr`, `Exp`, `Log`, `Log10`, `Sgn`, `Mod`,
     `Power`. Text: `Len`, `Left`, `Right`, `Mid`, `UCase`, `LCase`, `Trim`, `InStr`,
     `Replace`, `Val`, `Str`, `CStr`.
@@ -234,6 +236,10 @@ practice that means:
     `time`.
   - `Cousin` and `ParallelPeriod` take the same child at each step down, so in a ragged
     hierarchy there may be no such member; then, as past the end of a level, there is none.
+  - `TopSum` and `TopPercent` take tuples from the greatest down until their values reach
+    the sum, or the share of the set's whole; the tuple that reaches it is the last taken.
+  - `Var` and `Stdev` are of a sample and are null for one value alone; `VarP` and
+    `StdevP` are of a population. Like `Avg`, all of them pass over empty cells.
   - `Rank` with an expression is one more than the number of tuples with a greater
     value, so equal values share a rank; a tuple that is not in the set ranks zero.
   - `Round` rounds halves away from zero. A root or logarithm that does not exist is null.

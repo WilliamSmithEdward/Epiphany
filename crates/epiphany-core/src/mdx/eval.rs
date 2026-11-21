@@ -702,10 +702,12 @@ impl<'a> Evaluator<'a> {
         };
         let whole = |argument: &Expr| Ok(self.number(argument, context)?.max(0.0) as usize);
         match function {
-            "SUM" | "AGGREGATE" | "AVG" | "MIN" | "MAX" => {
+            "SUM" | "AGGREGATE" | "AVG" | "MIN" | "MAX" | "MEDIAN" | "VAR" | "VARIANCE"
+            | "VARP" | "VARIANCEP" | "STDEV" | "STDDEV" | "STDEVP" | "STDDEVP" => {
                 count(1..=2)?;
                 // As everywhere in the engine, a cell holding zero is an empty cell, so the
-                // average, least and greatest are taken over the cells that hold something.
+                // average, the least and greatest, the middle and the spread are taken over
+                // the cells that hold something.
                 let mut values = Vec::new();
                 let set = self.set(&arguments[0], context)?;
                 self.foresee(arguments.get(1), context, &set);
@@ -716,12 +718,36 @@ impl<'a> Evaluator<'a> {
                     }
                 }
                 let total: f64 = values.iter().sum();
+                let count = values.len() as f64;
+                let mean = total / count;
+                // Of a sample the squares are shared among one fewer than there are, which
+                // one value alone cannot be; of a population, among all of them.
+                let spread = |sample: bool| {
+                    let squares: f64 = values.iter().map(|value| (value - mean).powi(2)).sum();
+                    let among = count - f64::from(u8::from(sample));
+                    (among > 0.0).then(|| squares / among)
+                };
+                let number = |value: Option<f64>| value.map_or(Datum::Null, Datum::Number);
                 Ok(match (function, values.is_empty()) {
                     ("SUM" | "AGGREGATE", _) => Datum::Number(total),
                     (_, true) => Datum::Null,
-                    ("AVG", _) => Datum::Number(total / values.len() as f64),
+                    ("AVG", _) => Datum::Number(mean),
                     ("MIN", _) => Datum::Number(values.into_iter().fold(f64::INFINITY, f64::min)),
-                    _ => Datum::Number(values.into_iter().fold(f64::NEG_INFINITY, f64::max)),
+                    ("MAX", _) => {
+                        Datum::Number(values.into_iter().fold(f64::NEG_INFINITY, f64::max))
+                    }
+                    ("MEDIAN", _) => {
+                        values.sort_by(f64::total_cmp);
+                        let middle = values.len() / 2;
+                        Datum::Number(match values.len() % 2 {
+                            0 => (values[middle - 1] + values[middle]) / 2.0,
+                            _ => values[middle],
+                        })
+                    }
+                    ("VAR" | "VARIANCE", _) => number(spread(true)),
+                    ("VARP" | "VARIANCEP", _) => number(spread(false)),
+                    ("STDEV" | "STDDEV", _) => number(spread(true).map(f64::sqrt)),
+                    _ => number(spread(false).map(f64::sqrt)),
                 })
             }
             "COUNT" => {
@@ -812,6 +838,43 @@ impl<'a> Evaluator<'a> {
                 });
                 let kept = keyed.into_iter().take(whole(&arguments[1])?);
                 Ok(Datum::Set(kept.map(|(_, tuple)| tuple).collect()))
+            }
+            "TOPSUM" | "BOTTOMSUM" | "TOPPERCENT" | "BOTTOMPERCENT" => {
+                count(3..=3)?;
+                let set = self.set(&arguments[0], context)?;
+                let wanted = self.number(&arguments[1], context)?;
+                self.foresee(arguments.get(2), context, &set);
+                let mut keyed = Vec::new();
+                for tuple in set {
+                    let context = with(context, &tuple);
+                    let value = self.evaluate(&arguments[2], &context)?;
+                    let value = match self.scalar(value, &context)? {
+                        Datum::Null => 0.0,
+                        value => to_number(&value)?,
+                    };
+                    keyed.push((value, tuple));
+                }
+                keyed.sort_by(|(left, _), (right, _)| match function.starts_with("TOP") {
+                    true => right.total_cmp(left),
+                    false => left.total_cmp(right),
+                });
+                // From the greatest down, or the least up, as many as it takes for their
+                // values to come to the amount: a sum, or a percentage of the whole.
+                let whole: f64 = keyed.iter().map(|(value, _)| value).sum();
+                let amount = match function.ends_with("PERCENT") {
+                    true => whole * wanted / 100.0,
+                    false => wanted,
+                };
+                let mut reached = 0.0;
+                let mut kept = Vec::new();
+                for (value, tuple) in keyed {
+                    if reached >= amount {
+                        break;
+                    }
+                    reached += value;
+                    kept.push(tuple);
+                }
+                Ok(Datum::Set(kept))
             }
             "GENERATE" => {
                 count(2..=3)?;

@@ -1142,3 +1142,56 @@ fn a_level_cannot_share_its_name() {
     assert_eq!(columns("[Period].Levels('H1').Members"), ["H1"]);
     assert_eq!(columns("[Period].Levels('Quarter').Members"), ["Q1", "Q2"]);
 }
+
+#[test]
+fn values_have_a_middle_and_a_spread() {
+    // The days of the first three months, 31, 28 and 31, and of all six.
+    let days = "[Period].CurrentMember.Properties('Days')";
+    let quarter = "{[Period].[Jan], [Period].[Feb], [Period].[Mar]}";
+    let of = |function: &str, set: &str| number(&format!("{function}({set}, {days})"));
+    assert_eq!(of("Median", quarter), Some(31.0));
+    assert_eq!(of("Median", "[Period].Levels(0).Members"), Some(30.5));
+    assert_eq!(of("Var", quarter), Some(3.0));
+    assert_eq!(of("VarP", quarter), Some(2.0));
+    assert_eq!(of("Stdev", quarter), Some(3f64.sqrt()));
+    assert_eq!(of("StdevP", quarter), Some(2f64.sqrt()));
+    assert_eq!(of("StdDev", quarter), of("Stdev", quarter));
+    assert_eq!(of("Variance", quarter), of("Var", quarter));
+    // One value alone has no spread as a sample, and none at all as a population.
+    assert_eq!(of("Stdev", "{[Period].[Jan]}"), None);
+    assert_eq!(of("StdevP", "{[Period].[Jan]}"), Some(0.0));
+    // Over cells, the empty ones are left out, here March.
+    let revenue = "([Account].[Product Revenue], [Entity].[US])";
+    assert_eq!(number(&format!("Median({quarter}, {revenue})")), Some(60.0));
+    assert_eq!(
+        number(&format!("Median({{[Period].[Mar]}}, {revenue})")),
+        None
+    );
+}
+
+#[test]
+fn the_top_of_a_set_is_taken_by_sum_or_by_share() {
+    // January's product revenue: 150 in all, 100 in the US and 50 in the UK.
+    let by = "([Account].[Product Revenue], [Period].[Jan], [Version].[Actual])";
+    let columns = |function: &str, amount: f64| {
+        let mdx = format!(
+            "SELECT {function}([Entity].Members, {amount}, {by}) ON COLUMNS FROM [General Ledger]"
+        );
+        names(&run(&mdx), 0)
+    };
+    // As many, from the greatest down, as it takes to reach the sum.
+    assert_eq!(columns("TopSum", 200.0), ["Total Entity", "US"]);
+    assert_eq!(columns("TopSum", 150.0), ["Total Entity"]);
+    assert_eq!(columns("TopSum", 1000.0), ["Total Entity", "US", "UK"]);
+    assert_eq!(columns("TopSum", 0.0), [""; 0]);
+    assert_eq!(columns("BottomSum", 60.0), ["UK", "US"]);
+    // Or to reach a share of the whole, which here is 300.
+    assert_eq!(columns("TopPercent", 50.0), ["Total Entity"]);
+    assert_eq!(columns("TopPercent", 51.0), ["Total Entity", "US"]);
+    assert_eq!(columns("BottomPercent", 10.0), ["UK"]);
+    let mistake = failure("SELECT TopSum([Entity].Members, 5) ON COLUMNS FROM [General Ledger]");
+    assert!(
+        mistake.contains("TOPSUM takes 3 to 3 arguments"),
+        "{mistake}"
+    );
+}

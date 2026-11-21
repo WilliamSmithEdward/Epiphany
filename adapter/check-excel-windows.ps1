@@ -137,6 +137,8 @@ try {
     $checks = [ordered]@{}
     $checks['the window opened, a wrong password was refused, the right one accepted'] = @(Get-Content $log).Count -eq 4
     $checks['a formula answers once signed in'] = (Shown 1 '0') -eq '0'
+    Excel { $sheet.Cells.Item(4, 1).Formula = '=TM1USER("")' }
+    $checks['TM1USER gives the name signed in'] = (Shown 4 $env:EPIPHANY_CHECK_NAME) -eq $env:EPIPHANY_CHECK_NAME
     $checks['the address and the name were saved, not the password'] = [bool](Excel { $excel.ExecuteExcel4Macro("FILES(`"$settings`")") -is [string] })
 
     # Choosing an element: the list of the whole dimension, narrowed to the months with 'ma'.
