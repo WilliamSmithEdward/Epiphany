@@ -127,6 +127,34 @@ fn a_commit_cut_short_is_ignored_and_does_no_harm() {
     assert_eq!(get(&home.open(), EXPENSES), 70.0);
 }
 
+#[test]
+fn a_damaged_commit_with_others_after_it_is_not_passed_over() {
+    let home = Home::new("middle");
+    let mut database = home.open();
+    for (month, value) in [("Jan", 1.0), ("Feb", 2.0), ("Mar", 4.0)] {
+        let cell = set(["Rent", "US", month, "Actual"], value);
+        database.write(None, &[cell]).unwrap();
+    }
+    drop(database);
+    let log = home.path("data/log.jsonl");
+    let whole = fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = whole.lines().collect();
+    assert_eq!(lines.len(), 3);
+
+    // The second of three commits damaged: to open would be to lose the third as well.
+    let damaged = [lines[0], &lines[1][..lines[1].len() / 2], lines[2]].join("\n") + "\n";
+    fs::write(&log, damaged).unwrap();
+    let refusal = open(&home.0).unwrap_err().to_string();
+    assert!(refusal.contains("line 2 of 3 cannot be read"), "{refusal}");
+    // Refused, the file is as it was left, for whoever comes to mend it.
+    assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 3);
+
+    // The last one cut short is the commit that was being written when the server died.
+    let torn = [lines[0], lines[1], &lines[2][..lines[2].len() / 2]].join("\n");
+    fs::write(&log, torn).unwrap();
+    assert_eq!(get(&home.open(), EXPENSES), 3.0);
+}
+
 /// The example model with France added to the entities.
 fn with_france(database: &Database) -> epiphany_core::model::ModelDef {
     let mut model = serde_json::to_value(database.definition()).unwrap();

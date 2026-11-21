@@ -135,6 +135,12 @@ practice that means:
 - A model update writes the new model beside the old one, moves the old one into the
   history, and moves the new one into place; opening the directory finishes or discards an
   update that was interrupted.
+- The last line of the log may be a commit that was being written when the server died:
+  it is left out, with a warning. Any other line that cannot be read is damage to a
+  commit that was acknowledged, and the directory is then not opened: going on would drop
+  every commit after it, and the snapshot taken at the start would erase them for good.
+  Lines carry no checksum, so damage to the last line cannot be told from a write cut
+  short, and damage that still reads as a commit cannot be told at all.
 - Cost to keep in view: every commit waits for the disk, so many small commits are slower
   than one batch.
 

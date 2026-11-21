@@ -82,18 +82,32 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(at(&log, &error).into()),
     };
-    for (number, line) in recorded.lines().enumerate() {
-        // A commit that was being written when the process died is incomplete and was never
-        // acknowledged. Nothing after it can be trusted.
-        let Ok(commit) = serde_json::from_str::<Vec<CellWrite>>(line) else {
-            eprintln!(
-                "warning: {}: ignored from line {}",
+    let commits: Vec<&str> = recorded.lines().collect();
+    for (number, line) in commits.iter().enumerate() {
+        match serde_json::from_str::<Vec<CellWrite>>(line) {
+            Ok(commit) => skipped += database.load(&commit),
+            // A commit that was being written when the process died is incomplete and was
+            // never acknowledged: the last line may be one, and is left out.
+            Err(_) if number + 1 == commits.len() => eprintln!(
+                "warning: {}: the last commit, on line {}, was cut short and is left out",
                 log.display(),
                 number + 1
-            );
-            break;
-        };
-        skipped += database.load(&commit);
+            ),
+            // Any other line was written whole and acknowledged. It is damaged, and to go
+            // on without it would be to drop every commit after it and then, at the next
+            // snapshot, to erase them for good.
+            Err(error) => {
+                return Err(format!(
+                    "{}: line {} of {} cannot be read ({error}). The commits after it would \
+                     be lost, so the directory is not opened; restore the file from a copy, \
+                     or remove the damaged line to go on without that commit.",
+                    log.display(),
+                    number + 1,
+                    commits.len()
+                )
+                .into());
+            }
+        }
     }
     if skipped > 0 {
         eprintln!("warning: {skipped} stored cells no longer fit the model and were dropped");
