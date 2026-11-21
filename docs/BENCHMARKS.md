@@ -157,6 +157,16 @@ towards one of the totals is worked out once and shared out among them; a rule i
 about a cell that counts towards none. In this benchmark every cell counts, so it shows no
 gain from that.
 
+## Memory
+
+Measured from outside, on a server built for release and given a cube of four dimensions
+of a hundred leaves each: a million different cells, written by name in four requests,
+took the process from 6 MB to 106 MB, 105 bytes a cell, and 58 MB of log on disk
+(2026-11-21). A cell is 48 bytes where it is stored, its coordinate of up to eight
+dimensions and its value; the rest is the room a table keeps free so as to stay quick,
+which is at its most just after the table has grown, as it had here. So a cell costs
+between about 55 and 105 bytes as a cube fills.
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.
