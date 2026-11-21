@@ -11,6 +11,9 @@ use crate::model::{Cube, Dimension, DimensionType, Element, ElementId, ElementTy
 
 /// The most cells one query may return.
 const MOST_CELLS: usize = 1_000_000;
+/// The most tuples a set may hold while a query is worked out. A cross join multiplies, and
+/// without a limit one short query could ask for more memory than there is.
+const MOST_TUPLES: usize = 1_000_000;
 /// How deeply calculated members may refer to one another.
 const DEEPEST: u32 = 32;
 
@@ -894,6 +897,7 @@ impl<'a> Evaluator<'a> {
                 let mut generated = Vec::new();
                 for tuple in self.set(&arguments[0], context)? {
                     generated.extend(self.set(&arguments[1], &with(context, &tuple))?);
+                    bounded(Some(generated.len()))?;
                 }
                 Ok(Datum::Set(match all(arguments.get(2))? {
                     true => generated,
@@ -1499,15 +1503,14 @@ impl<'a> Evaluator<'a> {
                     false => self.chosen(self.set(&arguments[1], context)?),
                 };
                 let drilled = |member: Member, _: &Element| all || members.contains(&member);
-                Ok(Datum::Set(
-                    self.drill_down(set, position, recursive, &drilled),
-                ))
+                self.drill_down(set, position, recursive, &drilled)
+                    .map(Datum::Set)
             }
             "DRILLDOWNLEVEL" => {
                 count(1..=2)?;
                 let set = self.set(&arguments[0], context)?;
                 let first = |tuple: &Tuple| tuple.first().copied();
-                Ok(Datum::Set(match arguments.get(1) {
+                let opened = match arguments.get(1) {
                     // The members of the level given.
                     Some(level) => {
                         let (position, level) = self.level(level, context)?;
@@ -1524,7 +1527,8 @@ impl<'a> Evaluator<'a> {
                         let at = |member: Member, _: &Element| self.depth(member) == deepest;
                         self.drill_down(set, None, false, &at)
                     }
-                }))
+                };
+                opened.map(Datum::Set)
             }
             "DRILLUPMEMBER" => {
                 count(2..=2)?;
@@ -1557,7 +1561,7 @@ impl<'a> Evaluator<'a> {
                 let shut = |member: Member, _: &Element| {
                     members.contains(&member) && !open.contains(&member)
                 };
-                Ok(Datum::Set(self.drill_down(set, position, false, &shut)))
+                self.drill_down(set, position, false, &shut).map(Datum::Set)
             }
             _ => fail(format!("unknown function {function}")),
         }
@@ -2003,7 +2007,7 @@ impl<'a> Evaluator<'a> {
         position: Option<usize>,
         recursive: bool,
         drilled: &dyn Fn(Member, &Element) -> bool,
-    ) -> Vec<Tuple> {
+    ) -> Evaluated<Vec<Tuple>> {
         let mut found = Vec::new();
         let mut waiting: Vec<(Tuple, bool)> = set.into_iter().rev().map(|t| (t, true)).collect();
         while let Some((tuple, asked)) = waiting.pop() {
@@ -2023,8 +2027,9 @@ impl<'a> Evaluator<'a> {
                 }
             }
             found.push(tuple);
+            bounded(Some(found.len()))?;
         }
-        found
+        Ok(found)
     }
 
     /// The members of the tuples of a set, and the position of their dimension: what a
@@ -2397,6 +2402,14 @@ fn union(mut left: Vec<Tuple>, right: Vec<Tuple>, repeats: bool) -> Evaluated<Ve
     })
 }
 
+/// Refuses a set of more tuples than a set may hold, or of more than can be counted.
+fn bounded(tuples: Option<usize>) -> Evaluated<()> {
+    match tuples.is_some_and(|tuples| tuples <= MOST_TUPLES) {
+        true => Ok(()),
+        false => fail(format!("a set has more than {MOST_TUPLES} tuples")),
+    }
+}
+
 /// Whether text matches a pattern in which `*` stands for any run of characters and `?` for
 /// any one.
 fn wildcard(pattern: &[char], text: &[char]) -> bool {
@@ -2419,6 +2432,7 @@ fn cross_join(left: &[Tuple], right: &[Tuple]) -> Evaluated<Vec<Tuple>> {
     {
         return fail("the sets of a cross join must have different dimensions");
     }
+    bounded(left.len().checked_mul(right.len()))?;
     let mut joined = Vec::with_capacity(left.len() * right.len());
     for left in left {
         for right in right {

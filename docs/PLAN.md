@@ -246,6 +246,9 @@ practice that means:
   - `Ytd`, `Qtd`, `Mtd` and `Wtd` run within the levels named Year, Quarter, Month and
     Week. Without a member they end at the current member of the cube's dimension of type
     `time`.
+  - A set holds at most 1,000,000 tuples while a query is worked out, as a query returns
+    at most 1,000,000 cells. A cross join that would hold more is refused before any of
+    it is built, so that one short query cannot ask for more memory than there is.
   - Drilling puts a member's children after it, each in its parent's place in the tuple,
     and opens a member wherever it stands, whether or not its children already follow.
     `DrilldownLevel` without a level opens the members furthest beneath the top of their

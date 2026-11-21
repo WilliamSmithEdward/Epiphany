@@ -1266,6 +1266,27 @@ fn calculated_members_are_added_to_a_set_and_taken_from_it() {
 }
 
 #[test]
+fn a_set_too_large_to_hold_is_refused() {
+    let refused = |set: &str| {
+        let mistake = failure(&format!("SELECT {set} ON COLUMNS FROM [General Ledger]"));
+        assert!(
+            mistake.contains("a set has more than 1000000 tuples"),
+            "{mistake}"
+        );
+    };
+    // Nine periods, each giving the nine again, six times over: more than half a million.
+    let mut periods = "[Period].Members".to_owned();
+    for _ in 0..5 {
+        periods = format!("Generate({periods}, [Period].Members, ALL)");
+    }
+    // Once more is nearly five million.
+    refused(&format!("Generate({periods}, [Period].Members, ALL)"));
+    // Sets multiplied together are refused before any of the product is built.
+    refused(&format!("CrossJoin({periods}, [Entity].Members)"));
+    refused(&format!("NonEmptyCrossJoin({periods}, [Entity].Members)"));
+}
+
+#[test]
 fn dimensions_are_taken_out_of_a_set() {
     let crossed = "{[Entity].[US], [Entity].[UK]} * {[Period].[Jan], [Period].[Feb]}";
     let columns = |set: &str| {
