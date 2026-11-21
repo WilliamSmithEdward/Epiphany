@@ -198,6 +198,11 @@ last 244 ms, and all 150 pages 34.6 s. Each page now orders only its own cells: 
 takes 107 ms and all of them 24.0 s. These are times seen by a PowerShell client, which
 takes most of the 97 ms itself to read a page's JSON (2026-11-21).
 
+A model update on the same server, adding an element to a dimension, moves every one of
+the 1.5 million cells to the new model and writes a snapshot: 1.1 s, and no more memory
+at its height than loading the cells took. One that adds a view moves no cells and takes
+14 ms (2026-11-21).
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.
