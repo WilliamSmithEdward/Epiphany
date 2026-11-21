@@ -207,7 +207,9 @@ fn changing_only_subsets_and_views_keeps_every_cell() {
         database.view(None, "Sales", "By region"),
         Err(Error::NotFound(_))
     ));
-    let query = "SELECT TM1SubsetToSet([Period], 'Second half') ON COLUMNS FROM [Sales]";
+    // Whether a subset is public or private may be said, and makes no difference here.
+    let query =
+        "SELECT TM1SubsetToSet([Period].[Period], 'Second half', 'public') ON COLUMNS FROM [Sales]";
     assert_eq!(database.query(None, query).unwrap().axes[0].tuples.len(), 2);
 }
 

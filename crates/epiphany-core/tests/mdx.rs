@@ -569,6 +569,41 @@ fn tm1_style_set_functions() {
         columns(&format!("TM1Sort({months}, DESC)")),
         ["Mar", "Jan", "Feb"]
     );
+    // By place in the dimension, where the months stand after the quarters and the half.
+    let mixed = "{[Period].[Mar], [Period].[Q1], [Period].[Jan], [Period].[H1]}";
+    assert_eq!(
+        columns(&format!("TM1SortByIndex({mixed}, ASC)")),
+        columns(&format!("Intersect([Period].Members, {mixed})"))
+    );
+    assert_eq!(
+        columns(&format!("TM1SortByIndex({months}, DESC)")),
+        ["Mar", "Feb", "Jan"]
+    );
+
+    let tuple = "([Entity].[UK], [Period].[Mar])";
+    assert_eq!(text(&format!("TM1Member({tuple}, 0).Name")), "UK");
+    assert_eq!(text(&format!("TM1Member({tuple}, 1).Name")), "Mar");
+    assert_eq!(number(&format!("TM1TupleSize({tuple})")), Some(2.0));
+    assert_eq!(number("TM1TupleSize([Period].[Mar])"), Some(1.0));
+    assert_eq!(
+        text(&format!(
+            "IIF(TM1Member({tuple}, 2) IS NULL, 'none', 'one')"
+        )),
+        "none"
+    );
+
+    // A member knows its dimension, which is its hierarchy too.
+    assert_eq!(text("[Period].[Mar].Dimension.Name"), "Period");
+    assert_eq!(text("[Period].[Mar].Hierarchy.UniqueName"), "[Period]");
+    assert_eq!(text("[Period].[Mar].Level.Hierarchy.Name"), "Period");
+    assert_eq!(
+        text("[Period].CurrentMember.Dimension.CurrentMember.Name"),
+        "Feb"
+    );
+    assert_eq!(
+        columns("[Period].[Mar].Hierarchy.Members"),
+        columns("[Period].Members")
+    );
 }
 
 #[test]

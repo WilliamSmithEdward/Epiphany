@@ -983,7 +983,9 @@ impl<'a> Evaluator<'a> {
                 })
             }
             "TM1SUBSETTOSET" => {
-                count(2..=2)?;
+                // A third argument says whether the subset is public or private; here
+                // every subset is public, so it is read past.
+                count(2..=3)?;
                 let dimension = self.evaluate(&arguments[0], context)?;
                 let name = self.evaluate(&arguments[1], context)?;
                 let (Datum::Dimension(position), Datum::Text(name)) = (dimension, name) else {
@@ -1034,16 +1036,43 @@ impl<'a> Evaluator<'a> {
                 let set = self.set(&arguments[0], context)?;
                 Ok(Datum::Set(set.into_iter().filter(matches).collect()))
             }
-            "TM1SORT" => {
+            "TM1SORT" | "TM1SORTBYINDEX" => {
                 count(1..=2)?;
                 let mut set = self.set(&arguments[0], context)?;
-                let name = |tuple: &Tuple| key(self.name(tuple[0]));
+                // By name, or by the place of each member in its dimension.
+                let place = |tuple: &Tuple| match (function, tuple[0].id) {
+                    ("TM1SORT", _) => (0, key(self.name(tuple[0]))),
+                    (_, Id::Element(id)) => (id as usize, String::new()),
+                    (_, Id::Calculated(index)) => (usize::MAX, index.to_string()),
+                };
                 match flag(arguments.get(1)).as_deref() {
-                    None | Some("ASC") => set.sort_by_key(name),
-                    Some("DESC") => set.sort_by_key(|tuple| std::cmp::Reverse(name(tuple))),
-                    Some(other) => return fail(format!("unknown TM1SORT flag {other}")),
+                    None | Some("ASC") => set.sort_by_key(place),
+                    Some("DESC") => set.sort_by_key(|tuple| std::cmp::Reverse(place(tuple))),
+                    Some(other) => return fail(format!("unknown {function} flag {other}")),
                 }
                 Ok(Datum::Set(set))
+            }
+            "TM1MEMBER" => {
+                count(2..=2)?;
+                let tuple = match self.evaluate(&arguments[0], context)? {
+                    Datum::Member(member) => vec![member],
+                    Datum::Tuple(tuple) => tuple,
+                    _ => return fail("TM1MEMBER takes a tuple and a place in it, from zero"),
+                };
+                let place = whole(&arguments[1])?;
+                Ok(tuple
+                    .get(place)
+                    .map_or(Datum::Null, |&member| Datum::Member(member)))
+            }
+            "TM1TUPLESIZE" => {
+                count(1..=1)?;
+                Ok(Datum::Number(
+                    match self.evaluate(&arguments[0], context)? {
+                        Datum::Member(_) => 1.0,
+                        Datum::Tuple(tuple) => tuple.len() as f64,
+                        _ => 0.0,
+                    },
+                ))
             }
             "ISLEAF" => {
                 count(1..=1)?;
@@ -1912,6 +1941,22 @@ impl<'a> Evaluator<'a> {
                 ))
             }
             ("LEVELS", _) => fail(".LEVELS applies to a dimension"),
+            // A dimension has one hierarchy here, which is the dimension itself.
+            ("DIMENSION" | "HIERARCHY", _) => match target {
+                Datum::Dimension(position) | Datum::Level(position, _) => {
+                    Ok(Datum::Dimension(position))
+                }
+                Datum::Member(member) => Ok(Datum::Dimension(member.position)),
+                _ => fail(format!(
+                    ".{method} applies to a member, a level or a dimension"
+                )),
+            },
+            ("NAME", &Datum::Dimension(position)) => {
+                Ok(Datum::Text(self.dimension(position).name.clone()))
+            }
+            ("UNIQUENAME", &Datum::Dimension(position)) => {
+                Ok(Datum::Text(format!("[{}]", self.dimension(position).name)))
+            }
             ("ORDINAL", &Datum::Level(_, level)) => Ok(Datum::Number(f64::from(level))),
             ("MEMBERS", &Datum::Level(position, level)) => {
                 let elements = self.dimension(position).elements.iter().enumerate();

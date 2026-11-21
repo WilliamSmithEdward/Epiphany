@@ -197,6 +197,10 @@ practice that means:
     `TM1Sort`.
   - `Extract(set, dimension, ...)` for what the tuples of a set hold of some dimensions,
     and `[Dimension].DefaultMember`, the first top element.
+  - `TM1SubsetToSet(dimension, name [, "public"])`, `TM1SortByIndex(set [, ASC | DESC])`,
+    `TM1Member(tuple, place)` and `TM1TupleSize(tuple)`, written from memory of TM1 and
+    not checked against it; and `.Dimension` and `.Hierarchy` of a member, a level or a
+    dimension, with `.Name` and `.UniqueName` of a dimension.
   - `NonEmptyCrossJoin(set, set, ...)`, and `AddCalculatedMembers` and
     `StripCalculatedMembers` for the calculated members of a set's dimension.
   - Drilling: `DrilldownMember(set, members [, RECURSIVE])`, `TM1DrilldownMember` (which
