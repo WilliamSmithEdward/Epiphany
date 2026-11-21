@@ -171,12 +171,22 @@ fn at(path: &Path, error: &dyn Error) -> String {
 /// Writes a JSON file so that it is either complete or absent: to a temporary file first,
 /// flushed to disk, then renamed into place.
 pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
+    write_whole(path, value, true)
+}
+
+/// The same, laid out for a person to read or as closely as it will go. A model is read
+/// and edited by hand; a snapshot of a million cells is not, and laid out it is twice the
+/// size on disk.
+fn write_whole(path: &Path, value: &impl Serialize, laid_out: bool) -> io::Result<()> {
     let temporary = path.with_extension("tmp");
     // JSON is written a few bytes at a time, and each piece handed straight to the file
     // would be a call to the operating system: a snapshot of a million cells took two
     // minutes that way. The pieces are gathered and handed over by the page.
     let mut file = BufWriter::new(File::create(&temporary)?);
-    serde_json::to_writer_pretty(&mut file, value)?;
+    match laid_out {
+        true => serde_json::to_writer_pretty(&mut file, value)?,
+        false => serde_json::to_writer(&mut file, value)?,
+    }
     file.write_all(b"\n")?;
     let file = file.into_inner().map_err(|error| error.into_error())?;
     file.sync_all()?;
@@ -285,9 +295,10 @@ impl Journal for Files {
             model_version,
             cells: Cow::Borrowed(cells),
         };
-        let written = write_json(
+        let written = write_whole(
             &self.directory.join("data").join("snapshot.json"),
             &snapshot,
+            false,
         )
         // The log is open for appending only, which does not allow truncating it; opening
         // it afresh does, and later appends then start from the beginning.

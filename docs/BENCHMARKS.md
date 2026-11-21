@@ -174,8 +174,11 @@ less as it fills.
 Loading past a million cells found what no test had: the snapshot that replaces the log
 once it passes 64 MiB, and at every start, was written a few bytes at a time, each piece
 a call to the operating system. The request that brought the log to its limit took 130
-seconds, with every other request waiting on it. Written through a buffer the same
-request takes 1.3 seconds (2026-11-21).
+seconds, with every other request waiting on it, and a server holding a million cells
+took 159 seconds to start. Written through a buffer the request takes 1.3 seconds and the
+start 1.4 seconds. The snapshot is also no longer laid out for reading, which took it
+from 131 MB to 87 MB for a million and a half cells; a server holding those starts in 2
+seconds (2026-11-21).
 
 ## Notes
 
