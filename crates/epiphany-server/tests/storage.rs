@@ -479,3 +479,146 @@ fn damaged_files_are_refused_or_recovered_from_and_never_fatal() {
     // Some damage is recovered from and some is refused: both happen.
     assert!(opened > 0, "nothing damaged was ever opened");
 }
+
+/// A small generator of numbers that look random, so that a failure can be had again.
+struct Dice(u64);
+
+impl Dice {
+    fn roll(&mut self, sides: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % sides as u64) as usize
+    }
+}
+
+#[test]
+fn many_clients_at_once_leave_every_cell_as_its_last_writer_left_it() {
+    let home = Home::new("crowded");
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let server = Server::start(&home, port);
+
+    // Forty-eight leaf cells, shared out among eight clients: each writes only its own.
+    let mut cells = Vec::new();
+    for account in ["Rent", "Salaries"] {
+        for entity in ["US", "UK"] {
+            for month in ["Jan", "Feb", "Mar", "Apr", "May", "Jun"] {
+                for version in ["Actual", "Budget"] {
+                    cells.push([account, entity, month, version]);
+                }
+            }
+        }
+    }
+    let cell = |at: [&str; 4]| json!({ "cube": CUBE, "at": at });
+    let write = |at: [&str; 4], value: f64| json!({ "cube": CUBE, "at": at, "value": value });
+    let queries = [
+        "SELECT [Account].Members ON COLUMNS, [Period].Members ON ROWS FROM [General Ledger]",
+        "SELECT NON EMPTY [Account].Members * [Entity].Members ON ROWS, {[Version].[Actual]} ON COLUMNS FROM [General Ledger]",
+        "SELECT TopCount([Period].Members, 3, [Account].[Rent]) ON COLUMNS FROM [General Ledger]",
+    ];
+
+    let clients: Vec<_> = (0..8)
+        .map(|client| {
+            let mine: Vec<[&str; 4]> = cells.iter().copied().skip(client).step_by(8).collect();
+            let all = cells.clone();
+            thread::spawn(move || {
+                let mut dice = Dice(0x9E37_79B9 + client as u64);
+                // What each of this client's cells holds, as far as the server has agreed.
+                let mut held = vec![0.0; mine.len()];
+                let mut errors = Vec::new();
+                let mut said = |what: &str, status: u16, body: &str| {
+                    if status >= 500 {
+                        errors.push(format!("{what}: {status} {body}"));
+                    }
+                };
+                for step in 0..120 {
+                    let own = dice.roll(mine.len());
+                    let value = (1 + client * 1000 + step) as f64;
+                    match dice.roll(8) {
+                        // A write on its own.
+                        0 | 1 => {
+                            let body = json!({ "cells": [write(mine[own], value)] });
+                            let (status, answer) = post(port, "/cells/write", body);
+                            said("write", status, &answer);
+                            if status == 204 {
+                                held[own] = value;
+                            }
+                        }
+                        // A transaction, with or without a lock, committed or rolled back.
+                        2 | 3 => {
+                            let (status, answer) = post(port, "/transactions", json!(null));
+                            said("begin", status, &answer);
+                            let Ok(begun) = serde_json::from_str::<Json>(&answer) else {
+                                continue;
+                            };
+                            let id = begun["transaction"].clone();
+                            if dice.roll(3) == 0 {
+                                let mode = ["read", "write", "exclusive"][dice.roll(3)];
+                                let lock = json!({ "cube": CUBE, "mode": mode });
+                                let (status, answer) =
+                                    post(port, &format!("/transactions/{id}/locks"), lock);
+                                said("lock", status, &answer);
+                            }
+                            let body =
+                                json!({ "transaction": id, "cells": [write(mine[own], value)] });
+                            let (wrote, answer) = post(port, "/cells/write", body);
+                            said("write within", wrote, &answer);
+                            let end = ["commit", "rollback"][dice.roll(2)];
+                            let (ended, answer) =
+                                post(port, &format!("/transactions/{id}/{end}"), json!(null));
+                            said(end, ended, &answer);
+                            if wrote == 204 && end == "commit" && ended < 300 {
+                                held[own] = value;
+                            }
+                        }
+                        // Reads of anybody's cells, alone and by the batch.
+                        4 | 5 => {
+                            let some: Vec<Json> = (0..1 + dice.roll(20))
+                                .map(|_| cell(all[dice.roll(all.len())]))
+                                .collect();
+                            let (status, answer) =
+                                post(port, "/cells/read", json!({ "cells": some }));
+                            said("read", status, &answer);
+                        }
+                        6 => {
+                            let mdx = queries[dice.roll(queries.len())];
+                            let (status, answer) = post(port, "/mdx", json!({ "mdx": mdx }));
+                            said("query", status, &answer);
+                        }
+                        _ => {
+                            let body = json!({ "cells": [cell(EXPENSES), cell(mine[own])] });
+                            let (status, answer) = post(port, "/cells/explain", body);
+                            said("explain", status, &answer);
+                        }
+                    }
+                }
+                (mine, held, errors)
+            })
+        })
+        .collect();
+
+    let mut expected = Vec::new();
+    for client in clients {
+        let (mine, held, errors) = client.join().unwrap();
+        assert!(errors.is_empty(), "{}", errors.join("\n"));
+        expected.extend(mine.into_iter().zip(held));
+    }
+    // Every cell is as its one writer last left it: now, and after the server is killed.
+    let check = |port: u16| {
+        let asked: Vec<Json> = expected.iter().map(|(at, _)| cell(*at)).collect();
+        let (status, answer) = post(port, "/cells/read", json!({ "cells": asked }));
+        assert_eq!(status, 200, "{answer}");
+        let answer: Json = serde_json::from_str(&answer).unwrap();
+        for ((at, value), read) in expected.iter().zip(answer["cells"].as_array().unwrap()) {
+            assert_eq!(read["value"].as_f64(), Some(*value), "{at:?}");
+        }
+    };
+    check(port);
+    drop(server);
+    let _server = Server::start(&home, port);
+    check(port);
+}
