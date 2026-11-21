@@ -382,6 +382,36 @@ impl Places {
     }
 }
 
+/// A cell moved along the tuples of a set: each tuple is put into the one copy of the cell,
+/// in the place of the tuple before it, so that a set of any length costs one copy.
+struct Along {
+    cell: Context,
+    /// What stood in the places the last tuple took.
+    before: Vec<(usize, Id)>,
+}
+
+impl Along {
+    fn new(context: &Context) -> Self {
+        Self {
+            cell: context.clone(),
+            before: Vec::new(),
+        }
+    }
+
+    /// The cell with this tuple in it and the last one out of it again.
+    fn at(&mut self, tuple: &Tuple) -> &Context {
+        for (position, id) in self.before.drain(..) {
+            self.cell[position] = id;
+        }
+        for member in tuple {
+            self.before
+                .push((member.position, self.cell[member.position]));
+            self.cell[member.position] = member.id;
+        }
+        &self.cell
+    }
+}
+
 /// A context with the members of a tuple put in their places.
 fn with(context: &Context, tuple: &Tuple) -> Context {
     let mut context = context.clone();
@@ -831,15 +861,12 @@ impl<'a> Evaluator<'a> {
             }
         };
         // The value an aggregate takes from a tuple: the given expression there, or its cell.
-        let measure = |tuple: &Tuple| {
-            let context = with(context, tuple);
-            match arguments.get(1) {
-                Some(expression) => {
-                    let value = self.evaluate(expression, &context)?;
-                    self.scalar(value, &context)
-                }
-                None => self.cell(&context),
+        let measure = |context: &Context| match arguments.get(1) {
+            Some(expression) => {
+                let value = self.evaluate(expression, context)?;
+                self.scalar(value, context)
             }
+            None => self.cell(context),
         };
         let all = |argument: Option<&Expr>| match flag(argument).as_deref() {
             None => Ok(false),
@@ -857,8 +884,9 @@ impl<'a> Evaluator<'a> {
                 let mut values = Vec::new();
                 let set = self.set(&arguments[0], context)?;
                 self.foresee(arguments.get(1), context, &set);
+                let mut along = Along::new(context);
                 for tuple in set {
-                    let value = measure(&tuple)?;
+                    let value = measure(along.at(&tuple))?;
                     if !is_empty(&value) {
                         values.push(to_number(&value)?);
                     }
@@ -1173,8 +1201,9 @@ impl<'a> Evaluator<'a> {
                 let mut kept = Vec::new();
                 let set = self.set(&arguments[0], context)?;
                 self.foresee(arguments.get(1), context, &set);
+                let mut along = Along::new(context);
                 for tuple in set {
-                    if self.truth(&arguments[1], &with(context, &tuple))? {
+                    if self.truth(&arguments[1], along.at(&tuple))? {
                         kept.push(tuple);
                     }
                 }
@@ -2352,14 +2381,21 @@ impl<'a> Evaluator<'a> {
             Some(expression) => self.named(expression, context, &mut named),
             None => named.push(Tuple::new()),
         }
-        let cells: Vec<Vec<ElementId>> = set
-            .iter()
-            .flat_map(|tuple| {
-                let context = with(context, tuple);
-                let at = |named: &Tuple| self.total_at(&with(&context, named));
-                named.iter().filter_map(at).collect::<Vec<_>>()
-            })
-            .collect();
+        // The cell at each tuple with each named member in it, given member by member so
+        // that one which is no total is turned down without being written out.
+        let mut along = Along::new(context);
+        let mut cells: Vec<Vec<ElementId>> = Vec::new();
+        for tuple in set {
+            let context = along.at(tuple);
+            let at = |named: &Tuple| {
+                let placed = |(position, id): (usize, &Id)| {
+                    let member = named.iter().find(|member| member.position == position);
+                    member.map_or(*id, |member| member.id)
+                };
+                self.total_of(context.iter().enumerate().map(placed))
+            };
+            cells.extend(named.iter().filter_map(at));
+        }
         (self.expect)(&cells.iter().map(Vec::as_slice).collect::<Vec<_>>());
     }
 

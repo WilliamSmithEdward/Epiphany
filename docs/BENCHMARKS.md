@@ -83,6 +83,10 @@ Laying a grid out made three lists for each of its cells, one for the slicer's c
 one more as each axis's tuple was put in. One is enough: the grid of 10,000 leaf cells
 goes from 2.2 ms to 1.5 ms, and of a calculated member from 2.4 ms to 2.0 ms (2026-11-21).
 
+`Filter`, the aggregates and the announcing of cells went through a set copying the cell
+for every tuple. They now move one copy along the set, putting each tuple in the place of
+the one before: the `Filter` over 10,000 tuples goes from 2.6 ms to 1.9 ms (2026-11-21).
+
 Writing 200,000 cells in one batch took 198 ms, about a microsecond a cell, of which
 storing the cell is an eighth. Three things on the way there were trimmed: the locks were
 asked for again at every cell and are now asked for once for the batch and each cube; the
