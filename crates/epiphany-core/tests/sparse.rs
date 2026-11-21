@@ -246,6 +246,42 @@ fn random_cubes_and_queries_agree_either_way() {
 }
 
 #[test]
+fn a_cross_join_inside_hierarchize_is_cut_down_and_then_put_in_order() {
+    let database = filled(model(3), 3);
+    let crossed = "[d0].Members * [d1].Members";
+    let ask = |rows: &str| {
+        let mdx = format!("SELECT NON EMPTY {rows} ON ROWS, {{[d2].[all]}} ON COLUMNS FROM [C]");
+        database.query(None, &mdx).unwrap()
+    };
+    for flag in ["", ", POST"] {
+        let cut = ask(&format!("Hierarchize({crossed}{flag})"));
+        let written = ask(&format!("Hierarchize(Head({crossed}, 1000000){flag})"));
+        assert_eq!(names(&cut, 1), names(&written, 1), "{flag}");
+        assert_eq!(cut.cells, written.cells, "{flag}");
+        assert!(names(&cut, 1).len() > 300);
+    }
+    // The order is the hierarchy's and not the cross join's.
+    assert_ne!(
+        names(&ask(&format!("Hierarchize({crossed})")), 1),
+        names(&ask(crossed), 1)
+    );
+    // The same of the function, and of the cross join of three that cannot be written out.
+    let rows = |set: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [C] WHERE [d2].[all]");
+        names(&database.query(None, &mdx).unwrap(), 0)
+    };
+    assert_eq!(
+        rows(&format!("NonEmpty(Hierarchize({crossed}))")),
+        rows(&format!("NonEmpty(Hierarchize(Head({crossed}, 1000000)))"))
+    );
+    let three = "SELECT NON EMPTY Hierarchize([d0].Members * [d1].Members * [d2].Members) ON ROWS, \
+                 {[d3].[all]} ON COLUMNS FROM [C]";
+    let three = filled(model(4), 4).query(None, three).unwrap();
+    assert!(names(&three, 1).len() >= 290);
+    assert!(names(&three, 1).contains(&vec!["all".to_owned(); 3]));
+}
+
+#[test]
 fn a_cell_written_in_a_transaction_brings_its_rows() {
     let mut database = filled(model(3), 3);
     let columns = "{[d2].[e99]} ON COLUMNS FROM [C]";

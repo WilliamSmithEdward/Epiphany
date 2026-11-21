@@ -273,8 +273,9 @@ practice that means:
     Week. Without a member they end at the current member of the cube's dimension of type
     `time`.
   - What follows holds as well for `NonEmptyCrossJoin(...)` and for `NonEmpty` of a cross
-    join, with or without a second set; and for a long set that is no cross join, which
-    is one of a single set. Two long `NON EMPTY` axes, each of a dimension of thousands of
+    join, with or without a second set; for a long set that is no cross join, which is one
+    of a single set; and for either inside `Hierarchize`, which only puts in order and is
+    applied to what is left. Two long `NON EMPTY` axes, each of a dimension of thousands of
     elements, then give the few rows and columns that hold something, where every
     combination of them would be more cells than a query may return.
   - `NON EMPTY` over a cross join of sets of elements does not write the cross join out

@@ -242,7 +242,7 @@ impl Query {
             let axis = evaluator.lay(&evaluator.settled(&axis.set), axis.non_empty, &context)?;
             let first: Option<Tuple> = match &axis {
                 Laid::Out(set) => set.first().cloned(),
-                Laid::Crossed(sets) => Some(sets.iter().map(|set| set[0][0]).collect()),
+                Laid::Crossed(sets, _) => Some(sets.iter().map(|set| set[0][0]).collect()),
             };
             if let Some(tuple) = first {
                 claim(&tuple)?;
@@ -257,7 +257,7 @@ impl Query {
             let beside: Vec<&Vec<Tuple>> = others
                 .flat_map(|(_, other)| match other {
                     Laid::Out(set) => std::slice::from_ref(set),
-                    Laid::Crossed(sets) => sets.as_slice(),
+                    Laid::Crossed(sets, _) => sets.as_slice(),
                 })
                 .collect();
             sets.push(evaluator.cut(&laid[index], &beside, &context)?);
@@ -436,6 +436,27 @@ impl<'a> Evaluator<'a> {
             Id::Element(top.unwrap_or(0) as ElementId)
         };
         self.dimensions().map(top).collect()
+    }
+
+    /// A set in the order of its hierarchies: each member before what is beneath it, or
+    /// after it if `post`.
+    fn hierarchized(&self, set: Vec<Tuple>, post: bool) -> Vec<Tuple> {
+        let mut orders: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut place = |member: &Member| match member.id {
+            Id::Element(id) => {
+                let order = orders.entry(member.position);
+                order.or_insert_with(|| self.hierarchy_order(member.position, post))[id as usize]
+            }
+            // Calculated members follow the hierarchy, in the order they were defined.
+            Id::Calculated(index) => usize::MAX - self.calculated.len() + index,
+        };
+        let places: Vec<Vec<usize>> = set
+            .iter()
+            .map(|tuple| tuple.iter().map(&mut place).collect())
+            .collect();
+        let mut order: Vec<usize> = (0..set.len()).collect();
+        order.sort_by(|&a, &b| places[a].cmp(&places[b]));
+        order.into_iter().map(|index| set[index].clone()).collect()
     }
 
     /// An expression with its names settled, or as it stands if one of them means nothing:
@@ -1207,25 +1228,8 @@ impl<'a> Evaluator<'a> {
                     Some("POST") => true,
                     Some(other) => return fail(format!("unknown HIERARCHIZE flag {other}")),
                 };
-                let mut set = self.set(&arguments[0], context)?;
-                let mut orders: HashMap<usize, Vec<usize>> = HashMap::new();
-                let mut place = |member: &Member| match member.id {
-                    Id::Element(id) => {
-                        let order = orders.entry(member.position);
-                        order.or_insert_with(|| self.hierarchy_order(member.position, post))
-                            [id as usize]
-                    }
-                    // Calculated members follow the hierarchy, in the order they were defined.
-                    Id::Calculated(index) => usize::MAX - self.calculated.len() + index,
-                };
-                let places: Vec<Vec<usize>> = set
-                    .iter()
-                    .map(|tuple| tuple.iter().map(&mut place).collect())
-                    .collect();
-                let mut order: Vec<usize> = (0..set.len()).collect();
-                order.sort_by(|&a, &b| places[a].cmp(&places[b]));
-                set = order.into_iter().map(|index| set[index].clone()).collect();
-                Ok(Datum::Set(set))
+                let set = self.set(&arguments[0], context)?;
+                Ok(Datum::Set(self.hierarchized(set, post)))
             }
             "DESCENDANTS" => {
                 count(1..=3)?;
