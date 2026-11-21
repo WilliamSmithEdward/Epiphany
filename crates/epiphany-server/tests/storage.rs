@@ -639,3 +639,25 @@ fn many_clients_at_once_leave_every_cell_as_its_last_writer_left_it() {
     let _server = Server::start(&home, port);
     check(port);
 }
+
+#[test]
+fn a_snapshot_laid_out_for_reading_still_loads() {
+    // Snapshots were written laid out, an element to a line, until 2026-11-21, and are now
+    // written close. One from before must load as it always did.
+    let home = Home::new("laid-out");
+    drop(home.open());
+    let cell = |at: [&str; 4], value: f64| json!({ "cube": CUBE, "at": at, "value": value });
+    let snapshot = json!({
+        "model_version": 1,
+        "cells": [cell(RENT, 25.0), cell(SALARIES, 40.0)]
+    });
+    let laid_out = serde_json::to_string_pretty(&snapshot).unwrap();
+    assert!(laid_out.lines().count() > 10);
+    fs::write(home.path("data/snapshot.json"), laid_out + "\n").unwrap();
+    fs::write(home.path("data/log.jsonl"), "").unwrap();
+    let database = home.open();
+    assert_eq!(get(&database, EXPENSES), 65.0);
+    drop(database);
+    // Opened, the snapshot is written again, close, and loads again.
+    assert_eq!(get(&home.open(), EXPENSES), 65.0);
+}
