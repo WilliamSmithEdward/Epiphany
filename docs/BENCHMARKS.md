@@ -194,6 +194,12 @@ took the process from 6 MB to 106 MB, 105 bytes a cell, and 58 MB of log on disk
 dimensions and its value; the rest is the room a table keeps free so as to stay quick,
 which is at its most just after the table has grown, as it had here.
 
+Ten million cells, written in requests of half a million, took the server to 865 MB, 90
+bytes a cell, and to 1,510 MB at its height. Started again, it answered in 13.9 s,
+holding 792 MB with 1,044 MB at the most on the way, from a snapshot of 586 MB. The
+requests that brought the log past 64 MiB at 7.5 and 9 million cells took 3.4 and 3.5 s,
+nearly all of it the snapshot (2026-11-21).
+
 At a million and a half cells in the same table it is 70 bytes a cell. With the
 coordinate kept apart from the cell, as it was until 2026-11-21, the same two loads came
 to 89 and 74 bytes a cell: the cell kept whole costs more just after the table grows and
