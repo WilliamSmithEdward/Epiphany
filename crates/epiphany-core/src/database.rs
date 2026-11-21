@@ -666,7 +666,7 @@ impl Database {
             .expect("checked above")
             .writes;
         for ((cube, at), write) in located.into_iter().zip(writes) {
-            pending[cube].insert(at.into(), write.value.clone());
+            pending[cube].insert(at.as_slice().into(), write.value.clone());
         }
         Ok(())
     }

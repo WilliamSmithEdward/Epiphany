@@ -66,6 +66,20 @@ to a place is quicker than a lookup: the 400 totals of two dimensions go from 4.
 ms to 2.9 ms. Most of what is left is the pass over the 200,000 stored cells themselves,
 each kept apart from the next in memory (2026-11-21).
 
+A stored cell's coordinate was a list kept apart from the cell, found by a pointer. For a
+cube of up to eight dimensions it is now kept in place beside the value, so a pass over
+the cells reads them one after the next. The 400 totals of two dimensions go from 3.8 ms
+to 1.3 ms, the same grid of a calculated member from 2.4 ms to 1.5 ms, the 113 totals of
+three dimensions from 7.0 ms to 5.9 ms, and the long `NON EMPTY` query from 48 ms to 45
+ms. Writing 200,000 cells is unchanged at 198 ms: its time is not in storing them
+(2026-11-21).
+
+It is not all gain. In the cube with a rule and feeders, the first total read after a
+write, which includes working out what is fed, takes 10.7 ms where it took 8.8 ms with
+the coordinate kept apart, and 113 such totals read together 11.6 ms where they took 10.0
+ms. Where that goes was looked for and not found. In `bench_cells` the pass over the
+stored cells for one grand total goes from 6.4 ms to 4.0 ms (2026-11-21).
+
 `NON EMPTY` over a cross join used to write the cross join out and then drop its empty
 tuples, so the cross join of three dimensions here, 1,442,897 tuples, was refused for its
 length. Its tuples that hold something are now found by looking through the stored cells:

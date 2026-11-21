@@ -130,6 +130,79 @@ fn hierarchies_that_go_round_or_nowhere_are_refused() {
 }
 
 #[test]
+fn a_cube_of_many_dimensions_keeps_its_cells_as_one_of_few_does() {
+    use epiphany_core::Scalar;
+    use epiphany_core::database::{CellRef, CellWrite};
+
+    // Seven, eight, nine and twelve dimensions: a coordinate keeps up to eight elements in
+    // place and more of them apart, and neither way may show.
+    for count in [7, 8, 9, 12] {
+        let dimension = |index: usize| json!({ "name": format!("D{index}"), "elements": [total("all", &["a", "b"]), leaf("a"), leaf("b")] });
+        let names: Vec<String> = (0..count).map(|index| format!("D{index}")).collect();
+        let definition = json!({
+            "dimensions": (0..count).map(dimension).collect::<Vec<_>>(),
+            "cubes": [{ "name": "C", "dimensions": names }]
+        });
+        let mut database = Database::new(serde_json::from_value(definition).unwrap()).unwrap();
+        let at = |last: &str, rest: &str| -> Vec<String> {
+            let mut at = vec![rest.to_owned(); count - 1];
+            at.push(last.to_owned());
+            at
+        };
+        let write = |at: Vec<String>, value: f64| CellWrite {
+            cube: "C".to_owned(),
+            at,
+            value: Scalar::Number(value),
+        };
+        let writes = [
+            write(at("a", "a"), 1.0),
+            write(at("b", "a"), 2.0),
+            write(at("b", "b"), 4.0),
+        ];
+        database.write(None, &writes).unwrap();
+        let read = |at: Vec<String>| {
+            database.read(
+                None,
+                &CellRef {
+                    cube: "C".to_owned(),
+                    at,
+                },
+            )
+        };
+        assert_eq!(read(at("b", "a")), Ok(Scalar::Number(2.0)), "{count}");
+        assert_eq!(read(at("all", "a")), Ok(Scalar::Number(3.0)), "{count}");
+        assert_eq!(read(at("all", "all")), Ok(Scalar::Number(7.0)), "{count}");
+        // Written over and cleared, as any cell is.
+        let mut database = database;
+        database
+            .write(None, &[write(at("a", "a"), 0.0), write(at("b", "b"), 5.0)])
+            .unwrap();
+        let read = |at: Vec<String>| {
+            database.read(
+                None,
+                &CellRef {
+                    cube: "C".to_owned(),
+                    at,
+                },
+            )
+        };
+        assert_eq!(read(at("all", "all")), Ok(Scalar::Number(7.0)), "{count}");
+        assert_eq!(read(at("a", "a")), Ok(Scalar::Number(0.0)), "{count}");
+        let mdx = format!(
+            "SELECT NON EMPTY [D0].Members * [D{}].Members ON COLUMNS FROM [C]",
+            count - 1
+        );
+        // Two cells are left, both at b in the last dimension: a and b in the first, each
+        // with the total above it and the total of the last.
+        assert_eq!(
+            database.query(None, &mdx).unwrap().axes[0].tuples.len(),
+            6,
+            "{count}"
+        );
+    }
+}
+
+#[test]
 fn a_hierarchy_may_be_wide_but_only_so_deep() {
     // Each element the only child of the one before it, and a leaf at the bottom.
     let chain = |deep: usize, downwards: bool| {

@@ -9,7 +9,70 @@ use crate::Scalar;
 use crate::model::{Cube, Element, ElementId, ElementType, Model};
 
 /// One element per dimension of a cube, in the cube's dimension order.
-pub(crate) type Coordinate = Box<[ElementId]>;
+///
+/// A cube of up to eight dimensions keeps the elements here, in place: the stored cells are
+/// then one beside the next in memory, each whole, and a pass over them or a lookup among
+/// them follows no pointer. A cube of more keeps them apart, as any list is kept.
+#[derive(Clone)]
+pub(crate) enum Coordinate {
+    Few(u8, [ElementId; FEW]),
+    Many(Box<[ElementId]>),
+}
+
+/// The most dimensions whose elements a coordinate keeps in place.
+const FEW: usize = 8;
+
+impl From<&[ElementId]> for Coordinate {
+    fn from(at: &[ElementId]) -> Self {
+        match at.len() <= FEW {
+            true => {
+                let mut few = [0; FEW];
+                few[..at.len()].copy_from_slice(at);
+                Self::Few(at.len() as u8, few)
+            }
+            false => Self::Many(at.into()),
+        }
+    }
+}
+
+impl std::ops::Deref for Coordinate {
+    type Target = [ElementId];
+
+    fn deref(&self) -> &[ElementId] {
+        match self {
+            Self::Few(dimensions, few) => &few[..usize::from(*dimensions)],
+            Self::Many(many) => many,
+        }
+    }
+}
+
+// A coordinate is its elements and nothing else: it is compared, hashed and shown as they
+// are, so that a cell can be looked up by the elements alone.
+impl std::borrow::Borrow<[ElementId]> for Coordinate {
+    fn borrow(&self) -> &[ElementId] {
+        self
+    }
+}
+
+impl PartialEq for Coordinate {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for Coordinate {}
+
+impl std::hash::Hash for Coordinate {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
+    }
+}
+
+impl std::fmt::Debug for Coordinate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (**self).fmt(f)
+    }
+}
 /// Values not yet stored, by the coordinate they will be written to.
 pub(crate) type Writes = FxHashMap<Coordinate, Scalar>;
 /// The leaves of one element and the weight of each, ordered by id.
