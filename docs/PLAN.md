@@ -135,6 +135,11 @@ practice that means:
 - A model update writes the new model beside the old one, moves the old one into the
   history, and moves the new one into place; opening the directory finishes or discards an
   update that was interrupted.
+- A file's contents are safe once it is flushed, but that it stands under its name is for
+  its folder to record, and on Unix the folder is flushed too: after the snapshot is moved
+  into place and before the log is emptied, when the log is first made, and after a model
+  is moved into place. Without it a loss of power could leave the old snapshot beside the
+  emptied log. This is by reasoning, not by test: nothing here cuts the power.
 - The last line of the log may be a commit that was being written when the server died:
   it is left out, with a warning. Any other line that cannot be read is damage to a
   commit that was acknowledged, and the directory is then not opened: going on would drop

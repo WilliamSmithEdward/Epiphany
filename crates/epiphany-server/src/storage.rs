@@ -113,12 +113,17 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
         eprintln!("warning: {skipped} stored cells no longer fit the model and were dropped");
     }
 
+    let created = !log.exists();
     let mut files = Files {
         directory: directory.to_owned(),
         log: OpenOptions::new().create(true).append(true).open(&log)?,
         log_bytes: recorded.len() as u64,
         _lock: lock,
     };
+    // A log that is new must be known to its folder before a commit is trusted to it.
+    if created {
+        settle(&data)?;
+    }
     if !recorded.is_empty() {
         files.snapshot(version, &database.cells())?;
     }
@@ -171,7 +176,19 @@ pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> 
     serde_json::to_writer_pretty(&mut file, value)?;
     file.write_all(b"\n")?;
     file.sync_all()?;
-    fs::rename(&temporary, path)
+    fs::rename(&temporary, path)?;
+    path.parent().map_or(Ok(()), settle)
+}
+
+/// Makes what has been created, renamed or removed in a folder last through a loss of power.
+/// A file's contents are safe once the file is flushed, but that it is there under its name
+/// is the folder's to record, and on Unix the folder must be flushed too. Windows records it
+/// with the change itself and has no such call to make.
+fn settle(folder: &Path) -> io::Result<()> {
+    match cfg!(unix) {
+        true => File::open(folder)?.sync_all(),
+        false => Ok(()),
+    }
 }
 
 /// Writes each item to its own JSON file in a new folder, named after the item.
@@ -251,7 +268,8 @@ impl Journal for Files {
             &model,
             history.join(previous.expect("the numbers never run out")),
         )?;
-        fs::rename(&next, &model)
+        fs::rename(&next, &model)?;
+        settle(&history).and_then(|()| settle(&self.directory))
     }
 
     fn is_full(&self) -> bool {
