@@ -11,6 +11,10 @@ Every run of the repository's CI on GitHub keeps an `epiphany-windows` artifact 
 add-in (`Epiphany64-packed.xll` for 64-bit Excel) and `epiphany-server.exe`, so neither has to
 be built to be tried. They are not signed.
 
+To have Excel load it at every start, for your user only and without administrator rights,
+close Excel and run `powershell -ExecutionPolicy Bypass -File adapter\install.ps1`; the same
+with `-Remove` takes it out again.
+
 ## Build
 
 Needs the .NET SDK. From the repository root:
