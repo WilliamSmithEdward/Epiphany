@@ -331,6 +331,29 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public void NoFormulaPutTogetherAtRandomIsMoreThanTheReaderCanTake()
+        {
+            // Pieces of formulas, strung together any way: read as a call or not, never an error.
+            var pieces = new[]
+            {
+                "=", "DBRW", "SUBNM", "(", ")", ",", "\"", "'", "{", "}", " ", "A1", "$B$2", "\"a,b\"",
+                "'My sheet'!", "1", "+", "*", "IF(", "\"\"", "''", "é", "\n", "((", "))", "=DBRW(", ".", "_",
+            };
+            var random = new Random(7);
+            for (var attempt = 0; attempt < 50000; attempt++)
+            {
+                var formula = string.Concat(Enumerable.Range(0, random.Next(12)).Select(_ => pieces[random.Next(pieces.Length)]));
+                var call = Formula.Call(formula);
+                if (call == null)
+                    continue;
+                // What is read as a call has a function, and written out again reads the same.
+                Assert.NotEqual("", call[0]);
+                Assert.Equal(call, Formula.Call(Formula.With(call, 0, call[0])));
+                Assert.NotNull(Formula.With(call, call.Length + 2, Formula.Quote(formula)));
+            }
+        }
+
+        [Fact]
         public void AFormulaIsReadAsOneCallOrNotAtAll()
         {
             Assert.Equal(new[] { "SUBNM", "\"Period\"", "\"\"", "1" }, Formula.Call("=SUBNM(\"Period\",\"\",1)"));
@@ -343,6 +366,12 @@ namespace Epiphany.Excel.Tests
             Assert.Null(Formula.Call("=A1+DBRW(\"a\",\"b\")"));
             Assert.Null(Formula.Call("12"));
             Assert.Null(Formula.Call("=DBRW(\"a\""));
+
+            // So do those in the name of a sheet, which stands in single quotes, an apostrophe
+            // in it doubled; and an apostrophe in text is no such quote.
+            Assert.Equal(
+                new[] { "DBRW", "'Q1, plan (old'!A1", "'It''s, here'!B2", "\"it's, text\"" },
+                Formula.Call("=DBRW('Q1, plan (old'!A1,'It''s, here'!B2,\"it's, text\")"));
 
             var call = Formula.Call("=SUBNM(\"Period\",\"Months\",1,\"Code\")");
             Assert.Equal("=SUBNM(\"Period\",\"Months\",\"Mar\",\"Code\")", Formula.With(call, 3, Formula.Quote("Mar")));

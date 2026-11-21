@@ -19,14 +19,19 @@ namespace Epiphany.Excel
             if (!call[0].All(character => char.IsLetterOrDigit(character) || character == '.' || character == '_'))
                 return null;
             var depth = 0;
+            // Text stands in double quotes, and the name of a sheet with spaces or signs in it
+            // in single ones: 'Q1, plan (old)'!A1. Neither's commas and brackets are the call's.
             var quoted = false;
+            var named = false;
             var start = open + 1;
             for (var index = open; index < formula.Length; index++)
             {
                 var character = formula[index];
-                if (character == '"')
+                if (character == '"' && !named)
                     quoted = !quoted;
-                if (quoted)
+                if (character == '\'' && !quoted)
+                    named = !named;
+                if (quoted || named)
                     continue;
                 if (character == '(' || character == '{')
                     depth++;
