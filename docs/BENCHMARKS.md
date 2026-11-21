@@ -84,7 +84,9 @@ storing the cell is an eighth. Three things on the way there were trimmed: the l
 asked for again at every cell and are now asked for once for the batch and each cube; the
 writes were named for the journal even where there is none; and names were lowered a
 character at a time and looked up with the slow hash. The batch now takes 117 ms. A
-server keeps a journal, so it gains from the first and third only (2026-11-21).
+server keeps a journal, so it gains from the first and third only: one request writing
+50,000 cells, 3.8 MB of JSON, took 75 ms through a server on this machine and takes 66 ms,
+its body read, its commit written to the journal and flushed (2026-11-21).
 
 It is not all gain. In the cube with a rule and feeders, the first total read after a
 write, which includes working out what is fed, takes 10.7 ms where it took 8.8 ms with
