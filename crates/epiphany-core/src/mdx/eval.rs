@@ -113,6 +113,25 @@ pub(super) struct Evaluator<'a> {
 
 /// Takes the cells of a cube that are about to be read.
 pub(crate) type Expect<'a> = &'a dyn Fn(&[&[ElementId]]);
+/// Shows every leaf cell of the cube that may hold something, unless there are more than a
+/// number of them, or says that it cannot.
+pub(crate) type Occupied<'a> = &'a dyn Fn(usize, &mut dyn FnMut(&[ElementId])) -> bool;
+
+/// A cross join on a `NON EMPTY` axis is not written out past this many tuples if its tuples
+/// that hold something can be found from the cells instead.
+const CROSSED_FROM: usize = 10_000;
+/// Looking through the cells costs one pass over them, and writing the cross join out costs
+/// working out each of its tuples; a tuple costs about what four cells do. So the cells are
+/// looked through only where there are no more than this many to a tuple of the cross join.
+/// (Measured 2026-11-21: a pass over 200,000 cells took 5 ms, and 12,769 tuples about 1 ms.)
+const CELLS_A_TUPLE: usize = 4;
+
+/// What an axis holds: its tuples, or the sets whose cross join they are, where that is too
+/// long to write out before the empty tuples are dropped from it.
+enum Laid {
+    Out(Vec<Tuple>),
+    Crossed(Vec<Vec<Tuple>>),
+}
 
 /// For work whose cells are read one at a time.
 pub(super) fn unexpected(_: &[&[ElementId]]) {}
@@ -160,6 +179,7 @@ impl Query {
         cube_id: usize,
         read: Read,
         expect: Expect,
+        occupied: Occupied,
     ) -> Evaluated<QueryResult> {
         let cube = &model.cubes()[cube_id];
         let mut evaluator = Evaluator::new(model, cube_id, cube, read);
@@ -220,13 +240,37 @@ impl Query {
         {
             return fail("axes are numbered from COLUMNS without gaps or repeats");
         }
-        let mut sets = Vec::new();
+        let mut laid = Vec::new();
         for axis in &axes {
-            let set = evaluator.set(&evaluator.settled(&axis.set), &context)?;
-            if let Some(tuple) = set.first() {
-                claim(tuple)?;
+            let axis = evaluator.lay(&evaluator.settled(&axis.set), axis.non_empty, &context)?;
+            let first: Option<Tuple> = match &axis {
+                Laid::Out(set) => set.first().cloned(),
+                Laid::Crossed(sets) => Some(sets.iter().map(|set| set[0][0]).collect()),
+            };
+            if let Some(tuple) = first {
+                claim(&tuple)?;
             }
-            sets.push(set);
+            laid.push(axis);
+        }
+        // A cross join left unwritten is now cut down to its tuples that may hold something,
+        // which takes knowing what the other axes hold.
+        let mut sets = Vec::new();
+        for (index, axis) in laid.iter().enumerate() {
+            sets.push(match axis {
+                Laid::Out(set) => set.clone(),
+                Laid::Crossed(crossed) => {
+                    match evaluator.holding(crossed, index, &laid, &context, occupied)? {
+                        Some(set) => set,
+                        None => {
+                            let mut whole = crossed[0].clone();
+                            for set in &crossed[1..] {
+                                whole = cross_join(&whole, set)?;
+                            }
+                            whole
+                        }
+                    }
+                }
+            });
         }
 
         // One cell per combination of a tuple from each axis, the first axis varying fastest.
@@ -400,6 +444,175 @@ impl<'a> Evaluator<'a> {
             Id::Element(top.unwrap_or(0) as ElementId)
         };
         self.dimensions().map(top).collect()
+    }
+
+    /// The set of an axis. A cross join of sets of single elements on a `NON EMPTY` axis is
+    /// left as its sets if it would be long: most of it is likely to be dropped.
+    fn lay(&self, expression: &Expr, non_empty: bool, context: &Context) -> Evaluated<Laid> {
+        let mut parts = Vec::new();
+        fn crossed<'e>(expression: &'e Expr, parts: &mut Vec<&'e Expr>) {
+            match expression {
+                Expr::Call(function, arguments) if function == "CROSSJOIN" => {
+                    arguments
+                        .iter()
+                        .for_each(|argument| crossed(argument, parts));
+                }
+                Expr::Binary(left, "*", right) => {
+                    crossed(left, parts);
+                    crossed(right, parts);
+                }
+                other => parts.push(other),
+            }
+        }
+        crossed(expression, &mut parts);
+        if !non_empty || parts.len() < 2 {
+            return self.set(expression, context).map(Laid::Out);
+        }
+        let mut sets = Vec::new();
+        for part in parts {
+            sets.push(self.set(part, context)?);
+        }
+        let elements = |set: &Vec<Tuple>| {
+            let element = |tuple: &Tuple| {
+                matches!(
+                    tuple[..],
+                    [Member {
+                        id: Id::Element(_),
+                        ..
+                    }]
+                )
+            };
+            set.iter().all(element)
+        };
+        let long = sets
+            .iter()
+            .try_fold(1usize, |product, set| product.checked_mul(set.len()))
+            .is_none_or(|product| product > CROSSED_FROM);
+        let mut positions: Vec<usize> = sets
+            .iter()
+            .filter_map(|set| Some(set.first()?[0].position))
+            .collect();
+        positions.sort_unstable();
+        positions.dedup();
+        if long && sets.iter().all(elements) && positions.len() == sets.len() {
+            return Ok(Laid::Crossed(sets));
+        }
+        let mut whole = sets.remove(0);
+        for set in &sets {
+            whole = cross_join(&whole, set)?;
+        }
+        Ok(Laid::Out(whole))
+    }
+
+    /// The tuples of a cross join that may hold something beside what the other axes and the
+    /// slicer hold, in the order the cross join would have them: found by looking at each
+    /// cell that may hold something and noting the tuples it counts towards, which never
+    /// writes the cross join out. Nothing if they cannot be found that way, because a
+    /// calculated member stands somewhere, or the cube cannot say which of its cells may
+    /// hold something.
+    fn holding(
+        &self,
+        crossed: &[Vec<Tuple>],
+        axis: usize,
+        laid: &[Laid],
+        context: &Context,
+        occupied: Occupied,
+    ) -> Evaluated<Option<Vec<Tuple>>> {
+        // For each dimension of the cube, the members a cell must stand beneath one of.
+        let mut wanted: Vec<Vec<Id>> = context.iter().map(|&id| vec![id]).collect();
+        let mut place = |members: &mut dyn Iterator<Item = Member>| {
+            let mut first = true;
+            for member in members {
+                if std::mem::take(&mut first) {
+                    wanted[member.position].clear();
+                }
+                wanted[member.position].push(member.id);
+            }
+        };
+        for (index, other) in laid.iter().enumerate() {
+            match other {
+                Laid::Out(set) if index != axis => {
+                    let width = set.first().map_or(0, Vec::len);
+                    (0..width).for_each(|at| place(&mut set.iter().map(|tuple| tuple[at])));
+                }
+                Laid::Crossed(sets) => {
+                    sets.iter()
+                        .for_each(|set| place(&mut set.iter().map(|tuple| tuple[0])));
+                }
+                Laid::Out(_) => {}
+            }
+        }
+        // For each dimension, the leaves beneath those members; and for a dimension of the
+        // cross join, which of its set's members each leaf stands beneath.
+        let own: Vec<usize> = crossed.iter().map(|set| set[0][0].position).collect();
+        let mut beneath: Vec<Vec<Option<Vec<u32>>>> = Vec::new();
+        for (position, members) in wanted.iter().enumerate() {
+            let elements = &self.dimension(position).elements;
+            let mut leaves: Vec<Option<Vec<u32>>> = vec![None; elements.len()];
+            for (index, id) in members.iter().enumerate() {
+                let Id::Element(id) = *id else {
+                    return Ok(None);
+                };
+                for &(leaf, _) in &elements[id as usize].leaves {
+                    let above = leaves[leaf as usize].get_or_insert_default();
+                    if own.contains(&position) {
+                        above.push(index as u32);
+                    }
+                }
+            }
+            beneath.push(leaves);
+        }
+        let tuples = crossed
+            .iter()
+            .try_fold(1usize, |product, set| product.checked_mul(set.len()));
+        let most = tuples.map_or(usize::MAX, |tuples| tuples.saturating_mul(CELLS_A_TUPLE));
+        let mut found: HashSet<Vec<u32>> = HashSet::new();
+        let shown = occupied(most, &mut |at: &[ElementId]| {
+            let mut above = Vec::with_capacity(own.len());
+            for (position, leaf) in at.iter().enumerate() {
+                match &beneath[position][*leaf as usize] {
+                    Some(members) if own.contains(&position) => above.push((position, members)),
+                    Some(_) => {}
+                    None => return,
+                }
+            }
+            if found.len() > MOST_TUPLES {
+                return;
+            }
+            // Every way of taking one member above the cell from each set of the cross join.
+            above.sort_by_key(|&(position, _)| own.iter().position(|&own| own == position));
+            let mut places = vec![0; above.len()];
+            loop {
+                found.insert(
+                    places
+                        .iter()
+                        .zip(&above)
+                        .map(|(&place, (_, members))| members[place])
+                        .collect(),
+                );
+                let Some(next) = (0..places.len())
+                    .rev()
+                    .find(|&set| places[set] + 1 < above[set].1.len())
+                else {
+                    break;
+                };
+                places[next] += 1;
+                places[next + 1..].fill(0);
+            }
+        });
+        if !shown {
+            return Ok(None);
+        }
+        bounded(Some(found.len()))?;
+        let mut found: Vec<Vec<u32>> = found.into_iter().collect();
+        found.sort_unstable();
+        let tuple = |places: Vec<u32>| -> Tuple {
+            let members = places.iter().zip(crossed);
+            members
+                .map(|(&place, set)| set[place as usize][0])
+                .collect()
+        };
+        Ok(Some(found.into_iter().map(tuple).collect()))
     }
 
     /// An expression with its names settled, or as it stands if one of them means nothing:

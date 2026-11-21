@@ -120,6 +120,33 @@ impl<'a> Reader<'a> {
         Ok(value)
     }
 
+    /// Shows every leaf cell of a cube that may hold something: the stored cells, those
+    /// written in the transaction being read in, and in a cube with rules the fed ones.
+    /// False, and nothing shown, for a cube with rules and no feeders, where any cell may
+    /// hold something and there is no telling which; and where there are more than `most`
+    /// of them, which the one who asks has said is too many to be worth looking through.
+    pub(crate) fn occupied(
+        &self,
+        cube: usize,
+        most: usize,
+        show: &mut dyn FnMut(&[ElementId]),
+    ) -> bool {
+        let fed = self.fed[cube].as_ref();
+        if fed.is_none() && !self.model.cubes()[cube].rules.is_empty() {
+            return false;
+        }
+        let stored = &self.cells[cube];
+        let written = self.pending.map(|pending| &pending[cube]);
+        let count = stored.stored_at().count() + written.map_or(0, |w| w.len());
+        if count + fed.map_or(0, |fed| fed.len()) > most {
+            return false;
+        }
+        stored.stored_at().for_each(&mut *show);
+        written.into_iter().flatten().for_each(|(at, _)| show(at));
+        fed.into_iter().flatten().for_each(|at| show(at));
+        true
+    }
+
     /// Says which cells of a cube are about to be read. Where adding up the totals among them
     /// one by one would pass over the stored cells more than once, they are all added up in a
     /// single pass and kept, and the reads that follow find them there.

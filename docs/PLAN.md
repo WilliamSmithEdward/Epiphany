@@ -257,6 +257,15 @@ practice that means:
   - `Ytd`, `Qtd`, `Mtd` and `Wtd` run within the levels named Year, Quarter, Month and
     Week. Without a member they end at the current member of the cube's dimension of type
     `time`.
+  - `NON EMPTY` over a cross join of sets of elements does not write the cross join out
+    where it is long (over 10,000 tuples, and over a quarter of the number of cells there
+    are to look through). It looks at each cell that may hold something and notes the
+    tuples it counts towards, so a cross join far past the limit on sets gives its few
+    rows. The cells that may hold something are the stored ones, those written in the
+    transaction, and in a cube with rules the fed ones: as with a consolidation in a fed
+    cube, a cell a rule gives a value that nothing feeds is left out. A cube with rules
+    and no feeders, and a query with a calculated member on an axis or in the slicer,
+    have their cross joins written out as before.
   - A set holds at most 1,000,000 tuples while a query is worked out, as a query returns
     at most 1,000,000 cells. A cross join that would hold more is refused before any of
     it is built, so that one short query cannot ask for more memory than there is.

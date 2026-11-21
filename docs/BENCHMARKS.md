@@ -59,6 +59,13 @@ member's expression names are now announced with the rest of the grid and added 
 same pass, and the 400 cells take 3 ms. Finding what to announce costs the grid of 10,000
 leaf cells of a calculated member a little: 2.7 ms where it was 2.4 ms (2026-11-21).
 
+`NON EMPTY` over a cross join used to write the cross join out and then drop its empty
+tuples, so the cross join of three dimensions here, 1,442,897 tuples, was refused for its
+length. Its tuples that hold something are now found by looking through the stored cells:
+the 200,000 cells give some 36,000 rows in 69 ms. Looking through the cells costs a pass
+over all of them, so it is done only where the cross join is long beside them: the cross
+join of two dimensions, 12,769 tuples, is still written out, in 6 ms (2026-11-21).
+
 ## Rules and feeders
 
 ```

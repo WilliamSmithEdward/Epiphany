@@ -454,7 +454,9 @@ impl Database {
             false => Err(MdxError::new(refusal(cube))),
         };
         let expect = |cells: &[&[ElementId]]| reader.expect(cube, cells);
-        Ok(query.evaluate(&self.model, cube, &read, &expect)?)
+        let occupied =
+            |most: usize, show: &mut dyn FnMut(&[ElementId])| reader.occupied(cube, most, show);
+        Ok(query.evaluate(&self.model, cube, &read, &expect, &occupied)?)
     }
 
     /// Writes every cell, or none of them if any write is refused. Within a transaction the
