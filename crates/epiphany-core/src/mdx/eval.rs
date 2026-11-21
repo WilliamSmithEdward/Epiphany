@@ -1441,10 +1441,12 @@ impl<'a> Evaluator<'a> {
                     return Ok(Datum::Number(0.0));
                 }
                 self.foresee(Some(expression), context, &set);
+                let along = std::cell::RefCell::new(Along::new(context));
                 let value = |tuple: &Tuple| {
-                    let context = with(context, tuple);
-                    let value = self.evaluate(expression, &context)?;
-                    to_number(&self.scalar(value, &context)?)
+                    let mut along = along.borrow_mut();
+                    let context = along.at(tuple);
+                    let value = self.evaluate(expression, context)?;
+                    to_number(&self.scalar(value, context)?)
                 };
                 // One more than the number of tuples with a greater value, so equals share.
                 let own = value(&tuple)?;
@@ -2283,11 +2285,31 @@ impl<'a> Evaluator<'a> {
             Some(other) => return fail(format!("unknown ORDER flag {other}")),
         };
         self.foresee(arguments.get(1), context, &set);
+        let along = std::cell::RefCell::new(Along::new(context));
         let value = |tuple: &Tuple| {
-            let context = with(context, tuple);
-            let value = self.evaluate(&arguments[1], &context)?;
-            self.scalar(value, &context)
+            let mut along = along.borrow_mut();
+            let context = along.at(tuple);
+            let value = self.evaluate(&arguments[1], context)?;
+            self.scalar(value, context)
         };
+        let turned = |ordering: Ordering| match descending {
+            true => ordering.reverse(),
+            false => ordering,
+        };
+        // By value alone the hierarchy has no say: each tuple has one value, and tuples of
+        // one value stand in the order of their members, as they would by the longer way.
+        if !hierarchical {
+            let mut keyed = Vec::with_capacity(set.len());
+            for tuple in set {
+                keyed.push((value(&tuple)?, tuple));
+            }
+            keyed.sort_by(|(left, one), (right, other)| {
+                let members = || one.iter().map(|m| m.id).cmp(other.iter().map(|m| m.id));
+                turned(compare(left, right)).then_with(members)
+            });
+            return Ok(keyed.into_iter().map(|(_, tuple)| tuple).collect());
+        }
+
         // For each member of a tuple, the path from its top ancestor down to it, each step
         // with the value the tuple would have with that ancestor in the member's place.
         let path = |tuple: &Tuple, index: usize| -> Evaluated<Vec<(Datum, Id)>> {
@@ -2310,13 +2332,8 @@ impl<'a> Evaluator<'a> {
             keyed.push((paths, tuple));
         }
         let by_value = |left: &(Datum, Id), right: &(Datum, Id)| {
-            let ordering = compare(&left.0, &right.0);
-            let ordering = match descending {
-                true => ordering.reverse(),
-                false => ordering,
-            };
             // Equal values keep members apart by identity, so a parent's children stay together.
-            ordering.then_with(|| left.1.cmp(&right.1))
+            turned(compare(&left.0, &right.0)).then_with(|| left.1.cmp(&right.1))
         };
         let by_path = |left: &Vec<(Datum, Id)>, right: &Vec<(Datum, Id)>| {
             let steps = left

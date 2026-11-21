@@ -85,6 +85,20 @@ fn main() {
             ),
         ),
         (
+            "10,000 tuples put in order of a cell",
+            format!(
+                "SELECT Order({} * {}, [d2].[e0], BDESC) ON COLUMNS FROM [C] WHERE [d3].[e0]",
+                leaves(0),
+                leaves(1)
+            ),
+        ),
+        (
+            "12,769 tuples put in order within their hierarchies",
+            "SELECT Order([d0].Members * [d1].Members, [d2].[e0], DESC) ON COLUMNS FROM [C] \
+             WHERE [d3].[e0]"
+                .to_owned(),
+        ),
+        (
             "400 cells, each totalling two dimensions",
             format!(
                 "SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d2].[all], [d3].[all])",

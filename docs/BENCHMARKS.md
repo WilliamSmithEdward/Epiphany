@@ -87,8 +87,14 @@ goes from 2.2 ms to 1.5 ms, and of a calculated member from 2.4 ms to 2.0 ms (20
 for every tuple. They now move one copy along the set, putting each tuple in the place of
 the one before: the `Filter` over 10,000 tuples goes from 2.6 ms to 1.9 ms, a grid of 400
 cells that are each a `Sum` over 100 members from 7.3 ms to 4.8 ms, and the 1,000 largest
-of 10,000 tuples by `TopCount` from 2.8 ms to 2.2 ms. `Rank` and `Order` still copy the
-cell for each tuple (2026-11-21).
+of 10,000 tuples by `TopCount` from 2.8 ms to 2.2 ms (2026-11-21).
+
+`Order` by value alone (`BASC`, `BDESC`) went the way of the order within hierarchies,
+which works a tuple's value out once for each of its members and compares paths. It has
+a way of its own now, one value to a tuple: 10,000 tuples go from 16.5 ms to 10.7 ms, of
+which reading the 10,000 cells of the answer, each a total of a hundred leaves, is about
+five. The order within hierarchies is unchanged at some 31 ms for 12,769 tuples;
+remembering each tuple's value there was tried and made it slower (2026-11-21).
 
 Writing 200,000 cells in one batch took 198 ms, about a microsecond a cell, of which
 storing the cell is an eighth. Three things on the way there were trimmed: the locks were
