@@ -188,6 +188,8 @@ practice that means:
     `SELF`, `AFTER`, `SELF_AND_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and
     `POST`), `NonEmpty`, and `TM1SubsetAll`, `TM1FilterByLevel`, `TM1FilterByPattern`,
     `TM1Sort`.
+  - `Extract(set, dimension, ...)` for what the tuples of a set hold of some dimensions,
+    and `[Dimension].DefaultMember`, the first top element.
   - Drilling: `DrilldownMember(set, members [, RECURSIVE])`, `TM1DrilldownMember` (which
     also takes `ALL` for the members), `DrilldownLevel(set [, level])` and
     `DrillupMember(set, members)`.
@@ -202,8 +204,10 @@ practice that means:
     `LastPeriods(n [, member])`, `OpeningPeriod(level [, member])`,
     `ClosingPeriod(level [, member])`, and `Ytd`, `Qtd`, `Mtd` and `Wtd`, each with or
     without a member.
-  - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `NOT`, `IIF`,
-    `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`, `Aggregate`, `Avg`, `Min`, `Max`,
+  - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `XOR` / `NOT`,
+    `IS` (the same member, tuple or level, or `NULL`), `IIF`, `CASE` in both its forms
+    (`CASE WHEN condition THEN ...` and `CASE value WHEN other THEN ...`, with or without
+    `ELSE`), `NULL`, `IsAncestor`, `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`, `Aggregate`, `Avg`, `Min`, `Max`,
     `Count` and `.Count`, tuples as cell references, `.Name`, `.UniqueName`, `.Value`,
     and `.Properties("name")` for an attribute or for `MEMBER_NAME`,
     `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`, `CHILDREN_CARDINALITY`.

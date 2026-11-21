@@ -612,11 +612,18 @@ impl<'a> Evaluator<'a> {
             let either = self.truth(left, context)? || self.truth(right, context)?;
             return Ok(Datum::Bool(either));
         }
+        if operator == "XOR" {
+            let one = self.truth(left, context)? != self.truth(right, context)?;
+            return Ok(Datum::Bool(one));
+        }
         let (left, right) = (
             self.evaluate(left, context)?,
             self.evaluate(right, context)?,
         );
         match (operator, &left, &right) {
+            // The same member, tuple, level or dimension, or nothing on both sides: what
+            // the two are, where `=` compares the values of their cells.
+            ("IS", ..) => return Ok(Datum::Bool(left == right)),
             ("*", Datum::Set(left), Datum::Set(right)) => {
                 return cross_join(left, right).map(Datum::Set);
             }
@@ -1143,6 +1150,63 @@ impl<'a> Evaluator<'a> {
                     false => &arguments[2],
                 };
                 self.evaluate(chosen, context)
+            }
+            "CASE" => {
+                // The value beside the first condition that holds; failing them all, the
+                // value left over at the end, or nothing.
+                let (pairs, otherwise) = arguments.as_chunks::<2>();
+                for [condition, value] in pairs {
+                    if self.truth(condition, context)? {
+                        return self.evaluate(value, context);
+                    }
+                }
+                match otherwise {
+                    [otherwise] => self.evaluate(otherwise, context),
+                    _ => Ok(Datum::Null),
+                }
+            }
+            "NULL" => {
+                count(0..=0)?;
+                Ok(Datum::Null)
+            }
+            "ISANCESTOR" => {
+                count(2..=2)?;
+                let above = self.member(&arguments[0], context)?;
+                let below = self.member(&arguments[1], context)?;
+                Ok(Datum::Bool(
+                    above.position == below.position && self.beneath(below, above),
+                ))
+            }
+            "EXTRACT" => {
+                count(2..=usize::MAX)?;
+                let set = self.set(&arguments[0], context)?;
+                let mut positions = Vec::new();
+                for argument in &arguments[1..] {
+                    match self.evaluate(argument, context)? {
+                        Datum::Dimension(position) if !positions.contains(&position) => {
+                            positions.push(position);
+                        }
+                        Datum::Dimension(_) => return fail("EXTRACT takes each dimension once"),
+                        _ => return fail("EXTRACT takes a set and then dimensions"),
+                    }
+                }
+                // What each tuple holds of those dimensions, in the order they are given,
+                // each such tuple once.
+                let mut found = Vec::new();
+                for tuple in set {
+                    let of =
+                        |&position: &usize| tuple.iter().find(|member| member.position == position);
+                    let kept: Option<Tuple> = positions
+                        .iter()
+                        .map(of)
+                        .map(Option::<&Member>::copied)
+                        .collect();
+                    match kept {
+                        Some(kept) => found.push(kept),
+                        None => return fail("EXTRACT takes dimensions of the set"),
+                    }
+                }
+                Ok(Datum::Set(distinct(found)))
             }
             "ISEMPTY" => {
                 count(1..=1)?;
@@ -1747,6 +1811,11 @@ impl<'a> Evaluator<'a> {
                 };
                 Ok(found.map_or(Datum::Null, |&id| Datum::Member(one(member.position, id))))
             }
+            ("DEFAULTMEMBER", &Datum::Dimension(position)) => Ok(Datum::Member(Member {
+                position,
+                id: self.top()[position],
+            })),
+            ("DEFAULTMEMBER", _) => fail(".DEFAULTMEMBER applies to a dimension"),
             ("CURRENTMEMBER", &Datum::Dimension(position)) => Ok(Datum::Member(Member {
                 position,
                 id: context[position],

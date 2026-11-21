@@ -1139,6 +1139,91 @@ fn periods_are_counted_back_and_found_at_either_end() {
     assert_eq!(text("[Period].[Q1].LastSibling.Name"), "Q2");
 }
 
+#[test]
+fn a_value_is_chosen_case_by_case() {
+    let revenue = "[Account].[Product Revenue]";
+    let size = |period: &str| {
+        text(&format!(
+            "CASE WHEN ({revenue}, {period}) >= 100 THEN 'large' \
+             WHEN ({revenue}, {period}) > 0 THEN 'small' ELSE 'none' END"
+        ))
+    };
+    assert_eq!(size("[Period].[Jan]"), "large");
+    assert_eq!(size("[Period].[Feb]"), "small");
+    assert_eq!(size("[Period].[Mar]"), "none");
+    // A value is set against what it may equal, and the words may be in any case.
+    let half = "case [Period].CurrentMember.Name when 'Jan' then 1 when 'Feb' then 2 end";
+    assert_eq!(number(half), Some(2.0));
+    // Without an ELSE, a value that meets no case is nothing.
+    assert_eq!(
+        number("CASE [Period].CurrentMember.Name WHEN 'Jan' THEN 1 END"),
+        None
+    );
+    assert_eq!(number("CASE WHEN 1 = 1 THEN 2 END + 1"), Some(3.0));
+    assert_eq!(number("IIF(1 = 2, 5, NULL)"), None);
+
+    // IS asks whether two are the same member, where = compares their cells.
+    let is = |condition: &str| text(&format!("IIF({condition}, 'yes', 'no')"));
+    assert_eq!(is("[Period].CurrentMember IS [Period].[Feb]"), "yes");
+    assert_eq!(is("[Period].CurrentMember IS [Period].[Jan]"), "no");
+    assert_eq!(is("[Period].[Jan].PrevMember IS NULL"), "yes");
+    assert_eq!(is("[Period].[Feb].PrevMember IS NULL"), "no");
+    assert_eq!(is("NOT [Period].CurrentMember IS [Period].[Jan]"), "yes");
+    assert_eq!(is("[Period].[Feb].Level IS [Period].Levels(0)"), "yes");
+    assert_eq!(is("1 = 1 XOR 1 = 2"), "yes");
+    assert_eq!(is("1 = 1 XOR 2 = 2"), "no");
+
+    assert_eq!(is("IsAncestor([Period].[H1], [Period].[Feb])"), "yes");
+    assert_eq!(is("IsAncestor([Period].[Q2], [Period].[Feb])"), "no");
+    assert_eq!(is("IsAncestor([Period].[Feb], [Period].[Feb])"), "no");
+    assert_eq!(text("[Period].DefaultMember.Name"), "H1");
+
+    for (mdx, expected) in [
+        ("CASE 1 THEN 2 END", "expected WHEN"),
+        ("CASE WHEN 1 = 1 THEN 2", "expected END"),
+        ("CASE WHEN 1 = 1 2 END", "expected THEN"),
+    ] {
+        let mistake = failure(&format!(
+            "WITH MEMBER [Account].[X] AS {mdx} SELECT {{[Account].[X]}} ON COLUMNS FROM [General Ledger]"
+        ));
+        assert!(mistake.contains(expected), "{mistake}");
+    }
+}
+
+#[test]
+fn dimensions_are_taken_out_of_a_set() {
+    let crossed = "{[Entity].[US], [Entity].[UK]} * {[Period].[Jan], [Period].[Feb]}";
+    let columns = |set: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [General Ledger]");
+        names(&run(&mdx), 0)
+    };
+    // Each tuple of what is left appears once.
+    assert_eq!(
+        columns(&format!("Extract({crossed}, [Entity])")),
+        ["US", "UK"]
+    );
+    assert_eq!(
+        columns(&format!("Extract({crossed}, [Period])")),
+        ["Jan", "Feb"]
+    );
+    let result = run(&format!(
+        "SELECT Extract({crossed}, [Period], [Entity]) ON COLUMNS FROM [General Ledger]"
+    ));
+    assert_eq!(result.axes[0].tuples.len(), 4);
+    assert_eq!(result.axes[0].tuples[1][0].name, "Feb");
+    assert_eq!(result.axes[0].tuples[1][1].name, "US");
+    for (arguments, expected) in [
+        ("[Account]", "dimensions of the set"),
+        ("[Entity], [Entity]", "each dimension once"),
+        ("[Entity].[US]", "a set and then dimensions"),
+    ] {
+        let mistake = failure(&format!(
+            "SELECT Extract({crossed}, {arguments}) ON COLUMNS FROM [General Ledger]"
+        ));
+        assert!(mistake.contains(expected), "{mistake}");
+    }
+}
+
 /// The example model with its periods as a time dimension whose levels have names.
 fn calendar() -> ModelDef {
     let mut definition = database().definition().clone();

@@ -62,16 +62,17 @@ const AXES: [&str; 5] = ["COLUMNS", "ROWS", "PAGES", "CHAPTERS", "SECTIONS"];
 
 /// Binary operators from loosest to tightest. `NOT` sits between `AND` and the comparisons.
 const LEVELS: [&[&str]; 5] = [
-    &["OR"],
+    &["OR", "XOR"],
     &["AND"],
-    &["=", "<>", "<=", ">=", "<", ">"],
+    &["=", "<>", "<=", ">=", "<", ">", "IS"],
     &["+", "-"],
     &["*", "/"],
 ];
 const COMPARISONS: usize = 2;
 
 /// The words that may follow a dot without being part of a name.
-const METHODS: [&str; 23] = [
+const METHODS: [&str; 24] = [
+    "DEFAULTMEMBER",
     "FIRSTSIBLING",
     "LASTSIBLING",
     "LEVEL",
@@ -357,6 +358,14 @@ impl Parser {
                     _ => Ok(Expr::Tuple(items)),
                 }
             }
+            Token::Word(word) if word.eq_ignore_ascii_case("CASE") => {
+                self.advance();
+                self.case()
+            }
+            Token::Word(word) if !called && word.eq_ignore_ascii_case("NULL") => {
+                self.advance();
+                Ok(Expr::Call("NULL".to_owned(), Vec::new()))
+            }
             Token::Word(function) if called => {
                 self.next += 2;
                 Ok(Expr::Call(function.to_uppercase(), self.list(")")?))
@@ -364,6 +373,36 @@ impl Parser {
             Token::Word(_) | Token::Name(_) => self.name(),
             _ => Err(self.error("expected an expression")),
         }
+    }
+
+    /// What follows `CASE`: either `WHEN condition THEN value ...`, or a value and then
+    /// `WHEN other THEN value ...` for what it may equal, with or without an `ELSE value`,
+    /// as far as `END`. It becomes a call whose arguments are each condition and its value
+    /// in turn, and last the value of `ELSE` if there is one.
+    fn case(&mut self) -> Parsed<Expr> {
+        let subject = match matches!(self.peek(), Token::Word(word) if word.eq_ignore_ascii_case("WHEN"))
+        {
+            true => None,
+            false => Some(self.expression()?),
+        };
+        let mut arguments = Vec::new();
+        while self.word("WHEN") {
+            let when = self.expression()?;
+            arguments.push(match &subject {
+                Some(subject) => Expr::Binary(Box::new(subject.clone()), "=", Box::new(when)),
+                None => when,
+            });
+            self.expect_word("THEN")?;
+            arguments.push(self.expression()?);
+        }
+        if arguments.is_empty() {
+            return Err(self.error("expected WHEN"));
+        }
+        if self.word("ELSE") {
+            arguments.push(self.expression()?);
+        }
+        self.expect_word("END")?;
+        Ok(Expr::Call("CASE".to_owned(), arguments))
     }
 
     /// A dotted name. It stops before a dot that introduces a method.
