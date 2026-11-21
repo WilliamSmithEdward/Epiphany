@@ -1017,19 +1017,42 @@ impl<'a> Evaluator<'a> {
                     Some(argument) => self.set(argument, context)?,
                     None => vec![Tuple::new()],
                 };
-                let mut kept = Vec::new();
                 let set = self.set(&arguments[0], context)?;
-                for other in &across {
-                    self.foresee(None, &with(context, other), &set);
+                self.non_empty(set, &across, context).map(Datum::Set)
+            }
+            "NONEMPTYCROSSJOIN" => {
+                count(2..=usize::MAX)?;
+                let mut joined = self.set(&arguments[0], context)?;
+                for argument in &arguments[1..] {
+                    joined = cross_join(&joined, &self.set(argument, context)?)?;
                 }
-                for tuple in set {
-                    let context = with(context, &tuple);
-                    let mut cells = across.iter().map(|other| self.cell(&with(&context, other)));
-                    if cells.try_fold(false, |any, cell| Ok(any || !is_empty(&cell?)))? {
-                        kept.push(tuple);
+                self.non_empty(joined, &[Tuple::new()], context)
+                    .map(Datum::Set)
+            }
+            "ADDCALCULATEDMEMBERS" | "STRIPCALCULATEDMEMBERS" => {
+                count(1..=1)?;
+                let mut set = self.set(&arguments[0], context)?;
+                let calculated = |member: &Member| matches!(member.id, Id::Calculated(_));
+                if function == "STRIPCALCULATEDMEMBERS" {
+                    set.retain(|tuple| !tuple.iter().any(calculated));
+                    return Ok(Datum::Set(set));
+                }
+                // After the set, the calculated members of its dimension that it lacks.
+                let position = match set.first().map(Vec::as_slice) {
+                    Some(&[member]) => member.position,
+                    Some(_) => return fail("ADDCALCULATEDMEMBERS takes a set of one dimension"),
+                    None => return Ok(Datum::Set(set)),
+                };
+                for (index, member) in self.calculated.iter().enumerate() {
+                    let added = vec![Member {
+                        position,
+                        id: Id::Calculated(index),
+                    }];
+                    if member.position == position && !set.contains(&added) {
+                        set.push(added);
                     }
                 }
-                Ok(Datum::Set(kept))
+                Ok(Datum::Set(set))
             }
             "ORDER" => {
                 count(2..=3)?;
@@ -1507,28 +1530,86 @@ impl<'a> Evaluator<'a> {
                 count(2..=2)?;
                 let set = self.set(&arguments[0], context)?;
                 let (position, members) = self.chosen(self.set(&arguments[1], context)?);
-                // The tuples that follow a chosen member and stand beneath it are left out.
-                let mut closed: Option<Member> = None;
-                let mut kept = Vec::new();
-                for tuple in set {
+                Ok(Datum::Set(self.drill_up(set, position, &members)))
+            }
+            "TOGGLEDRILLSTATE" => {
+                count(2..=2)?;
+                let set = self.set(&arguments[0], context)?;
+                let (position, members) = self.chosen(self.set(&arguments[1], context)?);
+                let of = |tuple: &Tuple| {
                     let member = tuple
                         .iter()
-                        .find(|member| Some(member.position) == position)
-                        .copied();
-                    let beneath = match (closed, member) {
-                        (Some(closed), Some(member)) => self.beneath(member, closed),
-                        _ => false,
-                    };
-                    if beneath {
-                        continue;
+                        .find(|member| Some(member.position) == position);
+                    member.copied()
+                };
+                // A chosen member is open if what follows it stands beneath it: that one is
+                // closed, and any other opened.
+                let mut open = HashSet::new();
+                for pair in set.windows(2) {
+                    if let (Some(member), Some(next)) = (of(&pair[0]), of(&pair[1]))
+                        && members.contains(&member)
+                        && self.beneath(next, member)
+                    {
+                        open.insert(member);
                     }
-                    closed = member.filter(|member| members.contains(member));
-                    kept.push(tuple);
                 }
-                Ok(Datum::Set(kept))
+                let set = self.drill_up(set, position, &open);
+                let shut = |member: Member, _: &Element| {
+                    members.contains(&member) && !open.contains(&member)
+                };
+                Ok(Datum::Set(self.drill_down(set, position, false, &shut)))
             }
             _ => fail(format!("unknown function {function}")),
         }
+    }
+
+    /// The tuples of a set whose cell holds something, here or at any of the tuples across.
+    fn non_empty(
+        &self,
+        set: Vec<Tuple>,
+        across: &[Tuple],
+        context: &Context,
+    ) -> Evaluated<Vec<Tuple>> {
+        for other in across {
+            self.foresee(None, &with(context, other), &set);
+        }
+        let mut kept = Vec::new();
+        for tuple in set {
+            let context = with(context, &tuple);
+            let mut cells = across.iter().map(|other| self.cell(&with(&context, other)));
+            if cells.try_fold(false, |any, cell| Ok(any || !is_empty(&cell?)))? {
+                kept.push(tuple);
+            }
+        }
+        Ok(kept)
+    }
+
+    /// A set without the tuples that follow one of some members and stand beneath it, the
+    /// member looked at being the tuple's member of the dimension at `position`.
+    fn drill_up(
+        &self,
+        set: Vec<Tuple>,
+        position: Option<usize>,
+        members: &HashSet<Member>,
+    ) -> Vec<Tuple> {
+        let mut closed: Option<Member> = None;
+        let mut kept = Vec::new();
+        for tuple in set {
+            let member = tuple
+                .iter()
+                .find(|member| Some(member.position) == position)
+                .copied();
+            let beneath = match (closed, member) {
+                (Some(closed), Some(member)) => self.beneath(member, closed),
+                _ => false,
+            };
+            if beneath {
+                continue;
+            }
+            closed = member.filter(|member| members.contains(member));
+            kept.push(tuple);
+        }
+        kept
     }
 
     /// Whether a member stands beneath another of its dimension, by any of its parents.

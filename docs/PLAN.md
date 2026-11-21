@@ -190,9 +190,12 @@ practice that means:
     `TM1Sort`.
   - `Extract(set, dimension, ...)` for what the tuples of a set hold of some dimensions,
     and `[Dimension].DefaultMember`, the first top element.
+  - `NonEmptyCrossJoin(set, set, ...)`, and `AddCalculatedMembers` and
+    `StripCalculatedMembers` for the calculated members of a set's dimension.
   - Drilling: `DrilldownMember(set, members [, RECURSIVE])`, `TM1DrilldownMember` (which
-    also takes `ALL` for the members), `DrilldownLevel(set [, level])` and
-    `DrillupMember(set, members)`.
+    also takes `ALL` for the members), `DrilldownLevel(set [, level])`,
+    `DrillupMember(set, members)` and `ToggleDrillState(set, members)`, which closes a
+    member that is followed by something beneath it and opens any other.
   - Members: `[Dimension].[Member]` by name or alias, `.Parent`, `.FirstChild`,
     `.LastChild`, `.FirstSibling`, `.LastSibling`, `.CurrentMember`, `Ancestor`, `.PrevMember`, `.NextMember`, `.Lag(n)`,
     `.Lead(n)`, and `StrToMember`, `StrToTuple`, `StrToSet` for a member, tuple or set

@@ -1191,6 +1191,81 @@ fn a_value_is_chosen_case_by_case() {
 }
 
 #[test]
+fn a_member_is_opened_if_shut_and_shut_if_open() {
+    let columns = |set: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [General Ledger]");
+        names(&run(&mdx), 0)
+    };
+    let shut = "{[Period].[H1], [Period].[Q1], [Period].[Q2]}";
+    let open = ["H1", "Q1", "Jan", "Feb", "Mar", "Q2"];
+    let toggled = format!("ToggleDrillState({shut}, {{[Period].[Q1]}})");
+    assert_eq!(columns(&toggled), open);
+    assert_eq!(
+        columns(&format!("ToggleDrillState({toggled}, {{[Period].[Q1]}})")),
+        ["H1", "Q1", "Q2"]
+    );
+    // Each member chosen goes its own way.
+    assert_eq!(
+        columns(&format!(
+            "ToggleDrillState({toggled}, {{[Period].[Q1], [Period].[Q2]}})"
+        )),
+        ["H1", "Q1", "Q2", "Apr", "May", "Jun"]
+    );
+    assert_eq!(
+        columns(&format!("ToggleDrillState({shut}, {{[Period].[H1]}})")),
+        ["H1"]
+    );
+}
+
+#[test]
+fn a_cross_join_may_leave_out_its_empty_tuples() {
+    let sets = "{[Entity].[US], [Entity].[UK]}, [Period].Members";
+    let slicer = "WHERE ([Account].[Product Revenue], [Version].[Actual])";
+    let tuples = |set: &str| {
+        let result = run(&format!(
+            "SELECT {set} ON COLUMNS FROM [General Ledger] {slicer}"
+        ));
+        let names = |tuple: &Vec<_>| -> Vec<String> {
+            tuple
+                .iter()
+                .map(|member: &epiphany_core::mdx::MemberResult| member.name.clone())
+                .collect()
+        };
+        result.axes[0].tuples.iter().map(names).collect::<Vec<_>>()
+    };
+    let kept = tuples(&format!("NonEmptyCrossJoin({sets})"));
+    assert_eq!(kept, tuples(&format!("NonEmpty(CrossJoin({sets}))")));
+    assert!(kept.contains(&vec!["US".to_owned(), "Jan".to_owned()]));
+    assert!(kept.len() < tuples(&format!("CrossJoin({sets})")).len());
+}
+
+#[test]
+fn calculated_members_are_added_to_a_set_and_taken_from_it() {
+    let columns = |set: &str| {
+        let mdx = format!(
+            "WITH MEMBER [Period].[Best] AS 1 MEMBER [Entity].[Other] AS 2 \
+             SELECT {set} ON COLUMNS FROM [General Ledger]"
+        );
+        names(&run(&mdx), 0)
+    };
+    let added = "AddCalculatedMembers({[Period].[Jan], [Period].[Feb]})";
+    assert_eq!(columns(added), ["Jan", "Feb", "Best"]);
+    // One that is there already is not added again.
+    assert_eq!(
+        columns("AddCalculatedMembers({[Period].[Best], [Period].[Jan]})"),
+        ["Best", "Jan"]
+    );
+    assert_eq!(
+        columns(&format!("StripCalculatedMembers({added})")),
+        ["Jan", "Feb"]
+    );
+    assert_eq!(
+        columns("StripCalculatedMembers([Period].AllMembers)"),
+        columns("[Period].Members")
+    );
+}
+
+#[test]
 fn dimensions_are_taken_out_of_a_set() {
     let crossed = "{[Entity].[US], [Entity].[UK]} * {[Period].[Jan], [Period].[Feb]}";
     let columns = |set: &str| {
