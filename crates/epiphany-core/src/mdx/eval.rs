@@ -14,6 +14,12 @@ const MOST_CELLS: usize = 1_000_000;
 /// The most tuples a set may hold while a query is worked out. A cross join multiplies, and
 /// without a limit one short query could ask for more memory than there is.
 const MOST_TUPLES: usize = 1_000_000;
+/// The most steps one query, or one rule at one cell, may take to work out: every part of an
+/// expression worked out is a step. Calculated members that each use the one before twice
+/// double the work at every member, and a few dozen of them would otherwise never finish.
+const MOST_STEPS: u64 = 100_000_000;
+/// The most characters a text worked out may hold, which the same doubling would outgrow.
+const MOST_TEXT: usize = 1_000_000;
 /// How deeply calculated members may refer to one another.
 const DEEPEST: u32 = 32;
 
@@ -80,6 +86,8 @@ pub(super) struct Evaluator<'a> {
     sets: HashMap<String, Vec<Tuple>>,
     /// How many calculated members are being evaluated inside one another.
     depth: Cell<u32>,
+    /// How many steps have been taken.
+    steps: Cell<u64>,
 }
 
 /// Takes the cells of a cube that are about to be read.
@@ -347,6 +355,7 @@ impl<'a> Evaluator<'a> {
             calculated: Vec::new(),
             sets: HashMap::new(),
             depth: Cell::new(0),
+            steps: Cell::new(0),
         }
     }
 
@@ -550,6 +559,12 @@ impl<'a> Evaluator<'a> {
     }
 
     pub(super) fn evaluate(&self, expression: &Expr, context: &Context) -> Evaluated<Datum> {
+        self.steps.set(self.steps.get() + 1);
+        if self.steps.get() > MOST_STEPS {
+            return fail(format!(
+                "more than {MOST_STEPS} steps are needed to work this out"
+            ));
+        }
         Ok(match expression {
             Expr::Number(number) => Datum::Number(*number),
             Expr::Text(text) => Datum::Text(text.clone()),
@@ -654,7 +669,7 @@ impl<'a> Evaluator<'a> {
         }
         let (left, right) = (self.scalar(left, context)?, self.scalar(right, context)?);
         if let ("+", Datum::Text(left), Datum::Text(right)) = (operator, &left, &right) {
-            return Ok(Datum::Text(format!("{left}{right}")));
+            return bounded_text(format!("{left}{right}"));
         }
         let ordering = || compare(&left, &right);
         let equal = || match (&left, &right) {
@@ -1381,10 +1396,10 @@ impl<'a> Evaluator<'a> {
                 let text = self.text(&arguments[0], context)?;
                 let sought = self.text(&arguments[1], context)?;
                 let with = self.text(&arguments[2], context)?;
-                Ok(Datum::Text(match sought.is_empty() {
+                bounded_text(match sought.is_empty() {
                     true => text,
                     false => text.replace(&sought, &with),
-                }))
+                })
             }
             "COUSIN" => {
                 count(2..=2)?;
@@ -2405,6 +2420,14 @@ fn union(mut left: Vec<Tuple>, right: Vec<Tuple>, repeats: bool) -> Evaluated<Ve
         true => left,
         false => distinct(left),
     })
+}
+
+/// Text, unless it is longer than text may be.
+fn bounded_text(text: String) -> Evaluated<Datum> {
+    match text.len() <= MOST_TEXT {
+        true => Ok(Datum::Text(text)),
+        false => fail(format!("a text has more than {MOST_TEXT} characters")),
+    }
 }
 
 /// Refuses a set of more tuples than a set may hold, or of more than can be counted.

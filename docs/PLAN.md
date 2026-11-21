@@ -256,6 +256,12 @@ practice that means:
   - A set holds at most 1,000,000 tuples while a query is worked out, as a query returns
     at most 1,000,000 cells. A cross join that would hold more is refused before any of
     it is built, so that one short query cannot ask for more memory than there is.
+  - A query takes at most 100,000,000 steps, a step being one part of an expression
+    worked out, and so does a rule at one cell; a text worked out holds at most 1,000,000
+    characters. Calculated members that each use the one before twice double the work
+    and the text at every member, and thirty of them would otherwise never finish. The
+    limit is reached after about half a minute of one processor (release build, measured
+    2026-11-21).
   - Expressions sit at most 32 deep inside one another, in a query, a rule, a feeder or a
     subset alike. Reading and working out an expression go as deep as it does, and the
     limit is what keeps a body of nothing but brackets from running a thread out of stack.

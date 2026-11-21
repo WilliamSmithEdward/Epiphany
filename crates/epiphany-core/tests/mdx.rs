@@ -1333,6 +1333,58 @@ fn a_pattern_of_many_stars_is_matched_without_going_back_over_them() {
     assert!(matching(&format!("{}!", "*e".repeat(40))).is_empty());
 }
 
+/// A query whose calculated members each add the one before to itself, from a first one.
+fn doubling(first: &str, members: usize) -> String {
+    let mut mdx = format!("WITH MEMBER [Account].[M0] AS {first}");
+    for member in 1..=members {
+        let before = member - 1;
+        mdx += &format!(
+            " MEMBER [Account].[M{member}] AS [Account].[M{before}] + [Account].[M{before}]"
+        );
+    }
+    mdx + &format!(" SELECT {{[Account].[M{members}]}} ON COLUMNS FROM [General Ledger]")
+}
+
+#[test]
+fn text_that_doubles_is_refused_once_it_is_too_long() {
+    assert_eq!(
+        run(&doubling("('a' + 'b')", 3)).cells,
+        [Some(Scalar::Text("ab".repeat(8)))]
+    );
+    assert_eq!(
+        run(&doubling("1", 10)).cells,
+        [Some(Scalar::Number(1024.0))]
+    );
+    let mistake = failure(&doubling("('a' + 'b')", 30));
+    assert!(
+        mistake.contains("a text has more than 1000000 characters"),
+        "{mistake}"
+    );
+    // Ten letters, each made fifty of another, three times over.
+    let mut grown = "('a' + 'aaaaaaaaa')".to_owned();
+    for (from, to) in [('a', 'b'), ('b', 'c'), ('c', 'd')] {
+        grown = format!(
+            "Replace({grown}, '{from}', '{}')",
+            to.to_string().repeat(50)
+        );
+    }
+    let mistake = failure(&format!(
+        "WITH MEMBER [Account].[X] AS {grown} SELECT {{[Account].[X]}} ON COLUMNS FROM [General Ledger]"
+    ));
+    assert!(
+        mistake.contains("a text has more than 1000000 characters"),
+        "{mistake}"
+    );
+}
+
+/// A hundred million steps take a debug build the better part of a minute.
+#[test]
+#[cfg_attr(debug_assertions, ignore = "slow without optimisation")]
+fn work_that_doubles_is_refused_once_it_is_too_much() {
+    let mistake = failure(&doubling("1", 31));
+    assert!(mistake.contains("more than 100000000 steps"), "{mistake}");
+}
+
 #[test]
 fn dimensions_are_taken_out_of_a_set() {
     let crossed = "{[Entity].[US], [Entity].[UK]} * {[Period].[Jan], [Period].[Feb]}";
