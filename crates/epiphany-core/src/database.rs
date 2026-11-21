@@ -222,6 +222,25 @@ impl Database {
         named
     }
 
+    /// The stored cells of one cube, addressed by name: how many there are, and those from
+    /// `offset` on, at most `limit` of them. They come in the order of their elements in
+    /// each dimension, the last dimension turning fastest, so that the same data always
+    /// lists the same way and can be taken a page at a time.
+    pub fn stored(
+        &self,
+        cube: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(usize, Vec<CellWrite>), Error> {
+        let id = self.cube_id(cube)?;
+        let mut entries: Vec<_> = self.cells[id].entries().collect();
+        entries.sort_by_key(|(at, _)| *at);
+        let total = entries.len();
+        let page = entries.into_iter().skip(offset).take(limit);
+        let cells = page.map(|(at, value)| self.named(id, at, value)).collect();
+        Ok((total, cells))
+    }
+
     /// Takes transaction ids from a source of its own choosing, such as random numbers that
     /// cannot be guessed, instead of counting up from one.
     pub fn set_transaction_ids(&mut self, ids: fn() -> TransactionId) {

@@ -66,6 +66,7 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(explain_cells))
         .routes(routes!(spread_cells))
         .routes(routes!(query))
+        .routes(routes!(stored_cells))
         .routes(routes!(run_view))
         .routes(routes!(check_feeders))
         .routes(routes!(begin_transaction))
@@ -962,6 +963,52 @@ async fn query(
         &request.mdx,
         &may_read,
     )?))
+}
+
+/// How many cells a page of stored cells holds unless the request says.
+const PAGE: usize = 10_000;
+
+#[derive(Deserialize, IntoParams)]
+struct Page {
+    /// How many stored cells to pass over first. Zero unless given.
+    offset: Option<usize>,
+    /// The most cells to return. Ten thousand unless given.
+    limit: Option<usize>,
+}
+
+/// Some of the stored cells of a cube.
+#[derive(Serialize, ToSchema)]
+struct StoredCells {
+    /// How many cells the cube stores in all.
+    total: usize,
+    /// The cells of this page, in a form `POST /cells/write` takes back.
+    cells: Vec<CellWrite>,
+}
+
+/// Lists the cells a cube stores: its leaf cells that hold a value, with neither totals nor
+/// cells a rule calculates. They come in a fixed order, so the whole can be taken a page at
+/// a time, and what comes out can be written back with `POST /cells/write`, to this server or
+/// another.
+#[utoipa::path(
+    get,
+    path = "/cubes/{cube}/cells",
+    params(("cube" = String, Path, description = "Cube name, ignoring case and spaces"), Page),
+    responses(
+        (status = OK, body = StoredCells, description = "The cells of the page"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "Unknown cube")
+    )
+)]
+async fn stored_cells(
+    State(database): State<Shared>,
+    Extension(grants): Held,
+    Path(cube): Path<String>,
+    Query(page): Query<Page>,
+) -> Result<Json<StoredCells>, ApiError> {
+    allow(&grants, &cube, Role::Read)?;
+    let database = database.read().unwrap();
+    let (offset, limit) = (page.offset.unwrap_or(0), page.limit.unwrap_or(PAGE));
+    let (total, cells) = database.stored(&cube, offset, limit)?;
+    Ok(Json(StoredCells { total, cells }))
 }
 
 /// Runs a view saved with a cube.

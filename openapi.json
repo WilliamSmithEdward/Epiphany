@@ -294,6 +294,91 @@
         }
       }
     },
+    "/cubes/{cube}/cells": {
+      "get": {
+        "summary": "Lists the cells a cube stores: its leaf cells that hold a value, with neither totals nor\ncells a rule calculates. They come in a fixed order, so the whole can be taken a page at\na time, and what comes out can be written back with `POST /cells/write`, to this server or\nanother.",
+        "operationId": "stored_cells",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "description": "Cube name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "path",
+            "description": "How many stored cells to pass over first. Zero unless given.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "path",
+            "description": "The most cells to return. Ten thousand unless given.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cells of the page",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StoredCells"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown cube",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cubes/{cube}/feeders/check": {
       "get": {
         "summary": "Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's\nconsolidations therefore leave out. It works every calculated leaf out, so it is slow on\na large cube. At most a hundred cells are returned; none means the feeders are complete\nfor the data held, or the cube is not fed.",
@@ -2415,6 +2500,28 @@
           },
           "text": {
             "type": "string"
+          }
+        }
+      },
+      "StoredCells": {
+        "type": "object",
+        "description": "Some of the stored cells of a cube.",
+        "required": [
+          "total",
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CellWrite"
+            },
+            "description": "The cells of this page, in a form `POST /cells/write` takes back."
+          },
+          "total": {
+            "type": "integer",
+            "description": "How many cells the cube stores in all.",
+            "minimum": 0
           }
         }
       },

@@ -105,6 +105,7 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `POST /cells/write` | A batch of leaf cells: all of them or none |
 | `POST /cells/spread` | A value shared out among the leaves of a consolidation |
 | `POST /cells/explain` | How each cell comes by its value: stored, a rule, a total, fed or not |
+| `GET /cubes/{cube}/cells` | The cells a cube stores, a page at a time, in a form `/cells/write` takes back |
 | `POST /mdx` | An MDX query |
 | `GET /cubes/{cube}/views/{view}` | A saved view |
 | `GET /cubes/{cube}/feeders/check` | Calculated cells that no feeder feeds |

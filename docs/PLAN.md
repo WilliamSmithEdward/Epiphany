@@ -285,6 +285,10 @@ practice that means:
     `/dimensions/{name}`
   - `/transactions`, `/transactions/{id}/commit`, `/rollback`, `/locks`
   - `/sessions`: sign in and out
+- `GET /cubes/{cube}/cells` lists the cells a cube stores, in the order of their elements
+  in each dimension and a page at a time. A page is a list of writes, so what comes out of
+  one server goes into another through `/cells/write` as it is. It lists committed cells
+  only, not a transaction's pending ones.
 - Any data call may carry a transaction id; without one it is its own transaction.
 - One error shape everywhere: a stable code, a message, and the offending coordinate when
   there is one. The adapter maps codes to worksheet results.

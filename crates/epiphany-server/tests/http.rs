@@ -648,3 +648,53 @@ async fn every_response_says_which_model_version_answered() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(version("/dimensions/Period").await, "2");
 }
+
+#[tokio::test]
+async fn the_stored_cells_of_a_cube_are_listed_and_can_be_written_back() {
+    let app = example();
+    let cells = json!({ "cells": [
+        write(["Rent", "UK", "Feb", "Actual"], json!(3)),
+        write(["Salaries", "US", "Jan", "Budget"], json!(2.5)),
+        write(["Product Revenue", "US", "Jan", "Actual"], json!(100)),
+        write(["Rent", "US", "Jan", "Actual"], json!(0)),
+    ] });
+    call(&app, "POST", "/cells/write", Some(cells)).await;
+
+    // Leaf cells that hold a value, in the order of their elements in each dimension:
+    // accounts as the dimension lists them, then entities, periods and versions.
+    let (status, listed) = call(&app, "GET", "/cubes/general%20ledger/cells", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["total"], 3);
+    assert_eq!(
+        listed["cells"],
+        json!([
+            write(["Product Revenue", "US", "Jan", "Actual"], json!(100.0)),
+            write(["Salaries", "US", "Jan", "Budget"], json!(2.5)),
+            write(["Rent", "UK", "Feb", "Actual"], json!(3.0)),
+        ])
+    );
+    // A page at a time.
+    let (_, page) = call(
+        &app,
+        "GET",
+        "/cubes/General%20Ledger/cells?offset=1&limit=1",
+        None,
+    )
+    .await;
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["cells"], json!([listed["cells"][1]]));
+    let (_, page) = call(&app, "GET", "/cubes/General%20Ledger/cells?offset=3", None).await;
+    assert_eq!(page, json!({ "total": 3, "cells": [] }));
+
+    // What comes out goes into another server as it is, and then the two hold the same.
+    let other = example();
+    let body = json!({ "cells": listed["cells"] });
+    let (status, _) = call(&other, "POST", "/cells/write", Some(body)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, copied) = call(&other, "GET", "/cubes/General%20Ledger/cells", None).await;
+    assert_eq!(copied, listed);
+
+    let (status, body) = call(&app, "GET", "/cubes/Nowhere/cells", None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "unknown_cube");
+}
