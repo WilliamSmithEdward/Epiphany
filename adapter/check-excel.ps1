@@ -31,6 +31,11 @@ try {
     [void][Native.Window]::GetWindowThreadProcessId([IntPtr]$excel.Hwnd, [ref]$excelPid)
     $excel.DisplayAlerts = $false
     "registered: $($excel.RegisterXLL($xll))"
+    # The ribbon tab arrives as a COM add-in that Excel-DNA registers under the add-in's own
+    # name; the tab is offered if that one is connected.
+    $ribbon = @($excel.COMAddIns | Where-Object { $_.Description -eq 'Epiphany' -and $_.ProgId -like 'Dna_*' -and $_.Connect })
+    if ($ribbon.Count -ne 1) { throw 'the ribbon did not load' }
+    'ribbon: True'
     $book = $excel.Workbooks.Add()
     $sheet = $book.Worksheets.Item(1)
     $sheet.Columns.Item(1).ColumnWidth = 40

@@ -40,7 +40,8 @@ installed beside Excel, and no administrator rights.
 A cube or dimension can name its environment, as PAfE workbooks do: `"production:Sales"` is
 the cube Sales on the server called production, and a plain `"Sales"` is looked for in the
 default environment. To begin with there is one environment, `local`, at
-`http://127.0.0.1:8080`. The **Epiphany** menu, on Excel's Add-ins tab, has:
+`http://127.0.0.1:8080`. The **Epiphany** tab of the ribbon has a button for each of these;
+they are also in an Epiphany menu on the Add-ins tab:
 
 - **Connect...** to add an environment or change one (its name, its server, who signs in),
   and to sign in. The environment connected becomes the default.
@@ -97,7 +98,8 @@ before you have connected to anything yourself.
 | `Epiphany.Excel/Functions.cs` | The worksheet functions. |
 | `Epiphany.Excel/Connection.cs` | The server: batched cell reads and writes, dimensions, sign-in. |
 | `Epiphany.Excel/Dimension.cs` | A copy of a dimension and the answers read from it. |
-| `Epiphany.Excel/AddIn.cs` | The environments, the menu commands and the Connect window. |
+| `Epiphany.Excel/AddIn.cs` | The environments, the commands and the Connect window. |
+| `Epiphany.Excel/Ribbon.cs` | The Epiphany tab of the ribbon. |
 | `Epiphany.Excel/Writeback.cs` | Writing a value typed over a read formula. |
 | `Epiphany.Excel/Picker.cs` | Choosing the element of a `SUBNM` formula. |
 | `Epiphany.Excel/Formula.cs` | Reading a formula as a function call and its arguments. |
