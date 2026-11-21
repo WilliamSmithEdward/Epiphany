@@ -224,6 +224,26 @@ try {
     $ok = $got -eq "11 / rent 11 / salaries 0 / =DBRW($gl,`"Rent`",`"US`",A2,`"Budget`")"
     if (-not $ok) { $failed++ }
     "{0}  Typed: over a formula that a new row had moved -> <{1}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $got
+
+    # The month may stand on another sheet, whose name Excel then writes in single quotes
+    # where it has a space or a sign in it. A comma and a bracket in that name are the
+    # name's and not the formula's.
+    $named = $book.Worksheets.Add()
+    $named.Name = 'Q1, plan (old'
+    $named.Cells.Item(1, 1).Value2 = 'Mar'
+    $far = $moved.Cells.Item(6, 1)
+    $far.Formula = "=DBRW($gl,`"Salaries`",`"US`",'Q1, plan (old'!A1,`"Budget`")"
+    for ($tries = 0; $tries -lt 15 -and [string]$far.Text -ne '0'; $tries++) { Start-Sleep -Seconds 1 }
+    $moved.Activate() | Out-Null
+    $far.Select() | Out-Null
+    $far.Value2 = [double]13
+    for ($tries = 0; $tries -lt 15 -and [string]$far.Text -ne '13'; $tries++) { Start-Sleep -Seconds 1 }
+    $ask = @{ cells = @(@{ cube = 'General Ledger'; at = @('Salaries', 'US', 'Mar', 'Budget') }) } | ConvertTo-Json -Depth 4
+    $stored = [string][double](Invoke-RestMethod -Method Post -Uri "$address/cells/read" -ContentType 'application/json' -Body $ask).cells[0].value
+    $got = "{0} / stored {1} / {2}" -f $far.Text, $stored, $far.Formula
+    $ok = $got -eq "13 / stored 13 / =DBRW($gl,`"Salaries`",`"US`",'Q1, plan (old'!A1,`"Budget`")"
+    if (-not $ok) { $failed++ }
+    "{0}  Typed: over a formula that reads from a sheet with a comma in its name -> <{1}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $got
     "$failed failed"
     $script:failures = $failed
     $book.Close($false)
