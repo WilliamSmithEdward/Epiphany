@@ -164,8 +164,18 @@ of a hundred leaves each: a million different cells, written by name in four req
 took the process from 6 MB to 106 MB, 105 bytes a cell, and 58 MB of log on disk
 (2026-11-21). A cell is 48 bytes where it is stored, its coordinate of up to eight
 dimensions and its value; the rest is the room a table keeps free so as to stay quick,
-which is at its most just after the table has grown, as it had here. So a cell costs
-between about 55 and 105 bytes as a cube fills.
+which is at its most just after the table has grown, as it had here.
+
+At a million and a half cells in the same table it is 70 bytes a cell. With the
+coordinate kept apart from the cell, as it was until 2026-11-21, the same two loads came
+to 89 and 74 bytes a cell: the cell kept whole costs more just after the table grows and
+less as it fills.
+
+Loading past a million cells found what no test had: the snapshot that replaces the log
+once it passes 64 MiB, and at every start, was written a few bytes at a time, each piece
+a call to the operating system. The request that brought the log to its limit took 130
+seconds, with every other request waiting on it. Written through a buffer the same
+request takes 1.3 seconds (2026-11-21).
 
 ## Notes
 

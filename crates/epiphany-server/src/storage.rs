@@ -20,7 +20,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use epiphany_core::database::{CellWrite, Database, Journal};
@@ -172,9 +172,13 @@ fn at(path: &Path, error: &dyn Error) -> String {
 /// flushed to disk, then renamed into place.
 pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
     let temporary = path.with_extension("tmp");
-    let mut file = File::create(&temporary)?;
+    // JSON is written a few bytes at a time, and each piece handed straight to the file
+    // would be a call to the operating system: a snapshot of a million cells took two
+    // minutes that way. The pieces are gathered and handed over by the page.
+    let mut file = BufWriter::new(File::create(&temporary)?);
     serde_json::to_writer_pretty(&mut file, value)?;
     file.write_all(b"\n")?;
+    let file = file.into_inner().map_err(|error| error.into_error())?;
     file.sync_all()?;
     fs::rename(&temporary, path)?;
     path.parent().map_or(Ok(()), settle)
