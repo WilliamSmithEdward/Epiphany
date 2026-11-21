@@ -1,6 +1,9 @@
 //! The model snapshot: a validated, immutable form of a definition, indexed for lookup.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+
+// Names are looked up for every cell read or written by name, so with the quick hash.
+use rustc_hash::FxHashMap as HashMap;
 
 use super::definition::{
     AttributeType, CubeDef, DimensionDef, DimensionType, ElementDef, ElementType, ModelDef,
@@ -494,6 +497,14 @@ fn roll_up(
 
 /// The form in which names are compared: case and spaces are ignored.
 pub(crate) fn key(name: &str) -> String {
+    // Most names are plain letters and digits, which are lowered a byte at a time.
+    if name.is_ascii() {
+        let kept = name
+            .bytes()
+            .filter(|&byte| !char::from(byte).is_whitespace());
+        let lowered = kept.map(|byte| byte.to_ascii_lowercase()).collect();
+        return String::from_utf8(lowered).expect("ASCII is UTF-8");
+    }
     name.chars()
         .filter(|c| !c.is_whitespace())
         .flat_map(char::to_lowercase)
@@ -506,7 +517,7 @@ fn index<'a>(
     within: &str,
     names: impl IntoIterator<Item = &'a str>,
 ) -> Result<HashMap<String, u32>, ModelError> {
-    let mut ids = HashMap::new();
+    let mut ids = HashMap::default();
     for (id, name) in names.into_iter().enumerate() {
         let key = key(name);
         if key.is_empty() {

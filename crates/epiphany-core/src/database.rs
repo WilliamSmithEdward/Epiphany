@@ -500,11 +500,16 @@ impl Database {
     /// journal, nothing is stored and the transaction stays open.
     pub fn commit(&mut self, id: TransactionId) -> Result<(), Error> {
         self.expire();
+        // The writes by name, for the journal; without one there is nobody to name them for.
         let mut record = Vec::new();
-        for (cube, writes) in self.transaction(id)?.writes.iter().enumerate() {
-            for (at, value) in writes {
-                record.push(self.named(cube, at, value.clone()));
+        if self.journal.is_some() {
+            for (cube, writes) in self.transaction(id)?.writes.iter().enumerate() {
+                for (at, value) in writes {
+                    record.push(self.named(cube, at, value.clone()));
+                }
             }
+        } else {
+            self.transaction(id)?;
         }
         if let Some(journal) = &mut self.journal
             && !record.is_empty()
@@ -648,9 +653,18 @@ impl Database {
             .map(locate)
             .collect::<Result<_, _>>()?;
 
-        for ((cube, at), write) in located.iter().zip(writes) {
+        // The locks are asked for once for the batch and once for each cube in it, not
+        // again for every cell.
+        let mut cubes: Vec<usize> = located.iter().map(|&(cube, _)| cube).collect();
+        cubes.sort_unstable();
+        cubes.dedup();
+        if !cubes.is_empty() {
             self.acquire(id, Resource::Server, Mode::IntentExclusive)?;
-            self.acquire(id, Resource::Cube(*cube), Mode::IntentExclusive)?;
+        }
+        for cube in cubes {
+            self.acquire(id, Resource::Cube(cube), Mode::IntentExclusive)?;
+        }
+        for ((cube, at), write) in located.iter().zip(writes) {
             let pending_elsewhere = |(&other, transaction): (&TransactionId, &Transaction)| {
                 other != id && transaction.writes[*cube].contains_key(at.as_slice())
             };

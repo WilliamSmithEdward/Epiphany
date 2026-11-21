@@ -79,6 +79,13 @@ a tuple to hold that member; both are now done without. The grid of 10,000 leaf 
 goes from 2.4 ms to 2.2 ms, that of a calculated member from 2.7 ms to 2.4 ms, and the
 `Filter` over 10,000 tuples from 3.3 ms to 2.6 ms (2026-11-21).
 
+Writing 200,000 cells in one batch took 198 ms, about a microsecond a cell, of which
+storing the cell is an eighth. Three things on the way there were trimmed: the locks were
+asked for again at every cell and are now asked for once for the batch and each cube; the
+writes were named for the journal even where there is none; and names were lowered a
+character at a time and looked up with the slow hash. The batch now takes 117 ms. A
+server keeps a journal, so it gains from the first and third only (2026-11-21).
+
 It is not all gain. In the cube with a rule and feeders, the first total read after a
 write, which includes working out what is fed, takes 10.7 ms where it took 8.8 ms with
 the coordinate kept apart, and 113 such totals read together 11.6 ms where they took 10.0
