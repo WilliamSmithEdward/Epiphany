@@ -1318,7 +1318,13 @@ fn a_set_too_large_to_hold_is_refused() {
     refused(&format!("Generate({periods}, [Period].Members, ALL)"));
     // Sets multiplied together are refused before any of the product is built.
     refused(&format!("CrossJoin({periods}, [Entity].Members)"));
-    refused(&format!("NonEmptyCrossJoin({periods}, [Entity].Members)"));
+    // Unless only their tuples that hold something are wanted, which are found from the
+    // cells without the product: here every period many times over, beside three entities.
+    let mdx = format!(
+        "SELECT NonEmptyCrossJoin({periods}, [Entity].Members) ON COLUMNS FROM [General Ledger] \
+         WHERE ([Account].[Rent], [Version].[Budget])"
+    );
+    assert!(run(&mdx).axes[0].tuples.len() < 1_000_000);
 }
 
 #[test]

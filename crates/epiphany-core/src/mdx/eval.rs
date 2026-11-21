@@ -103,6 +103,8 @@ pub(super) struct Evaluator<'a> {
     read: Read<'a>,
     /// Told which cells of the cube are about to be read, so that they can be added up together.
     expect: Expect<'a>,
+    /// Shows the cells of the cube that may hold something, if it can.
+    occupied: Occupied<'a>,
     calculated: Vec<Calculated<'a>>,
     sets: HashMap<String, Vec<Tuple>>,
     /// How many calculated members are being evaluated inside one another.
@@ -184,6 +186,7 @@ impl Query {
         let cube = &model.cubes()[cube_id];
         let mut evaluator = Evaluator::new(model, cube_id, cube, read);
         evaluator.expect = expect;
+        evaluator.occupied = occupied;
         for member in &self.members {
             let [dimension, .., name] = member.name.as_slice() else {
                 return fail("a calculated member is named [Dimension].[Name]");
@@ -255,22 +258,15 @@ impl Query {
         // A cross join left unwritten is now cut down to its tuples that may hold something,
         // which takes knowing what the other axes hold.
         let mut sets = Vec::new();
-        for (index, axis) in laid.iter().enumerate() {
-            sets.push(match axis {
-                Laid::Out(set) => set.clone(),
-                Laid::Crossed(crossed) => {
-                    match evaluator.holding(crossed, index, &laid, &context, occupied)? {
-                        Some(set) => set,
-                        None => {
-                            let mut whole = crossed[0].clone();
-                            for set in &crossed[1..] {
-                                whole = cross_join(&whole, set)?;
-                            }
-                            whole
-                        }
-                    }
-                }
-            });
+        for index in 0..laid.len() {
+            let others = laid.iter().enumerate().filter(|&(other, _)| other != index);
+            let beside: Vec<&Vec<Tuple>> = others
+                .flat_map(|(_, other)| match other {
+                    Laid::Out(set) => std::slice::from_ref(set),
+                    Laid::Crossed(sets) => sets.as_slice(),
+                })
+                .collect();
+            sets.push(evaluator.cut(&laid[index], &beside, &context)?);
         }
 
         // One cell per combination of a tuple from each axis, the first axis varying fastest.
@@ -430,6 +426,7 @@ impl<'a> Evaluator<'a> {
             cube,
             read,
             expect: &unexpected,
+            occupied: &|_, _| false,
             calculated: Vec::new(),
             sets: HashMap::new(),
             depth: Cell::new(0),
@@ -497,26 +494,33 @@ impl<'a> Evaluator<'a> {
         if long && sets.iter().all(elements) && positions.len() == sets.len() {
             return Ok(Laid::Crossed(sets));
         }
-        let mut whole = sets.remove(0);
-        for set in &sets {
-            whole = cross_join(&whole, set)?;
-        }
-        Ok(Laid::Out(whole))
+        whole(&sets).map(Laid::Out)
     }
 
-    /// The tuples of a cross join that may hold something beside what the other axes and the
-    /// slicer hold, in the order the cross join would have them: found by looking at each
-    /// cell that may hold something and noting the tuples it counts towards, which never
-    /// writes the cross join out. Nothing if they cannot be found that way, because a
-    /// calculated member stands somewhere, or the cube cannot say which of its cells may
-    /// hold something.
+    /// The tuples of a set that was laid: as they are, or of a cross join left unwritten
+    /// those that may hold something beside the sets that stand beside it, if they can be
+    /// found from the cells, and else the whole cross join.
+    fn cut(&self, laid: &Laid, beside: &[&Vec<Tuple>], context: &Context) -> Evaluated<Vec<Tuple>> {
+        match laid {
+            Laid::Out(set) => Ok(set.clone()),
+            Laid::Crossed(crossed) => match self.holding(crossed, beside, context)? {
+                Some(set) => Ok(set),
+                None => whole(crossed),
+            },
+        }
+    }
+
+    /// The tuples of a cross join that may hold something beside the sets that stand beside
+    /// it and the cell it is asked at, in the order the cross join would have them: found by
+    /// looking at each cell that may hold something and noting the tuples it counts towards,
+    /// which never writes the cross join out. Nothing if they cannot be found that way,
+    /// because a calculated member stands somewhere, a set beside the cross join is of one
+    /// of its own dimensions, or the cube cannot say which of its cells may hold something.
     fn holding(
         &self,
         crossed: &[Vec<Tuple>],
-        axis: usize,
-        laid: &[Laid],
+        beside: &[&Vec<Tuple>],
         context: &Context,
-        occupied: Occupied,
     ) -> Evaluated<Option<Vec<Tuple>>> {
         // For each dimension of the cube, the members a cell must stand beneath one of.
         let mut wanted: Vec<Vec<Id>> = context.iter().map(|&id| vec![id]).collect();
@@ -529,22 +533,22 @@ impl<'a> Evaluator<'a> {
                 wanted[member.position].push(member.id);
             }
         };
-        for (index, other) in laid.iter().enumerate() {
-            match other {
-                Laid::Out(set) if index != axis => {
-                    let width = set.first().map_or(0, Vec::len);
-                    (0..width).for_each(|at| place(&mut set.iter().map(|tuple| tuple[at])));
-                }
-                Laid::Crossed(sets) => {
-                    sets.iter()
-                        .for_each(|set| place(&mut set.iter().map(|tuple| tuple[0])));
-                }
-                Laid::Out(_) => {}
-            }
+        let own: Vec<usize> = crossed.iter().map(|set| set[0][0].position).collect();
+        let shared = |set: &&Vec<Tuple>| {
+            let first = set.first().into_iter().flatten();
+            first
+                .into_iter()
+                .any(|member| own.contains(&member.position))
+        };
+        if beside.iter().any(shared) {
+            return Ok(None);
+        }
+        for set in crossed.iter().chain(beside.iter().copied()) {
+            let width = set.first().map_or(0, Vec::len);
+            (0..width).for_each(|at| place(&mut set.iter().map(|tuple| tuple[at])));
         }
         // For each dimension, the leaves beneath those members; and for a dimension of the
         // cross join, which of its set's members each leaf stands beneath.
-        let own: Vec<usize> = crossed.iter().map(|set| set[0][0].position).collect();
         let mut beneath: Vec<Vec<Option<Vec<u32>>>> = Vec::new();
         for (position, members) in wanted.iter().enumerate() {
             let elements = &self.dimension(position).elements;
@@ -567,7 +571,7 @@ impl<'a> Evaluator<'a> {
             .try_fold(1usize, |product, set| product.checked_mul(set.len()));
         let most = tuples.map_or(usize::MAX, |tuples| tuples.saturating_mul(CELLS_A_TUPLE));
         let mut found: HashSet<Vec<u32>> = HashSet::new();
-        let shown = occupied(most, &mut |at: &[ElementId]| {
+        let shown = (self.occupied)(most, &mut |at: &[ElementId]| {
             let mut above = Vec::with_capacity(own.len());
             for (position, leaf) in at.iter().enumerate() {
                 match &beneath[position][*leaf as usize] {
@@ -1332,16 +1336,20 @@ impl<'a> Evaluator<'a> {
                     Some(argument) => self.set(argument, context)?,
                     None => vec![Tuple::new()],
                 };
-                let set = self.set(&arguments[0], context)?;
+                // A long cross join is first cut down to what may hold something.
+                let laid = self.lay(&arguments[0], true, context)?;
+                let beside: &[&Vec<Tuple>] = match arguments.len() {
+                    1 => &[],
+                    _ => &[&across],
+                };
+                let set = self.cut(&laid, beside, context)?;
                 self.non_empty(set, &across, context).map(Datum::Set)
             }
             "NONEMPTYCROSSJOIN" => {
                 count(2..=usize::MAX)?;
-                let mut joined = self.set(&arguments[0], context)?;
-                for argument in &arguments[1..] {
-                    joined = cross_join(&joined, &self.set(argument, context)?)?;
-                }
-                self.non_empty(joined, &[Tuple::new()], context)
+                let crossed = Expr::Call("CROSSJOIN".to_owned(), arguments.to_vec());
+                let set = self.cut(&self.lay(&crossed, true, context)?, &[], context)?;
+                self.non_empty(set, &[Tuple::new()], context)
                     .map(Datum::Set)
             }
             "ADDCALCULATEDMEMBERS" | "STRIPCALCULATEDMEMBERS" => {
@@ -2797,6 +2805,15 @@ fn fixed(expression: &Expr) -> bool {
         Expr::Tuple(items) => items.iter().all(plain),
         _ => true,
     }
+}
+
+/// The cross join of several sets, written out.
+fn whole(sets: &[Vec<Tuple>]) -> Evaluated<Vec<Tuple>> {
+    let mut whole = sets.first().cloned().unwrap_or_default();
+    for set in sets.iter().skip(1) {
+        whole = cross_join(&whole, set)?;
+    }
+    Ok(whole)
 }
 
 /// Text, unless it is longer than text may be.

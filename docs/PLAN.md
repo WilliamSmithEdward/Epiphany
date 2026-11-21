@@ -257,6 +257,8 @@ practice that means:
   - `Ytd`, `Qtd`, `Mtd` and `Wtd` run within the levels named Year, Quarter, Month and
     Week. Without a member they end at the current member of the cube's dimension of type
     `time`.
+  - What follows holds as well for `NonEmptyCrossJoin(...)` and for `NonEmpty` of a cross
+    join, with or without a second set.
   - `NON EMPTY` over a cross join of sets of elements does not write the cross join out
     where it is long (over 10,000 tuples, and over a quarter of the number of cells there
     are to look through). It looks at each cell that may hold something and notes the

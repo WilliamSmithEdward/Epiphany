@@ -88,6 +88,49 @@ fn the_rows_that_hold_something_are_the_same_found_either_way() {
 }
 
 #[test]
+fn the_functions_that_drop_empty_tuples_agree_with_the_axis() {
+    let database = filled(model(3), 3);
+    let crossed = "[d0].Members * [d1].Members";
+    let rows = |set: &str, slicer: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [C] {slicer}");
+        names(&database.query(None, &mdx).unwrap(), 0)
+    };
+    // The cross join of all three, too long to write out, by either function.
+    let three = rows(
+        "NonEmptyCrossJoin([d0].Members, [d1].Members, [d2].Members)",
+        "",
+    );
+    assert!(three.len() >= 290);
+    assert_eq!(
+        rows(&format!("NonEmpty({crossed} * [d2].Members)"), ""),
+        three
+    );
+    // Each cut down from the cells, against the cross join written out and then filtered:
+    // at the total of the third dimension, and at a leaf of it that holds something.
+    let leaf = three
+        .iter()
+        .map(|row| &row[2])
+        .find(|name| name.starts_with('e'));
+    let leaf = format!("WHERE [d2].[{}]", leaf.expect("a leaf holds something"));
+    for slicer in ["WHERE [d2].[all]", leaf.as_str()] {
+        let written = rows(&format!("NonEmpty(Head({crossed}, 1000000))"), slicer);
+        assert!(
+            !written.is_empty() && written.len() < 12_769,
+            "{slicer}: {}",
+            written.len()
+        );
+        assert_eq!(rows(&format!("NonEmpty({crossed})"), slicer), written);
+        let function = "NonEmptyCrossJoin([d0].Members, [d1].Members)";
+        assert_eq!(rows(function, slicer), written);
+    }
+    // Beside a set of another dimension: any of its members makes a tuple count.
+    let beside = "{[d2].[all], [d2].[e8]}";
+    assert_eq!(
+        rows(&format!("NonEmpty({crossed}, {beside})"), ""),
+        rows(&format!("NonEmpty(Head({crossed}, 1000000), {beside})"), "")
+    );
+}
+#[test]
 fn a_cell_written_in_a_transaction_brings_its_rows() {
     let mut database = filled(model(3), 3);
     let columns = "{[d2].[e99]} ON COLUMNS FROM [C]";
