@@ -135,14 +135,20 @@ namespace Epiphany.Excel
 
         /// <summary>What the status bar says when there is nothing else to say: that changes
         /// are being held in a transaction, or nothing, which gives the bar back to Excel.</summary>
-        internal static object Standing => fallback.Connection.InTransaction
+        internal static object Standing => InTransaction
             ? "Epiphany: in a transaction. What you enter is yours alone until Commit; Roll back discards it."
             : (object)false;
 
+        /// <summary>Whether what is entered is being held in a transaction.</summary>
+        internal static bool InTransaction => fallback != null && fallback.Connection.InTransaction;
+
+        /// <summary>Says something in the status bar, or what stands when there is nothing to
+        /// say, and has the ribbon show which transaction buttons now apply.</summary>
         private static void Say(string message)
         {
             var excel = (Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application;
             excel.StatusBar = message ?? Standing;
+            Ribbon.Changed();
         }
 
         [ExcelCommand(MenuName = Menu, MenuText = "Begin transaction")]

@@ -74,10 +74,20 @@ try {
     $tab.GetCurrentPattern([Windows.Automation.SelectionItemPattern]::Pattern).Select()
     Start-Sleep -Seconds 2
 
+    # Which of the transaction's buttons can be pressed, as B(egin), C(ommit), R(oll back).
+    $able = {
+        $can = foreach ($button in 'Begin', 'Commit', 'Roll back') {
+            if ((Find ([Windows.Automation.ControlType]::Button) $button).Current.IsEnabled) { $button.Substring(0, 1) }
+        }
+        -join $can
+    }
+
     $steps = @()
     $steps += @(,@('the formula answers', (Until $shown '0'), '0'))
+    $steps += @(,@('with no transaction only Begin can be pressed', (Until $able 'B'), 'B'))
     Press 'Begin'
     $steps += @(,@('Begin opens a transaction', (Until $bar 'in a transaction'), 'in a transaction'))
+    $steps += @(,@('and then only Commit and Roll back can be', (Until $able 'CR'), 'CR'))
     Excel { $cell.Select() | Out-Null; $cell.Value2 = [double]12 }
     $steps += @(,@('a value typed in it shows', (Until $shown '12'), '12'))
     Press 'Roll back'
@@ -88,6 +98,7 @@ try {
     $steps += @(,@('a value typed in another shows', (Until $shown '34'), '34'))
     Press 'Commit'
     $steps += @(,@('Commit ends it', (Until $bar 'none'), 'none'))
+    $steps += @(,@('and Begin can be pressed again', (Until $able 'B'), 'B'))
     $steps += @(,@('and the server holds the value', [string](& $stored), '34'))
     # Changed behind Excel's back, the cell follows only when Refresh is pressed.
     $write = '{"cells":[{"cube":"General Ledger","at":["Rent","UK","Jan","Actual"],"value":56}]}'
