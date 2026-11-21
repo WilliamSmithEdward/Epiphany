@@ -153,10 +153,12 @@ practice that means:
 - Evaluation is on read, remembered for the length of one request, and a cell that depends
   on itself is reported instead of looping.
 - A cell is worked out inside the cell that needs it, so a chain of cells that depend on
-  one another uses a thread's stack in proportion to its length. A chain that has taken
-  512 KB of it is refused, since a thread that runs out of stack ends the process. In a
-  release build that is a balance carried forward through about 180 periods (measured
-  2026-11-21); a longer one needs a rule that reads a running total instead.
+  one another uses a thread's stack in proportion to its length, and a thread that runs
+  out of stack ends the process. A chain that has taken 512 KB is left off where it
+  stands; the cell it was left at is worked out first, as the beginning of a chain of its
+  own, and what waited for it is tried again and finds it known. So a balance carried
+  forward through any number of periods is followed, in stages, and a circle too long
+  to see within one stage is still found, because a cell is left off twice.
 - A cell that a rule decides cannot be written.
 - Feeders are a second list of statements, `source => target, ...`, for example
   `[Account].[Units] => [Account].[Revenue]`. Wherever a stored cell lies in the source

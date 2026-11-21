@@ -1702,19 +1702,24 @@ impl<'a> Evaluator<'a> {
     /// those of its level in the dimension's order. Nothing past either end.
     fn shift(&self, member: Member, by: f64) -> Evaluated<Option<Member>> {
         let (id, element) = self.element(member)?;
-        let elements = self.dimension(member.position).elements.iter().enumerate();
-        let level: Vec<usize> = elements
-            .filter(|(_, other)| other.level == element.level)
-            .map(|(id, _)| id)
-            .collect();
-        let place = level.iter().position(|&other| other == id as usize);
-        let place = place.map(|place| place as f64 + by.trunc());
-        let found = place
-            .filter(|&place| place >= 0.0)
-            .and_then(|place| level.get(place as usize));
-        Ok(found.map(|&id| Member {
+        let elements = &self.dimension(member.position).elements;
+        // From the member towards the end asked for, counting the elements of its level:
+        // the next one is found without looking at the rest of the dimension.
+        let mut at = id as usize;
+        let mut left = by.trunc().abs() as usize;
+        while left > 0 {
+            at = match by > 0.0 {
+                true => at + 1,
+                false => at.wrapping_sub(1),
+            };
+            match elements.get(at) {
+                Some(other) => left -= usize::from(other.level == element.level),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(Member {
             position: member.position,
-            id: Id::Element(id as ElementId),
+            id: Id::Element(at as ElementId),
         }))
     }
 

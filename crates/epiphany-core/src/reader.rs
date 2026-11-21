@@ -25,10 +25,11 @@ const MOST_VISITED: usize = 10_000_000;
 /// The most cells the feeders of a model may feed.
 const MOST_FED: usize = 10_000_000;
 /// How much of a thread's stack a chain of cells that depend on one another through rules
-/// may take, in bytes. Each cell in the chain is worked out inside the one that needs it, so
-/// a chain uses stack in proportion to its length and to how much its rules nest, and a
-/// thread that runs out of stack ends the whole process. Threads are given a megabyte or
-/// two; this leaves room for the deepest rule to be worked out at the end of the chain.
+/// may take at a time, in bytes. Each cell in the chain is worked out inside the one that
+/// needs it, so a chain uses stack in proportion to its length and to how much its rules
+/// nest, and a thread that runs out of stack ends the whole process. Threads are given a
+/// megabyte or two; this leaves room for the deepest rule to be worked out at the end. A
+/// longer chain is followed in stages, each no deeper than this.
 const MOST_STACK: usize = 512 * 1024;
 
 /// The most consolidated cells kept for one cube; past it they are forgotten and kept afresh.
@@ -77,6 +78,8 @@ pub(crate) struct Reader<'a> {
     working: RefCell<Vec<(usize, Coordinate)>>,
     /// Where the stack stood when the first of them was begun.
     began: Cell<usize>,
+    /// The cell at which a chain was left off for having gone too deep.
+    left_off: RefCell<Option<(usize, Coordinate)>>,
 }
 
 impl<'a> Reader<'a> {
@@ -96,6 +99,7 @@ impl<'a> Reader<'a> {
             known: RefCell::default(),
             working: RefCell::default(),
             began: Cell::default(),
+            left_off: RefCell::default(),
         }
     }
 
@@ -229,31 +233,57 @@ impl<'a> Reader<'a> {
         // How far the stack has moved since the chain began is told by where a local of
         // this call stands.
         let here = std::ptr::from_ref(&key).addr();
-        let trouble = {
-            let working = self.working.borrow();
-            if working.is_empty() {
-                self.began.set(here);
+        if !self.working.borrow().is_empty() {
+            return self.follow(key, here);
+        }
+        // The cell that begins a chain. A chain too long to follow at once is left off part
+        // of the way down; the cell it was left at is then worked out first, as the
+        // beginning of a chain of its own, and what waited for it is tried again and now
+        // finds it known. Every stage adds to what is known, so the stages come to an end.
+        self.began.set(here);
+        let mut waiting = FxHashSet::from_iter([key.clone()]);
+        let mut wanted = vec![key];
+        loop {
+            let next = wanted.last().expect("the first is taken off last").clone();
+            let value = self.follow(next, here);
+            match self.left_off.take() {
+                // A cell cannot be waiting for a cell that waits for it.
+                Some(deeper) if !waiting.insert(deeper.clone()) => {
+                    return Err(self.circular(&deeper));
+                }
+                Some(deeper) => wanted.push(deeper),
+                None => {
+                    let value = value?;
+                    wanted.pop();
+                    if wanted.is_empty() {
+                        return Ok(value);
+                    }
+                }
             }
-            if working.contains(&key) {
-                Some("depends on itself")
-            } else if self.began.get().abs_diff(here) > MOST_STACK {
-                Some("depends on too long a chain of other cells")
-            } else {
-                None
-            }
-        };
-        if let Some(trouble) = trouble {
-            let (name, at) = (&self.model.cubes()[cube].name, self.names(cube, at));
-            return Err(MdxError::new(format!(
-                "cell ({at}) of cube '{name}' {trouble}"
-            )));
+        }
+    }
+
+    /// Works out a cell that is not known yet, as one more of a chain of them.
+    fn follow(&self, key: (usize, Coordinate), here: usize) -> Read<Scalar> {
+        if self.working.borrow().contains(&key) {
+            return Err(self.circular(&key));
+        }
+        if self.began.get().abs_diff(here) > MOST_STACK {
+            let message = "the chain of cells is too long to follow at once";
+            *self.left_off.borrow_mut() = Some(key);
+            return Err(MdxError::new(message.to_owned()));
         }
         self.working.borrow_mut().push(key.clone());
-        let value = self.decide(cube, at);
+        let value = self.decide(key.0, &key.1);
         self.working.borrow_mut().pop();
         let value = value?;
         self.known.borrow_mut().insert(key, value.clone());
         Ok(value)
+    }
+
+    fn circular(&self, (cube, at): &(usize, Coordinate)) -> MdxError {
+        let (name, at) = (&self.model.cubes()[*cube].name, self.names(*cube, at));
+        MdxError::new(format!("cell ({at}) of cube '{name}' depends on itself"))
     }
 
     /// The leaf cells that a rule gives a value but that are neither stored nor fed, and so

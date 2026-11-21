@@ -319,35 +319,39 @@ fn carried(days: usize, balance: &str) -> Database {
 }
 
 #[test]
-fn a_long_chain_of_rules_is_followed_or_refused_but_never_fatal() {
+fn a_chain_of_rules_is_followed_however_long() {
     let balance =
         |database: &Database, day: &str| database.read(None, &cell("Ledger", &[day, "Balance"]));
-    let plain = carried(100_000, "[Account].[Flow] + BEFORE");
-    assert_eq!(balance(&plain, "D3"), Ok(Scalar::Number(7.0)));
-    assert_eq!(balance(&plain, "D20"), Ok(Scalar::Number(7.0)));
-    // Past what can be followed the cell is refused, where the chain gave out.
-    let refused = |database: &Database| match balance(database, "D100000") {
-        Err(Error::Rule(message)) => {
-            assert!(
-                message.ends_with("depends on too long a chain of other cells"),
-                "{message}"
-            );
-        }
-        other => panic!("expected a refusal, found {other:?}"),
-    };
-    refused(&plain);
+    let seven = Ok(Scalar::Number(7.0));
+    let plain = carried(30_000, "[Account].[Flow] + BEFORE");
+    assert_eq!(balance(&plain, "D3"), seven);
+    // Far more days than can be worked out one inside another.
+    assert_eq!(balance(&plain, "D30000"), seven);
+    assert_eq!(balance(&plain, "D15000"), seven);
+    let sum = "SELECT {[Day].[D29999], [Day].[D30000]} ON COLUMNS FROM [Ledger] WHERE [Account].[Balance]";
+    let result = plain.query(None, sum).unwrap();
+    assert_eq!(
+        result.cells,
+        [Some(Scalar::Number(7.0)), Some(Scalar::Number(7.0))]
+    );
 
     // The same with each day's rule a nest of functions.
     let nested = format!(
         "{}[Account].[Flow] + BEFORE{}",
-        "IIF(1 = 1, ".repeat(4),
-        ", 0)".repeat(4)
+        "IIF(1 = 1, ".repeat(20),
+        ", 0)".repeat(20)
     );
-    let nested = carried(100_000, &nested);
-    assert_eq!(balance(&nested, "D2"), Ok(Scalar::Number(5.0)));
-    refused(&nested);
-}
+    assert_eq!(balance(&carried(5_000, &nested), "D5000"), seven);
 
+    // A circle too long to see at once is still a circle: the first day's balance is the
+    // last day's.
+    let round = "[Account].[Flow] + ([Account].[Balance], \
+                 IIF([Day].CurrentMember IS [Day].[D1], [Day].[D5000], [Day].CurrentMember.PrevMember))";
+    match balance(&carried(5_000, round), "D9") {
+        Err(Error::Rule(message)) => assert!(message.ends_with("depends on itself"), "{message}"),
+        other => panic!("expected a circle, found {other:?}"),
+    }
+}
 #[test]
 fn bad_rules_and_feeders_make_the_model_invalid() {
     let cases = [
