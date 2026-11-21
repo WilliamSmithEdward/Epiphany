@@ -1338,20 +1338,7 @@ impl<'a> Evaluator<'a> {
                 // To the member given, or to the current member of the cube's time dimension.
                 let member = match arguments.first() {
                     Some(argument) => self.member(argument, context)?,
-                    None => {
-                        let time = |&position: &usize| {
-                            self.dimension(position).kind == DimensionType::Time
-                        };
-                        let Some(position) = (0..context.len()).find(time) else {
-                            return fail(format!(
-                                "{function} needs a member, or a dimension of type 'time' in the cube"
-                            ));
-                        };
-                        Member {
-                            position,
-                            id: context[position],
-                        }
-                    }
+                    None => self.now(function, context)?,
                 };
                 let wanted = match function {
                     "YTD" => "Year",
@@ -1368,8 +1355,132 @@ impl<'a> Evaluator<'a> {
                 };
                 self.periods_to_date(member, level).map(Datum::Set)
             }
+            "LASTPERIODS" => {
+                count(1..=2)?;
+                let periods = self.number(&arguments[0], context)?.trunc();
+                let member = match arguments.get(1) {
+                    Some(argument) => self.member(argument, context)?,
+                    None => self.now(function, context)?,
+                };
+                // That many members of the level ending at the member, or for a negative
+                // number beginning at it; fewer where the level ends first.
+                let mut found = Vec::new();
+                for step in 0..periods.abs() as usize {
+                    let by = step as f64 * -periods.signum();
+                    match self.shift(member, by)? {
+                        Some(period) => found.push(vec![period]),
+                        None => break,
+                    }
+                }
+                if periods > 0.0 {
+                    found.reverse();
+                }
+                Ok(Datum::Set(found))
+            }
+            "OPENINGPERIOD" | "CLOSINGPERIOD" => {
+                count(1..=2)?;
+                let (position, level) = self.level(&arguments[0], context)?;
+                let mut member = self.member_of(arguments.get(1), position, context)?;
+                self.of_level(member, position)?;
+                // Down by first children, or by last, as far as the level.
+                loop {
+                    let (_, element) = self.element(member)?;
+                    let child = match function {
+                        "OPENINGPERIOD" => element.children.first(),
+                        _ => element.children.last(),
+                    };
+                    match (element.level.cmp(&level), child) {
+                        (Ordering::Equal, _) => return Ok(Datum::Member(member)),
+                        (Ordering::Greater, Some(&(child, _))) => member.id = Id::Element(child),
+                        _ => return Ok(Datum::Null),
+                    }
+                }
+            }
+            "DRILLDOWNMEMBER" | "TM1DRILLDOWNMEMBER" => {
+                count(2..=3)?;
+                let recursive = match flag(arguments.get(2)).as_deref() {
+                    None => false,
+                    Some("RECURSIVE") => true,
+                    Some(other) => return fail(format!("unknown {function} flag {other}")),
+                };
+                let set = self.set(&arguments[0], context)?;
+                // Every member, where TM1's function is told ALL; else those of the second set.
+                let all = function == "TM1DRILLDOWNMEMBER"
+                    && flag(arguments.get(1)).as_deref() == Some("ALL");
+                let (position, members) = match all {
+                    true => (None, HashSet::new()),
+                    false => self.chosen(self.set(&arguments[1], context)?),
+                };
+                let drilled = |member: Member, _: &Element| all || members.contains(&member);
+                Ok(Datum::Set(
+                    self.drill_down(set, position, recursive, &drilled),
+                ))
+            }
+            "DRILLDOWNLEVEL" => {
+                count(1..=2)?;
+                let set = self.set(&arguments[0], context)?;
+                let first = |tuple: &Tuple| tuple.first().copied();
+                Ok(Datum::Set(match arguments.get(1) {
+                    // The members of the level given.
+                    Some(level) => {
+                        let (position, level) = self.level(level, context)?;
+                        let at = |_: Member, element: &Element| element.level == level;
+                        self.drill_down(set, Some(position), false, &at)
+                    }
+                    // The members furthest beneath the top of their dimension.
+                    None => {
+                        let depths = set
+                            .iter()
+                            .filter_map(first)
+                            .map(|member| self.depth(member));
+                        let deepest = depths.max().unwrap_or(0);
+                        let at = |member: Member, _: &Element| self.depth(member) == deepest;
+                        self.drill_down(set, None, false, &at)
+                    }
+                }))
+            }
+            "DRILLUPMEMBER" => {
+                count(2..=2)?;
+                let set = self.set(&arguments[0], context)?;
+                let (position, members) = self.chosen(self.set(&arguments[1], context)?);
+                // The tuples that follow a chosen member and stand beneath it are left out.
+                let mut closed: Option<Member> = None;
+                let mut kept = Vec::new();
+                for tuple in set {
+                    let member = tuple
+                        .iter()
+                        .find(|member| Some(member.position) == position)
+                        .copied();
+                    let beneath = match (closed, member) {
+                        (Some(closed), Some(member)) => self.beneath(member, closed),
+                        _ => false,
+                    };
+                    if beneath {
+                        continue;
+                    }
+                    closed = member.filter(|member| members.contains(member));
+                    kept.push(tuple);
+                }
+                Ok(Datum::Set(kept))
+            }
             _ => fail(format!("unknown function {function}")),
         }
+    }
+
+    /// Whether a member stands beneath another of its dimension, by any of its parents.
+    fn beneath(&self, member: Member, other: Member) -> bool {
+        let (Id::Element(id), Id::Element(other)) = (member.id, other.id) else {
+            return false;
+        };
+        let elements = &self.dimension(member.position).elements;
+        let mut waiting = elements[id as usize].parents.to_vec();
+        while let Some(next) = waiting.pop() {
+            if next == other {
+                return true;
+            }
+            waiting.extend(&elements[next as usize].parents);
+        }
+        false
     }
 
     /// The members of a member's own level beneath its ancestor at a level, in the order of
@@ -1621,24 +1732,20 @@ impl<'a> Evaluator<'a> {
             }
             ("SIBLINGS", _) => {
                 let member = member()?;
-                let (_, element) = self.element(member)?;
-                let elements = &self.dimension(member.position).elements;
-                // The children of the first parent, or for a top element the other tops.
-                let siblings: Vec<ElementId> = match element.parents.first() {
-                    Some(&parent) => {
-                        let children = elements[parent as usize].children.iter();
-                        children.map(|&(id, _)| id).collect()
-                    }
-                    None => {
-                        let tops = elements.iter().enumerate();
-                        let tops = tops.filter(|(_, element)| element.parents.is_empty());
-                        tops.map(|(id, _)| id as ElementId).collect()
-                    }
-                };
-                let siblings = siblings.into_iter();
+                let siblings = self.siblings(member)?.into_iter();
                 Ok(Datum::Set(
                     siblings.map(|id| vec![one(member.position, id)]).collect(),
                 ))
+            }
+            ("FIRSTSIBLING" | "LASTSIBLING", _) => {
+                let member = member()?;
+                let siblings = self.siblings(member)?;
+                // A member is among its own siblings, so there is always one.
+                let found = match method {
+                    "FIRSTSIBLING" => siblings.first(),
+                    _ => siblings.last(),
+                };
+                Ok(found.map_or(Datum::Null, |&id| Datum::Member(one(member.position, id))))
             }
             ("CURRENTMEMBER", &Datum::Dimension(position)) => Ok(Datum::Member(Member {
                 position,
@@ -1701,6 +1808,90 @@ impl<'a> Evaluator<'a> {
             },
             (_, None) => Datum::Null,
         })
+    }
+
+    /// A member and its siblings: the children of its first parent, or for a top element the
+    /// tops of the dimension.
+    fn siblings(&self, member: Member) -> Evaluated<Vec<ElementId>> {
+        let (_, element) = self.element(member)?;
+        let elements = &self.dimension(member.position).elements;
+        Ok(match element.parents.first() {
+            Some(&parent) => {
+                let children = elements[parent as usize].children.iter();
+                children.map(|&(id, _)| id).collect()
+            }
+            None => {
+                let tops = elements.iter().enumerate();
+                let tops = tops.filter(|(_, element)| element.parents.is_empty());
+                tops.map(|(id, _)| id as ElementId).collect()
+            }
+        })
+    }
+
+    /// The current member of the cube's dimension of type `time`, for a function that is
+    /// given no member to start from.
+    fn now(&self, function: &str, context: &Context) -> Evaluated<Member> {
+        let time = |&position: &usize| self.dimension(position).kind == DimensionType::Time;
+        match (0..context.len()).find(time) {
+            Some(position) => Ok(Member {
+                position,
+                id: context[position],
+            }),
+            None => fail(format!(
+                "{function} needs a member, or a dimension of type 'time' in the cube"
+            )),
+        }
+    }
+
+    /// A set with the children of some of its tuples put in after them, each child standing
+    /// in its parent's place in the tuple. The member looked at is the tuple's member of the
+    /// dimension at `position`, or without one its first. `drilled` says whether a member is
+    /// to be opened; the children put in are asked too if `recursive`.
+    fn drill_down(
+        &self,
+        set: Vec<Tuple>,
+        position: Option<usize>,
+        recursive: bool,
+        drilled: &dyn Fn(Member, &Element) -> bool,
+    ) -> Vec<Tuple> {
+        let mut found = Vec::new();
+        let mut waiting: Vec<(Tuple, bool)> = set.into_iter().rev().map(|t| (t, true)).collect();
+        while let Some((tuple, asked)) = waiting.pop() {
+            let place = match position {
+                Some(position) => tuple.iter().position(|member| member.position == position),
+                None => (!tuple.is_empty()).then_some(0),
+            };
+            if asked
+                && let Some(place) = place
+                && let Ok((_, element)) = self.element(tuple[place])
+                && drilled(tuple[place], element)
+            {
+                for &(child, _) in element.children.iter().rev() {
+                    let mut below = tuple.clone();
+                    below[place].id = Id::Element(child);
+                    waiting.push((below, recursive));
+                }
+            }
+            found.push(tuple);
+        }
+        found
+    }
+
+    /// The members of the tuples of a set, and the position of their dimension: what a
+    /// drilling function is told to open or to close.
+    fn chosen(&self, set: Vec<Tuple>) -> (Option<usize>, HashSet<Member>) {
+        let members: HashSet<Member> = set.into_iter().flatten().collect();
+        (members.iter().next().map(|member| member.position), members)
+    }
+
+    /// How many steps a member is beneath the top of its dimension, going up by first parents.
+    fn depth(&self, mut member: Member) -> usize {
+        let mut depth = 0;
+        while let Ok(parent) = self.parent(member) {
+            member = parent;
+            depth += 1;
+        }
+        depth
     }
 
     fn parent(&self, member: Member) -> Evaluated<Member> {

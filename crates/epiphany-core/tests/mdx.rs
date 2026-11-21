@@ -1011,6 +1011,134 @@ fn periods_run_to_date_within_an_ancestor() {
     );
 }
 
+#[test]
+fn members_are_opened_and_closed_in_place() {
+    let columns = |set: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [General Ledger]");
+        names(&run(&mdx), 0)
+    };
+    let quarters = ["H1", "Q1", "Q2"];
+    let opened = ["H1", "Q1", "Jan", "Feb", "Mar", "Q2"];
+    let all = ["H1", "Q1", "Jan", "Feb", "Mar", "Q2", "Apr", "May", "Jun"];
+    let down = |arguments: &str| columns(&format!("DrilldownMember({arguments})"));
+    assert_eq!(down("{[Period].[H1]}, {[Period].[H1]}"), quarters);
+    assert_eq!(
+        down("{[Period].[H1], [Period].[Q1], [Period].[Q2]}, {[Period].[Q1]}"),
+        opened
+    );
+    // The children put in are opened too only when asked.
+    let both = "{[Period].[H1]}, {[Period].[H1], [Period].[Q1]}";
+    assert_eq!(down(both), quarters);
+    assert_eq!(down(&format!("{both}, RECURSIVE")), opened);
+    // A member that is not in the set stays as it is, and so does a leaf.
+    assert_eq!(down("{[Period].[H1]}, {[Period].[Q1]}"), ["H1"]);
+    assert_eq!(down("{[Period].[Jan]}, {[Period].[Jan]}"), ["Jan"]);
+    assert_eq!(
+        columns("TM1DrilldownMember({[Period].[H1]}, ALL, RECURSIVE)"),
+        all
+    );
+    assert_eq!(
+        columns("TM1DrilldownMember({[Period].[H1]}, ALL)"),
+        quarters
+    );
+    assert_eq!(
+        columns("TM1DrilldownMember({[Period].[H1]}, {[Period].[H1]})"),
+        quarters
+    );
+
+    // In a tuple the child takes its parent's place, whichever place that is.
+    let result = run(
+        "SELECT DrilldownMember({[Entity].[US]} * {[Period].[Q1], [Period].[Q2]}, {[Period].[Q2]}) \
+         ON COLUMNS FROM [General Ledger]",
+    );
+    assert_eq!(result.axes[0].tuples.len(), 5);
+    assert_eq!(result.axes[0].tuples[2][1].name, "Apr");
+    assert_eq!(result.axes[0].tuples[2][0].name, "US");
+
+    // A level is opened where it is deepest, or where it is named.
+    assert_eq!(columns("DrilldownLevel({[Period].[H1]})"), quarters);
+    assert_eq!(
+        columns("DrilldownLevel(DrilldownLevel({[Period].[H1]}))"),
+        all
+    );
+    assert_eq!(
+        columns(
+            "DrilldownLevel({[Period].[H1], [Period].[Q1], [Period].[Q2]}, [Period].Levels(2))"
+        ),
+        ["H1", "Q1", "Q2", "Q1", "Q2"]
+    );
+
+    // Closing a member takes away what follows beneath it, and nothing else.
+    let up = |members: &str| {
+        columns(&format!(
+            "DrillupMember(TM1DrilldownMember({{[Period].[H1]}}, ALL, RECURSIVE), {members})"
+        ))
+    };
+    assert_eq!(
+        up("{[Period].[Q1]}"),
+        ["H1", "Q1", "Q2", "Apr", "May", "Jun"]
+    );
+    assert_eq!(up("{[Period].[H1]}"), ["H1"]);
+    assert_eq!(up("{[Period].[Jan]}"), all);
+    let mistake = failure(
+        "SELECT DrilldownMember({[Period].[H1]}, {[Period].[H1]}, DEEP) ON COLUMNS FROM [General Ledger]",
+    );
+    assert!(
+        mistake.contains("unknown DRILLDOWNMEMBER flag DEEP"),
+        "{mistake}"
+    );
+}
+
+#[test]
+fn periods_are_counted_back_and_found_at_either_end() {
+    let columns = |set: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [General Ledger]");
+        names(&run(&mdx), 0)
+    };
+    assert_eq!(
+        columns("LastPeriods(3, [Period].[May])"),
+        ["Mar", "Apr", "May"]
+    );
+    assert_eq!(columns("LastPeriods(-2, [Period].[May])"), ["May", "Jun"]);
+    assert_eq!(columns("LastPeriods(1, [Period].[Q2])"), ["Q2"]);
+    // Where the level ends first there are fewer, and none at all of no periods.
+    assert_eq!(columns("LastPeriods(5, [Period].[Feb])"), ["Jan", "Feb"]);
+    assert!(columns("LastPeriods(0, [Period].[Feb])").is_empty());
+    let mistake = failure("SELECT LastPeriods(2) ON COLUMNS FROM [General Ledger]");
+    assert!(mistake.contains("dimension of type 'time'"), "{mistake}");
+
+    assert_eq!(
+        text("OpeningPeriod([Period].Levels(0), [Period].[Q2]).Name"),
+        "Apr"
+    );
+    assert_eq!(
+        text("ClosingPeriod([Period].Levels(0), [Period].[H1]).Name"),
+        "Jun"
+    );
+    assert_eq!(
+        text("ClosingPeriod([Period].Levels(1), [Period].[H1]).Name"),
+        "Q2"
+    );
+    assert_eq!(
+        text("OpeningPeriod([Period].Levels(1), [Period].[Q2]).Name"),
+        "Q2"
+    );
+    // The opening balance of a half is that of its first month.
+    assert_eq!(
+        number("([Account].[Product Revenue], OpeningPeriod([Period].Levels(0), [Period].[H1]))"),
+        Some(100.0)
+    );
+    // Nothing opens a month at the level of the quarters above it.
+    assert_eq!(
+        number("([Account].[Product Revenue], OpeningPeriod([Period].Levels(1), [Period].[Jan]))"),
+        None
+    );
+
+    assert_eq!(text("[Period].[May].FirstSibling.Name"), "Apr");
+    assert_eq!(text("[Period].[May].LastSibling.Name"), "Jun");
+    assert_eq!(text("[Period].[Q1].LastSibling.Name"), "Q2");
+}
+
 /// The example model with its periods as a time dimension whose levels have names.
 fn calendar() -> ModelDef {
     let mut definition = database().definition().clone();

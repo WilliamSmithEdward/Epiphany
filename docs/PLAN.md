@@ -188,15 +188,20 @@ practice that means:
     `SELF`, `AFTER`, `SELF_AND_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and
     `POST`), `NonEmpty`, and `TM1SubsetAll`, `TM1FilterByLevel`, `TM1FilterByPattern`,
     `TM1Sort`.
+  - Drilling: `DrilldownMember(set, members [, RECURSIVE])`, `TM1DrilldownMember` (which
+    also takes `ALL` for the members), `DrilldownLevel(set [, level])` and
+    `DrillupMember(set, members)`.
   - Members: `[Dimension].[Member]` by name or alias, `.Parent`, `.FirstChild`,
-    `.LastChild`, `.CurrentMember`, `Ancestor`, `.PrevMember`, `.NextMember`, `.Lag(n)`,
+    `.LastChild`, `.FirstSibling`, `.LastSibling`, `.CurrentMember`, `Ancestor`, `.PrevMember`, `.NextMember`, `.Lag(n)`,
     `.Lead(n)`, and `StrToMember`, `StrToTuple`, `StrToSet` for a member, tuple or set
     given as text.
   - Levels: `[Dimension].Levels(n)`, `[Dimension].Levels('name')`, `[Dimension].[name]`
     and `member.Level`, with `.Members`, `.Ordinal` and `.Name`; `Ancestor(member, level)`,
     `Descendants(member, level [, flag])`, `Cousin(member, ancestor)`,
-    `ParallelPeriod(level [, back [, member]])`, `PeriodsToDate(level [, member])`, and
-    `Ytd`, `Qtd`, `Mtd` and `Wtd`, each with or without a member.
+    `ParallelPeriod(level [, back [, member]])`, `PeriodsToDate(level [, member])`,
+    `LastPeriods(n [, member])`, `OpeningPeriod(level [, member])`,
+    `ClosingPeriod(level [, member])`, and `Ytd`, `Qtd`, `Mtd` and `Wtd`, each with or
+    without a member.
   - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `NOT`, `IIF`,
     `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`, `Aggregate`, `Avg`, `Min`, `Max`,
     `Count` and `.Count`, tuples as cell references, `.Name`, `.UniqueName`, `.Value`,
@@ -234,6 +239,14 @@ practice that means:
   - `Ytd`, `Qtd`, `Mtd` and `Wtd` run within the levels named Year, Quarter, Month and
     Week. Without a member they end at the current member of the cube's dimension of type
     `time`.
+  - Drilling puts a member's children after it, each in its parent's place in the tuple,
+    and opens a member wherever it stands, whether or not its children already follow.
+    `DrilldownLevel` without a level opens the members furthest beneath the top of their
+    dimension, which in a ragged hierarchy are not all of one level number.
+    `DrillupMember` leaves out what follows a member and stands beneath it.
+  - `LastPeriods` gives fewer members where the level ends first. `OpeningPeriod` and
+    `ClosingPeriod` need their level, go down by first or by last children, and give no
+    member if that way passes the level by.
   - `Cousin` and `ParallelPeriod` take the same child at each step down, so in a ragged
     hierarchy there may be no such member; then, as past the end of a level, there is none.
   - `TopSum` and `TopPercent` take tuples from the greatest down until their values reach
