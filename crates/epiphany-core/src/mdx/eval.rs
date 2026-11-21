@@ -2412,13 +2412,32 @@ fn bounded(tuples: Option<usize>) -> Evaluated<()> {
 
 /// Whether text matches a pattern in which `*` stands for any run of characters and `?` for
 /// any one.
+/// Each `*` first stands for nothing; when what follows it fails, the last one takes one
+/// more character and the rest is tried again. No earlier `*` need ever be gone back to, so
+/// a pattern of many stars costs no more than its length times the text's.
 fn wildcard(pattern: &[char], text: &[char]) -> bool {
-    match (pattern, text) {
-        ([], []) => true,
-        (['*', rest @ ..], _) => (0..=text.len()).any(|skipped| wildcard(rest, &text[skipped..])),
-        ([p, rest @ ..], [c, text @ ..]) => (*p == '?' || p == c) && wildcard(rest, text),
-        _ => false,
+    let (mut at, mut read) = (0, 0);
+    // The place after the last star, and how much of the text it had taken.
+    let mut star: Option<(usize, usize)> = None;
+    while read < text.len() {
+        match (pattern.get(at), star) {
+            (Some('*'), _) => {
+                star = Some((at + 1, read));
+                at += 1;
+            }
+            (Some(&p), _) if p == '?' || p == text[read] => {
+                at += 1;
+                read += 1;
+            }
+            (_, Some((after, taken))) => {
+                star = Some((after, taken + 1));
+                at = after;
+                read = taken + 1;
+            }
+            _ => return false,
+        }
     }
+    pattern[at..].iter().all(|&p| p == '*')
 }
 
 /// Every tuple of the left set joined with every tuple of the right.

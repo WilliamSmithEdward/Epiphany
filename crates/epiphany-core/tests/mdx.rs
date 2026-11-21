@@ -1287,6 +1287,53 @@ fn a_set_too_large_to_hold_is_refused() {
 }
 
 #[test]
+fn expressions_nested_too_deeply_are_refused() {
+    let nested = |deep: usize| format!("{}1{}", "IIF(1 = 1, ".repeat(deep), ", 0)".repeat(deep));
+    // As deep as is allowed is read and worked out.
+    assert_eq!(number(&nested(30)), Some(1.0));
+    for mdx in [
+        nested(70),
+        format!("{}1{}", "(".repeat(100_000), ")".repeat(100_000)),
+        format!("{}1", "- ".repeat(100_000)),
+        format!("{}1 = 1", "NOT ".repeat(100_000)),
+        format!("{}1{}", "{".repeat(100_000), "}".repeat(100_000)),
+    ] {
+        let mistake = failure(&format!(
+            "WITH MEMBER [Account].[X] AS {mdx} SELECT {{[Account].[X]}} ON COLUMNS FROM [General Ledger]"
+        ));
+        assert!(mistake.contains("nested more than 32 deep"), "{mistake}");
+    }
+}
+
+#[test]
+fn a_pattern_of_many_stars_is_matched_without_going_back_over_them() {
+    let matching = |pattern: &str| {
+        let mdx = format!(
+            "SELECT TM1FilterByPattern([Account].Members, \"{pattern}\") ON COLUMNS FROM [General Ledger]"
+        );
+        names(&run(&mdx), 0)
+    };
+    assert_eq!(
+        matching("*Revenue"),
+        ["Revenue", "Product Revenue", "Service Revenue"]
+    );
+    assert_eq!(
+        matching("*e*e*e"),
+        ["Revenue", "Product Revenue", "Service Revenue"]
+    );
+    assert_eq!(matching("?ent"), ["Rent"]);
+    assert_eq!(matching("Rent*"), ["Rent"]);
+    // Letters match in either case.
+    assert_eq!(
+        matching("*R*t**"),
+        ["Product Revenue", "Operating Expenses", "Rent"]
+    );
+    assert!(matching("Rent?").is_empty());
+    // Forty stars that can never be satisfied: tried every way round, this would not end.
+    assert!(matching(&format!("{}!", "*e".repeat(40))).is_empty());
+}
+
+#[test]
 fn dimensions_are_taken_out_of_a_set() {
     let crossed = "{[Entity].[US], [Entity].[UK]} * {[Period].[Jan], [Period].[Feb]}";
     let columns = |set: &str| {

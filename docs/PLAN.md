@@ -249,6 +249,9 @@ practice that means:
   - A set holds at most 1,000,000 tuples while a query is worked out, as a query returns
     at most 1,000,000 cells. A cross join that would hold more is refused before any of
     it is built, so that one short query cannot ask for more memory than there is.
+  - Expressions sit at most 32 deep inside one another, in a query, a rule, a feeder or a
+    subset alike. Reading and working out an expression go as deep as it does, and the
+    limit is what keeps a body of nothing but brackets from running a thread out of stack.
   - Drilling puts a member's children after it, each in its parent's place in the tuple,
     and opens a member wherever it stands, whether or not its children already follow.
     `DrilldownLevel` without a level opens the members furthest beneath the top of their

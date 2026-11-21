@@ -98,16 +98,27 @@ const METHODS: [&str; 24] = [
     "LASTCHILD",
 ];
 
+/// How deeply expressions may sit inside one another. Reading and working out an expression
+/// both go as deep as it does, and text of a few thousand brackets would otherwise run the
+/// thread out of stack and take the server with it.
+const DEEPEST: usize = 32;
+
 pub(super) struct Parser {
     tokens: Vec<(Token, usize)>,
     next: usize,
+    /// How many expressions are being read inside one another.
+    depth: usize,
 }
 
 type Parsed<T> = Result<T, MdxError>;
 
 impl Parser {
     pub(super) fn new(tokens: Vec<(Token, usize)>) -> Self {
-        Self { tokens, next: 0 }
+        Self {
+            tokens,
+            next: 0,
+            depth: 0,
+        }
     }
 
     pub(super) fn query(mut self) -> Parsed<Query> {
@@ -286,7 +297,8 @@ impl Parser {
             return self.unary();
         }
         if level == COMPARISONS && self.word("NOT") {
-            return Ok(Expr::Not(Box::new(self.binary(level)?)));
+            let operand = self.nested(|parser| parser.binary(COMPARISONS))?;
+            return Ok(Expr::Not(Box::new(operand)));
         }
         let mut left = self.binary(level + 1)?;
         while let Some(operator) = self.operator(LEVELS[level]) {
@@ -310,7 +322,23 @@ impl Parser {
         found
     }
 
+    /// Reads an expression that sits inside another, one level further down. Every way of
+    /// putting one expression inside another comes through here.
+    fn nested(&mut self, read: fn(&mut Self) -> Parsed<Expr>) -> Parsed<Expr> {
+        if self.depth == DEEPEST {
+            return Err(self.error(&format!("expressions are nested more than {DEEPEST} deep")));
+        }
+        self.depth += 1;
+        let expression = read(self);
+        self.depth -= 1;
+        expression
+    }
+
     fn unary(&mut self) -> Parsed<Expr> {
+        self.nested(Self::operand)
+    }
+
+    fn operand(&mut self) -> Parsed<Expr> {
         if self.symbol("-") {
             return Ok(Expr::Negate(Box::new(self.unary()?)));
         }
