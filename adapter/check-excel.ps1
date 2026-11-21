@@ -87,6 +87,9 @@ try {
         @('=SUBNM("Line","Texts","Amount")', ''),
         @('=SUBNM("Line","",1)', 'Comment'),
         @('=SUBNM("Line","Nope",1)', '*KEY_ERR'),
+        # Nobody is signed in to this server, so the name is empty.
+        @('=TM1USER("local")', ''),
+        @('=TM1USER("nowhere")', '*KEY_ERR'),
         @('=DNLEV("Period")', '3'),
         @('=DNEXT("Period","H1")', 'Q1'),
         @('=DNEXT("Period","Jun")', ''),

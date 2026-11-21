@@ -90,6 +90,20 @@ namespace Epiphany.Excel
             }
         }
 
+        /// <summary>The name signed in to an environment, or to the default one if none is
+        /// named; empty where the server asks for no sign-in. Null if there is no such
+        /// environment.</summary>
+        internal static string UserOf(string environment)
+        {
+            lock (Gate)
+            {
+                var place = fallback;
+                if (Dimension.Key(environment) != "")
+                    Places.TryGetValue(Dimension.Key(environment), out place);
+                return place?.User;
+            }
+        }
+
         /// <summary>Adds an environment, or replaces the one of the same name.</summary>
         private static Place Add(string name, string address, string user, Connection connection = null)
         {

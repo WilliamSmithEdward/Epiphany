@@ -19,7 +19,8 @@ use epiphany_core::database::{
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
-    AttributeType, ChildDef, CubeDef, Dimension, DimensionDef, ElementId, ElementType, ModelDef,
+    AttributeType, ChildDef, CubeDef, Dimension, DimensionDef, DimensionType, ElementId,
+    ElementType, ModelDef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -410,6 +411,10 @@ struct ModelPut {
 #[derive(Serialize, ToSchema)]
 struct DimensionView {
     name: String,
+    #[serde(rename = "type")]
+    kind: DimensionType,
+    /// The names of the levels, from the leaves up, where the model gives them.
+    levels: Vec<String>,
     attributes: BTreeMap<String, AttributeType>,
     /// Elements in declaration order.
     elements: Vec<ElementView>,
@@ -451,6 +456,8 @@ impl From<&Dimension> for DimensionView {
         });
         Self {
             name: dimension.name.clone(),
+            kind: dimension.kind,
+            levels: dimension.levels.clone(),
             attributes: dimension
                 .attributes
                 .iter()

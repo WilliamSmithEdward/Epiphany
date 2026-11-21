@@ -61,6 +61,12 @@ namespace Epiphany.Excel
             return Ask(nameof(DIMSIZ), dimension, found => found.Size());
         }
 
+        [ExcelFunction(Category = Category, Description = "The name signed in to an environment")]
+        public static object TM1USER(object environment)
+        {
+            return AddIn.UserOf(Text(environment)) ?? (object)Connection.KeyError;
+        }
+
         [ExcelFunction(Category = Category, Description = "The number of levels in a dimension")]
         public static object DNLEV(object dimension)
         {

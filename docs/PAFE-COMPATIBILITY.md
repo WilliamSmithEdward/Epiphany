@@ -77,6 +77,7 @@ corrected and the adapter with it.
 | `ELISANC` | dimension, element, other | Whether the element is above the other, at any distance | Same |
 | `ELWEIGHT` | dimension, parent, child | The child's weight in the parent; `0` if it is not a child of it | Same, unverified |
 | `SUBSIZ` | dimension, subset | The number of elements in the subset | Same |
+| `TM1USER` | environment | The name signed in to the environment, or to the default one if none is named; empty text where the server asks for no sign-in | Same, unverified |
 
 In these an unknown element gives `*KEY_ERR`.
 

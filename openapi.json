@@ -1810,6 +1810,8 @@
         "description": "A dimension with the hierarchy facts derived from its definition.",
         "required": [
           "name",
+          "type",
+          "levels",
           "attributes",
           "elements",
           "subsets"
@@ -1831,6 +1833,13 @@
             },
             "description": "Elements in declaration order."
           },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of the levels, from the leaves up, where the model gives them."
+          },
           "name": {
             "type": "string"
           },
@@ -1846,6 +1855,9 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "type": {
+            "$ref": "#/components/schemas/DimensionType"
           }
         }
       },

@@ -698,3 +698,32 @@ async fn the_stored_cells_of_a_cube_are_listed_and_can_be_written_back() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(body["code"], "unknown_cube");
 }
+
+#[tokio::test]
+async fn a_dimension_says_its_type_and_the_names_of_its_levels() {
+    let app = example();
+    let (_, plain) = call(&app, "GET", "/dimensions/Period", None).await;
+    assert_eq!(plain["type"], "standard");
+    assert_eq!(plain["levels"], json!([]));
+
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    let dimensions = served["model"]["dimensions"].as_array().unwrap();
+    let mut period = dimensions
+        .iter()
+        .find(|dimension| dimension["name"] == "Period")
+        .unwrap()
+        .clone();
+    period["type"] = json!("time");
+    period["levels"] = json!(["Month", "Quarter", "Half"]);
+    let put = json!({ "based_on": 1, "dimension": period });
+    let (status, _) = call(&app, "PUT", "/dimensions/Period", Some(put)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, timed) = call(&app, "GET", "/dimensions/Period", None).await;
+    assert_eq!(timed["type"], "time");
+    assert_eq!(timed["levels"], json!(["Month", "Quarter", "Half"]));
+    // And a query may use them at once.
+    let mdx = json!({ "mdx": "SELECT Qtd([Period].[May]) ON COLUMNS FROM [General Ledger]" });
+    let (status, answer) = call(&app, "POST", "/mdx", Some(mdx)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(answer["axes"][0]["tuples"].as_array().unwrap().len(), 2);
+}
