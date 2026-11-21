@@ -2455,14 +2455,27 @@ impl<'a> Evaluator<'a> {
     /// The value of the cell at a context. A calculated member there is evaluated first.
     fn cell(&self, context: &Context) -> Evaluated<Datum> {
         let Some(calculated) = self.calculated_at(context) else {
-            let at: Vec<ElementId> = context
-                .iter()
-                .map(|id| match id {
-                    Id::Element(id) => *id,
-                    Id::Calculated(_) => unreachable!("checked above"),
-                })
-                .collect();
-            return Ok(match (self.read)(self.cube_id, &at)? {
+            let element = |id: &Id| match id {
+                Id::Element(id) => *id,
+                Id::Calculated(_) => unreachable!("checked above"),
+            };
+            // Where the cell is, written where it is cheapest: here, for a cube of few
+            // enough dimensions, since this is done for every cell of every grid.
+            let mut few = [0; 16];
+            let many: Vec<ElementId>;
+            let at = match context.len() <= few.len() {
+                true => {
+                    few.iter_mut()
+                        .zip(context)
+                        .for_each(|(slot, id)| *slot = element(id));
+                    &few[..context.len()]
+                }
+                false => {
+                    many = context.iter().map(element).collect();
+                    &many
+                }
+            };
+            return Ok(match (self.read)(self.cube_id, at)? {
                 Scalar::Number(number) => Datum::Number(number),
                 Scalar::Text(text) => Datum::Text(text),
             });
@@ -2487,7 +2500,12 @@ impl<'a> Evaluator<'a> {
     /// Reduces a value to a number, text, truth or nothing: a member or tuple gives its cell.
     pub(super) fn scalar(&self, datum: Datum, context: &Context) -> Evaluated<Datum> {
         match datum {
-            Datum::Member(member) => self.cell(&with(context, &vec![member])),
+            Datum::Member(member) => {
+                // The one member put in its place, without a tuple made to hold it.
+                let mut context = context.clone();
+                context[member.position] = member.id;
+                self.cell(&context)
+            }
             Datum::Tuple(tuple) => self.cell(&with(context, &tuple)),
             Datum::Set(_) | Datum::Dimension(_) | Datum::Level(..) => {
                 fail("expected a value, found a set")
