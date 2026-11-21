@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 
 use axum::Extension;
@@ -38,6 +39,9 @@ type Shared = Arc<RwLock<Database>>;
 struct AppState {
     database: Shared,
     auth: Option<Arc<Auth>>,
+    /// The model's version, kept beside the database so that it can be read without waiting
+    /// for whoever is writing.
+    version: Arc<AtomicU64>,
 }
 
 impl FromRef<AppState> for Shared {
@@ -147,6 +151,7 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
         getrandom::u64().expect("the operating system provides randomness") >> 11
     });
     let state = AppState {
+        version: Arc::new(AtomicU64::new(database.model_version())),
         database: Arc::new(RwLock::new(database)),
         auth: auth.map(Arc::new),
     };
@@ -155,7 +160,7 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
     // Nearest the routes comes the handing over, so that a request is given a thread only
     // once it has been let in and has arrived whole.
     router
-        .layer(from_fn_with_state(state.database.clone(), survive))
+        .layer(from_fn_with_state(state.clone(), survive))
         .layer(from_fn_with_state(state.clone(), require_session))
         .layer(from_fn_with_state(state.clone(), stamp))
         .route("/openapi.json", get(async move || Json(contract)))
@@ -169,7 +174,8 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
 /// One thing cannot be carried on from: a write that stopped part of the way through. What
 /// is in memory is then in no known state and every later request would fail on it, so the
 /// server stops, to be started again from what is on disk, where only whole commits are.
-async fn survive(State(database): State<Shared>, request: Request, next: Next) -> Response {
+async fn survive(State(state): State<AppState>, request: Request, next: Next) -> Response {
+    let database = &state.database;
     // The body is taken in first, here where waiting for it holds up nothing: a request
     // handed over while its body was still on its way would keep a thread for as long as
     // the sender cared to take, and a few hundred senders in no hurry would have them all.
@@ -192,7 +198,17 @@ async fn survive(State(database): State<Shared>, request: Request, next: Next) -
     // request where it is and telling the runtime so (`block_in_place`) cost 7, and left
     // some of the adapter's requests unanswered.
     let runtime = tokio::runtime::Handle::current();
-    let answer = tokio::task::spawn_blocking(move || runtime.block_on(next.run(request)));
+    // Only these change the model. Its version is noted afresh after one of them, there on
+    // the thread that may wait; never set back, should two of them finish out of turn.
+    let changes = matches!(*request.method(), Method::PUT | Method::DELETE);
+    let (shared, version) = (Arc::clone(database), Arc::clone(&state.version));
+    let answer = tokio::task::spawn_blocking(move || {
+        let response = runtime.block_on(next.run(request));
+        if let (true, Ok(database)) = (changes, shared.read()) {
+            version.fetch_max(database.model_version(), Ordering::Relaxed);
+        }
+        response
+    });
     if let Ok(response) = answer.await {
         return response;
     }
@@ -230,7 +246,9 @@ const MODEL_VERSION: &str = "epiphany-model-version";
 /// Puts the model's version on a response, refusals included.
 async fn stamp(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let mut response = next.run(request).await;
-    let version = state.database.read().unwrap().model_version();
+    // Read from beside the database: this runs on a thread that takes requests in, which
+    // must not be kept waiting for a write to finish.
+    let version = state.version.load(Ordering::Relaxed);
     response
         .headers_mut()
         .insert(MODEL_VERSION, HeaderValue::from(version));
@@ -1215,12 +1233,16 @@ mod tests {
     async fn a_request_that_goes_wrong_is_answered_and_so_is_the_next() {
         let model = serde_json::json!({ "dimensions": [], "cubes": [] });
         let database = Database::new(serde_json::from_value(model).unwrap()).unwrap();
-        let database: Shared = Arc::new(RwLock::new(database));
+        let state = AppState {
+            version: Arc::new(AtomicU64::new(database.model_version())),
+            database: Arc::new(RwLock::new(database)),
+            auth: None,
+        };
         let fail = get(async || -> &'static str { panic!("as nobody foresaw") });
         let application = Router::new()
             .route("/fail", fail)
             .route("/fine", get(async || "fine"))
-            .layer(from_fn_with_state(database, survive));
+            .layer(from_fn_with_state(state, survive));
         let ask = |path: &'static str| {
             let request = Request::builder().uri(path).body(Body::empty()).unwrap();
             application.clone().oneshot(request)
