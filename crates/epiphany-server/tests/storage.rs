@@ -267,10 +267,15 @@ impl Drop for Server {
 
 /// Posts JSON and returns the status and the body.
 fn post(port: u16, path: &str, body: Json) -> (u16, String) {
+    send(port, "POST", path, body)
+}
+
+/// Sends a request with a JSON body and returns the status and the body of the answer.
+fn send(port: u16, method: &str, path: &str, body: Json) -> (u16, String) {
     let body = body.to_string();
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     let head = format!(
-        "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "{method} {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream
@@ -588,6 +593,18 @@ fn many_clients_at_once_leave_every_cell_as_its_last_writer_left_it() {
                             let mdx = queries[dice.roll(queries.len())];
                             let (status, answer) = post(port, "/mdx", json!({ "mdx": mdx }));
                             said("query", status, &answer);
+                        }
+                        // The model put back as it stands: a new version of it, or a refusal
+                        // because it has moved on or a transaction is open.
+                        7 if dice.roll(4) == 0 => {
+                            let (status, answer) = send(port, "GET", "/model", json!(null));
+                            said("model", status, &answer);
+                            let Ok(current) = serde_json::from_str::<Json>(&answer) else {
+                                continue;
+                            };
+                            let update = json!({ "based_on": current["version"], "model": current["model"] });
+                            let (status, answer) = send(port, "PUT", "/model", update);
+                            said("model update", status, &answer);
                         }
                         _ => {
                             let body = json!({ "cells": [cell(EXPENSES), cell(mine[own])] });
