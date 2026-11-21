@@ -16,14 +16,13 @@
 //! A commit is appended to the log and flushed to disk before it is acknowledged. Opening the
 //! directory loads the snapshot, replays the log, and replaces both with a fresh snapshot.
 
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::error::Error;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use epiphany_core::database::{CellWrite, Database, Journal};
+use epiphany_core::database::{CellWrite, Database, Journal, NamedCells};
 use epiphany_core::model::ModelDef;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -37,9 +36,9 @@ struct ModelFile {
 }
 
 #[derive(Serialize, Deserialize)]
-struct Snapshot<'a> {
+struct Snapshot<Cells> {
     model_version: u64,
-    cells: Cow<'a, [CellWrite]>,
+    cells: Cells,
 }
 
 /// Opens the database kept in a directory. The directory must hold a `model` folder; the
@@ -73,7 +72,7 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
     let mut database = Database::restore(load_model(&model)?, version)?;
 
     let mut skipped = 0;
-    if let Some(snapshot) = read_json::<Snapshot>(&data.join("snapshot.json"))? {
+    if let Some(snapshot) = read_json::<Snapshot<Vec<CellWrite>>>(&data.join("snapshot.json"))? {
         skipped += database.load(&snapshot.cells);
     }
     let log = data.join("log.jsonl");
@@ -125,7 +124,7 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
         settle(&data)?;
     }
     if !recorded.is_empty() {
-        files.snapshot(version, &database.cells())?;
+        files.snapshot(version, &database.named_cells())?;
     }
     database.set_journal(Box::new(files));
     Ok(database)
@@ -290,10 +289,10 @@ impl Journal for Files {
         self.log_bytes > LOG_LIMIT
     }
 
-    fn snapshot(&mut self, model_version: u64, cells: &[CellWrite]) -> io::Result<()> {
+    fn snapshot(&mut self, model_version: u64, cells: &NamedCells<'_>) -> io::Result<()> {
         let snapshot = Snapshot {
             model_version,
-            cells: Cow::Borrowed(cells),
+            cells,
         };
         let written = write_whole(
             &self.directory.join("data").join("snapshot.json"),

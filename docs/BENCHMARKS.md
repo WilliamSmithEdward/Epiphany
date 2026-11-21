@@ -181,6 +181,11 @@ million cells took 131 MB, about 131 bytes a cell; written close, a million and 
 take 87 MB, about 58 bytes a cell, and a server holding them starts in 2 seconds
 (2026-11-21).
 
+A snapshot named every cell before writing any, and the server's memory, 106 MB for its
+cells, rose to 460 MB while it did, some 300 bytes a cell. Each cell is now named as it
+is written: the peak through the same load is 177 MB. Measured as the process's largest
+working set over a load of 1.5 million cells in requests of 25,000 (2026-11-21).
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.

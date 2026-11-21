@@ -130,7 +130,45 @@ pub trait Journal: Send + Sync + fmt::Debug {
     fn is_full(&self) -> bool;
 
     /// Records every stored cell, replacing the commits recorded so far.
-    fn snapshot(&mut self, model_version: u64, cells: &[CellWrite]) -> io::Result<()>;
+    fn snapshot(&mut self, model_version: u64, cells: &NamedCells<'_>) -> io::Result<()>;
+}
+
+/// Every stored cell of a database, addressed by name. It is named a cell at a time as it is
+/// written out: a snapshot of a million cells that named them all first took some 300 bytes
+/// a cell beside the cells themselves, three times what they take.
+pub struct NamedCells<'a> {
+    model: &'a Model,
+    cells: &'a [Cells],
+}
+
+impl NamedCells<'_> {
+    fn each(&self) -> impl Iterator<Item = CellWrite> + '_ {
+        let cubes = self.cells.iter().enumerate();
+        cubes.flat_map(move |(cube, cells)| {
+            let entries = cells.entries();
+            entries.map(move |(at, value)| named(self.model, cube, at, value))
+        })
+    }
+}
+
+impl serde::Serialize for NamedCells<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.each())
+    }
+}
+
+/// A cell and its value, addressed by name.
+fn named(model: &Model, cube: usize, at: &[ElementId], value: Scalar) -> CellWrite {
+    let cube = &model.cubes()[cube];
+    let name = |(&dimension, &element): (&u32, &ElementId)| {
+        let dimension = &model.dimensions()[dimension as usize];
+        dimension.elements[element as usize].name.clone()
+    };
+    CellWrite {
+        cube: cube.name.clone(),
+        at: cube.dimensions.iter().zip(at).map(name).collect(),
+        value,
+    }
 }
 
 #[derive(Debug)]
@@ -213,13 +251,15 @@ impl Database {
 
     /// Every stored cell, addressed by name.
     pub fn cells(&self) -> Vec<CellWrite> {
-        let mut named = Vec::new();
-        for (cube, cells) in self.cells.iter().enumerate() {
-            for (at, value) in cells.entries() {
-                named.push(self.named(cube, at, value));
-            }
+        self.named_cells().each().collect()
+    }
+
+    /// Every stored cell, addressed by name, to be written out a cell at a time.
+    pub fn named_cells(&self) -> NamedCells<'_> {
+        NamedCells {
+            model: &self.model,
+            cells: &self.cells,
         }
-        named
     }
 
     /// The stored cells of one cube, addressed by name: how many there are, and those from
@@ -695,7 +735,10 @@ impl Database {
     }
 
     fn snapshot(&mut self) {
-        let cells = self.cells();
+        let cells = NamedCells {
+            model: &self.model,
+            cells: &self.cells,
+        };
         if let Some(journal) = &mut self.journal {
             let _ = journal.snapshot(self.model_version, &cells);
         }
@@ -703,16 +746,7 @@ impl Database {
 
     /// A cell and its value, addressed by name.
     fn named(&self, cube: usize, at: &[ElementId], value: Scalar) -> CellWrite {
-        let cube = &self.model.cubes()[cube];
-        let name = |(&dimension, &element): (&u32, &ElementId)| {
-            let dimension = &self.model.dimensions()[dimension as usize];
-            dimension.elements[element as usize].name.clone()
-        };
-        CellWrite {
-            cube: cube.name.clone(),
-            at: cube.dimensions.iter().zip(at).map(name).collect(),
-            value,
-        }
+        named(&self.model, cube, at, value)
     }
 
     /// Removes a transaction and releases its locks.
