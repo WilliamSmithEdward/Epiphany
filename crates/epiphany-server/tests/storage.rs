@@ -359,3 +359,95 @@ fn requests_that_never_finish_arriving_hold_nobody_up() {
     );
     drop(stalled);
 }
+
+/// Every file beneath a directory, with what it holds.
+fn files(directory: &std::path::Path) -> Vec<(std::path::PathBuf, Vec<u8>)> {
+    let mut found = Vec::new();
+    for entry in fs::read_dir(directory).unwrap() {
+        let path = entry.unwrap().path();
+        match path.is_dir() {
+            true => found.extend(files(&path)),
+            false => found.push((path.clone(), fs::read(&path).unwrap())),
+        }
+    }
+    found
+}
+
+#[test]
+fn damaged_files_are_refused_or_recovered_from_and_never_fatal() {
+    let home = Home::new("damaged");
+    let mut database = home.open();
+    // Enough history for there to be something of every kind on disk.
+    database.write(None, &[set(RENT, 25.0)]).unwrap();
+    let france = with_france(&database);
+    database
+        .update_model(database.model_version(), france)
+        .unwrap();
+    database.write(None, &[set(SALARIES, 40.0)]).unwrap();
+    drop(database);
+
+    let whole = files(&home.0);
+    assert!(whole.len() > 5, "{} files", whole.len());
+    let mut down = Vec::new();
+    let mut opened = 0;
+    for (path, contents) in &whole {
+        if path.ends_with("lock") {
+            continue;
+        }
+        let half = contents.len() / 2;
+        let mut flipped = contents.clone();
+        if let Some(byte) = flipped.get_mut(half) {
+            *byte ^= 0xff;
+        }
+        let damages: [(&str, Vec<u8>); 9] = [
+            ("emptied", Vec::new()),
+            ("cut in half", contents[..half].to_vec()),
+            (
+                "without its last byte",
+                contents[..contents.len().saturating_sub(1)].to_vec(),
+            ),
+            ("with a byte turned over", flipped),
+            (
+                "followed by nonsense",
+                [contents.as_slice(), b"\n\x00\xff{[\"nonsense"].concat(),
+            ),
+            ("made of nulls", vec![0; contents.len()]),
+            ("holding only a bracket", b"[".to_vec()),
+            ("holding null", b"null".to_vec()),
+            (
+                "twice over",
+                [contents.as_slice(), contents.as_slice()].concat(),
+            ),
+        ];
+        for (damage, damaged) in damages {
+            // Everything as it was, but for the one file.
+            for (other, contents) in &whole {
+                fs::write(other, contents).unwrap();
+            }
+            fs::write(path, damaged).unwrap();
+            let attempt = std::panic::catch_unwind(|| {
+                let Ok(mut database) = open(&home.0) else {
+                    return false;
+                };
+                // Opened, it must also answer and take a write.
+                drop(database.query(
+                    None,
+                    "SELECT [Account].Members ON COLUMNS FROM [General Ledger]",
+                ));
+                drop(database.write(None, &[set(RENT, 1.0)]));
+                true
+            });
+            match attempt {
+                Ok(taken) => opened += usize::from(taken),
+                Err(_) => down.push(format!("{} {damage}", path.display())),
+            }
+        }
+    }
+    assert!(
+        down.is_empty(),
+        "the server came down on:\n{}",
+        down.join("\n")
+    );
+    // Some damage is recovered from and some is refused: both happen.
+    assert!(opened > 0, "nothing damaged was ever opened");
+}
