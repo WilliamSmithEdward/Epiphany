@@ -1195,3 +1195,34 @@ fn the_top_of_a_set_is_taken_by_sum_or_by_share() {
         "{mistake}"
     );
 }
+
+#[test]
+fn a_level_means_nothing_to_another_dimension() {
+    for set in [
+        "Descendants([Account].[Net Income], [Period].Levels(1))",
+        "{Ancestor([Account].[Rent], [Period].Levels(1))}",
+        "PeriodsToDate([Period].Levels(2), [Account].[Rent])",
+        "{ParallelPeriod([Period].Levels(1), 1, [Account].[Rent])}",
+    ] {
+        let mistake = failure(&format!("SELECT {set} ON COLUMNS FROM [General Ledger]"));
+        let expected =
+            "the level is one of dimension 'Period', and the member belongs to 'Account'";
+        assert!(mistake.contains(expected), "{set}: {mistake}");
+    }
+}
+
+#[test]
+fn a_share_of_a_loss_is_reached_from_above() {
+    // January's product revenue taken as a loss: -150 in all, -100 in the US, -50 in the UK.
+    let by = "-([Account].[Product Revenue], [Period].[Jan], [Version].[Actual])";
+    let columns = |function: &str, amount: f64| {
+        let mdx = format!(
+            "SELECT {function}([Entity].Members, {amount}, {by}) ON COLUMNS FROM [General Ledger]"
+        );
+        names(&run(&mdx), 0)
+    };
+    // Half of the whole, which is -300, is -150.
+    assert_eq!(columns("TopPercent", 50.0), ["UK", "US"]);
+    assert_eq!(columns("BottomPercent", 50.0), ["Total Entity"]);
+    assert_eq!(columns("BottomSum", -200.0), ["Total Entity", "US"]);
+}

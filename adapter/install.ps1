@@ -5,10 +5,13 @@
 #
 # It copies the add-in to %APPDATA%\Epiphany and names it in Excel's list of add-ins to open
 # (the OPEN values under HKCU\Software\Microsoft\Office\16.0\Excel\Options). Close Excel first.
-# -Xll names the add-in file, if it is not the one this repository builds.
+# -Xll names the add-in file, if it is not the one this repository builds, and -Bitness (x64 or
+# x86) says which Excel it is for, if Office does not say.
 param(
     [switch]$Remove,
     [string]$Xll,
+    # x64 or x86, if Office does not say which it is or says it wrongly.
+    [ValidateSet('x64', 'x86', '')][string]$Bitness = '',
     # Where Excel keeps its list; only the installer's own test gives another.
     [string]$Options = 'HKCU:\Software\Microsoft\Office\16.0\Excel\Options',
     [string]$Folder = (Join-Path $env:APPDATA 'Epiphany')
@@ -47,9 +50,15 @@ if ($Remove) {
 }
 
 if (-not $Xll) {
-    # The add-in must match Excel: 64-bit Excel takes the file with 64 in its name.
-    $bitness = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration' -ErrorAction SilentlyContinue).Platform
-    $name = if ($bitness -eq 'x86') { 'Epiphany-packed.xll' } else { 'Epiphany64-packed.xll' }
+    # The add-in must match Excel: 64-bit Excel takes the file with 64 in its name. Office
+    # says which it is in one of three places, depending on how it was installed.
+    $said = @(
+        @('HKLM:\SOFTWARE\Microsoft\Office\ClickToRun\Configuration', 'Platform'),
+        @('HKLM:\SOFTWARE\Microsoft\Office\16.0\Outlook', 'Bitness'),
+        @('HKLM:\SOFTWARE\WOW6432Node\Microsoft\Office\16.0\Outlook', 'Bitness')
+    ) | ForEach-Object { (Get-ItemProperty $_[0] -ErrorAction SilentlyContinue).($_[1]) } | Where-Object { $_ } | Select-Object -First 1
+    if (-not $Bitness) { $Bitness = if ($said -eq 'x86') { 'x86' } else { 'x64' } }
+    $name = if ($Bitness -eq 'x86') { 'Epiphany-packed.xll' } else { 'Epiphany64-packed.xll' }
     $Xll = Join-Path $PSScriptRoot "Epiphany.Excel\bin\Release\net472\publish\$name"
 }
 if (-not (Test-Path $Xll)) {
@@ -59,4 +68,4 @@ New-Item -ItemType Directory -Force $Folder | Out-Null
 Copy-Item $Xll $installed -Force
 if (-not (Test-Path $Options)) { New-Item $Options -Force | Out-Null }
 Relist ($others + $ours)
-"Installed $installed. Start Excel; the Epiphany menu is on the Add-ins tab."
+"Installed $installed. Start Excel; its ribbon has an Epiphany tab."

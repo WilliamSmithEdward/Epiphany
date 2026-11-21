@@ -865,10 +865,16 @@ impl<'a> Evaluator<'a> {
                     true => whole * wanted / 100.0,
                     false => wanted,
                 };
+                // An amount below zero, a share of a set that comes to a loss say, is
+                // reached from above.
+                let there = |reached: f64| match amount >= 0.0 {
+                    true => reached >= amount,
+                    false => reached <= amount,
+                };
                 let mut reached = 0.0;
                 let mut kept = Vec::new();
                 for (value, tuple) in keyed {
-                    if reached >= amount {
+                    if there(reached) {
                         break;
                     }
                     reached += value;
@@ -1058,7 +1064,10 @@ impl<'a> Evaluator<'a> {
                     .get(1)
                     .map(|argument| self.evaluate(argument, context))
                 {
-                    Some(Ok(Datum::Level(_, to))) => level = Some(to),
+                    Some(Ok(Datum::Level(position, to))) => {
+                        self.of_level(member, position)?;
+                        level = Some(to);
+                    }
                     Some(steps) => {
                         distance = Some(to_number(&self.scalar(steps?, context)?)? as usize);
                     }
@@ -1107,7 +1116,8 @@ impl<'a> Evaluator<'a> {
                 let mut member = self.member(&arguments[0], context)?;
                 // Up to a level, or up a number of steps.
                 match self.evaluate(&arguments[1], context)? {
-                    Datum::Level(_, level) => {
+                    Datum::Level(position, level) => {
+                        self.of_level(member, position)?;
                         member = self.ancestor_at(member, level)?.ok_or_else(|| {
                             let name = self.name(member);
                             MdxError::new(format!(
@@ -1306,6 +1316,7 @@ impl<'a> Evaluator<'a> {
                     None => 1.0,
                 };
                 let member = self.member_of(arguments.get(2), position, context)?;
+                self.of_level(member, position)?;
                 // The member in the same place under the ancestor that many places back.
                 let mut parallel = None;
                 if let Some(ancestor) = self.ancestor_at(member, level)?
@@ -1319,6 +1330,7 @@ impl<'a> Evaluator<'a> {
                 count(1..=2)?;
                 let (position, level) = self.level(&arguments[0], context)?;
                 let member = self.member_of(arguments.get(1), position, context)?;
+                self.of_level(member, position)?;
                 self.periods_to_date(member, level).map(Datum::Set)
             }
             "YTD" | "QTD" | "MTD" | "WTD" => {
@@ -1388,6 +1400,18 @@ impl<'a> Evaluator<'a> {
             }]
         };
         Ok(periods.into_iter().map(one).collect())
+    }
+
+    /// A level belongs to one dimension and means nothing to a member of another.
+    fn of_level(&self, member: Member, position: usize) -> Evaluated<()> {
+        match member.position == position {
+            true => Ok(()),
+            false => fail(format!(
+                "the level is one of dimension '{}', and the member belongs to '{}'",
+                self.dimension(position).name,
+                self.dimension(member.position).name
+            )),
+        }
     }
 
     /// A level given as an argument: the position of its dimension, and the level.

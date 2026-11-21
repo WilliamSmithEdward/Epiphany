@@ -233,12 +233,20 @@ impl Database {
         limit: usize,
     ) -> Result<(usize, Vec<CellWrite>), Error> {
         let id = self.cube_id(cube)?;
-        let mut entries: Vec<_> = self.cells[id].entries().collect();
-        entries.sort_by_key(|(at, _)| *at);
-        let total = entries.len();
-        let page = entries.into_iter().skip(offset).take(limit);
-        let cells = page.map(|(at, value)| self.named(id, at, value)).collect();
-        Ok((total, cells))
+        let cells = &self.cells[id];
+        let mut stored: Vec<&[ElementId]> = cells.stored_at().collect();
+        let total = stored.len();
+        // Only the cells up to the end of the page need be in order, and only those of the
+        // page are copied out.
+        let end = offset.saturating_add(limit).min(total);
+        if end < total {
+            stored.select_nth_unstable(end);
+            stored.truncate(end);
+        }
+        stored.sort_unstable();
+        let page = stored.into_iter().skip(offset);
+        let named = page.map(|at| self.named(id, at, cells.value(at)));
+        Ok((total, named.collect()))
     }
 
     /// Takes transaction ids from a source of its own choosing, such as random numbers that

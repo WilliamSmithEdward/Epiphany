@@ -161,7 +161,7 @@ function keepSession(answer) {
 function roleOn(name) {
   if (!grants) return 'admin';
   const same = other => other.replace(/\s/g, '').toLowerCase() === name.replace(/\s/g, '').toLowerCase();
-  const own = Object.entries(grants.cubes).find(([other]) => same(other));
+  const own = Object.entries(grants.cubes ?? {}).find(([other]) => same(other));
   return own ? own[1] : grants.role;
 }
 const mayWrite = name => ['write', 'admin'].includes(roleOn(name));

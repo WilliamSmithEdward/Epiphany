@@ -143,7 +143,10 @@ try {
     Excel { $excel.Run('Disconnect') } | Out-Null
     # Not asked for again unasked: after Disconnect a refused formula just shows #N/A.
     Excel { $sheet.Cells.Item(2, 1).Formula = $read -f 'Feb' }
-    $checks['after Disconnect a formula is refused'] = (Shown 2 '#N/A') -eq '#N/A'
+    $refused = Shown 2 '#N/A'
+    if ($refused -ne '#N/A') { "after Disconnect the formula shows <$refused>" }
+    $checks['after Disconnect a formula is refused'] = $refused -eq '#N/A'
+    $checks['and TM1USER gives no name'] = (Shown 4 '') -eq ''
 
     $failures = 0
     foreach ($check in $checks.GetEnumerator()) {

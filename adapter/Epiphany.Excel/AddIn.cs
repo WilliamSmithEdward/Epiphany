@@ -100,7 +100,9 @@ namespace Epiphany.Excel
                 var place = fallback;
                 if (Dimension.Key(environment) != "")
                     Places.TryGetValue(Dimension.Key(environment), out place);
-                return place?.User;
+                // The name is remembered from one day to the next; it is someone's only
+                // while there is a session.
+                return place == null ? null : place.Connection.SignedIn ? place.User : "";
             }
         }
 
@@ -137,12 +139,18 @@ namespace Epiphany.Excel
         [ExcelCommand(MenuName = Menu, MenuText = "Refresh", ShortCut = "^R")]
         public static void Refresh()
         {
+            // Asking for a refresh is asking to be connected, so the sign-in window may open.
+            foreach (var place in Places.Values)
+                place.Declined = false;
+            AskAgain();
+        }
+
+        /// <summary>Has every formula ask its server again.</summary>
+        private static void AskAgain()
+        {
             Refreshes++;
             foreach (var place in Places.Values)
-            {
-                place.Declined = false;
                 place.Connection.Refresh();
-            }
             // Every formula is calculated again, whether or not Excel holds it to be out of date.
             ((Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application).CalculateFull();
         }
@@ -206,7 +214,18 @@ namespace Epiphany.Excel
         [ExcelCommand(MenuName = Menu, MenuText = "Connect...")]
         public static void Connect()
         {
-            Connect(fallback);
+            if (Settled("connect"))
+                Connect(fallback);
+        }
+
+        /// <summary>Whether no transaction is open. One that is would be left behind, neither
+        /// committed nor rolled back, by anything that changes or ends the connection; so the
+        /// user is told to end it first.</summary>
+        private static bool Settled(string what)
+        {
+            if (InTransaction)
+                MessageBox.Show("Commit the transaction or roll it back before you " + what + ".", Menu);
+            return !InTransaction;
         }
 
         /// <summary>Asks where an environment's server is and who is signing in, until the
@@ -234,6 +253,7 @@ namespace Epiphany.Excel
                 asking = false;
             }
             Save();
+            Say(null);
             Refresh();
         }
 
@@ -263,11 +283,17 @@ namespace Epiphany.Excel
         [ExcelCommand(MenuName = Menu, MenuText = "Disconnect")]
         public static void Disconnect()
         {
+            if (!Settled("disconnect"))
+                return;
             foreach (var place in Places.Values.ToArray())
             {
                 Task.Run(() => place.Connection.SignOut()).Wait();
+                // Someone who has just disconnected does not want to be asked to sign in.
                 place.Declined = true;
             }
+            Say(null);
+            // Every formula asks again and is refused, so the sheet shows that it is cut off.
+            AskAgain();
         }
 
         /// <summary>Remembers each environment's server and who signs in. Never a password.</summary>

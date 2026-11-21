@@ -73,6 +73,20 @@ impl Cells {
         Scalar::Number(stored + pending.iter().filter_map(change).sum::<f64>())
     }
 
+    /// Where every stored cell is.
+    pub(crate) fn stored_at(&self) -> impl Iterator<Item = &[ElementId]> {
+        let numbers = self.numbers.keys().map(|at| &**at);
+        numbers.chain(self.texts.keys().map(|at| &**at))
+    }
+
+    /// What is stored at a leaf cell: its text, or its number, zero if it holds none.
+    pub(crate) fn value(&self, at: &[ElementId]) -> Scalar {
+        match self.texts.get(at) {
+            Some(text) => Scalar::Text(text.clone()),
+            None => Scalar::Number(self.numbers.get(at).copied().unwrap_or(0.0)),
+        }
+    }
+
     /// Every stored cell and its value.
     pub(crate) fn entries(&self) -> impl Iterator<Item = (&Coordinate, Scalar)> {
         let numbers = self

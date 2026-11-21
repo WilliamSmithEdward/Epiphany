@@ -180,6 +180,10 @@ namespace Epiphany.Excel
             return reply.Ok || reply.Status == 404;
         }
 
+        /// <summary>Whether a session has been begun and not ended here. The server may have
+        /// ended it since, which the next request finds out.</summary>
+        public bool SignedIn => http.DefaultRequestHeaders.Authorization != null;
+
         /// <summary>Ends the session, if there is one.</summary>
         public async Task SignOut()
         {
