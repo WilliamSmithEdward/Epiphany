@@ -207,6 +207,41 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task DimensionFunctionsTakeWhateverAWorksheetHandsThem()
+        {
+            object Period(Func<Dimension, object> question) => connection.Ask("Period", question).Result;
+            await connection.Ask("Period", period => period.Size());
+
+            // A position that is no position is past the end: empty text, as beyond the last.
+            foreach (var index in new[] { double.NaN, double.NegativeInfinity, double.PositiveInfinity, -1, 0.99, 1e300 })
+            {
+                Assert.Equal("", Period(period => period.Name(index, "")));
+                Assert.Equal("", Period(period => period.Parent("Jan", index)));
+                Assert.Equal("", Period(period => period.Child("Q1", index)));
+                Assert.Equal("", Period(period => period.SubsetName("", index, "")));
+            }
+            // A fraction is the position it has passed.
+            Assert.Equal("H1", Period(period => period.Name(1.9, "")));
+            // A name that is none, empty, or not text at all is no element.
+            foreach (var name in new[] { null, "", "   ", "nobody", "Jan,Feb", "\0" })
+            {
+                Assert.Equal(0.0, Period(period => period.Index(name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.Level(name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.Next(name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.IsChild(name, "Q1")));
+                Assert.Equal(Connection.KeyError, Period(period => period.IsAncestor("H1", name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.Weight(name, name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.Attribute(name, "Code")));
+                Assert.Equal(Connection.KeyError, Period(period => period.Attribute("Jan", name)));
+                Assert.Equal("", Period(period => period.SubsetName("", name, "")));
+            }
+            Assert.Equal("", Period(period => period.SubsetName("", true, "")));
+            Assert.Equal(Connection.KeyError, Period(period => period.SubsetName("nobody", 1.0, "")));
+            Assert.Equal(Connection.KeyError, Period(period => period.Members("", "nobody")));
+            Assert.Equal(Connection.KeyError, Period(period => period.SubsetSize(null)));
+        }
+
+        [Fact]
         public async Task DimensionFunctionsAnswerFromTheHierarchy()
         {
             object Period(Func<Dimension, object> question) => connection.Ask("Period", question).Result;
