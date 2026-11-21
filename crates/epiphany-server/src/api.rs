@@ -157,7 +157,10 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
 async fn survive(State(database): State<Shared>, request: Request, next: Next) -> Response {
     // Run apart, so that its failure is this request's and nobody else's, and on a thread
     // of its own kind: a query may work for seconds, and the few threads that take in
-    // requests would otherwise all be busy with slow ones while a quick one waited.
+    // requests would otherwise all be busy with slow ones while a quick one waited. The
+    // hand-over costs a small request about 25 microseconds (2026-11-21). Keeping the
+    // request where it is and telling the runtime so (`block_in_place`) cost 7, and left
+    // some of the adapter's requests unanswered.
     let runtime = tokio::runtime::Handle::current();
     let answer = tokio::task::spawn_blocking(move || runtime.block_on(next.run(request)));
     if let Ok(response) = answer.await {
