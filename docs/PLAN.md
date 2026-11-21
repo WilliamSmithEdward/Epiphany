@@ -350,6 +350,10 @@ practice that means:
 - Any data call may carry a transaction id; without one it is its own transaction.
 - One error shape everywhere: a stable code, a message, and the offending coordinate when
   there is one. The adapter maps codes to worksheet results.
+- Each request is handled on a thread of the pool kept for work that takes time, not on
+  one of the few that take requests in, so that as many slow queries as the machine has
+  processors do not make a quick request wait for one of them to finish. Writes still
+  wait for the queries already reading, and queries for a write.
 - A request whose handling fails in a way nobody foresaw is answered 500 with the code
   `internal`, and the server goes on serving the others. If it was a write that failed
   part of the way through, what is in memory is in no known state: the server then stops,

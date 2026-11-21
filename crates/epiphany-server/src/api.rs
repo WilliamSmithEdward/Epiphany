@@ -155,8 +155,12 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
 /// is in memory is then in no known state and every later request would fail on it, so the
 /// server stops, to be started again from what is on disk, where only whole commits are.
 async fn survive(State(database): State<Shared>, request: Request, next: Next) -> Response {
-    // Run apart, so that its failure is this request's and nobody else's.
-    if let Ok(response) = tokio::spawn(next.run(request)).await {
+    // Run apart, so that its failure is this request's and nobody else's, and on a thread
+    // of its own kind: a query may work for seconds, and the few threads that take in
+    // requests would otherwise all be busy with slow ones while a quick one waited.
+    let runtime = tokio::runtime::Handle::current();
+    let answer = tokio::task::spawn_blocking(move || runtime.block_on(next.run(request)));
+    if let Ok(response) = answer.await {
         return response;
     }
     if database.is_poisoned() {

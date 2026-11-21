@@ -284,3 +284,42 @@ fn a_killed_server_restarts_with_every_acknowledged_write() {
     let body: Json = serde_json::from_str(&body).unwrap();
     assert_eq!(body, json!({ "cells": [{ "value": 30.0 }] }));
 }
+
+#[test]
+fn slow_queries_do_not_hold_up_a_quick_request() {
+    let home = Home::new("slow");
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let _server = Server::start(&home, port);
+    // Calculated members that each add the one before to itself: millions of steps.
+    let mut slow = "WITH MEMBER [Account].[M0] AS 1".to_owned();
+    for member in 1..=23 {
+        let before = member - 1;
+        slow += &format!(
+            " MEMBER [Account].[M{member}] AS [Account].[M{before}] + [Account].[M{before}]"
+        );
+    }
+    slow += " SELECT {[Account].[M23]} ON COLUMNS FROM [General Ledger]";
+
+    // More of them at once than the machine has processors.
+    let finished = std::sync::atomic::AtomicBool::new(false);
+    let many = thread::available_parallelism().map_or(4, usize::from) + 2;
+    thread::scope(|scope| {
+        for _ in 0..many {
+            scope.spawn(|| {
+                assert_eq!(post(port, "/mdx", json!({ "mdx": slow })).0, 200);
+                finished.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+        }
+        thread::sleep(Duration::from_millis(100));
+        let cell = json!({ "cells": [{ "cube": CUBE, "at": RENT }] });
+        assert_eq!(post(port, "/cells/read", cell).0, 200);
+        assert!(
+            !finished.load(std::sync::atomic::Ordering::SeqCst),
+            "the quick request waited for a slow one to finish"
+        );
+    });
+}
