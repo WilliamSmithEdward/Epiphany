@@ -727,3 +727,19 @@ async fn a_dimension_says_its_type_and_the_names_of_its_levels() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(answer["axes"][0]["tuples"].as_array().unwrap().len(), 2);
 }
+
+#[tokio::test]
+async fn a_large_write_is_taken_in_one_request() {
+    let app = example();
+    // Sixty thousand cells, some five megabytes of JSON.
+    let cells: Vec<Value> = (0..60_000)
+        .map(|index| write(["Rent", "US", "Jan", "Actual"], json!(index)))
+        .collect();
+    let body = json!({ "cells": cells });
+    assert!(body.to_string().len() > 4 * 1024 * 1024);
+    let (status, _) = call(&app, "POST", "/cells/write", Some(body)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let read = json!({ "cells": [cell(["Rent", "US", "Jan", "Actual"])] });
+    let (_, body) = call(&app, "POST", "/cells/read", Some(read)).await;
+    assert_eq!(body, json!({ "cells": [{ "value": 59_999.0 }] }));
+}

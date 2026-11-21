@@ -528,3 +528,12 @@ fn a_server_without_users_refuses_to_listen_beyond_this_machine() {
     let message = String::from_utf8_lossy(&output.stderr);
     assert!(message.contains("this directory has no users"), "{message}");
 }
+
+#[tokio::test]
+async fn signing_in_has_room_for_a_name_and_a_password_and_no_more() {
+    let (_home, app) = secured("large", None);
+    let (status, body) = sign_in(&app, NAME, &"x".repeat(100_000)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(body["code"], "invalid_request");
+    assert_eq!(sign_in(&app, NAME, PASSWORD).await.0, StatusCode::CREATED);
+}

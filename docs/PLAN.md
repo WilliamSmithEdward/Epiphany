@@ -350,6 +350,9 @@ practice that means:
 - Any data call may carry a transaction id; without one it is its own transaction.
 - One error shape everywhere: a stable code, a message, and the offending coordinate when
   there is one. The adapter maps codes to worksheet results.
+- A request body holds at most 64 MiB, room for a model of large dimensions or some
+  hundreds of thousands of cells in one write; a larger one is refused with 413 before it
+  is read. A request to sign in, the one request anybody may send, holds at most 16 KiB.
 - Each request is handled on a thread of the pool kept for work that takes time, not on
   one of the few that take requests in, so that as many slow queries as the machine has
   processors do not make a quick request wait for one of them to finish. Writes still

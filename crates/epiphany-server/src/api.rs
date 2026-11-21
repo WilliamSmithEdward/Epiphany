@@ -6,7 +6,7 @@ use std::sync::{Arc, RwLock};
 
 use axum::Extension;
 use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRef, FromRequest, Path, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, FromRef, FromRequest, Path, Query, Request, State};
 use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
@@ -28,7 +28,7 @@ use crate::auth::{Auth, Grants, Refusal, Role};
 use utoipa::openapi::RefOr;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
 use utoipa::{IntoParams, OpenApi, ToSchema};
-use utoipa_axum::router::OpenApiRouter;
+use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouterExt};
 use utoipa_axum::routes;
 
 type Shared = Arc<RwLock<Database>>;
@@ -56,9 +56,16 @@ struct Contract;
 /// The name of the security scheme in the contract.
 const SESSION: &str = "session";
 
+/// The most bytes a request may carry: room for a model of large dimensions, or some
+/// hundreds of thousands of cells in one write. A larger body is refused before it is read.
+const MOST_BODY: usize = 64 * 1024 * 1024;
+/// The most a request to sign in may carry. It is the one request that anybody may send, so
+/// it is given room for a name and a password and no more.
+const MOST_SIGN_IN: usize = 16 * 1024;
+
 fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(Contract::openapi())
-        .routes(routes!(sign_in, sign_out))
+        .routes(routes!(sign_in, sign_out).layer(DefaultBodyLimit::max(MOST_SIGN_IN)))
         .routes(routes!(get_model, put_model))
         .routes(routes!(get_dimension, put_dimension, delete_dimension))
         .routes(routes!(get_cube, put_cube, delete_cube))
@@ -144,6 +151,7 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
         .layer(from_fn_with_state(state.clone(), require_session))
         .layer(from_fn_with_state(state.clone(), stamp))
         .route("/openapi.json", get(async move || Json(contract)))
+        .layer(DefaultBodyLimit::max(MOST_BODY))
         .layer(from_fn_with_state(state.database.clone(), survive))
         .with_state(state)
 }
