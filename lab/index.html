@@ -142,9 +142,38 @@ const status = (message, isError) => say('status', message, isError);
 
 let token = sessionStorage.getItem('epiphany-token'); // the session, if the server has users
 let signingIn = null;      // the sign-in in progress, so that several requests share one
+// What the signed-in user may do, as the server said at sign-in: a role, and for some cubes
+// another in its place. Nothing on a server without users, where anyone may do anything.
+let grants = JSON.parse(sessionStorage.getItem('epiphany-grants') ?? 'null');
 
-/** Shows who is signed in, by whether there is a session to sign out of. */
-const showSession = () => { $('signout').hidden = !token; };
+/** Keeps or forgets the session and what its user may do. */
+function keepSession(answer) {
+  token = answer?.token ?? null;
+  grants = answer ? { role: answer.role, cubes: answer.cubes } : null;
+  for (const [name, value] of [['epiphany-token', token], ['epiphany-grants', grants && JSON.stringify(grants)]]) {
+    if (value) sessionStorage.setItem(name, value);
+    else sessionStorage.removeItem(name);
+  }
+  showSession();
+}
+
+/** The user's role on a cube; names are matched as the server matches them. */
+function roleOn(name) {
+  if (!grants) return 'admin';
+  const same = other => other.replace(/\s/g, '').toLowerCase() === name.replace(/\s/g, '').toLowerCase();
+  const own = Object.entries(grants.cubes).find(([other]) => same(other));
+  return own ? own[1] : grants.role;
+}
+const mayWrite = name => ['write', 'admin'].includes(roleOn(name));
+
+/** Shows that someone is signed in, and as what, on the button that signs out. */
+function showSession() {
+  const button = $('signout');
+  button.hidden = !token;
+  button.textContent = grants ? `Sign out (${grants.role})` : 'Sign out';
+  const others = Object.entries(grants?.cubes ?? {}).map(([name, role]) => `${name}: ${role}`);
+  button.title = others.length ? `On some cubes another role holds. ${others.join(', ')}` : '';
+}
 
 /** Asks for a name and password until the server accepts them. */
 function signIn() {
@@ -162,12 +191,10 @@ function signIn() {
       const answer = await response.json();
       $('secret').value = '';
       if (!response.ok) return say('signinStatus', answer.message, true);
-      token = answer.token;
-      sessionStorage.setItem('epiphany-token', token);
+      keepSession(answer);
       say('signinStatus', '');
       dialog.close();
       signingIn = null;
-      showSession();
       resolve();
     };
     dialog.showModal();
@@ -180,9 +207,7 @@ async function api(method, path, body) {
   const response = await fetch(path, { method, headers, body: body && JSON.stringify(body) });
   // The session has ended, or was never begun: sign in, then ask again.
   if (response.status === 401) {
-    token = null;
-    sessionStorage.removeItem('epiphany-token');
-    showSession();
+    keepSession(null);
     await signIn();
     return api(method, path, body);
   }
@@ -547,10 +572,13 @@ function draw() {
   const { result, sideways, facts } = shown;
   const { columns, rows, cells } = lay(result, sideways);
   const listed = new Set([...columns, ...rows].flat().map(member => `${member.dimension}\n${member.name}`));
+  // A user who may only read the cube sees it as it is and can type nowhere.
+  const allowed = mayWrite(cube.name);
   visible = cells.map((cell, index) => {
     const fact = facts[index];
-    const spreadable = fact?.kind === 'consolidated' && !fact.rule;
-    return { at: cell.at, held: cell.held, fact, editable: fact?.writable ?? false, spreadable, text: fact?.kind === 'text' };
+    const spreadable = allowed && fact?.kind === 'consolidated' && !fact.rule;
+    const editable = allowed && (fact?.writable ?? false);
+    return { at: cell.at, held: cell.held, fact, editable, spreadable, text: fact?.kind === 'text' };
   });
 
   // The row dimension names sit above their labels, on the last header row only.
@@ -761,11 +789,9 @@ $('fill').onclick = () => write(visible.filter(cell => cell.editable && !cell.te
   .map(cell => ({ cube: cube.name, at: cell.at, value: Math.ceil(Math.random() * 1000) })));
 $('signout').onclick = async () => {
   await fetch('/sessions', { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
-  token = null;
+  keepSession(null);
   transaction = null;
   pending.clear();
-  sessionStorage.removeItem('epiphany-token');
-  showSession();
   showTransaction();
   await openCube();
 };

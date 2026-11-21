@@ -114,7 +114,9 @@ its place, `none` included:
 target\release\epiphany-server.exe user lab yourname read "Commentary=write"
 ```n
 Five wrong passwords running keep a name out for a minute.
-The page then asks you to sign in, and **Sign out** appears in the top bar. Delete
+The page then asks you to sign in, and **Sign out** appears in the top bar with your role
+beside it; hover it for the cubes on which another role holds. On a cube you may only read,
+no cell can be typed into. Delete
 `users.json` to go back to no sign-in.
 
 ## Data
