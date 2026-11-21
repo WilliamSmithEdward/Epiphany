@@ -283,6 +283,11 @@ practice that means:
   - A word that is a flag, such as `DESC`, `ALL` or `SELF`, is the flag wherever it stands
     alone, even in a cube with a dimension of that name. The dimension is then written in
     full, as `[Desc].[Desc]`.
+  - Calculated members refer to one another at most 32 deep, and take at most 512 KB of
+    the thread's stack in doing so; past either, the member is reported as referring to
+    itself. The second was found by a test that asks expressions put together at random:
+    a member that reads its own cell through a nest of functions ran a build without
+    optimisation out of stack before it was 32 deep.
   - Expressions sit at most 32 deep inside one another, in a query, a rule, a feeder or a
     subset alike. Reading and working out an expression go as deep as it does, and the
     limit is what keeps a body of nothing but brackets from running a thread out of stack.

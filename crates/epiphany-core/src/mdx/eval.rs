@@ -44,6 +44,10 @@ const FLAGS: [&str; 13] = [
 ];
 /// How deeply calculated members may refer to one another.
 const DEEPEST: u32 = 32;
+/// How much of the thread's stack they may take in doing so, in bytes. A member worked out
+/// inside another uses stack in proportion to how much its expression nests, and a build
+/// without optimisation uses several times more; a thread that runs out ends the process.
+const MOST_STACK: usize = 512 * 1024;
 
 pub(super) type Evaluated<T> = Result<T, MdxError>;
 /// Reads a cell of a cube, by the cube's position in the model.
@@ -115,6 +119,8 @@ pub(super) struct Evaluator<'a> {
     depth: Cell<u32>,
     /// How many steps have been taken.
     steps: Cell<u64>,
+    /// Where the stack stood when the outermost calculated member was begun.
+    began: Cell<usize>,
 }
 
 /// Takes the cells of a cube that are about to be read.
@@ -419,6 +425,7 @@ impl<'a> Evaluator<'a> {
             sets: HashMap::new(),
             depth: Cell::new(0),
             steps: Cell::new(0),
+            began: Cell::new(0),
         }
     }
 
@@ -2450,7 +2457,13 @@ impl<'a> Evaluator<'a> {
                 Scalar::Text(text) => Datum::Text(text),
             });
         };
-        if self.depth.get() == DEEPEST {
+        // How far the stack has moved since the first of them is told by where a local of
+        // this call stands.
+        let here = std::ptr::from_ref(&calculated).addr();
+        if self.depth.get() == 0 {
+            self.began.set(here);
+        }
+        if self.depth.get() == DEEPEST || self.began.get().abs_diff(here) > MOST_STACK {
             let name = calculated.name;
             return fail(format!("calculated member '{name}' refers to itself"));
         }
