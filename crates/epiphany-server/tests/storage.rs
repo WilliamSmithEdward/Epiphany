@@ -323,3 +323,39 @@ fn slow_queries_do_not_hold_up_a_quick_request() {
         );
     });
 }
+
+#[test]
+fn requests_that_never_finish_arriving_hold_nobody_up() {
+    let home = Home::new("stalled");
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let _server = Server::start(&home, port);
+    // Six hundred requests to sign in, each promising a body and sending the start of one:
+    // more than there are threads to handle requests on.
+    let head = "POST /sessions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{\"name\":";
+    let stalled: Vec<TcpStream> = (0..600)
+        .map(|_| {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            stream.write_all(head.as_bytes()).unwrap();
+            stream
+        })
+        .collect();
+    thread::sleep(Duration::from_millis(500));
+
+    // An ordinary request is still answered.
+    let (answer, asked) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let cell = json!({ "cells": [{ "cube": CUBE, "at": RENT }] });
+        let _ = answer.send(post(port, "/cells/read", cell).0);
+    });
+    let status = asked.recv_timeout(Duration::from_secs(10));
+    assert_eq!(
+        status,
+        Ok(200),
+        "the request waited behind those that never arrived"
+    );
+    drop(stalled);
+}

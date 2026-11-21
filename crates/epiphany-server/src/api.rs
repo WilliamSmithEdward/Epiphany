@@ -28,7 +28,7 @@ use crate::auth::{Auth, Grants, Refusal, Role};
 use utoipa::openapi::RefOr;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
 use utoipa::{IntoParams, OpenApi, ToSchema};
-use utoipa_axum::router::{OpenApiRouter, UtoipaMethodRouterExt};
+use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
 type Shared = Arc<RwLock<Database>>;
@@ -65,7 +65,7 @@ const MOST_SIGN_IN: usize = 16 * 1024;
 
 fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(Contract::openapi())
-        .routes(routes!(sign_in, sign_out).layer(DefaultBodyLimit::max(MOST_SIGN_IN)))
+        .routes(routes!(sign_in, sign_out))
         .routes(routes!(get_model, put_model))
         .routes(routes!(get_dimension, put_dimension, delete_dimension))
         .routes(routes!(get_cube, put_cube, delete_cube))
@@ -147,12 +147,14 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
     };
     let (router, contract) = router().split_for_parts();
     let contract = secured(contract);
+    // Nearest the routes comes the handing over, so that a request is given a thread only
+    // once it has been let in and has arrived whole.
     router
+        .layer(from_fn_with_state(state.database.clone(), survive))
         .layer(from_fn_with_state(state.clone(), require_session))
         .layer(from_fn_with_state(state.clone(), stamp))
         .route("/openapi.json", get(async move || Json(contract)))
         .layer(DefaultBodyLimit::max(MOST_BODY))
-        .layer(from_fn_with_state(state.database.clone(), survive))
         .with_state(state)
 }
 
@@ -163,6 +165,20 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
 /// is in memory is then in no known state and every later request would fail on it, so the
 /// server stops, to be started again from what is on disk, where only whole commits are.
 async fn survive(State(database): State<Shared>, request: Request, next: Next) -> Response {
+    // The body is taken in first, here where waiting for it holds up nothing: a request
+    // handed over while its body was still on its way would keep a thread for as long as
+    // the sender cared to take, and a few hundred senders in no hurry would have them all.
+    let most = match request.uri().path() {
+        "/sessions" => MOST_SIGN_IN,
+        _ => MOST_BODY,
+    };
+    let (head, body) = request.into_parts();
+    let Ok(body) = axum::body::to_bytes(body, most).await else {
+        let message = format!("the request body is longer than {most} bytes, or did not arrive");
+        return ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "invalid_request", message)
+            .into_response();
+    };
+    let request = Request::from_parts(head, axum::body::Body::from(body));
     // Run apart, so that its failure is this request's and nobody else's, and on a thread
     // of its own kind: a query may work for seconds, and the few threads that take in
     // requests would otherwise all be busy with slow ones while a quick one waited. The
