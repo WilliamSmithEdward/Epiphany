@@ -350,6 +350,10 @@ practice that means:
 - Any data call may carry a transaction id; without one it is its own transaction.
 - One error shape everywhere: a stable code, a message, and the offending coordinate when
   there is one. The adapter maps codes to worksheet results.
+- A request whose handling fails in a way nobody foresaw is answered 500 with the code
+  `internal`, and the server goes on serving the others. If it was a write that failed
+  part of the way through, what is in memory is in no known state: the server then stops,
+  to be started again from what is on disk, where only whole commits are.
 - **Decision (authentication):** users with salted password hashes in a server-side file;
   sign-in returns a bearer token for the session. Per-cube permissions are left out of the
   first version.

@@ -144,7 +144,27 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
         .layer(from_fn_with_state(state.clone(), require_session))
         .layer(from_fn_with_state(state.clone(), stamp))
         .route("/openapi.json", get(async move || Json(contract)))
+        .layer(from_fn_with_state(state.database.clone(), survive))
         .with_state(state)
+}
+
+/// Answers a request whose handling went wrong in a way nobody foresaw, which would
+/// otherwise close the connection without a word, and keeps serving the others.
+///
+/// One thing cannot be carried on from: a write that stopped part of the way through. What
+/// is in memory is then in no known state and every later request would fail on it, so the
+/// server stops, to be started again from what is on disk, where only whole commits are.
+async fn survive(State(database): State<Shared>, request: Request, next: Next) -> Response {
+    // Run apart, so that its failure is this request's and nobody else's.
+    if let Ok(response) = tokio::spawn(next.run(request)).await {
+        return response;
+    }
+    if database.is_poisoned() {
+        eprintln!("A write failed part of the way through. Stopping; start the server again.");
+        std::process::exit(70);
+    }
+    let message = "the server failed to answer this request".to_owned();
+    ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", message).into_response()
 }
 
 /// Adds a test page at `/lab` to an application, read from disk on every request so that it
@@ -1137,4 +1157,36 @@ async fn lock(
     let mut database = database.write().unwrap();
     database.lock(id, request.cube.as_deref(), request.mode)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn a_request_that_goes_wrong_is_answered_and_so_is_the_next() {
+        let model = serde_json::json!({ "dimensions": [], "cubes": [] });
+        let database = Database::new(serde_json::from_value(model).unwrap()).unwrap();
+        let database: Shared = Arc::new(RwLock::new(database));
+        let fail = get(async || -> &'static str { panic!("as nobody foresaw") });
+        let application = Router::new()
+            .route("/fail", fail)
+            .route("/fine", get(async || "fine"))
+            .layer(from_fn_with_state(database, survive));
+        let ask = |path: &'static str| {
+            let request = Request::builder().uri(path).body(Body::empty()).unwrap();
+            application.clone().oneshot(request)
+        };
+        let failed = ask("/fail").await.unwrap();
+        assert_eq!(failed.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(failed.into_body(), 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["code"], "internal");
+        assert_eq!(ask("/fine").await.unwrap().status(), StatusCode::OK);
+    }
 }
