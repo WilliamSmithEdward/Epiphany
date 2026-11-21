@@ -372,6 +372,9 @@ practice that means:
     read, write and spread within one server transaction. A transaction the server has
     rolled back for want of use is noticed at the next request; reads go on without it,
     and a write meant for it is not made, since made then it would be final.
+  - An Epiphany tab on the ribbon with a button for each command, and
+    `adapter/install.ps1` to have Excel load the add-in at every start for one user.
+    `adapter/check-excel-ribbon.ps1` presses the buttons in a visible Excel.
   - Formulas name their environment as PAfE's do (`production:Sales`); each environment is
     a server with its own session, added with Connect.
   - See "Not replicated" in the table for the PAfE features left out.

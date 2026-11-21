@@ -91,6 +91,10 @@ Connect window, narrows the list that chooses a `SUBNM`'s element and chooses on
 check then disconnects. It removes the settings file that signing in saves, so run it only
 before you have connected to anything yourself.
 
+`adapter\check-excel-ribbon.ps1` presses the buttons of the Epiphany tab: Begin, Roll back,
+Commit and Refresh, watching the status bar and a cell for what each does. Unlike the other
+two it shows its Excel for a quarter of a minute; leave the window alone while it runs.
+
 ## Layout
 
 | File | Purpose |
