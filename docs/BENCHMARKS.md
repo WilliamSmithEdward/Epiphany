@@ -163,6 +163,21 @@ took 59 ms in a transaction with one write pending, against 1.2 ms outside. A re
 transaction now keeps totals of its own for its request and adds them up in one pass over
 the stored cells with the pending writes laid over them: 2.4 ms (2026-11-21).
 
+## Model
+
+```
+cargo run --release --example bench_model
+```
+
+A model with one dimension of many leaves, under groups and one total, read from JSON
+and compiled, as is done at every start and every model update (2026-11-21):
+
+| Dimension | JSON | Read | Compiled |
+| --- | --- | --- | --- |
+| 100,000 leaves in groups of 100 | 5 MB | 15 ms | 56 ms |
+| 1,000,000 leaves in groups of 100 | 55 MB | 147 ms | 1.0 s |
+| 1,000,000 leaves under the total alone | 55 MB | 218 ms | 1.5 s |
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions
