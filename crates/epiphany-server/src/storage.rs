@@ -35,10 +35,106 @@ struct ModelFile {
     version: u64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize)]
 struct Snapshot<Cells> {
     model_version: u64,
     cells: Cells,
+}
+
+/// How many cells of a snapshot are held by name at once while it is loaded.
+const LOADED_AT_ONCE: usize = 10_000;
+
+/// Loads the snapshot in a file into a database a few thousand cells at a time, so that a
+/// snapshot of millions of cells is never held whole by name: that took some 300 bytes a
+/// cell beside the cells themselves. Says how many cells no longer fit the model; nothing
+/// if there is no snapshot.
+fn load_snapshot(path: &Path, database: &mut Database) -> Result<Option<usize>, String> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(at(path, &error)),
+    };
+    let mut reader = serde_json::Deserializer::from_reader(io::BufReader::new(file));
+    let mut loading = Loading {
+        database,
+        waiting: Vec::with_capacity(LOADED_AT_ONCE),
+        skipped: 0,
+    };
+    let read = serde::de::DeserializeSeed::deserialize(&mut loading, &mut reader);
+    read.and_then(|()| reader.end())
+        .map_err(|error| at(path, &error))?;
+    loading.flush();
+    Ok(Some(loading.skipped))
+}
+
+struct Loading<'a> {
+    database: &'a mut Database,
+    waiting: Vec<CellWrite>,
+    skipped: usize,
+}
+
+impl Loading<'_> {
+    fn flush(&mut self) {
+        self.skipped += self.database.load(&self.waiting);
+        self.waiting.clear();
+    }
+}
+
+// The snapshot, an object whose `cells` are taken in as they are read and whose other
+// fields are passed over.
+impl<'de> serde::de::DeserializeSeed<'de> for &mut Loading<'_> {
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for &mut Loading<'_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a snapshot, an object with its cells")
+    }
+
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+        while let Some(field) = map.next_key::<String>()? {
+            match field.as_str() {
+                "cells" => map.next_value_seed(Cells(&mut *self))?,
+                _ => drop(map.next_value::<serde::de::IgnoredAny>()?),
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The cells of a snapshot, loaded as they come.
+struct Cells<'a, 'b>(&'a mut Loading<'b>);
+
+impl<'de> serde::de::DeserializeSeed<'de> for Cells<'_, '_> {
+    type Value = ();
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for Cells<'_, '_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a list of cells")
+    }
+
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut cells: A) -> Result<(), A::Error> {
+        while let Some(cell) = cells.next_element::<CellWrite>()? {
+            self.0.waiting.push(cell);
+            if self.0.waiting.len() == LOADED_AT_ONCE {
+                self.0.flush();
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Opens the database kept in a directory. The directory must hold a `model` folder; the
@@ -72,9 +168,7 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
     let mut database = Database::restore(load_model(&model)?, version)?;
 
     let mut skipped = 0;
-    if let Some(snapshot) = read_json::<Snapshot<Vec<CellWrite>>>(&data.join("snapshot.json"))? {
-        skipped += database.load(&snapshot.cells);
-    }
+    skipped += load_snapshot(&data.join("snapshot.json"), &mut database)?.unwrap_or(0);
     let log = data.join("log.jsonl");
     let recorded = match fs::read_to_string(&log) {
         Ok(text) => text,

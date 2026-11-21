@@ -186,6 +186,11 @@ cells, rose to 460 MB while it did, some 300 bytes a cell. Each cell is now name
 is written: the peak through the same load is 177 MB. Measured as the process's largest
 working set over a load of 1.5 million cells in requests of 25,000 (2026-11-21).
 
+Starting was the same the other way: the whole snapshot was read into a list of cells by
+name before any was stored, and a server that holds 104 MB once started reached 446 MB
+on the way. The snapshot is now read and stored ten thousand cells at a time, and the
+start peaks at 182 MB, in the same 1.7 seconds (2026-11-21).
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.
