@@ -443,8 +443,8 @@ impl<'a> Evaluator<'a> {
         self.dimensions().map(top).collect()
     }
 
-    /// The set of an axis. A cross join of sets of single elements on a `NON EMPTY` axis is
-    /// left as its sets if it would be long: most of it is likely to be dropped.
+    /// The set of an axis. A set of single elements on a `NON EMPTY` axis, or a cross join of
+    /// such sets, is left as its sets if it would be long: most of it is likely to be dropped.
     fn lay(&self, expression: &Expr, non_empty: bool, context: &Context) -> Evaluated<Laid> {
         let mut parts = Vec::new();
         fn crossed<'e>(expression: &'e Expr, parts: &mut Vec<&'e Expr>) {
@@ -462,9 +462,10 @@ impl<'a> Evaluator<'a> {
             }
         }
         crossed(expression, &mut parts);
-        if !non_empty || parts.len() < 2 {
+        if !non_empty {
             return self.set(expression, context).map(Laid::Out);
         }
+        // A set that is no cross join is one of a single set, and cut down the same way.
         let mut sets = Vec::new();
         for part in parts {
             sets.push(self.set(part, context)?);

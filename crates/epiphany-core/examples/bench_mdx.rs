@@ -84,18 +84,6 @@ fn main() {
             ),
         ),
         (
-            "non-empty rows of 12,769",
-            "SELECT NON EMPTY [d0].Members * [d1].Members ON ROWS, \
-             {[d2].[e0]} ON COLUMNS FROM [C] WHERE [d3].[e0]"
-                .to_owned(),
-        ),
-        (
-            "non-empty rows of 1,442,897, found from the cells",
-            "SELECT NON EMPTY [d0].Members * [d1].Members * [d2].Members ON ROWS, \
-             {[d3].[e0]} ON COLUMNS FROM [C]"
-                .to_owned(),
-        ),
-        (
             "113 cells, each totalling three dimensions",
             "SELECT [d0].Members ON COLUMNS FROM [C] WHERE ([d1].[all], [d2].[all], [d3].[all])"
                 .to_owned(),
@@ -106,6 +94,20 @@ fn main() {
                 "SELECT TopCount({}, 10, ([d1].[all], [d2].[all], [d3].[all])) ON COLUMNS FROM [C] WHERE ([d1].[all], [d2].[all], [d3].[all])",
                 leaves(0)
             ),
+        ),
+        // Last: whatever is asked straight after the long one takes about twice its usual
+        // time (measured 2026-11-21), as the first query of a run does.
+        (
+            "non-empty rows of 12,769",
+            "SELECT NON EMPTY [d0].Members * [d1].Members ON ROWS, \
+             {[d2].[e0]} ON COLUMNS FROM [C] WHERE [d3].[e0]"
+                .to_owned(),
+        ),
+        (
+            "non-empty rows of 1,442,897, found from the cells",
+            "SELECT NON EMPTY [d0].Members * [d1].Members * [d2].Members ON ROWS, \
+             {[d3].[e0]} ON COLUMNS FROM [C]"
+                .to_owned(),
         ),
     ];
     for (label, mdx) in &queries {

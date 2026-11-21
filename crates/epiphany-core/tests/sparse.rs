@@ -131,6 +131,54 @@ fn the_functions_that_drop_empty_tuples_agree_with_the_axis() {
     );
 }
 #[test]
+fn a_long_set_that_is_no_cross_join_is_cut_down_as_well() {
+    // Two dimensions of some twelve thousand elements each, and two hundred cells.
+    let shape = Shape {
+        leaves: 12_000,
+        groups: 12,
+        fan: 10,
+    };
+    let mut database = Database::new(random_model(&mut Rng::new(3), 2, &shape)).unwrap();
+    let mut rng = Rng::new(5);
+    let writes: Vec<CellWrite> = (0..200)
+        .map(|index| CellWrite {
+            cube: "C".to_owned(),
+            at: vec![
+                format!("e{}", rng.below(shape.leaves)),
+                format!("e{}", rng.below(40)),
+            ],
+            value: Scalar::Number(1.0 + f64::from(index)),
+        })
+        .collect();
+    database.write(None, &writes).unwrap();
+
+    let ask = |rows: &str, rest: &str| {
+        let mdx = format!("SELECT NON EMPTY {rows} ON ROWS, {rest} FROM [C]");
+        database.query(None, &mdx).unwrap()
+    };
+    let columns = "{[d1].[e0], [d1].[e1], [d1].[e2]} ON COLUMNS";
+    let (cut, written) = (
+        ask("[d0].Members", columns),
+        ask("Head([d0].Members, 1000000)", columns),
+    );
+    assert_eq!(names(&cut, 1), names(&written, 1));
+    assert_eq!(cut.cells, written.cells);
+    assert!(!cut.cells.is_empty() && names(&cut, 1).len() < 200);
+
+    // Both axes long: twelve thousand by twelve thousand is far more cells than a query may
+    // return, and what holds something is a few hundred of them.
+    let both = ask("[d0].Members", "NON EMPTY [d1].Members ON COLUMNS");
+    assert!(names(&both, 1).len() >= 150, "{}", names(&both, 1).len());
+    assert!(names(&both, 0).len() >= 30 && names(&both, 0).len() < 100);
+    let function =
+        "SELECT NonEmpty([d0].Members, {[d1].[e0], [d1].[e1], [d1].[e2]}) ON COLUMNS FROM [C]";
+    assert_eq!(
+        names(&database.query(None, function).unwrap(), 0),
+        names(&cut, 1)
+    );
+}
+
+#[test]
 fn a_cell_written_in_a_transaction_brings_its_rows() {
     let mut database = filled(model(3), 3);
     let columns = "{[d2].[e99]} ON COLUMNS FROM [C]";

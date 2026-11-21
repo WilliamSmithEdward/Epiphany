@@ -258,7 +258,10 @@ practice that means:
     Week. Without a member they end at the current member of the cube's dimension of type
     `time`.
   - What follows holds as well for `NonEmptyCrossJoin(...)` and for `NonEmpty` of a cross
-    join, with or without a second set.
+    join, with or without a second set; and for a long set that is no cross join, which
+    is one of a single set. Two long `NON EMPTY` axes, each of a dimension of thousands of
+    elements, then give the few rows and columns that hold something, where every
+    combination of them would be more cells than a query may return.
   - `NON EMPTY` over a cross join of sets of elements does not write the cross join out
     where it is long (over 10,000 tuples, and over a quarter of the number of cells there
     are to look through). It looks at each cell that may hold something and notes the
