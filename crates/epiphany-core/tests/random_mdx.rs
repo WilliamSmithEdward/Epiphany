@@ -229,8 +229,8 @@ fn expression(rng: &mut Rng, depth: usize) -> String {
     }
 }
 
-/// The example model with a few cells in it, and one calculated element fed from another.
-fn database() -> Database {
+/// The example model.
+fn definition() -> ModelDef {
     let dimensions = [
         include_str!("fixtures/model/dimensions/account.json"),
         include_str!("fixtures/model/dimensions/entity.json"),
@@ -238,26 +238,34 @@ fn database() -> Database {
         include_str!("fixtures/model/dimensions/version.json"),
     ];
     let cube = include_str!("fixtures/model/cubes/general-ledger.json");
-    let definition = ModelDef {
+    ModelDef {
         dimensions: dimensions
             .iter()
             .map(|text| serde_json::from_str(text).unwrap())
             .collect(),
         cubes: vec![serde_json::from_str(cube).unwrap()],
-    };
-    let mut database = Database::new(definition).unwrap();
+    }
+}
+
+/// A few cells of the example model.
+fn cells() -> [CellWrite; 4] {
     let cell = |at: [&str; 4], value: f64| CellWrite {
         cube: "General Ledger".to_owned(),
         at: at.map(str::to_owned).to_vec(),
         value: Scalar::Number(value),
     };
-    let writes = [
+    [
         cell(["Product Revenue", "US", "Jan", "Actual"], 100.0),
         cell(["Product Revenue", "UK", "Feb", "Actual"], -100.0),
         cell(["Rent", "US", "Jan", "Actual"], 10.0),
         cell(["Salaries", "UK", "Jun", "Budget"], 40.0),
-    ];
-    database.write(None, &writes).unwrap();
+    ]
+}
+
+/// The example model with those cells in it.
+fn database() -> Database {
+    let mut database = Database::new(definition()).unwrap();
+    database.write(None, &cells()).unwrap();
     database
 }
 
@@ -298,6 +306,75 @@ fn nothing_put_together_at_random_brings_the_evaluator_down() {
     assert!(
         fallen.is_empty(),
         "{} queries brought it down, the first of them:\n{}",
+        fallen.len(),
+        fallen[..fallen.len().min(5)].join("\n")
+    );
+}
+
+const AREAS: [&str; 8] = [
+    "[Account].[Rent]",
+    "N: [Account].[Salaries]",
+    "C: [Account].[Revenue]",
+    "[Period].[Jan]",
+    "([Account].[Rent], [Period].[Jan])",
+    "N: ([Account].[Rent], [Entity].[US])",
+    "[Version].[Budget]",
+    "C: [Entity].[Total Entity]",
+];
+const FEEDERS: [&str; 4] = [
+    "[Account].[Product Revenue] => [Account].[Rent]",
+    "[Account].[Rent] => [Account].[Salaries]",
+    "[Period].[Feb] => [Period].[Jan]",
+    "[Account].[Rent] => ([Account].[Rent], [Period].[Jun])",
+];
+
+#[test]
+fn no_rule_put_together_at_random_brings_the_engine_down() {
+    let grid = "SELECT [Account].Members ON COLUMNS, [Period].Members ON ROWS FROM [General Ledger] \
+                WHERE ([Entity].[Total Entity], [Version].[Actual])";
+    let sparse = "SELECT NON EMPTY [Account].Members * [Period].Members ON ROWS, \
+                  [Version].Members ON COLUMNS FROM [General Ledger]";
+    let mut fallen = Vec::new();
+    for seed in 1..=tries() / 5 {
+        let mut rng = Rng::new(seed);
+        let depth = 1 + rng.below(3);
+        let mut definition = definition();
+        let rules = 1 + rng.below(2);
+        definition.cubes[0].rules = (0..rules)
+            .map(|_| {
+                format!(
+                    "{} = {}",
+                    pick(&mut rng, &AREAS),
+                    expression(&mut rng, depth)
+                )
+            })
+            .collect();
+        if rng.below(2) == 0 {
+            definition.cubes[0].feeders = vec![pick(&mut rng, &FEEDERS).to_owned()];
+        }
+        let written = format!(
+            "{:?} {:?}",
+            definition.cubes[0].rules, definition.cubes[0].feeders
+        );
+        // The model is taken or refused; taken, its cells are written and read every way.
+        let tried = catch_unwind(AssertUnwindSafe(|| {
+            let Ok(mut database) = Database::new(definition) else {
+                return;
+            };
+            for cell in cells() {
+                drop(database.write(None, &[cell]));
+            }
+            drop(database.query(None, grid));
+            drop(database.query(None, sparse));
+            drop(database.unfed("General Ledger", 10));
+        }));
+        if tried.is_err() {
+            fallen.push(written);
+        }
+    }
+    assert!(
+        fallen.is_empty(),
+        "{} sets of rules brought it down, the first of them:\n{}",
         fallen.len(),
         fallen[..fallen.len().min(5)].join("\n")
     );
