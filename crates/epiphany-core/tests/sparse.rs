@@ -179,6 +179,73 @@ fn a_long_set_that_is_no_cross_join_is_cut_down_as_well() {
 }
 
 #[test]
+fn random_cubes_and_queries_agree_either_way() {
+    // Sets of a dimension that are long enough, two of them crossed, to be left unwritten.
+    let sets = |dimension: usize, pick: usize| match pick {
+        0 => format!("[d{dimension}].Members"),
+        1 => format!("{{[d{dimension}].[all], TM1FilterByLevel([d{dimension}].Members, 0)}}"),
+        _ => format!("Hierarchize([d{dimension}].Members)"),
+    };
+    for seed in 1..=12 {
+        let mut rng = Rng::new(seed);
+        let mut definition = random_model(&mut rng, 3, &SHAPE);
+        // Every other cube has a rule, fed or not.
+        if seed % 2 == 0 {
+            definition.cubes[0].rules = vec!["N: [d2].[e0] = [d2].[e1] * 3".to_owned()];
+        }
+        if seed % 4 == 0 {
+            definition.cubes[0].feeders = vec!["[d2].[e1] => [d2].[e0]".to_owned()];
+        }
+        let mut database = Database::new(definition).unwrap();
+        // Few cells or many, with some that cancel one another under a negative weight.
+        let count = [5, 40, 400, 3000][rng.below(4)];
+        let writes: Vec<CellWrite> = (0..count)
+            .map(|index| write(&mut rng, 3, f64::from(index % 7) - 3.0))
+            .filter(|write| write.at[2] != "e0")
+            .collect();
+        database.write(None, &writes).unwrap();
+
+        let (first, second) = (rng.below(3), rng.below(3));
+        let rows = format!(
+            "{} * {}",
+            sets(first, rng.below(3)),
+            sets((first + 1 + second % 2) % 3, rng.below(3))
+        );
+        let other = 3 - first - (first + 1 + second % 2) % 3;
+        let rest = match rng.below(3) {
+            0 => format!("{{[d{other}].[all]}} ON COLUMNS FROM [C]"),
+            1 => {
+                format!("{{[d{other}].[e0], [d{other}].[e1], [d{other}].[e5]}} ON COLUMNS FROM [C]")
+            }
+            _ => format!(
+                "NON EMPTY {{[d{other}].[all], [d{other}].[e2], [d{other}].[e3], [d{other}].[e4]}} ON COLUMNS FROM [C]"
+            ),
+        };
+        let ask = |rows: &str| {
+            let mdx = format!("SELECT NON EMPTY {rows} ON ROWS, {rest}");
+            database
+                .query(None, &mdx)
+                .unwrap_or_else(|error| panic!("seed {seed}: {error}\n{mdx}"))
+        };
+        let (cut, written) = (ask(&rows), ask(&format!("Head({rows}, 1000000)")));
+        assert_eq!(
+            names(&cut, 1),
+            names(&written, 1),
+            "seed {seed}: {rows} beside {rest}"
+        );
+        assert_eq!(
+            names(&cut, 0),
+            names(&written, 0),
+            "seed {seed}: {rows} beside {rest}"
+        );
+        assert_eq!(
+            cut.cells, written.cells,
+            "seed {seed}: {rows} beside {rest}"
+        );
+    }
+}
+
+#[test]
 fn a_cell_written_in_a_transaction_brings_its_rows() {
     let mut database = filled(model(3), 3);
     let columns = "{[d2].[e99]} ON COLUMNS FROM [C]";
