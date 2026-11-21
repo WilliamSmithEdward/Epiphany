@@ -15,6 +15,9 @@
     },
     "Margin by month": {
       "mdx": "WITH MEMBER [Account].[Margin %] AS IIF([Account].[Revenue] = 0, 0, [Account].[Net Income] / [Account].[Revenue]) SELECT NON EMPTY TM1SubsetToSet([Period], 'Months') ON COLUMNS, {[Account].[Revenue], [Account].[Net Income], [Account].[Margin %]} ON ROWS FROM [General Ledger] WHERE ([Entity].[Total Entity], [Version].[Actual])"
+    },
+    "Year to date": {
+      "mdx": "WITH MEMBER [Version].[Actual YTD] AS Sum(Ytd(), [Version].[Actual]) SELECT [Period].Levels('Month').Members ON COLUMNS, {[Account].[Revenue], [Account].[Operating Expenses], [Account].[Net Income]} ON ROWS FROM [General Ledger] WHERE ([Entity].[Total Entity], [Version].[Actual YTD])"
     }
   }
 }

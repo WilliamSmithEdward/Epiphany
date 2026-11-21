@@ -1,6 +1,7 @@
 {
   "name": "Period",
-  "type": "standard",
+  "type": "time",
+  "levels": ["Month", "Quarter", "Year"],
   "elements": [
     {
       "name": "Year",

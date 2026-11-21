@@ -1010,3 +1010,135 @@ fn periods_run_to_date_within_an_ancestor() {
         Some(120.0)
     );
 }
+
+/// The example model with its periods as a time dimension whose levels have names.
+fn calendar() -> ModelDef {
+    let mut definition = database().definition().clone();
+    let period = &mut definition.dimensions[2];
+    period.kind = epiphany_core::model::DimensionType::Time;
+    period.levels = ["Month", "Quarter", "Half"].map(str::to_owned).to_vec();
+    definition
+}
+
+#[test]
+fn levels_are_known_by_the_names_the_model_gives_them() {
+    let mut named = Database::new(calendar()).unwrap();
+    named.write(None, &database().cells()).unwrap();
+    let columns = |set: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [General Ledger]");
+        let result = named.query(None, &mdx);
+        names(&result.unwrap_or_else(|error| panic!("{error}\n{mdx}")), 0)
+    };
+    let cell = |expression: &str| {
+        let mdx = format!(
+            "WITH MEMBER [Account].[X] AS {expression} SELECT {{[Account].[X]}} ON COLUMNS \
+             FROM [General Ledger] WHERE ([Entity].[US], [Period].[Feb], [Version].[Actual])"
+        );
+        let result = named.query(None, &mdx);
+        result
+            .unwrap_or_else(|error| panic!("{error}\n{mdx}"))
+            .cells[0]
+            .clone()
+    };
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"];
+
+    assert_eq!(columns("[Period].[Quarter].Members"), ["Q1", "Q2"]);
+    assert_eq!(columns("[Period].Levels('half').Members"), ["H1"]);
+    assert_eq!(columns("[Period].Levels(0).Members"), months);
+    assert_eq!(
+        cell("[Period].[Jan].Level.Name"),
+        Some(Scalar::Text("Month".to_owned()))
+    );
+    assert_eq!(
+        cell("[Period].Levels(1).Name"),
+        Some(Scalar::Text("Quarter".to_owned()))
+    );
+    // A level without a name is known by its number.
+    assert_eq!(
+        cell("[Account].[Rent].Level.Name"),
+        Some(Scalar::Text("0".to_owned()))
+    );
+
+    // Down to a level, whatever the distance.
+    assert_eq!(
+        columns("Descendants([Period].[H1], [Period].[Month])"),
+        months
+    );
+    assert_eq!(
+        columns("Descendants([Period].[H1], [Period].[Quarter])"),
+        ["Q1", "Q2"]
+    );
+    assert_eq!(
+        columns("Descendants([Period].[H1], [Period].[Quarter], AFTER)"),
+        months
+    );
+    assert_eq!(
+        columns("Descendants([Period].[Q2], [Period].[Quarter], SELF_AND_AFTER)"),
+        ["Q2", "Apr", "May", "Jun"]
+    );
+    assert_eq!(
+        columns("Descendants([Period].[Q1], 1)"),
+        ["Jan", "Feb", "Mar"]
+    );
+    assert_eq!(columns("Ancestor([Period].[May], [Period].[Half])"), ["H1"]);
+    assert_eq!(
+        columns("ParallelPeriod([Period].[Quarter], 1, [Period].[May])"),
+        ["Feb"]
+    );
+
+    // To date: within the quarter, the month, and at the current member of the time dimension.
+    assert_eq!(columns("Qtd([Period].[May])"), ["Apr", "May"]);
+    assert_eq!(columns("Qtd([Period].[Q2])"), ["Q2"]);
+    assert_eq!(columns("Mtd([Period].[May])"), ["May"]);
+    assert_eq!(
+        cell("Sum(Qtd(), [Account].[Product Revenue])"),
+        Some(Scalar::Number(120.0))
+    );
+
+    let failure = |mdx: &str| named.query(None, mdx).unwrap_err().to_string();
+    let year = failure("SELECT Ytd([Period].[May]) ON COLUMNS FROM [General Ledger]");
+    assert!(
+        year.contains("YTD needs a level named 'Year' in dimension 'Period'"),
+        "{year}"
+    );
+    let unknown =
+        failure("SELECT [Period].Levels('Year').Members ON COLUMNS FROM [General Ledger]");
+    assert!(
+        unknown.contains("dimension 'Period' has no level 'Year'"),
+        "{unknown}"
+    );
+    // In a cube with no time dimension the member must be given.
+    let untimed = self::failure("SELECT Qtd() ON COLUMNS FROM [General Ledger]");
+    assert!(
+        untimed.contains("QTD needs a member, or a dimension of type 'time'"),
+        "{untimed}"
+    );
+}
+
+#[test]
+fn a_level_cannot_share_its_name() {
+    let invalid = |levels: [&str; 2]| {
+        let mut definition = calendar();
+        definition.dimensions[2].levels = levels.map(str::to_owned).to_vec();
+        epiphany_core::model::Model::compile(&definition)
+            .unwrap_err()
+            .to_string()
+    };
+    assert_eq!(
+        invalid(["Month", "month"]),
+        "duplicate level 'month' in dimension 'Period'"
+    );
+
+    // With an element it can: the top of a calendar is as likely as not called Year. The
+    // name then means the element, and the level is reached by Levels or by Ytd.
+    let mut definition = calendar();
+    definition.dimensions[2].levels = ["Month", "Quarter", "H1"].map(str::to_owned).to_vec();
+    let shared = Database::new(definition).unwrap();
+    let columns = |set: &str| {
+        let mdx = format!("SELECT {set} ON COLUMNS FROM [General Ledger]");
+        names(&shared.query(None, &mdx).unwrap(), 0)
+    };
+    assert_eq!(columns("{[Period].[H1]}"), ["H1"]);
+    assert_eq!(columns("[Period].Levels('H1').Members"), ["H1"]);
+    assert_eq!(columns("[Period].Levels('Quarter').Members"), ["Q1", "Q2"]);
+}

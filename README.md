@@ -88,7 +88,15 @@ model/
 ```
 
 [lab/model](lab/model) is a complete example. Names are matched ignoring case and spaces, and
-an element answers to its aliases as well as its name.
+an element answers to its aliases as well as its name. A dimension may also name its levels,
+from the leaves up, and say that it is the cube's calendar:
+
+```json
+{ "name": "Period", "type": "time", "levels": ["Month", "Quarter", "Year"], "elements": [ ... ] }
+```
+
+A query can then say `[Period].Levels('Quarter').Members`, and `Sum(Ytd(), ...)` for a figure
+to date.
 
 ## The API
 

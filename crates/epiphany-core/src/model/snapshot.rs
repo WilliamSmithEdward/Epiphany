@@ -3,7 +3,8 @@
 use std::collections::{BTreeMap, HashMap};
 
 use super::definition::{
-    AttributeType, CubeDef, DimensionDef, ElementDef, ElementType, ModelDef, SubsetDef, ViewDef,
+    AttributeType, CubeDef, DimensionDef, DimensionType, ElementDef, ElementType, ModelDef,
+    SubsetDef, ViewDef,
 };
 use super::error::ModelError;
 use crate::Scalar;
@@ -211,6 +212,9 @@ pub struct Attribute {
 #[derive(Debug)]
 pub struct Dimension {
     pub name: String,
+    pub kind: DimensionType,
+    /// The names given to the levels, from the leaves up.
+    pub levels: Vec<String>,
     /// Elements in declaration order.
     pub elements: Vec<Element>,
     pub attributes: Vec<Attribute>,
@@ -284,14 +288,25 @@ impl Dimension {
         for id in 0..elements.len() {
             roll_up(&mut elements, &mut marks, id, &def.name)?;
         }
+        // Two levels cannot share a name. A level and an element can, since the top of a
+        // calendar is as likely as not called Year: there the name means the element.
+        index("level", &within, def.levels.iter().map(String::as_str))?;
         Ok(Self {
             name: def.name.clone(),
+            kind: def.kind,
+            levels: def.levels.clone(),
             elements,
             attributes,
             subsets: Vec::new(),
             element_ids,
             attribute_ids,
         })
+    }
+
+    /// Finds a level by the name the dimension gives it, ignoring case and spaces.
+    pub fn level(&self, name: &str) -> Option<u32> {
+        let found = self.levels.iter().position(|level| key(level) == key(name));
+        found.map(|level| level as u32)
     }
 
     /// Finds a subset by name, ignoring case and spaces.

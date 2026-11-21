@@ -74,6 +74,7 @@ pub fn random_model(rng: &mut Rng, dimensions: usize, shape: &Shape) -> ModelDef
             elements,
             attributes: Default::default(),
             subsets: Default::default(),
+            levels: Default::default(),
         }
     };
 

@@ -30,6 +30,12 @@ pub struct DimensionDef {
     /// Reusable selections of this dimension's elements, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub subsets: BTreeMap<String, SubsetDef>,
+    /// Names for the dimension's levels, from the leaves up: the first names level zero. A
+    /// query may then say `[Period].[Quarter]` for the level, unless an element has that
+    /// name, and `Ytd`, `Qtd`, `Mtd` and `Wtd` look for the levels named Year, Quarter,
+    /// Month and Week.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<String>,
 }
 
 /// A selection of a dimension's elements.
@@ -59,6 +65,9 @@ pub struct ViewDef {
 pub enum DimensionType {
     #[default]
     Standard,
+    /// The dimension that holds a cube's periods, which `Ytd` and its kin run along when a
+    /// query does not say which member they are to end at.
+    Time,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -192,9 +192,11 @@ practice that means:
     `.LastChild`, `.CurrentMember`, `Ancestor`, `.PrevMember`, `.NextMember`, `.Lag(n)`,
     `.Lead(n)`, and `StrToMember`, `StrToTuple`, `StrToSet` for a member, tuple or set
     given as text.
-  - Levels: `[Dimension].Levels(n)` and `member.Level`, with `.Members` and `.Ordinal`;
-    `Ancestor(member, level)`, `Cousin(member, ancestor)`,
-    `ParallelPeriod(level [, back [, member]])` and `PeriodsToDate(level [, member])`.
+  - Levels: `[Dimension].Levels(n)`, `[Dimension].Levels('name')`, `[Dimension].[name]`
+    and `member.Level`, with `.Members`, `.Ordinal` and `.Name`; `Ancestor(member, level)`,
+    `Descendants(member, level [, flag])`, `Cousin(member, ancestor)`,
+    `ParallelPeriod(level [, back [, member]])`, `PeriodsToDate(level [, member])`, and
+    `Ytd`, `Qtd`, `Mtd` and `Wtd`, each with or without a member.
   - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `NOT`, `IIF`,
     `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`, `Aggregate`, `Avg`, `Min`, `Max`,
     `Count` and `.Count`, tuples as cell references, `.Name`, `.UniqueName`, `.Value`,
@@ -224,14 +226,18 @@ practice that means:
     member's level, in the order they are declared. Past either end there is no member,
     and a tuple with no member in one of its places has no cell.
   - A level is known by its number, counted up from the leaves as everywhere here, so
-    `[Period].Levels(0)` is the months of a calendar and not its top. Levels have no names.
+    `[Period].Levels(0)` is the months of a calendar and not its top. A dimension may name
+    its levels, from the leaves up, in `levels`; a name that is also an element's means
+    the element, since the top of a calendar is as likely as not called Year.
+  - `Ytd`, `Qtd`, `Mtd` and `Wtd` run within the levels named Year, Quarter, Month and
+    Week. Without a member they end at the current member of the cube's dimension of type
+    `time`.
   - `Cousin` and `ParallelPeriod` take the same child at each step down, so in a ragged
     hierarchy there may be no such member; then, as past the end of a level, there is none.
   - `Rank` with an expression is one more than the number of tuples with a greater
     value, so equal values share a rank; a tuple that is not in the set ranks zero.
   - `Round` rounds halves away from zero. A root or logarithm that does not exist is null.
-- Not done: functions outside the lists above (for example `Ytd`, `Qtd` and `Mtd`, which
-  need to know which level is the years, and the date functions), named levels, and
+- Not done: functions outside the lists above (for example the date functions), and
   formatting.
 
 ### 2.8 Spreading

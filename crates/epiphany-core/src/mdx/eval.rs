@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use super::parser::{Axis, Expr, Query};
 use super::{AxisResult, MdxError, MemberResult, MemberType, QueryResult};
 use crate::Scalar;
-use crate::model::{Cube, Dimension, Element, ElementId, ElementType, Model, key};
+use crate::model::{Cube, Dimension, DimensionType, Element, ElementId, ElementType, Model, key};
 
 /// The most cells one query may return.
 const MOST_CELLS: usize = 1_000_000;
@@ -539,7 +539,10 @@ impl<'a> Evaluator<'a> {
             Some(id) => Ok(Datum::Member(Member { position, id })),
             // `[Dimension].[Dimension]` is the hierarchy, which is the dimension itself.
             None if rest.len() == 1 && key(name) == key(first) => Ok(Datum::Dimension(position)),
-            None => fail(format!("dimension '{first}' has no member '{name}'")),
+            None => match self.dimension(position).level(name) {
+                Some(level) => Ok(Datum::Level(position, level)),
+                None => fail(format!("dimension '{first}' has no member '{name}'")),
+            },
         }
     }
 
@@ -986,21 +989,36 @@ impl<'a> Evaluator<'a> {
             "DESCENDANTS" => {
                 count(1..=3)?;
                 let member = self.member(&arguments[0], context)?;
-                let distance = match arguments.get(1) {
-                    Some(argument) => Some(self.number(argument, context)? as usize),
-                    None => None,
-                };
+                // How far down: a number of steps, or as far as a level.
+                let (mut distance, mut level) = (None, None);
+                match arguments
+                    .get(1)
+                    .map(|argument| self.evaluate(argument, context))
+                {
+                    Some(Ok(Datum::Level(_, to))) => level = Some(to),
+                    Some(steps) => {
+                        distance = Some(to_number(&self.scalar(steps?, context)?)? as usize);
+                    }
+                    None => {}
+                }
                 let which = flag(arguments.get(2)).unwrap_or_else(|| "SELF".to_owned());
                 if !["SELF", "AFTER", "SELF_AND_AFTER", "LEAVES"].contains(&which.as_str()) {
                     return fail(format!("unknown DESCENDANTS flag {which}"));
                 }
-                // Without a distance, the member and everything below it.
-                let wanted = |depth: usize, leaf: bool| match (which.as_str(), distance) {
-                    ("LEAVES", _) => leaf,
-                    (_, None) => true,
-                    ("AFTER", Some(distance)) => depth > distance,
-                    ("SELF_AND_AFTER", Some(distance)) => depth >= distance,
-                    (_, Some(distance)) => depth == distance,
+                // Without a distance or a level, the member and everything below it. Levels
+                // count up from the leaves, so what comes after a level has a lower number.
+                let wanted = |depth: usize, element: &Element| {
+                    let (below, at) = match (distance, level) {
+                        (Some(distance), _) => (depth > distance, depth == distance),
+                        (_, Some(level)) => (element.level < level, element.level == level),
+                        _ => (true, true),
+                    };
+                    match which.as_str() {
+                        "LEAVES" => element.children.is_empty(),
+                        "AFTER" => below,
+                        "SELF_AND_AFTER" => below || at,
+                        _ => at,
+                    }
                 };
                 let (id, _) = self.element(member)?;
                 let dimension = self.dimension(member.position);
@@ -1010,7 +1028,7 @@ impl<'a> Evaluator<'a> {
                 // Parents before children, children in their declared order.
                 while let Some((id, depth)) = pending.pop() {
                     let element = &dimension.elements[id as usize];
-                    if wanted(depth, element.children.is_empty()) && seen.insert(id) {
+                    if wanted(depth, element) && seen.insert(id) {
                         found.push(vec![Member {
                             position: member.position,
                             id: Id::Element(id),
@@ -1238,36 +1256,75 @@ impl<'a> Evaluator<'a> {
                 count(1..=2)?;
                 let (position, level) = self.level(&arguments[0], context)?;
                 let member = self.member_of(arguments.get(1), position, context)?;
-                let (id, element) = self.element(member)?;
-                // The members of the member's own level beneath its ancestor, in the order
-                // of the hierarchy, as far as the member itself.
-                let mut periods = Vec::new();
-                if let Some(ancestor) = self.ancestor_at(member, level)? {
-                    let elements = &self.dimension(position).elements;
-                    let mut waiting = vec![self.element(ancestor)?.0];
-                    while let Some(next) = waiting.pop() {
-                        let other = &elements[next as usize];
-                        if other.level == element.level && !periods.contains(&next) {
-                            periods.push(next);
-                        }
-                        if next == id {
-                            break;
-                        }
-                        if other.level > element.level {
-                            waiting.extend(other.children.iter().rev().map(|&(child, _)| child));
+                self.periods_to_date(member, level).map(Datum::Set)
+            }
+            "YTD" | "QTD" | "MTD" | "WTD" => {
+                count(0..=1)?;
+                // To the member given, or to the current member of the cube's time dimension.
+                let member = match arguments.first() {
+                    Some(argument) => self.member(argument, context)?,
+                    None => {
+                        let time = |&position: &usize| {
+                            self.dimension(position).kind == DimensionType::Time
+                        };
+                        let Some(position) = (0..context.len()).find(time) else {
+                            return fail(format!(
+                                "{function} needs a member, or a dimension of type 'time' in the cube"
+                            ));
+                        };
+                        Member {
+                            position,
+                            id: context[position],
                         }
                     }
-                }
-                let one = |id: ElementId| {
-                    vec![Member {
-                        position,
-                        id: Id::Element(id),
-                    }]
                 };
-                Ok(Datum::Set(periods.into_iter().map(one).collect()))
+                let wanted = match function {
+                    "YTD" => "Year",
+                    "QTD" => "Quarter",
+                    "MTD" => "Month",
+                    _ => "Week",
+                };
+                let dimension = self.dimension(member.position);
+                let Some(level) = dimension.level(wanted) else {
+                    return fail(format!(
+                        "{function} needs a level named '{wanted}' in dimension '{}'",
+                        dimension.name
+                    ));
+                };
+                self.periods_to_date(member, level).map(Datum::Set)
             }
             _ => fail(format!("unknown function {function}")),
         }
+    }
+
+    /// The members of a member's own level beneath its ancestor at a level, in the order of
+    /// the hierarchy, as far as the member itself. None if it has no ancestor there.
+    fn periods_to_date(&self, member: Member, level: u32) -> Evaluated<Vec<Tuple>> {
+        let (id, element) = self.element(member)?;
+        let mut periods = Vec::new();
+        if let Some(ancestor) = self.ancestor_at(member, level)? {
+            let elements = &self.dimension(member.position).elements;
+            let mut waiting = vec![self.element(ancestor)?.0];
+            while let Some(next) = waiting.pop() {
+                let other = &elements[next as usize];
+                if other.level == element.level && !periods.contains(&next) {
+                    periods.push(next);
+                }
+                if next == id {
+                    break;
+                }
+                if other.level > element.level {
+                    waiting.extend(other.children.iter().rev().map(|&(child, _)| child));
+                }
+            }
+        }
+        let one = |id: ElementId| {
+            vec![Member {
+                position: member.position,
+                id: Id::Element(id),
+            }]
+        };
+        Ok(periods.into_iter().map(one).collect())
     }
 
     /// A level given as an argument: the position of its dimension, and the level.
@@ -1408,7 +1465,29 @@ impl<'a> Evaluator<'a> {
                 Ok(Datum::Level(member.position, self.element(member)?.1.level))
             }
             ("LEVELS", &Datum::Dimension(position)) => {
-                Ok(Datum::Level(position, distance()?.max(0.0) as u32))
+                let [level] = arguments else {
+                    return fail(".LEVELS takes one level, by number or by name");
+                };
+                // By the name the dimension gives it, or by its number from the leaves up.
+                match self.evaluate(level, context)? {
+                    Datum::Text(name) => match self.dimension(position).level(&name) {
+                        Some(level) => Ok(Datum::Level(position, level)),
+                        None => {
+                            let dimension = &self.dimension(position).name;
+                            fail(format!("dimension '{dimension}' has no level '{name}'"))
+                        }
+                    },
+                    number => {
+                        let number = to_number(&self.scalar(number, context)?)?;
+                        Ok(Datum::Level(position, number.max(0.0) as u32))
+                    }
+                }
+            }
+            ("NAME", &Datum::Level(position, level)) => {
+                let named = self.dimension(position).levels.get(level as usize);
+                Ok(Datum::Text(
+                    named.cloned().unwrap_or_else(|| level.to_string()),
+                ))
             }
             ("LEVELS", _) => fail(".LEVELS applies to a dimension"),
             ("ORDINAL", &Datum::Level(_, level)) => Ok(Datum::Number(f64::from(level))),

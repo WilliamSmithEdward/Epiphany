@@ -1753,6 +1753,13 @@
               "$ref": "#/components/schemas/ElementDef"
             }
           },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names for the dimension's levels, from the leaves up: the first names level zero. A\nquery may then say `[Period].[Quarter]` for the level, unless an element has that\nname, and `Ytd`, `Qtd`, `Mtd` and `Wtd` look for the levels named Year, Quarter,\nMonth and Week."
+          },
           "name": {
             "type": "string"
           },
@@ -1794,7 +1801,8 @@
       "DimensionType": {
         "type": "string",
         "enum": [
-          "standard"
+          "standard",
+          "time"
         ]
       },
       "DimensionView": {
