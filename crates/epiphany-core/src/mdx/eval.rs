@@ -995,12 +995,13 @@ impl<'a> Evaluator<'a> {
                 if arguments.len() == 3 {
                     self.foresee(arguments.get(2), context, &set);
                 }
+                let mut along = Along::new(context);
                 for tuple in set {
                     let value = match arguments.get(2) {
                         Some(expression) => {
-                            let context = with(context, &tuple);
-                            let value = self.evaluate(expression, &context)?;
-                            self.scalar(value, &context)?
+                            let context = along.at(&tuple);
+                            let value = self.evaluate(expression, context)?;
+                            self.scalar(value, context)?
                         }
                         None => Datum::Null,
                     };
@@ -1020,10 +1021,11 @@ impl<'a> Evaluator<'a> {
                 let wanted = self.number(&arguments[1], context)?;
                 self.foresee(arguments.get(2), context, &set);
                 let mut keyed = Vec::new();
+                let mut along = Along::new(context);
                 for tuple in set {
-                    let context = with(context, &tuple);
-                    let value = self.evaluate(&arguments[2], &context)?;
-                    let value = match self.scalar(value, &context)? {
+                    let context = along.at(&tuple);
+                    let value = self.evaluate(&arguments[2], context)?;
+                    let value = match self.scalar(value, context)? {
                         Datum::Null => 0.0,
                         value => to_number(&value)?,
                     };
@@ -1761,9 +1763,14 @@ impl<'a> Evaluator<'a> {
             self.foresee(None, &with(context, other), &set);
         }
         let mut kept = Vec::new();
+        let mut along = Along::new(context);
         for tuple in set {
-            let context = with(context, &tuple);
-            let mut cells = across.iter().map(|other| self.cell(&with(&context, other)));
+            let context = along.at(&tuple);
+            // Across nothing, which is the usual case, the cell is the tuple's own.
+            let mut cells = across.iter().map(|other| match other.is_empty() {
+                true => self.cell(context),
+                false => self.cell(&with(context, other)),
+            });
             if cells.try_fold(false, |any, cell| Ok(any || !is_empty(&cell?)))? {
                 kept.push(tuple);
             }

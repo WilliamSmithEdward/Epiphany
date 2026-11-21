@@ -67,6 +67,24 @@ fn main() {
             ),
         ),
         (
+            "400 cells, each a sum over 100 members of a set",
+            format!(
+                "WITH MEMBER [d3].[sum] AS Sum({}, [d3].[e0]) \
+                 SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d3].[sum])",
+                leaves(2),
+                first(0, 20),
+                first(1, 20)
+            ),
+        ),
+        (
+            "the 1,000 largest of 10,000 tuples",
+            format!(
+                "SELECT TopCount({} * {}, 1000, [d2].[e0]) ON COLUMNS FROM [C] WHERE [d3].[e0]",
+                leaves(0),
+                leaves(1)
+            ),
+        ),
+        (
             "400 cells, each totalling two dimensions",
             format!(
                 "SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d2].[all], [d3].[all])",

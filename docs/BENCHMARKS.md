@@ -85,7 +85,10 @@ goes from 2.2 ms to 1.5 ms, and of a calculated member from 2.4 ms to 2.0 ms (20
 
 `Filter`, the aggregates and the announcing of cells went through a set copying the cell
 for every tuple. They now move one copy along the set, putting each tuple in the place of
-the one before: the `Filter` over 10,000 tuples goes from 2.6 ms to 1.9 ms (2026-11-21).
+the one before: the `Filter` over 10,000 tuples goes from 2.6 ms to 1.9 ms, a grid of 400
+cells that are each a `Sum` over 100 members from 7.3 ms to 4.8 ms, and the 1,000 largest
+of 10,000 tuples by `TopCount` from 2.8 ms to 2.2 ms. `Rank` and `Order` still copy the
+cell for each tuple (2026-11-21).
 
 Writing 200,000 cells in one batch took 198 ms, about a microsecond a cell, of which
 storing the cell is an eighth. Three things on the way there were trimmed: the locks were
