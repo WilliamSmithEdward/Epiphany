@@ -400,7 +400,8 @@ impl Along {
 
     /// The cell with this tuple in it and the last one out of it again.
     fn at(&mut self, tuple: &Tuple) -> &Context {
-        for (position, id) in self.before.drain(..) {
+        // Last put in, first put back: right even of a tuple with two of one dimension.
+        while let Some((position, id)) = self.before.pop() {
             self.cell[position] = id;
         }
         for member in tuple {
