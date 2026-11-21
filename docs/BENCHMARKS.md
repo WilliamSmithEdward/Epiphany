@@ -62,7 +62,9 @@ leaf cells of a calculated member a little: 2.7 ms where it was 2.4 ms (2026-11-
 `NON EMPTY` over a cross join used to write the cross join out and then drop its empty
 tuples, so the cross join of three dimensions here, 1,442,897 tuples, was refused for its
 length. Its tuples that hold something are now found by looking through the stored cells:
-the 200,000 cells give some 36,000 rows in 69 ms. Looking through the cells costs a pass
+the 200,000 cells give 36,461 rows in 69 ms, and in 57 ms with each tuple known by one
+number in place of a list. Of that, finding the rows takes 5 ms and adding up their
+totals 15 ms; most of the rest goes on describing the 109,383 members of the answer. Looking through the cells costs a pass
 over all of them, so it is done only where the cross join is long beside them: the cross
 join of two dimensions, 12,769 tuples, is still written out, in 6 ms (2026-11-21).
 

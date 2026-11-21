@@ -4,6 +4,8 @@ use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use rustc_hash::FxHashSet;
+
 use super::parser::{Axis, Expr, Query};
 use super::{AxisResult, MdxError, MemberResult, MemberType, QueryResult};
 use crate::Scalar;
@@ -567,37 +569,45 @@ impl<'a> Evaluator<'a> {
             }
             beneath.push(leaves);
         }
+        // A tuple of the cross join is known by one number: its place in the cross join
+        // written out, which is each member's place in its set times the length of all the
+        // sets after it.
         let tuples = crossed
             .iter()
             .try_fold(1usize, |product, set| product.checked_mul(set.len()));
-        let most = tuples.map_or(usize::MAX, |tuples| tuples.saturating_mul(CELLS_A_TUPLE));
-        let mut found: HashSet<Vec<u32>> = HashSet::new();
+        let Some(tuples) = tuples else {
+            return Ok(None);
+        };
+        let mut strides = vec![1; crossed.len()];
+        for set in (1..crossed.len()).rev() {
+            strides[set - 1] = strides[set] * crossed[set].len();
+        }
+        let set_of: Vec<Option<usize>> = (0..context.len())
+            .map(|position| own.iter().position(|&own| own == position))
+            .collect();
+        let mut found: FxHashSet<usize> = FxHashSet::default();
+        let mut above: Vec<&[u32]> = vec![&[]; crossed.len()];
+        let mut places = vec![0; crossed.len()];
+        let most = tuples.saturating_mul(CELLS_A_TUPLE);
         let shown = (self.occupied)(most, &mut |at: &[ElementId]| {
-            let mut above = Vec::with_capacity(own.len());
             for (position, leaf) in at.iter().enumerate() {
-                match &beneath[position][*leaf as usize] {
-                    Some(members) if own.contains(&position) => above.push((position, members)),
-                    Some(_) => {}
-                    None => return,
+                match (&beneath[position][*leaf as usize], set_of[position]) {
+                    (None, _) => return,
+                    (Some(members), Some(set)) => above[set] = members,
+                    (Some(_), None) => {}
                 }
             }
             if found.len() > MOST_TUPLES {
                 return;
             }
             // Every way of taking one member above the cell from each set of the cross join.
-            above.sort_by_key(|&(position, _)| own.iter().position(|&own| own == position));
-            let mut places = vec![0; above.len()];
+            places.fill(0);
             loop {
-                found.insert(
-                    places
-                        .iter()
-                        .zip(&above)
-                        .map(|(&place, (_, members))| members[place])
-                        .collect(),
-                );
+                let place = |set: usize| above[set][places[set]] as usize * strides[set];
+                found.insert((0..places.len()).map(place).sum());
                 let Some(next) = (0..places.len())
                     .rev()
-                    .find(|&set| places[set] + 1 < above[set].1.len())
+                    .find(|&set| places[set] + 1 < above[set].len())
                 else {
                     break;
                 };
@@ -609,17 +619,14 @@ impl<'a> Evaluator<'a> {
             return Ok(None);
         }
         bounded(Some(found.len()))?;
-        let mut found: Vec<Vec<u32>> = found.into_iter().collect();
+        let mut found: Vec<usize> = found.into_iter().collect();
         found.sort_unstable();
-        let tuple = |places: Vec<u32>| -> Tuple {
-            let members = places.iter().zip(crossed);
-            members
-                .map(|(&place, set)| set[place as usize][0])
-                .collect()
+        let tuple = |place: usize| -> Tuple {
+            let member = |set: usize| crossed[set][place / strides[set] % crossed[set].len()][0];
+            (0..crossed.len()).map(member).collect()
         };
         Ok(Some(found.into_iter().map(tuple).collect()))
     }
-
     /// An expression with its names settled, or as it stands if one of them means nothing:
     /// that one is then left to fail where it is used, if it ever is.
     fn settled(&self, expression: &Expr) -> Expr {
