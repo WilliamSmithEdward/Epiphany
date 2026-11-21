@@ -295,6 +295,59 @@ fn a_rule_that_depends_on_itself_is_reported() {
     );
 }
 
+/// A balance carried forward from day to day: each day's is the day before's and its own flow.
+fn carried(days: usize, balance: &str) -> Database {
+    let leaf = |name: String| json!({ "name": name, "type": "numeric" });
+    let days: Vec<Json> = (1..=days).map(|day| leaf(format!("D{day}"))).collect();
+    let before = "([Account].[Balance], [Day].CurrentMember.PrevMember)";
+    let rule = format!(
+        "[Account].[Balance] = {}",
+        balance.replace("BEFORE", before)
+    );
+    let definition = serde_json::from_value(json!({
+        "dimensions": [
+            { "name": "Day", "elements": days },
+            { "name": "Account", "elements": [leaf("Flow".to_owned()), leaf("Balance".to_owned())] }
+        ],
+        "cubes": [{ "name": "Ledger", "dimensions": ["Day", "Account"], "rules": [rule] }]
+    }))
+    .unwrap();
+    let mut database = Database::new(definition).unwrap();
+    write(&mut database, "Ledger", &["D1", "Flow"], 5.0);
+    write(&mut database, "Ledger", &["D3", "Flow"], 2.0);
+    database
+}
+
+#[test]
+fn a_long_chain_of_rules_is_followed_or_refused_but_never_fatal() {
+    let balance =
+        |database: &Database, day: &str| database.read(None, &cell("Ledger", &[day, "Balance"]));
+    let plain = carried(100_000, "[Account].[Flow] + BEFORE");
+    assert_eq!(balance(&plain, "D3"), Ok(Scalar::Number(7.0)));
+    assert_eq!(balance(&plain, "D20"), Ok(Scalar::Number(7.0)));
+    // Past what can be followed the cell is refused, where the chain gave out.
+    let refused = |database: &Database| match balance(database, "D100000") {
+        Err(Error::Rule(message)) => {
+            assert!(
+                message.ends_with("depends on too long a chain of other cells"),
+                "{message}"
+            );
+        }
+        other => panic!("expected a refusal, found {other:?}"),
+    };
+    refused(&plain);
+
+    // The same with each day's rule a nest of functions.
+    let nested = format!(
+        "{}[Account].[Flow] + BEFORE{}",
+        "IIF(1 = 1, ".repeat(4),
+        ", 0)".repeat(4)
+    );
+    let nested = carried(100_000, &nested);
+    assert_eq!(balance(&nested, "D2"), Ok(Scalar::Number(5.0)));
+    refused(&nested);
+}
+
 #[test]
 fn bad_rules_and_feeders_make_the_model_invalid() {
     let cases = [

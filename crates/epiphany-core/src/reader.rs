@@ -7,7 +7,7 @@
 //! and fed ones if it is.
 
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -24,8 +24,12 @@ pub(crate) type Fed = Vec<Option<FxHashSet<Coordinate>>>;
 const MOST_VISITED: usize = 10_000_000;
 /// The most cells the feeders of a model may feed.
 const MOST_FED: usize = 10_000_000;
-/// How deeply cells may depend on one another through rules.
-const DEEPEST: usize = 256;
+/// How much of a thread's stack a chain of cells that depend on one another through rules
+/// may take, in bytes. Each cell in the chain is worked out inside the one that needs it, so
+/// a chain uses stack in proportion to its length and to how much its rules nest, and a
+/// thread that runs out of stack ends the whole process. Threads are given a megabyte or
+/// two; this leaves room for the deepest rule to be worked out at the end of the chain.
+const MOST_STACK: usize = 512 * 1024;
 
 /// The most consolidated cells kept for one cube; past it they are forgotten and kept afresh.
 const MOST_KEPT: usize = 1_000_000;
@@ -71,6 +75,8 @@ pub(crate) struct Reader<'a> {
     known: RefCell<FxHashMap<(usize, Coordinate), Scalar>>,
     /// The cells being worked out, each because the one before it needs it.
     working: RefCell<Vec<(usize, Coordinate)>>,
+    /// Where the stack stood when the first of them was begun.
+    began: Cell<usize>,
 }
 
 impl<'a> Reader<'a> {
@@ -89,6 +95,7 @@ impl<'a> Reader<'a> {
             totals,
             known: RefCell::default(),
             working: RefCell::default(),
+            began: Cell::default(),
         }
     }
 
@@ -219,14 +226,26 @@ impl<'a> Reader<'a> {
         if let Some(known) = self.known.borrow().get(&key) {
             return Ok(known.clone());
         }
-        let circular = {
+        // How far the stack has moved since the chain began is told by where a local of
+        // this call stands.
+        let here = std::ptr::from_ref(&key).addr();
+        let trouble = {
             let working = self.working.borrow();
-            working.len() >= DEEPEST || working.contains(&key)
+            if working.is_empty() {
+                self.began.set(here);
+            }
+            if working.contains(&key) {
+                Some("depends on itself")
+            } else if self.began.get().abs_diff(here) > MOST_STACK {
+                Some("depends on too long a chain of other cells")
+            } else {
+                None
+            }
         };
-        if circular {
+        if let Some(trouble) = trouble {
             let (name, at) = (&self.model.cubes()[cube].name, self.names(cube, at));
             return Err(MdxError::new(format!(
-                "cell ({at}) of cube '{name}' depends on itself"
+                "cell ({at}) of cube '{name}' {trouble}"
             )));
         }
         self.working.borrow_mut().push(key.clone());
