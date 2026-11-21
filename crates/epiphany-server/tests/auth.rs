@@ -255,7 +255,7 @@ async fn signing_out_ends_the_session() {
 async fn a_session_left_unused_ends_and_a_used_one_lives_on() {
     // The times leave room for the other tests, which keep the processor busy with passwords:
     // a session lasts five seconds unused, and the one in use is used every half second,
-    // which the busiest machine yet seen has stretched to under two.
+    // which a busy machine has been seen to stretch past two.
     let (_home, app) = secured("idle", Some(Duration::from_secs(5)));
     let (idle, busy) = (token(&app).await, token(&app).await);
     for _ in 0..12 {
