@@ -125,6 +125,28 @@ A read, a write or a query can carry a transaction id; without one it stands alo
 curl -s http://127.0.0.1:8080/mdx -H "content-type: application/json" -d "{\"mdx\": \"SELECT {[Period].[Q1].Children} ON COLUMNS, {[Account].[Revenue]} ON ROWS FROM [General Ledger]\"}"
 ```
 
+`NON EMPTY` over a long set or cross join does not work through every combination: the rows
+that hold something are found from the stored cells, so a view of several large dimensions
+down its rows takes the time its data needs and not the time its size would. A cube with
+rules needs feeders for this, as it does for its totals to be quick.
+
+## Limits
+
+Each is there so that one request cannot take the server from the others. A request past a
+limit is refused with an ordinary error that says which.
+
+| Limit | Value |
+| --- | --- |
+| Cells a query returns | 1,000,000 |
+| Tuples in a set while a query is worked out | 1,000,000 |
+| Expressions inside one another | 32 deep |
+| Steps to work out one query, or one rule at one cell | 100,000,000 (about three seconds) |
+| Characters in a text an expression builds | 1,000,000 |
+| A request body | 64 MiB; 16 KiB to sign in |
+| Sign-ins waiting or being checked | 64, four checked at a time; one more is told to come back in a second |
+
+[docs/PLAN.md](docs/PLAN.md) gives the reasons.
+
 ## Excel
 
 [adapter](adapter) is an Excel-DNA add-in: one `.xll` file that needs nothing installed
@@ -145,7 +167,7 @@ dotnet test adapter/Epiphany.Excel.Tests
 ```
 
 The adapter's tests need `cargo build -p epiphany-server` first and the .NET SDK; they start
-a real server and need no Excel. Two scripts in [adapter](adapter) check the add-in inside
+a real server and need no Excel. Three scripts in [adapter](adapter) check the add-in inside
 Excel itself.
 
 | Path | What is there |
