@@ -157,6 +157,12 @@ towards one of the totals is worked out once and shared out among them; a rule i
 about a cell that counts towards none. In this benchmark every cell counts, so it shows no
 gain from that.
 
+Inside a transaction that had written anything, totals were neither added up in one pass
+nor kept, since what others had kept was of the committed cells: the grid of 400 totals
+took 59 ms in a transaction with one write pending, against 1.2 ms outside. A reader in a
+transaction now keeps totals of its own for its request and adds them up in one pass over
+the stored cells with the pending writes laid over them: 2.4 ms (2026-11-21).
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions

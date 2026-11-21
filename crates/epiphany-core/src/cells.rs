@@ -247,15 +247,17 @@ impl Cells {
         combinations.map_or(self.numbers.len(), |n| n.min(self.numbers.len()))
     }
 
-    /// Sums many numeric cells in one pass over the stored cells, giving each stored cell to
-    /// every one of them it counts towards. Nothing if the cells are too varied to number.
+    /// Sums many numeric cells in one pass over the stored cells, as they would be once the
+    /// pending writes were stored, giving each stored cell to every one of them it counts
+    /// towards. Nothing if the cells are too varied to number.
     pub(crate) fn sum_many(
         &self,
         model: &Model,
         cube: &Cube,
         cells: &[&[ElementId]],
+        pending: Option<&Writes>,
     ) -> Option<Vec<f64>> {
-        let stored = self.numbers.iter().map(|(at, &value)| (&**at, value));
+        let stored = self.numbers_with(pending);
         Self::share(model, cube, cells, stored, |_, value| Some(value))
     }
 

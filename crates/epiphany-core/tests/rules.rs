@@ -217,6 +217,27 @@ fn cells_of_a_cube_with_rules_read_together_equal_cells_read_one_by_one() {
         assert_eq!(read(&together, ["World", "Q1", "Tax"]), 110.0);
         assert_eq!(read(&together, ["World", "Q1", "Price"]), 2.5);
         assert_eq!(read(&together, ["World", "Q1", "Profit"]), 100.0);
+
+        // The same inside a transaction that changes revenue, the source of the rule.
+        let (mut together, mut one_by_one) = (together, one_by_one);
+        let change = |at: [&str; 3], value: f64| CellWrite {
+            cube: "Sales".to_owned(),
+            at: at.map(str::to_owned).to_vec(),
+            value: Scalar::Number(value),
+        };
+        let pending = [
+            change(["North", "Jan", "Revenue"], 0.0),
+            change(["South", "Feb", "Revenue"], 30.0),
+            change(["South", "Jan", "Units"], 4.0),
+        ];
+        let (within, alone) = (together.begin(), one_by_one.begin());
+        together.write(Some(within), &pending).unwrap();
+        one_by_one.write(Some(alone), &pending).unwrap();
+        let expected: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(Some(alone), cell))
+            .collect();
+        assert_eq!(together.read_many(Some(within), &cells), expected);
     }
 }
 

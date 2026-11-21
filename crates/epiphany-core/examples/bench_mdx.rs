@@ -142,6 +142,23 @@ fn main() {
                 .to_owned(),
         ),
     ];
+    // The same grid of totals inside a transaction with one write of its own pending.
+    {
+        let transaction = database.begin();
+        database.write(Some(transaction), &writes[..1]).unwrap();
+        let grid = format!(
+            "SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d2].[all], [d3].[all])",
+            first(0, 20),
+            first(1, 20)
+        );
+        let label = "400 totals inside a transaction with a write pending";
+        let start = Instant::now();
+        let result = database.query(Some(transaction), &grid).unwrap();
+        let took = millis(start);
+        let each = took * 1000.0 / result.cells.len() as f64;
+        println!("{label:<52} {took:>9.1} ms  {each:>9.1} us/cell");
+        database.rollback(transaction).unwrap();
+    }
     for (label, mdx) in &queries {
         // Each query starts with no totals kept from the one before.
         database.write(None, &writes[..1]).unwrap();

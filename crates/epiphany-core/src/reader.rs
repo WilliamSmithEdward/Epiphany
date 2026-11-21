@@ -71,7 +71,10 @@ pub(crate) struct Reader<'a> {
     fed: Cow<'a, Fed>,
     /// Consolidated cells others have worked out; none when reading a transaction's own
     /// writes, which only it can see.
-    totals: Option<&'a Totals>,
+    shared: Option<&'a Totals>,
+    /// Where there are none to share, those worked out for this reader alone: a
+    /// transaction's totals hold for as long as its writes stay as they are, the reader's.
+    own: Totals,
     /// Cells of cubes with rules that have been worked out already.
     known: RefCell<FxHashMap<(usize, Coordinate), Scalar>>,
     /// The cells being worked out, each because the one before it needs it.
@@ -95,7 +98,8 @@ impl<'a> Reader<'a> {
             cells,
             pending,
             fed,
-            totals,
+            shared: totals,
+            own: Totals::default(),
             known: RefCell::default(),
             working: RefCell::default(),
             began: Cell::default(),
@@ -103,10 +107,20 @@ impl<'a> Reader<'a> {
         }
     }
 
+    /// The totals kept: those everyone shares, or this reader's own.
+    fn totals(&self) -> &Totals {
+        self.shared.unwrap_or(&self.own)
+    }
+
+    /// The writes of the transaction being read in, to one cube.
+    fn pending_to(&self, cube: usize) -> Option<&'a Writes> {
+        self.pending.map(|pending| &pending[cube])
+    }
+
     pub(crate) fn read(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {
         let ruled = !self.model.cubes()[cube].rules.is_empty();
         // A leaf is quicker to look up where it is stored than among the totals.
-        let totals = self.totals.filter(|_| self.kind(cube, at).1);
+        let totals = self.kind(cube, at).1.then_some(self.totals());
         if let Some(kept) = totals.and_then(|totals| totals.get(cube, at)) {
             return Ok(kept);
         }
@@ -152,10 +166,9 @@ impl<'a> Reader<'a> {
     /// single pass and kept, and the reads that follow find them there.
     pub(crate) fn expect(&self, cube: usize, cells: &[&[ElementId]]) {
         let definition = &self.model.cubes()[cube];
-        let Some(totals) = self.totals else {
-            return;
-        };
+        let totals = self.totals();
         let stored = &self.cells[cube];
+        let pending = self.pending_to(cube);
         let mut wanted: Vec<&[ElementId]> = Vec::new();
         let mut seen = FxHashSet::default();
         let mut work = 0usize;
@@ -182,7 +195,10 @@ impl<'a> Reader<'a> {
             }
         };
         if work > stored.stored() {
-            keep(&wanted, stored.sum_many(self.model, definition, &wanted));
+            keep(
+                &wanted,
+                stored.sum_many(self.model, definition, &wanted, pending),
+            );
         }
 
         // In a fed cube such a total counts each stored cell as it is, or as its rule makes
@@ -195,12 +211,12 @@ impl<'a> Reader<'a> {
         let ruled = |leaf: &[ElementId]| leaf_rules().any(|rule| matches(&rule.area, leaf));
         // The stored cells with what they hold, then the fed cells that hold nothing.
         let held = stored
-            .numbers_with(None)
+            .numbers_with(pending)
             .map(|(leaf, held)| (leaf, Some(held)));
         let empty = fed
             .iter()
             .map(|leaf| &**leaf)
-            .filter(|leaf| stored.number_with(leaf, None) == 0.0);
+            .filter(|leaf| stored.number_with(leaf, pending) == 0.0);
         let leaves = held.chain(empty.map(|leaf| (leaf, None)));
         // A leaf a rule covers is what the rule makes it; any other is what it holds. A rule
         // is only asked about a leaf beneath one of the totals, and one that fails is left to

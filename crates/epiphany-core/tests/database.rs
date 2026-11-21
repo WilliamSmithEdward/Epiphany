@@ -142,6 +142,61 @@ fn cells_read_together_equal_cells_read_one_by_one() {
         assert_eq!(together.read_many(None, &cells), expected, "seed {seed}");
         // Asked again, they come from what was kept.
         assert_eq!(together.read_many(None, &cells), expected, "seed {seed}");
+
+        // Inside a transaction whose writes replace stored cells, clear some and add others,
+        // the cells are what committing those writes would make them, read together or not.
+        let pending: Vec<CellWrite> = writes
+            .iter()
+            .take(20)
+            .enumerate()
+            .map(|(index, write)| CellWrite {
+                value: Scalar::Number(match index % 3 {
+                    0 => 0.0,
+                    1 => 7.0,
+                    _ => -3.5,
+                }),
+                ..write.clone()
+            })
+            .chain((0..20).map(|_| {
+                CellWrite {
+                    cube: "C".to_owned(),
+                    at: (0..3)
+                        .map(|_| format!("e{}", rng.below(SHAPE.leaves)))
+                        .collect(),
+                    value: Scalar::Number(rng.below(100) as f64),
+                }
+            }))
+            .collect();
+        let within = together.begin();
+        together.write(Some(within), &pending).unwrap();
+        let one_by_one_within = one_by_one.begin();
+        one_by_one.write(Some(one_by_one_within), &pending).unwrap();
+        let expected: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(Some(one_by_one_within), cell))
+            .collect();
+        assert_eq!(
+            together.read_many(Some(within), &cells),
+            expected,
+            "seed {seed}"
+        );
+        assert_eq!(
+            together.read_many(Some(within), &cells),
+            expected,
+            "seed {seed}"
+        );
+        // What was worked out inside the transaction does not leak out of it.
+        let outside: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(None, cell))
+            .collect();
+        assert_eq!(together.read_many(None, &cells), outside, "seed {seed}");
+        one_by_one.commit(one_by_one_within).unwrap();
+        let committed: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(None, cell))
+            .collect();
+        assert_eq!(expected, committed, "seed {seed}");
     }
 }
 
