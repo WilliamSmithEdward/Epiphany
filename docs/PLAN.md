@@ -378,7 +378,8 @@ practice that means:
   wait for the queries already reading, and queries for a write. A request is handed
   over only once it has been let in and its body has arrived whole: handed over sooner,
   it kept a thread for as long as its sender took, and six hundred requests to sign in
-  that never finished arriving held every thread there was. The hand-over costs a
+  that never finished arriving held every thread there was. Reading the body first costs
+  nothing that shows in the timing below. The hand-over costs a
   small request about 25 µs: one cell read over a kept connection took 54 µs and takes
   78 µs (2026-11-21).
 - A request whose handling fails in a way nobody foresaw is answered 500 with the code
