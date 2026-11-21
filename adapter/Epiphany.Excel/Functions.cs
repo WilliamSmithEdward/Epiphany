@@ -185,8 +185,7 @@ namespace Epiphany.Excel
             var connection = AddIn.For(ref name);
             var at = elements.Select(Text).ToArray();
             var arguments = new[] { value, cube }.Concat(elements).ToArray();
-            if (value == null && connection != null)
-                Writeback.Reads(connection, name, at);
+
             return Run(function, arguments, connection,
                 () => value == null ? connection.Read(name, at) : connection.Write(name, at, value));
         }

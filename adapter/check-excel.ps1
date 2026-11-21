@@ -200,6 +200,30 @@ try {
     $ok = $before -eq '9' -and [string]$size.Text -eq '10' -and [string]$added.Text -eq '0'
     if (-not $ok) { $failed++ }
     "{0}  Model change: months counted <{1}> then <{2}>, the new month reads <{3}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $before, $size.Text, $added.Text
+
+    # A value typed over a read goes to the cell that formula reads, wherever the formula
+    # stands by then. Two reads on a sheet of their own, one with its month in another cell;
+    # a row is inserted above them, which moves them without their being calculated again;
+    # then the first is typed over.
+    $moved = $book.Worksheets.Add()
+    $moved.Cells.Item(1, 1).Value2 = 'Feb'
+    $moved.Cells.Item(2, 1).Formula = "=DBRW($gl,`"Rent`",`"US`",A1,`"Budget`")"
+    $moved.Cells.Item(3, 1).Formula = "=DBRW($gl,`"Salaries`",`"US`",`"Feb`",`"Budget`")"
+    for ($tries = 0; $tries -lt 15 -and ([string]$moved.Cells.Item(2, 1).Text -ne '0' -or [string]$moved.Cells.Item(3, 1).Text -ne '0'); $tries++) { Start-Sleep -Seconds 1 }
+    $moved.Rows.Item(1).Insert() | Out-Null
+    $rent = $moved.Cells.Item(3, 1)
+    $rent.Select() | Out-Null
+    $rent.Value2 = [double]11
+    for ($tries = 0; $tries -lt 15 -and [string]$rent.Text -ne '11'; $tries++) { Start-Sleep -Seconds 1 }
+    $held = {
+        param($account)
+        $ask = @{ cells = @(@{ cube = 'General Ledger'; at = @($account, 'US', 'Feb', 'Budget') }) } | ConvertTo-Json -Depth 4
+        [string][double](Invoke-RestMethod -Method Post -Uri "$address/cells/read" -ContentType 'application/json' -Body $ask).cells[0].value
+    }
+    $got = "{0} / rent {1} / salaries {2} / {3}" -f $rent.Text, (& $held 'Rent'), (& $held 'Salaries'), $rent.Formula
+    $ok = $got -eq "11 / rent 11 / salaries 0 / =DBRW($gl,`"Rent`",`"US`",A2,`"Budget`")"
+    if (-not $ok) { $failed++ }
+    "{0}  Typed: over a formula that a new row had moved -> <{1}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $got
     "$failed failed"
     $script:failures = $failed
     $book.Close($false)

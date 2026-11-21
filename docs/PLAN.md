@@ -382,8 +382,11 @@ practice that means:
     element, and Disconnect. Neither runs in CI,
     which has no Excel.
   - A value typed over a `DBRW` or `DBR` cell is written to the cube and the formula put
-    back. The add-in notes where each read formula reads from as it is calculated, and the
-    formulas of the selected cells before they can be typed over.
+    back. The add-in notes the formulas of the selected cells before they can be typed
+    over, and works out which cube cell a formula reads, from the formula, when it is. It
+    first kept that by the address the formula stood at when calculated; a row inserted or
+    a range sorted moved the formulas and not the notes, and a value could then have gone
+    to another formula's cell.
   - Begin transaction, Commit and Roll back in the menu: the connection then makes every
     read, write and spread within one server transaction. A transaction the server has
     rolled back for want of use is noticed at the next request; reads go on without it,

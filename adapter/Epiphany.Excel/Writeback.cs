@@ -9,9 +9,11 @@ using Microsoft.Office.Interop.Excel;
 namespace Epiphany.Excel
 {
     /// <summary>Typing over a cell that holds a DBRW or DBR formula writes the typed value to
-    /// the cube cell the formula reads, and puts the formula back. Two things are remembered
-    /// to do it: where each such formula reads from, noted as it is calculated, and the
-    /// formulas of the selected cells, noted before anything can be typed over them.</summary>
+    /// the cube cell the formula reads, and puts the formula back. One thing is remembered to
+    /// do it: the formulas of the selected cells, noted before anything can be typed over
+    /// them. Which cube cell a formula reads is worked out from the formula when it is typed
+    /// over, and not kept by where the formula stood: rows are inserted and ranges sorted,
+    /// and a note kept by address would then be a note about another formula.</summary>
     internal static class Writeback
     {
         // Selections and changes of more cells than this are left alone.
@@ -24,9 +26,7 @@ namespace Epiphany.Excel
             public string[] At;
         }
 
-        private static readonly object Gate = new object();
-        // By worksheet cell, as "[Book]Sheet!R1C1".
-        private static readonly Dictionary<string, Source> Sources = new Dictionary<string, Source>();
+        // The read formulas of the selected cells, by worksheet cell as "[Book]Sheet!R1C1".
         private static readonly Dictionary<string, string> Held = new Dictionary<string, string>();
         private static Application excel;
 
@@ -40,25 +40,38 @@ namespace Epiphany.Excel
             Hold(excel.ActiveSheet, excel.Selection as Range);
         }
 
-        /// <summary>Notes which cube cell the formula now being calculated reads.</summary>
-        public static void Reads(Connection connection, string cube, string[] at)
+        /// <summary>The cube cell a read formula reads, each argument worked out by Excel as it
+        /// stands on the formula's sheet. Null if an argument has no value just now or names
+        /// an environment that is not known.</summary>
+        private static Source Read(Worksheet sheet, string formula)
         {
-            if (!(XlCall.Excel(XlCall.xlfCaller) is ExcelReference caller))
-                return;
-            var key = Key((string)XlCall.Excel(XlCall.xlSheetNm, caller), caller.RowFirst + 1, caller.ColumnFirst + 1);
-            lock (Gate)
-                Sources[key] = new Source { Connection = connection, Cube = cube, At = at };
-        }
-
-        private static string Key(string sheet, int row, int column)
-        {
-            return sheet + "!R" + row + "C" + column;
+            var arguments = new List<string>();
+            foreach (var argument in Formula.Call(formula).Skip(1))
+            {
+                var value = sheet.Evaluate(argument);
+                if (value is Range range)
+                    value = range.Value2;
+                // A number is a name too, a year say; anything else is an error or nothing.
+                var text = value is double number
+                    ? number.ToString("R", CultureInfo.InvariantCulture)
+                    : value as string;
+                if (text == null)
+                    return null;
+                arguments.Add(text);
+            }
+            if (arguments.Count == 0)
+                return null;
+            var cube = arguments[0];
+            var connection = AddIn.For(ref cube);
+            return connection == null
+                ? null
+                : new Source { Connection = connection, Cube = cube, At = arguments.Skip(1).ToArray() };
         }
 
         private static string Key(Range cell)
         {
             var sheet = cell.Worksheet;
-            return Key("[" + ((Workbook)sheet.Parent).Name + "]" + sheet.Name, cell.Row, cell.Column);
+            return "[" + ((Workbook)sheet.Parent).Name + "]" + sheet.Name + "!R" + cell.Row + "C" + cell.Column;
         }
 
         /// <summary>True for a formula that is one DBRW or DBR call and nothing else.</summary>
@@ -100,9 +113,6 @@ namespace Epiphany.Excel
                 {
                     var key = Key(cell);
                     var formula = cell.Formula as string ?? "";
-                    Source source;
-                    lock (Gate)
-                        Sources.TryGetValue(key, out source);
                     if (formula.StartsWith("="))
                     {
                         // The formula itself was entered or edited.
@@ -110,12 +120,16 @@ namespace Epiphany.Excel
                         if (IsRead(formula))
                             Held[key] = formula;
                     }
-                    else if (source != null && Held.TryGetValue(key, out var held))
+                    else if (Held.TryGetValue(key, out var held))
                     {
                         restored.Add(new KeyValuePair<Range, string>(cell, held));
                         var value = cell.Value2;
-                        if (value is double || value is string)
-                            writes.Add(Write(source, value));
+                        if (!(value is double) && !(value is string))
+                            continue;
+                        // A formula whose cube cell cannot be told is put back with nothing
+                        // written, and counted among the values that were not.
+                        var source = Read(cell.Worksheet, held);
+                        writes.Add(source == null ? Task.FromResult<object>(Connection.KeyError) : Write(source, value));
                     }
                 }
                 if (restored.Count == 0)
@@ -197,7 +211,7 @@ namespace Epiphany.Excel
                 var lost = answers.Count(answer => ReferenceEquals(answer, Connection.Unavailable));
                 var message = refused + lost == 0 ? null
                     : "Epiphany: " + (refused + lost) + " of " + answers.Length + " values not written ("
-                        + (refused > 0 ? "the cell is consolidated, calculated or of another type" : "no connection") + ")";
+                        + (refused > 0 ? "the cell is consolidated, calculated, of another type or not to be found" : "no connection") + ")";
                 ExcelAsyncUtil.QueueAsMacro(() =>
                 {
                     excel.StatusBar = message ?? AddIn.Standing;
