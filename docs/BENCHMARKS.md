@@ -178,6 +178,13 @@ and compiled, as is done at every start and every model update (2026-11-21):
 | 1,000,000 leaves in groups of 100 | 55 MB | 147 ms | 1.0 s |
 | 1,000,000 leaves under the total alone | 55 MB | 218 ms | 1.5 s |
 
+A server on the model of a million leaves in groups of a hundred, with no cells, answers
+3.0 s after it is started and holds 520 MB: about 500 bytes an element. It keeps the
+model twice, as written, which `GET /model` returns and an update edits, and compiled,
+with each element's parents, children and leaves and an index of names and aliases; by
+reckoning rather than measurement, the two are of a size. A dimension of 100,000 leaves
+takes 60 MB (2026-11-21).
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions
