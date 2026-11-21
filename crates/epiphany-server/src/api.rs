@@ -294,7 +294,7 @@ struct Session {
     responses(
         (status = CREATED, body = Session, description = "Signed in"),
         (status = UNAUTHORIZED, body = ApiError, description = "Wrong name or password"),
-        (status = TOO_MANY_REQUESTS, body = ApiError, description = "The name has been given too many wrong passwords; the Retry-After header says how many seconds to wait"),
+        (status = TOO_MANY_REQUESTS, body = ApiError, description = "The name has been given too many wrong passwords, or too many sign-ins are waiting to be checked; the Retry-After header says how many seconds to wait"),
         (status = NOT_FOUND, body = ApiError, description = "The server has no users, so nothing needs signing in to"),
         (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The request body is malformed")
     )
@@ -305,6 +305,14 @@ async fn sign_in(State(state): State<AppState>, Body(request): Body<SignIn>) -> 
         return ApiError::new(StatusCode::NOT_FOUND, "not_found", message).into_response();
     };
     let idle_seconds = auth.idle().as_secs();
+    // A place in the queue, or none if it is full; then a turn at being checked.
+    let Ok(_place) = auth.waiting.try_acquire() else {
+        let message = "too many sign-ins are waiting; try again in a moment".to_owned();
+        let refusal = ApiError::new(StatusCode::TOO_MANY_REQUESTS, "busy", message);
+        return ([(RETRY_AFTER, "1")], refusal).into_response();
+    };
+    let _turn = auth.checking.acquire().await.expect("never closed");
+    let auth = Arc::clone(&auth);
     // Checking a password is deliberately slow, so it is kept off the threads that serve
     // other requests.
     let checked =

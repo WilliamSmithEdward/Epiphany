@@ -1239,7 +1239,7 @@
             }
           },
           "429": {
-            "description": "The name has been given too many wrong passwords; the Retry-After header says how many seconds to wait",
+            "description": "The name has been given too many wrong passwords, or too many sign-ins are waiting to be checked; the Retry-After header says how many seconds to wait",
             "content": {
               "application/json": {
                 "schema": {

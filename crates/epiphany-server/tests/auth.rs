@@ -537,3 +537,38 @@ async fn signing_in_has_room_for_a_name_and_a_password_and_no_more() {
     assert_eq!(body["code"], "invalid_request");
     assert_eq!(sign_in(&app, NAME, PASSWORD).await.0, StatusCode::CREATED);
 }
+
+#[tokio::test]
+async fn a_crowd_signing_in_at_once_is_checked_a_few_at_a_time() {
+    let home = Home::new("crowd");
+    set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();
+    let mut auth = Auth::load(&home.0)
+        .unwrap()
+        .expect("the directory has a user");
+    auth.set_waiting(6);
+    let app = app_with(home.open(), Some(auth));
+
+    // Each under a name of its own, so that no name is paused for its wrong passwords.
+    let crowd: Vec<_> = (0..16)
+        .map(|one| {
+            let app = app.clone();
+            tokio::spawn(async move { sign_in(&app, &format!("nobody{one}"), "wrong").await })
+        })
+        .collect();
+    let (mut refused, mut busy) = (0, 0);
+    for one in crowd {
+        let (status, body) = one.await.unwrap();
+        match status {
+            StatusCode::UNAUTHORIZED => refused += 1,
+            StatusCode::TOO_MANY_REQUESTS => {
+                assert_eq!(body["code"], "busy");
+                busy += 1;
+            }
+            other => panic!("unexpected {other}"),
+        }
+    }
+    // Six had a place in the queue; the rest were told to come back.
+    assert_eq!((refused, busy), (6, 10));
+    // And when the crowd has gone, the door is open again.
+    assert_eq!(sign_in(&app, NAME, PASSWORD).await.0, StatusCode::CREATED);
+}

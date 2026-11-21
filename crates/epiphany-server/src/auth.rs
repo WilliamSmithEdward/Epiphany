@@ -20,6 +20,7 @@ use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Semaphore;
 use utoipa::ToSchema;
 
 use crate::storage::{read_json, write_json};
@@ -31,6 +32,10 @@ const IDLE: Duration = Duration::from_secs(30 * 60);
 const ATTEMPTS: u32 = 5;
 /// How long such a name is refused, counted from the last wrong password.
 const PAUSE: Duration = Duration::from_secs(60);
+/// How many passwords are checked at once. Each check takes some 19 MiB and a processor.
+const CHECKED_AT_ONCE: usize = 4;
+/// How many sign-ins may wait for their turn; past that they are told to come back.
+const WAITING: usize = 64;
 
 /// What a user may do. Each role may also do what the ones before it may.
 #[derive(
@@ -161,6 +166,10 @@ pub struct Auth {
     failures: Mutex<HashMap<String, (u32, Instant)>>,
     idle: Duration,
     pause: Duration,
+    /// Checking a password is slow and takes memory on purpose, and anybody may ask for it,
+    /// so only so many are checked at once and only so many more may wait their turn.
+    pub(crate) checking: Semaphore,
+    pub(crate) waiting: Semaphore,
 }
 
 impl Auth {
@@ -181,6 +190,8 @@ impl Auth {
             failures: Mutex::default(),
             idle: IDLE,
             pause: PAUSE,
+            checking: Semaphore::new(CHECKED_AT_ONCE),
+            waiting: Semaphore::new(WAITING),
         }))
     }
 
@@ -191,6 +202,11 @@ impl Auth {
 
     pub fn idle(&self) -> Duration {
         self.idle
+    }
+
+    /// Sets how many sign-ins may wait for their password to be checked.
+    pub fn set_waiting(&mut self, waiting: usize) {
+        self.waiting = Semaphore::new(waiting);
     }
 
     /// Sets how long a name is refused after too many wrong passwords.

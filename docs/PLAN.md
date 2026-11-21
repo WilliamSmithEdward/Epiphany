@@ -350,6 +350,10 @@ practice that means:
 - Any data call may carry a transaction id; without one it is its own transaction.
 - One error shape everywhere: a stable code, a message, and the offending coordinate when
   there is one. The adapter maps codes to worksheet results.
+- Checking a password is slow and takes some 19 MiB on purpose, and anybody may ask for
+  it. Four are checked at once and 64 sign-ins in all may be waiting or being checked;
+  one more is answered 429 with the code `busy` and `Retry-After: 1`. A crowd of
+  sign-ins can then take neither the machine's memory nor all of its threads.
 - A request body holds at most 64 MiB, room for a model of large dimensions or some
   hundreds of thousands of cells in one write; a larger one is refused with 413 before it
   is read. A request to sign in, the one request anybody may send, holds at most 16 KiB.
