@@ -6,30 +6,13 @@
 # The add-in must be looking for the server at its default address, and port 8080 must be
 # free. Unlike the other checks this one puts a window on the screen; leave it alone while
 # it runs.
-$ErrorActionPreference = 'Stop'
+. "$PSScriptRoot\check-common.ps1"
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
-$repo = Split-Path $PSScriptRoot
-$port = 8080
-$address = "http://127.0.0.1:$port"
-$directory = Join-Path ([IO.Path]::GetTempPath()) "epiphany-excel-ribbon-$PID"
-$xll = "$repo\adapter\Epiphany.Excel\bin\Release\net472\publish\Epiphany64-packed.xll"
+New-Home
 
-if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { throw "port $port is in use; stop the server that has it first" }
-New-Item -ItemType Directory $directory | Out-Null
-Copy-Item -Recurse "$repo\crates\epiphany-core\tests\fixtures\model" "$directory\model"
-
-$server = $null; $excel = $null; $excelPid = [uint32]0; $failures = 1
 try {
-    $server = Start-Process -PassThru -WindowStyle Hidden "$repo\target\debug\epiphany-server.exe" -ArgumentList 'serve', "`"$directory`"", "127.0.0.1:$port"
-    Start-Sleep -Seconds 2
-    if ($server.HasExited) { throw 'the server did not start' }
-
-    $excel = New-Object -ComObject Excel.Application
-    # Remember which process this instance is, so that only it is ever stopped.
-    Add-Type -Namespace Native -Name Window -MemberDefinition '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);'
-    [void][Native.Window]::GetWindowThreadProcessId([IntPtr]$excel.Hwnd, [ref]$excelPid)
-    $excel.DisplayAlerts = $false
-    "registered: $($excel.RegisterXLL($xll))"
+    Start-Server
+    Start-Excel
     $book = $excel.Workbooks.Add()
     $cell = $book.Worksheets.Item(1).Cells.Item(1, 1)
     $cell.Formula = '=DBRW("General Ledger","Rent","UK","Jan","Actual")'
@@ -117,14 +100,6 @@ try {
     "$failures failed"
 }
 finally {
-    if ($excel) {
-        try { $excel.Visible = $false; foreach ($open in @($excel.Workbooks)) { $open.Close($false) }; $excel.Quit() } catch {}
-        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($excel)
-    }
-    Start-Sleep -Seconds 2
-    if ($excelPid) { Get-Process -Id $excelPid -ErrorAction SilentlyContinue | Where-Object Name -eq 'EXCEL' | Stop-Process -Force -ErrorAction SilentlyContinue }
-    if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-    Start-Sleep -Seconds 1
-    Remove-Item -Recurse -Force $directory -ErrorAction SilentlyContinue
+    Stop-All
 }
 exit $failures

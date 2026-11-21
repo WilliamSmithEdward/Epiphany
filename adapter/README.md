@@ -95,6 +95,9 @@ before you have connected to anything yourself.
 Commit and Refresh, watching the status bar and a cell for what each does. Unlike the other
 two it shows its Excel for a quarter of a minute; leave the window alone while it runs.
 
+The three share `adapter\check-common.ps1`, which starts the server and the Excel each of
+them uses and takes both away again.
+
 ## Layout
 
 | File | Purpose |

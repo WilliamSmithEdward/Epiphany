@@ -5,32 +5,14 @@
 #   dotnet build adapter/Epiphany.Excel -c Release
 # The add-in must be looking for the server at its default address (it is, unless Connect has
 # been used to name another), and port 8080 must be free.
-$ErrorActionPreference = 'Stop'
-$repo = Split-Path $PSScriptRoot
-$port = 8080
-$address = "http://127.0.0.1:$port"
-$directory = Join-Path ([IO.Path]::GetTempPath()) "epiphany-excel-check-$PID"
-$xll = "$repo\adapter\Epiphany.Excel\bin\Release\net472\publish\Epiphany64-packed.xll"
-
-if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { throw "port $port is in use; stop the server that has it first" }
-New-Item -ItemType Directory $directory | Out-Null
-Copy-Item -Recurse "$repo\crates\epiphany-core\tests\fixtures\model" "$directory\model"
+. "$PSScriptRoot\check-common.ps1"
+New-Home
 Set-Content -Encoding ascii "$directory\model\dimensions\line.json" '{"name":"Line","type":"standard","elements":[{"name":"Comment","type":"string"},{"name":"Amount","type":"numeric","attributes":{"Short":"Amt"}}],"attributes":{"Short":"alias"},"subsets":{"Texts":{"elements":["Comment"]},"Backwards":{"elements":["Amount","Comment"]}}}'
 Set-Content -Encoding ascii "$directory\model\cubes\notes.json" '{"name":"Notes","dimensions":["Entity","Line"]}'
 
-$server = $null; $excel = $null; $excelPid = [uint32]0
 try {
-    $server = Start-Process -PassThru -WindowStyle Hidden "$repo\target\debug\epiphany-server.exe" -ArgumentList 'serve', "`"$directory`"", "127.0.0.1:$port"
-    Start-Sleep -Seconds 2
-    if ($server.HasExited) { throw 'the server did not start' }
-
-
-    $excel = New-Object -ComObject Excel.Application
-    # Remember which process this instance is, so that only it is ever stopped.
-    Add-Type -Namespace Native -Name Window -MemberDefinition '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);'
-    [void][Native.Window]::GetWindowThreadProcessId([IntPtr]$excel.Hwnd, [ref]$excelPid)
-    $excel.DisplayAlerts = $false
-    "registered: $($excel.RegisterXLL($xll))"
+    Start-Server
+    Start-Excel
     # The ribbon tab arrives as a COM add-in that Excel-DNA registers under the add-in's own
     # name; the tab is offered if that one is connected.
     $ribbon = @($excel.COMAddIns | Where-Object { $_.Description -eq 'Epiphany' -and $_.ProgId -like 'Dna_*' -and $_.Connect })
@@ -223,13 +205,7 @@ try {
     $book.Close($false)
 }
 finally {
-    if ($excel) { try { $excel.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($excel) }
-    Start-Sleep -Seconds 2
-    if ($excelPid) { Get-Process -Id $excelPid -ErrorAction SilentlyContinue | Where-Object Name -eq 'EXCEL' | Stop-Process -Force -ErrorAction SilentlyContinue }
-    if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-
-    Start-Sleep -Seconds 1
-    Remove-Item -Recurse -Force $directory -ErrorAction SilentlyContinue
+    Stop-All
 }
 
 exit $failures
