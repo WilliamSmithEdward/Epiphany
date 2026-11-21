@@ -59,6 +59,13 @@ member's expression names are now announced with the rest of the grid and added 
 same pass, and the 400 cells take 3 ms. Finding what to announce costs the grid of 10,000
 leaf cells of a calculated member a little: 2.7 ms where it was 2.4 ms (2026-11-21).
 
+The one pass keeps its totals in a row, each at the place its number gives it, where there
+are no more than four million places, and looks them up by number only past that. Adding
+to a place is quicker than a lookup: the 400 totals of two dimensions go from 4.9 ms to
+3.8 ms, the 113 of three from 7.8 ms to 7.0 ms, and the ten largest of a hundred from 3.6
+ms to 2.9 ms. Most of what is left is the pass over the 200,000 stored cells themselves,
+each kept apart from the next in memory (2026-11-21).
+
 `NON EMPTY` over a cross join used to write the cross join out and then drop its empty
 tuples, so the cross join of three dimensions here, 1,442,897 tuples, was refused for its
 length. Its tuples that hold something are now found by looking through the stored cells:

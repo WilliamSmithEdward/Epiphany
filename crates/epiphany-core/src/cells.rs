@@ -247,7 +247,22 @@ impl Cells {
                 .map(|((element, asked), unit)| asked[element] * unit)
                 .sum()
         };
-        let mut totals: FxHashMap<u64, f64> = cells.iter().map(|at| (number(at), 0.0)).collect();
+        // Where the numbers do not run too high, every one of them has a place in a row of
+        // totals, the cells nobody asked for among them: adding to a place is quicker than
+        // looking a cell up, and what is added for nobody is simply not read. Past that,
+        // only the cells asked for are kept, each looked up by its number.
+        let mut row = vec![
+            0.0;
+            if size <= MOST_IN_A_ROW {
+                size as usize
+            } else {
+                0
+            }
+        ];
+        let mut totals: FxHashMap<u64, f64> = match row.is_empty() {
+            true => cells.iter().map(|at| (number(at), 0.0)).collect(),
+            false => FxHashMap::default(),
+        };
 
         let mut lists: Vec<&[(u64, f64)]> = Vec::with_capacity(dimensions.len());
         let mut positions = vec![0; dimensions.len()];
@@ -271,8 +286,13 @@ impl Cells {
                     cell += list[position].0 * unit;
                     weight *= list[position].1;
                 }
-                if let Some(total) = totals.get_mut(&cell) {
-                    *total += weight * value;
+                match row.get_mut(cell as usize) {
+                    Some(total) => *total += weight * value,
+                    None => {
+                        if let Some(total) = totals.get_mut(&cell) {
+                            *total += weight * value;
+                        }
+                    }
                 }
                 for (position, list) in positions.iter_mut().zip(&lists) {
                     *position += 1;
@@ -284,9 +304,17 @@ impl Cells {
                 break;
             }
         }
-        Some(cells.iter().map(|at| totals[&number(at)]).collect())
+        let total = |at: &&[ElementId]| match row.get(number(at) as usize) {
+            Some(&total) => total,
+            None => totals[&number(at)],
+        };
+        Some(cells.iter().map(total).collect())
     }
 }
+
+/// The most totals kept in a row, one beside the next, for the one pass over the cells: four
+/// million of them, thirty-two megabytes.
+const MOST_IN_A_ROW: u64 = 1 << 22;
 
 /// Moves to the next combination of one leaf per dimension, the last dimension turning
 /// fastest. `positions` says which leaf each dimension is at and `at` is the combination.
