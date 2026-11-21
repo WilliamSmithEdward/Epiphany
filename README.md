@@ -148,6 +148,24 @@ limit is refused with an ordinary error that says which.
 
 [docs/PLAN.md](docs/PLAN.md) gives the reasons.
 
+## Sizing
+
+Measured on one Windows machine with a build for release, a cube of four dimensions:
+
+| | |
+| --- | --- |
+| Memory a stored cell takes | 70 to 105 bytes, by how full the cube's table is |
+| Memory at its height, as a snapshot is written or read | about 1.7 times what the cells take |
+| Snapshot on disk | about 58 bytes a cell |
+| Start, 1.5 million cells | 2 seconds |
+| Write by name, through the server | 50,000 cells in about 60 ms |
+| Read by name, through the server | 5,000 cells in about 5 ms |
+| Memory a dimension element takes | about 500 bytes |
+| Start, a dimension of a million elements | 3 seconds |
+
+So a server holding ten million cells wants some 1 to 2 GB. [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
+has the queries and how to repeat every figure.
+
 ## Excel
 
 [adapter](adapter) is an Excel-DNA add-in: one `.xll` file that needs nothing installed
