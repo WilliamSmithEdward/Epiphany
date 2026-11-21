@@ -262,6 +262,9 @@ practice that means:
     and the text at every member, and thirty of them would otherwise never finish. The
     limit is reached after about three seconds of one processor (release build, measured
     2026-11-21).
+  - A word that is a flag, such as `DESC`, `ALL` or `SELF`, is the flag wherever it stands
+    alone, even in a cube with a dimension of that name. The dimension is then written in
+    full, as `[Desc].[Desc]`.
   - Expressions sit at most 32 deep inside one another, in a query, a rule, a feeder or a
     subset alike. Reading and working out an expression go as deep as it does, and the
     limit is what keeps a body of nothing but brackets from running a thread out of stack.

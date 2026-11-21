@@ -75,6 +75,15 @@ fn main() {
             ),
         ),
         (
+            "400 cells of a calculated member over such totals",
+            format!(
+                "WITH MEMBER [d3].[share] AS IIF([d3].[all] = 0, 0, [d3].[e0] / [d3].[all]) \
+                 SELECT {} ON COLUMNS, {} ON ROWS FROM [C] WHERE ([d2].[all], [d3].[share])",
+                first(0, 20),
+                first(1, 20)
+            ),
+        ),
+        (
             "113 cells, each totalling three dimensions",
             "SELECT [d0].Members ON COLUMNS FROM [C] WHERE ([d1].[all], [d2].[all], [d3].[all])"
                 .to_owned(),

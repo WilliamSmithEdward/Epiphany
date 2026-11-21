@@ -53,6 +53,12 @@ The same holds for the expressions of the axes, the slicer and the named sets: a
 over 10,000 tuples that compares two cells of each took 10.0 ms and takes 3.3 ms
 (2026-11-21).
 
+A calculated member whose cells are totals had each of them added up by itself, as every
+total was at milestone 6: 400 cells of a share of the grand total took 75 ms. The totals a
+member's expression names are now announced with the rest of the grid and added up in the
+same pass, and the 400 cells take 3 ms. Finding what to announce costs the grid of 10,000
+leaf cells of a calculated member a little: 2.7 ms where it was 2.4 ms (2026-11-21).
+
 ## Rules and feeders
 
 ```

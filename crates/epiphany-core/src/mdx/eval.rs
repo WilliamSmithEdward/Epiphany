@@ -90,6 +90,9 @@ struct Calculated<'a> {
     name: &'a str,
     expression: Expr,
     solve_order: f64,
+    /// The members and tuples the expression names outright, where they are the same at
+    /// every cell and so need finding only once.
+    named: Option<Vec<Tuple>>,
 }
 
 pub(super) struct Evaluator<'a> {
@@ -170,6 +173,7 @@ impl Query {
                 name,
                 expression: member.expression.clone(),
                 solve_order: member.solve_order,
+                named: None,
             });
         }
 
@@ -184,6 +188,11 @@ impl Query {
         // Those of the calculated members wait until every member and set is known.
         for index in 0..evaluator.calculated.len() {
             let settled = evaluator.settled(&evaluator.calculated[index].expression);
+            if fixed(&settled) {
+                let mut named = Vec::new();
+                evaluator.named(&settled, &context, &mut named);
+                evaluator.calculated[index].named = Some(named);
+            }
             evaluator.calculated[index].expression = settled;
         }
         let mut used = HashSet::new();
@@ -233,7 +242,7 @@ impl Query {
             .collect();
         let totals: Vec<Vec<ElementId>> = contexts
             .iter()
-            .filter_map(|context| evaluator.total_at(context))
+            .flat_map(|context| evaluator.ahead(context))
             .collect();
         expect(&totals.iter().map(Vec::as_slice).collect::<Vec<_>>());
         let cells = contexts
@@ -2259,24 +2268,56 @@ impl<'a> Evaluator<'a> {
     /// up: every member an element, and one of them at least a consolidation. Those are the
     /// cells worth saying are about to be read; a leaf is read as quickly unannounced.
     fn total_at(&self, context: &Context) -> Option<Vec<ElementId>> {
-        let consolidated = |(position, id): (usize, &Id)| match id {
+        self.total_of(context.iter().copied())
+    }
+
+    /// The same of a cell given member by member, in the cube's order, so that a cell which
+    /// is no total costs nothing to turn down.
+    fn total_of(&self, ids: impl Iterator<Item = Id> + Clone) -> Option<Vec<ElementId>> {
+        let consolidated = |(position, id): (usize, Id)| match id {
             Id::Element(id) => {
-                let element = &self.dimension(position).elements[*id as usize];
+                let element = &self.dimension(position).elements[id as usize];
                 element.kind == ElementType::Consolidated
             }
             Id::Calculated(_) => false,
         };
-        if !context.iter().enumerate().any(consolidated) {
+        if !ids.clone().enumerate().any(consolidated) {
             return None;
         }
-        let element = |id: &Id| match id {
-            Id::Element(element) => Some(*element),
+        let element = |id: Id| match id {
+            Id::Element(element) => Some(element),
             Id::Calculated(_) => None,
         };
-        context.iter().map(element).collect()
+        ids.map(element).collect()
     }
 
-    /// The members and tuples an expression names outright, through arithmetic and comparisons.
+    /// The totals that reading the cell at a context will ask for: the cell itself, or where
+    /// a calculated member stands there, the cells its expression names outright.
+    fn ahead(&self, context: &Context) -> Vec<Vec<ElementId>> {
+        let Some(calculated) = self.calculated_at(context) else {
+            return self.total_at(context).into_iter().collect();
+        };
+        // The cell at the context with the members of a tuple put in their places.
+        let at = |named: &Tuple| {
+            let placed = |(position, id): (usize, &Id)| {
+                let member = named.iter().find(|member| member.position == position);
+                member.map_or(*id, |member| member.id)
+            };
+            self.total_of(context.iter().enumerate().map(placed))
+        };
+        match &calculated.named {
+            Some(named) => named.iter().filter_map(at).collect(),
+            None => {
+                let mut named = Vec::new();
+                self.named(&calculated.expression, context, &mut named);
+                named.iter().filter_map(at).collect()
+            }
+        }
+    }
+
+    /// The members and tuples an expression names outright, through arithmetic, comparisons
+    /// and the functions that choose between values. A value that is named and then not
+    /// chosen is a cell read for nothing, which costs less than reading totals one by one.
     fn named(&self, expression: &Expr, context: &Context, found: &mut Vec<Tuple>) {
         match expression {
             Expr::Binary(left, _, right) => {
@@ -2284,7 +2325,12 @@ impl<'a> Evaluator<'a> {
                 self.named(right, context, found);
             }
             Expr::Not(inner) | Expr::Negate(inner) => self.named(inner, context, found),
-            Expr::Name(_) | Expr::Member(..) | Expr::Tuple(_) => {
+            Expr::Call(function, arguments) if CHOOSING.contains(&function.as_str()) => {
+                for argument in arguments {
+                    self.named(argument, context, found);
+                }
+            }
+            Expr::Name(_) | Expr::Member(..) | Expr::Calculated(..) | Expr::Tuple(_) => {
                 match self.evaluate(expression, context) {
                     Ok(Datum::Member(member)) => found.push(vec![member]),
                     Ok(Datum::Tuple(tuple)) => found.push(tuple),
@@ -2295,22 +2341,25 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    /// The value of the cell at a context. A calculated member there is evaluated first.
-    fn cell(&self, context: &Context) -> Evaluated<Datum> {
-        // Of several calculated members, the one with the highest solve order is calculated
-        // last, over the results of the others; among equals, the first in the cube's order.
+    /// The calculated member that decides the cell at a context, if one stands there. Of
+    /// several, the one with the highest solve order is calculated last, over the results of
+    /// the others; among equals, the first in the cube's order.
+    fn calculated_at(&self, context: &Context) -> Option<&Calculated<'a>> {
         let calculated = context.iter().filter_map(|id| match id {
             Id::Calculated(index) => Some(&self.calculated[*index]),
             Id::Element(_) => None,
         });
-        let calculated =
-            calculated.reduce(
-                |chosen, other| match other.solve_order > chosen.solve_order {
-                    true => other,
-                    false => chosen,
-                },
-            );
-        let Some(calculated) = calculated else {
+        calculated.reduce(
+            |chosen, other| match other.solve_order > chosen.solve_order {
+                true => other,
+                false => chosen,
+            },
+        )
+    }
+
+    /// The value of the cell at a context. A calculated member there is evaluated first.
+    fn cell(&self, context: &Context) -> Evaluated<Datum> {
+        let Some(calculated) = self.calculated_at(context) else {
             let at: Vec<ElementId> = context
                 .iter()
                 .map(|id| match id {
@@ -2466,6 +2515,30 @@ fn union(mut left: Vec<Tuple>, right: Vec<Tuple>, repeats: bool) -> Evaluated<Ve
         true => left,
         false => distinct(left),
     })
+}
+
+/// The functions that choose between the values given them, through which the cells an
+/// expression names are looked for.
+const CHOOSING: [&str; 4] = ["IIF", "CASE", "COALESCEEMPTY", "ISEMPTY"];
+
+/// Whether what an expression names outright is the same at every cell: its names are all
+/// plain ones, none worked out from the cell it stands at as `CurrentMember` is.
+fn fixed(expression: &Expr) -> bool {
+    let plain = |item: &Expr| {
+        matches!(
+            item,
+            Expr::Name(_) | Expr::Member(..) | Expr::Calculated(..)
+        )
+    };
+    match expression {
+        Expr::Binary(left, _, right) => fixed(left) && fixed(right),
+        Expr::Not(inner) | Expr::Negate(inner) => fixed(inner),
+        Expr::Call(function, arguments) if CHOOSING.contains(&function.as_str()) => {
+            arguments.iter().all(fixed)
+        }
+        Expr::Tuple(items) => items.iter().all(plain),
+        _ => true,
+    }
 }
 
 /// Text, unless it is longer than text may be.
