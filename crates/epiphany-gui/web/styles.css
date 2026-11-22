@@ -413,6 +413,13 @@ a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transfo
 .stat { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .menu .menu-gap { width: 16px; flex: none; }
 .section-title { margin: var(--s8) 0 var(--s4); }
+/* The places visited lately: a row each, its name as long as it needs and when beside it. */
+.recent { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.recent a { display: flex; align-items: center; gap: var(--s3); min-height: 44px; padding: var(--s2) var(--s4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); text-decoration: none; }
+.recent a:hover { border-color: var(--accent); }
+.recent a > svg { flex: none; color: var(--accent-text); }
+.recent .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent time { flex: none; font-size: var(--text-xs); color: var(--text-3); }
 
 /* ---- Explorer ---- */
 

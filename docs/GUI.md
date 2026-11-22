@@ -108,7 +108,10 @@ only way to do something, and modal dialogs where a side panel would keep the da
 - **Shared by a link.** The Views menu copies a link to the query shown, with its number
   format, highlights and sizes, which opens it as it was shown for anyone who may read the
   cube, each seeing only what they may read. What a link carries is held to what a view may
-  say, and a damaged link says so.
+  say, and a damaged link says so. Shown, the view is the cube's last layout, and the address
+  the cube's again.
+- **Back to where one was.** The overview lists the six places visited lately, newest first,
+  each with when; a page opened at a saved view is named by it.
 
 ## Security
 

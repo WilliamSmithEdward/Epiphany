@@ -441,11 +441,17 @@ async function signingIn({ admin }) {
     await page.fill('dialog.palette input', 'overview');
     await page.press('Enter');
     await page.waitFor(`document.querySelector('h1')?.textContent.startsWith('Welcome')`, 'the overview');
+    // The overview lists the places visited lately, to go back to.
+    const recent = await page.evaluate(`[...document.querySelectorAll('.recent a')].map((place) => place.querySelector('.grow').textContent)`);
+    expect(recent[0] === 'Administration', `The places visited lately are ${quoted(recent)}.`);
     await open();
     const [lately] = await page.evaluate(options);
     expect(lately.label === 'Overview', `With nothing typed, the first command offered is ${quoted(lately)}, not the one chosen last.`);
-    await page.press('Escape');
-    await page.waitFor(`!document.querySelector('dialog.palette')`, 'the palette, closed');
+    // A view chosen opens in Explore, which names it before the cube.
+    await page.type('quart');
+    await page.waitFor(`document.querySelector('dialog.palette [role="option"]')?.textContent.startsWith('Quarterly')`, 'the view, first');
+    await page.press('Enter');
+    await page.waitFor(`document.title === 'Quarterly income by entity · General Ledger · Explore · Epiphany'`, 'the view, named in the title');
   });
   await step('A notice stands while it is pointed at, the same one shows once, and four at most', async () => {
     const notices = `[...document.querySelectorAll('.notice p')].map((p) => p.textContent)`;
@@ -699,6 +705,9 @@ async function exploring() {
     const link = new URL(await page.evaluate(`import('/layout.js').then(({ linkOf }) => linkOf('General Ledger', { mdx: ${quoted(QUERY)}, format: { decimals: 1, scale: 'thousands' } }))`));
     await page.goto(link.pathname + link.search);
     await page.waitFor(`[...document.querySelectorAll('th.row-head[data-r1]')].map((th) => th.textContent.trim()).join() === 'Salaries,Rent'`, 'the rows the link asks for');
+    // Shown, the view is the cube's last layout, and the address the cube's again.
+    const address = await page.evaluate('location.search');
+    expect(address === '?cube=General%20Ledger', `The address is ${quoted(address)} once the link is shown.`);
     const { data } = await page.api('POST', '/cells/read', { cells: [{ cube: 'General Ledger', at: at('Salaries', 'Jan') }] });
     const expected = ((data.cells[0].value ?? 0) / 1000).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
     const shown = (await page.evaluate(GRID)).cells['0,0'];

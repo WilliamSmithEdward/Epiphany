@@ -2,7 +2,7 @@
 
 import { ApiError, api, events, get } from './api.js';
 import { marked } from './tree.js';
-import { dialog, h, icon, menu, MOD, mount, notify, working } from './ui.js';
+import { dialog, h, icon, menu, MOD, mount, notify, when, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
@@ -304,7 +304,31 @@ let rendering = 0;
  */
 let active = null;
 let activePath = null;
+let activeEntry = null;
 let shownPath = location.pathname + location.search;
+
+/** How many places visited lately the overview lists. */
+const PLACES_KEPT = 6;
+
+/** Where the places a user visited lately are kept in this browser, the latest first. */
+const placesKey = () => `epiphany.places.${state.user?.name?.toLowerCase() ?? ''}`;
+
+function placesVisited() {
+  try {
+    return JSON.parse(localStorage.getItem(placesKey())) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Keeps the page shown, by its address and title, among the places visited lately; the overview is not one. */
+function visited(entry) {
+  if (!entry || entry.path === '/') return;
+  const path = location.pathname + location.search;
+  const title = document.title.replace(/^• /, '').split(' · ').slice(0, -1).join(' · ');
+  const place = { path, title, icon: entry.icon, at: Math.round(Date.now() / 1000) };
+  localStorage.setItem(placesKey(), JSON.stringify([place, ...placesVisited().filter((other) => other.path !== path && other.title !== title)].slice(0, PLACES_KEPT)));
+}
 
 // The browser asks before the page is closed or loaded afresh while it holds changes not saved.
 addEventListener('beforeunload', (event) => {
@@ -324,12 +348,14 @@ async function route() {
   // what stays the same is not drawn again, and nothing comes in between.
   if (active?.update && path === activePath) {
     active.update(new URLSearchParams(location.search));
+    visited(activeEntry);
     return true;
   }
   active = null;
   activePath = path;
   const entry = visible().find((candidate) => candidate.path === path)
     ?? visible().find((candidate) => candidate.path !== '/' && path.startsWith(`${candidate.path}/`));
+  activeEntry = entry;
   for (const link of shellElement.querySelectorAll('.nav a')) {
     link.toggleAttribute('aria-current', false);
     if (entry && link.getAttribute('href') === entry.path) link.setAttribute('aria-current', 'page');
@@ -350,7 +376,10 @@ async function route() {
     if (ticket !== rendering) return false;
     const shown = await module.render(page, { state, params: new URLSearchParams(location.search), path, title: entry.title, titled });
     // A page another move has passed by is not the one shown, to be asked before leaving.
-    if (ticket === rendering) active = shown;
+    if (ticket === rendering) {
+      active = shown;
+      visited(entry);
+    }
   } catch (problem) {
     if (ticket !== rendering) return false;
     mount(page, h('div', { class: 'page' }, failure(problem, route)));
@@ -409,6 +438,12 @@ function awaitNext(shape) {
     waiting = null;
   };
   watcher.observe(page, { childList: true });
+}
+
+/** Puts `path` in the address in place of the one there, as the page shown now has it, without moving. */
+export function readdress(path) {
+  history.replaceState(null, '', path);
+  shownPath = path;
 }
 
 /** Goes to a page within the application. */
@@ -725,14 +760,19 @@ async function overview(target) {
     h('span', { class: 'badge' }, `${dashboard.tiles.length} tile${dashboard.tiles.length === 1 ? '' : 's'}`)),
   h('h3', {}, dashboard.name),
   dashboard.description ? h('p', { class: 'muted' }, dashboard.description) : null));
+  // The places visited lately, to go back to where one was.
+  const places = placesVisited().map((place) => h('li', {},
+    h('a', { href: place.path, 'data-link': '' }, icon(place.icon, 16), h('span', { class: 'grow' }, place.title), when(place.at))));
   mount(target, h('div', { class: 'page' },
     h('div', { class: 'page-head' },
-      h('div', { class: 'grow' }, h('h1', {}, state.open ? 'Welcome' : `Welcome, ${state.user.name}`), h('p', {}, 'Choose a cube to explore, or press Ctrl K to find anything.'))),
+      h('div', { class: 'grow' }, h('h1', {}, state.open ? 'Welcome' : `Welcome, ${state.user.name}`), h('p', {}, `Choose a cube to explore, or press ${MOD} K to find anything.`))),
     h('div', { class: 'grid-cards' },
       stat('Cubes', definition.cubes.length, 'cube'),
       stat('Dimensions', definition.dimensions.length, 'dimension'),
       stat('Elements', elements, 'member'),
       stat('Model version', Number(state.version ?? 0), 'model')),
+    places.length ? h('h2', { class: 'section-title' }, 'Recent') : null,
+    places.length ? h('ul', { class: 'recent', 'aria-label': 'Places visited lately' }, places) : null,
     h('h2', { class: 'section-title' }, 'Cubes'),
     definition.cubes.length
       ? h('div', { class: 'grid-cards' }, cubes)

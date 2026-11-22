@@ -2,7 +2,7 @@
 // of the query that layout makes.
 
 import { ApiError, del, get, modelVersion, part, post, put } from './api.js';
-import { empty, failure, go, loading, model, state } from './app.js';
+import { empty, failure, go, loading, model, readdress, state } from './app.js';
 import { chart, shape } from './chart.js';
 import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, linkOf, mdx, quote, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
@@ -56,8 +56,12 @@ export async function render(target, { params, titled }) {
   const shared = params.get('shared');
   const linked = shared ? linkedView(shared) : null;
   if (shared && !linked) notify('This link is damaged: it carries no query to show. The last layout of the cube is shown.', 'bad');
+  // Its view, once shown, is the cube's last layout: the address is the cube's again.
+  if (shared) readdress(`/explore?cube=${encodeURIComponent(cube.name)}`);
   const view = handed ? { mdx: handed } : linked ?? cube.views?.[params.get('view')];
-  return new Explorer(target, definition, cube, dims, view, kept, titled);
+  // Opened at a saved view, the page names it before the cube.
+  const named = !handed && !linked && cube.views?.[params.get('view')] ? params.get('view') : null;
+  return new Explorer(target, definition, cube, dims, view, kept, named ? (name, unsaved) => titled(`${named} · ${name}`, unsaved) : titled);
 }
 
 class Explorer {
