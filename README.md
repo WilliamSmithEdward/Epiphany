@@ -36,8 +36,8 @@ epiphany-server serve <directory> [address]
 
 The directory holds the model in `<directory>/model` (see below), keeps its data in
 `<directory>/data`, its users in `<directory>/users.json`, and the views and subsets each
-keeps for themself in `<directory>/views.json` and `<directory>/subsets.json`. The address defaults to
-`127.0.0.1:8080`. Every commit is written to disk before it is acknowledged, and the data is
+keeps for themself in `<directory>/views.json` and `<directory>/subsets.json`. The address
+defaults to `127.0.0.1:8080`. Every commit is written to disk before it is acknowledged, and the data is
 there again after a restart.
 
 A directory without users asks for no sign-in and listens only on this machine. To add a

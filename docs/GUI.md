@@ -155,10 +155,15 @@ DevTools protocol on a pipe. CI runs it on every push.
 A survey of the main planning and OLAP tools' screens and documentation (IBM Planning
 Analytics Workspace and TM1, Oracle EPM and Smart View, SAP Analytics Cloud and Analysis for
 Office, Excel and Power BI, Anaplan, Pigment, Workday Adaptive Planning, OneStream, Jedox,
-Tableau, Atoti) found these gaps. Already taken up: cell comments in a panel beside the grid, dashboard filters, number formats and
-totals placement, writable cells marked and read-only ones explained, typed spreading with a
-check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, data bars, shades and coloured rules kept with views, earlier versions of the model compared and restored, calculations added from a heading (difference, ratio, % change, share of parent), the largest or smallest N rows by a column, the feeder check offered from Explain, undo and
-redo of values, only the rows in view drawn, in the grid and in every tree of members, so
+Tableau, Atoti) found these gaps. Already taken up: cell comments in a panel beside the grid,
+dashboard filters, number formats and totals placement, writable cells marked and read-only
+ones explained, typed spreading with a check before sweeping spreads, drilling to the leaves,
+DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is
+built, data bars, shades and coloured rules kept with views, earlier versions of the model
+compared and restored, calculations added from a heading (difference, ratio, % change, share
+of parent), the largest or smallest N rows by a column, the feeder check offered from
+Explain, undo and redo of values, only the rows in view drawn, in the grid and in every tree
+of members, so
 that results and dimensions of any size show whole and scroll smoothly, each cell's history
 of changes, who made each and from what to what, beside its comments, the changes across
 cubes for administrators, by cube, user and time, each opened in Explore, picklists: a

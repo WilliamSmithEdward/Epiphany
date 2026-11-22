@@ -99,7 +99,12 @@ own rather than one cell asked for after another. Ten million cells take 282 to 
 rather than 882 MB; started again, the server holds 279 MB rather than 792 MB, with 464
 MB at the most on the way, and starts in the same 5.5 s.
 
-The passes over all the stored cells now go through each cell in turn with its elements unpacked into the same place, rather than handing out each cell's place: the stored-cell total takes 3.6 ms, the 400 totals of two dimensions 1.8 ms, the ten largest of a hundred 3.1 ms, the 113 totals of three dimensions 6.1 ms and the 113 over feeders one at a time 27.6 ms, against 4.0, 1.8, 2.9, 5.3 and 28.5 ms with coordinates kept whole, measured one after the other (2026-11-22).
+The passes over all the stored cells now go through each cell in turn with its elements
+unpacked into the same place, rather than handing out each cell's place: the stored-cell
+total takes 3.6 ms, the 400 totals of two dimensions 1.8 ms, the ten largest of a hundred
+3.1 ms, the 113 totals of three dimensions 6.1 ms and the 113 over feeders one at a time
+27.6 ms, against 4.0, 1.8, 2.9, 5.3 and 28.5 ms with coordinates kept whole, measured one
+after the other (2026-11-22).
 
 Their height while written seemed to be 1.2 GB, against 1.5 GB before; followed batch by
 batch, it was 740 MB until the end, and the rest was one page of the cube's cells asked
