@@ -219,7 +219,16 @@ function shell() {
       localStorage.setItem('epiphany.nav', now);
     },
   }, icon('menu', 20));
-  page = h('main', { class: 'main', id: 'main' });
+  page = h('main', { class: 'main', id: 'main', tabindex: '-1' });
+  // The first stop of the keys goes straight to the page, past the bar and the list of pages.
+  const skip = h('a', {
+    class: 'skip',
+    href: '#main',
+    onclick: (event) => {
+      event.preventDefault();
+      page.focus();
+    },
+  }, 'Skip to the page');
   const user = state.user;
   const userButton = h('button', {
     class: 'button quiet',
@@ -251,6 +260,7 @@ function shell() {
     ], event.currentTarget),
   }, icon(document.documentElement.dataset.theme === 'dark' ? 'moon' : 'sun', 18));
   shellElement = h('div', { class: 'shell', dataset: { nav: narrow ? 'narrow' : 'wide' } },
+    skip,
     h('header', { class: 'bar' },
       toggle,
       brand(),

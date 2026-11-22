@@ -121,6 +121,16 @@ button, input, select, textarea { font: inherit; color: inherit; }
   transition: grid-template-columns .2s var(--ease);
 }
 .shell[data-nav="narrow"] { grid-template-columns: var(--nav-narrow) 1fr; }
+/* The first stop of the keys, out of sight until it has them. */
+.skip {
+  position: fixed; top: var(--s2); left: var(--s2); z-index: 200;
+  padding: var(--s2) var(--s4); border: 1px solid var(--line-strong); border-radius: var(--radius-s);
+  background: var(--surface); color: var(--text); font-weight: 600; text-decoration: none;
+  box-shadow: var(--shadow-2); transform: translateY(calc(-100% - var(--s4)));
+}
+.skip:focus { transform: none; }
+/* Reached from the skip link, the page takes the keys without a ring around all of it. */
+.main:focus { outline: none; }
 
 .bar {
   grid-area: bar;
@@ -993,3 +1003,24 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
 /* Several members dragged at once show as their count. */
 .drag-count { position: fixed; top: -100px; left: -100px; padding: 4px 10px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: var(--text-s); font-weight: 600; white-space: nowrap; }
 @media (max-width: 1100px) { .explorer > .splitter { display: none; } }
+
+/* ---- High contrast ---- */
+
+/* In Windows' high contrast the system gives every colour, and backgrounds and shadows go.
+   What only they said, where the keys are or what is chosen, says itself with an outline or
+   the system's own highlight; what is only a colour, as a data bar, gives way to the number. */
+@media (forced-colors: active) {
+  .input:focus, .select:focus, .textarea:focus, .menu button:focus-visible, .splitter:focus-visible {
+    outline: 2px solid Highlight; outline-offset: 1px;
+  }
+  .nav a[aria-current="page"], .model-item[aria-current="page"], .dash-tabs a[aria-current="page"],
+  .button[aria-pressed="true"], .segmented button[aria-selected="true"], .segmented button[aria-checked="true"],
+  .palette li[aria-selected="true"], .set-item[aria-selected="true"], .tree-row[aria-selected="true"] {
+    forced-color-adjust: none; background: Highlight; color: HighlightText;
+  }
+  .pivot td.selected::before { display: none; }
+  .pivot td.selected { outline: 2px solid Highlight; outline-offset: -2px; }
+  .picker-row[aria-selected="true"] .choice { forced-color-adjust: none; background: Highlight; box-shadow: none; }
+  .badge, .chip { border: 1px solid CanvasText; }
+  .skip:focus { outline: 2px solid Highlight; }
+}

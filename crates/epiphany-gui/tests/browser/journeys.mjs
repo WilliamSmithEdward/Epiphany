@@ -368,6 +368,14 @@ async function signingIn({ admin }) {
     expect(shown === elements.toLocaleString('en-US'), `The overview counts ${shown} elements; the model has ${elements}.`);
     await page.audit('The overview');
   });
+  await step('The first key offers a way past the bar to the page', async () => {
+    await page.evaluate('document.activeElement?.blur()');
+    await page.press('Tab');
+    await page.waitFor(`document.activeElement?.classList.contains('skip') && document.activeElement.getBoundingClientRect().top >= 0`, 'the skip link, shown');
+    await page.audit('The skip link');
+    await page.press('Enter');
+    await page.waitFor(`document.activeElement?.id === 'main' && location.hash === ''`, 'the page, with the keys');
+  });
   await step('A session that ends is signed into again over the page, which stays', async () => {
     await page.click('.nav a', 'Administration');
     await page.waitFor(`document.querySelector('h1')?.textContent === 'Administration'`, 'Administration');
