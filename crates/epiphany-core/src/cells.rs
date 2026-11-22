@@ -240,6 +240,17 @@ impl Cells {
         self.numbers.len()
     }
 
+    /// How many cells are stored, numbers and texts.
+    pub(crate) fn len(&self) -> usize {
+        self.numbers.len() + self.texts.len()
+    }
+
+    /// Makes room for this many more numbers at once, rather than as they come. Storing
+    /// millions, the table grown as they came took half the time.
+    pub(crate) fn reserve(&mut self, numbers: usize) {
+        self.numbers.reserve(numbers);
+    }
+
     /// How many stored cells reading a numeric cell looks at or looks up.
     pub(crate) fn work(&self, model: &Model, cube: &Cube, at: &[ElementId]) -> usize {
         let combinations = elements(model, cube, at)

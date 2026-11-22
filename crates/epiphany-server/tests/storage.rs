@@ -661,3 +661,36 @@ fn a_snapshot_laid_out_for_reading_still_loads() {
     // Opened, the snapshot is written again, close, and loads again.
     assert_eq!(get(&home.open(), EXPENSES), 65.0);
 }
+
+#[test]
+fn a_snapshot_loads_whatever_order_its_fields_come_in_and_drops_what_no_longer_fits() {
+    let home = Home::new("odd-snapshot");
+    drop(home.open());
+    let snapshot = json!({
+        "model_version": 1,
+        // More than the file could hold is not made room for.
+        "stored": { CUBE: 1_000_000_000_000_u64, "Gone": 5 },
+        "cells": [
+            { "at": RENT, "cube": CUBE, "value": 25.0 },
+            { "value": 40.0, "cube": "general ledger", "at": SALARIES },
+            { "cube": "Gone", "at": RENT, "value": 1.0 },
+            { "cube": CUBE, "at": ["Rent", "Mars", "Jan", "Actual"], "value": 1.0 },
+            { "cube": CUBE, "at": ["Rent", "US", "Jan"], "value": 1.0 },
+            { "cube": CUBE, "at": ["Rent", "US", "Jan", "Actual", "More"], "value": 1.0 },
+            { "at": ["Rent", "US", "Jan", "Actual", "More"], "cube": CUBE, "value": 1.0 },
+            { "cube": CUBE, "at": EXPENSES, "value": 1.0 }
+        ]
+    });
+    fs::write(home.path("data/snapshot.json"), snapshot.to_string()).unwrap();
+    fs::write(home.path("data/log.jsonl"), "").unwrap();
+    let database = home.open();
+    assert_eq!(get(&database, EXPENSES), 65.0);
+    assert_eq!(database.cells().len(), 2);
+    drop(database);
+
+    // A cell without its value is damage, and the directory is not opened.
+    let damaged = json!({ "model_version": 1, "cells": [{ "cube": CUBE, "at": RENT }] });
+    fs::write(home.path("data/snapshot.json"), damaged.to_string()).unwrap();
+    let error = epiphany_server::open(&home.0).unwrap_err().to_string();
+    assert!(error.contains("value"), "{error}");
+}

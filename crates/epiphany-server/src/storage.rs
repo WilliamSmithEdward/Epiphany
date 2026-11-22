@@ -16,7 +16,7 @@
 //! A commit is appended to the log and flushed to disk before it is acknowledged. Opening the
 //! directory loads the snapshot, replays the log, and replaces both with a fresh snapshot.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufWriter, Write};
@@ -36,52 +36,50 @@ struct ModelFile {
 }
 
 #[derive(Serialize)]
-struct Snapshot<Cells> {
+struct Snapshot<'a> {
     model_version: u64,
-    cells: Cells,
+    /// How many cells each cube holds, ahead of the cells, so that room is made for them
+    /// at once as they are loaded.
+    stored: BTreeMap<&'a str, usize>,
+    cells: &'a NamedCells<'a>,
 }
 
-/// How many cells of a snapshot are held by name at once while it is loaded.
-const LOADED_AT_ONCE: usize = 10_000;
+/// The fewest bytes a cell takes in a snapshot, `{"cube":"","at":[],"value":0}`: no more
+/// room is made than the file could hold cells, whatever it says.
+const LEAST_A_CELL: u64 = 30;
 
-/// Loads the snapshot in a file into a database a few thousand cells at a time, so that a
-/// snapshot of millions of cells is never held whole by name: that took some 300 bytes a
-/// cell beside the cells themselves. Says how many cells no longer fit the model; nothing
-/// if there is no snapshot.
+/// Loads the snapshot in a file into a database as it is read, so that a snapshot of
+/// millions of cells is never held whole by name: that took some 300 bytes a cell beside
+/// the cells themselves. Says how many cells no longer fit the model; nothing if there is
+/// no snapshot.
 fn load_snapshot(path: &Path, database: &mut Database) -> Result<Option<usize>, String> {
     let file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(at(path, &error)),
     };
+    let room = file.metadata().map_or(0, |file| file.len() / LEAST_A_CELL);
     let mut reader = serde_json::Deserializer::from_reader(io::BufReader::new(file));
     let mut loading = Loading {
         database,
-        waiting: Vec::with_capacity(LOADED_AT_ONCE),
+        room: usize::try_from(room).unwrap_or(usize::MAX),
         skipped: 0,
     };
     let read = serde::de::DeserializeSeed::deserialize(&mut loading, &mut reader);
     read.and_then(|()| reader.end())
         .map_err(|error| at(path, &error))?;
-    loading.flush();
     Ok(Some(loading.skipped))
 }
 
 struct Loading<'a> {
     database: &'a mut Database,
-    waiting: Vec<CellWrite>,
+    /// How many more cells room may be made for.
+    room: usize,
     skipped: usize,
 }
 
-impl Loading<'_> {
-    fn flush(&mut self) {
-        self.skipped += self.database.load(&self.waiting);
-        self.waiting.clear();
-    }
-}
-
-// The snapshot, an object whose `cells` are taken in as they are read and whose other
-// fields are passed over.
+// The snapshot, an object whose `cells` are stored as they are read and whose other fields
+// are passed over.
 impl<'de> serde::de::DeserializeSeed<'de> for &mut Loading<'_> {
     type Value = ();
 
@@ -100,7 +98,14 @@ impl<'de> serde::de::Visitor<'de> for &mut Loading<'_> {
     fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
         while let Some(field) = map.next_key::<String>()? {
             match field.as_str() {
-                "cells" => map.next_value_seed(Cells(&mut *self))?,
+                "stored" => {
+                    for (cube, cells) in map.next_value::<BTreeMap<String, usize>>()? {
+                        let cells = cells.min(self.room);
+                        self.room -= cells;
+                        self.database.reserve(&cube, cells);
+                    }
+                }
+                "cells" => self.skipped += map.next_value_seed(Cells(&mut *self.database))?,
                 _ => drop(map.next_value::<serde::de::IgnoredAny>()?),
             }
         }
@@ -108,32 +113,14 @@ impl<'de> serde::de::Visitor<'de> for &mut Loading<'_> {
     }
 }
 
-/// The cells of a snapshot, loaded as they come.
-struct Cells<'a, 'b>(&'a mut Loading<'b>);
+/// The cells of a snapshot, stored as they come.
+struct Cells<'a>(&'a mut Database);
 
-impl<'de> serde::de::DeserializeSeed<'de> for Cells<'_, '_> {
-    type Value = ();
+impl<'de> serde::de::DeserializeSeed<'de> for Cells<'_> {
+    type Value = usize;
 
-    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_seq(self)
-    }
-}
-
-impl<'de> serde::de::Visitor<'de> for Cells<'_, '_> {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        formatter.write_str("a list of cells")
-    }
-
-    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut cells: A) -> Result<(), A::Error> {
-        while let Some(cell) = cells.next_element::<CellWrite>()? {
-            self.0.waiting.push(cell);
-            if self.0.waiting.len() == LOADED_AT_ONCE {
-                self.0.flush();
-            }
-        }
-        Ok(())
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<usize, D::Error> {
+        self.0.load_from(deserializer)
     }
 }
 
@@ -386,6 +373,7 @@ impl Journal for Files {
     fn snapshot(&mut self, model_version: u64, cells: &NamedCells<'_>) -> io::Result<()> {
         let snapshot = Snapshot {
             model_version,
+            stored: cells.counts(),
             cells,
         };
         let written = write_whole(

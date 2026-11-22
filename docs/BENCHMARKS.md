@@ -240,6 +240,15 @@ name before any was stored, and a server that holds 104 MB once started reached 
 on the way. The snapshot is now read and stored ten thousand cells at a time, and the
 start peaks at 182 MB, in the same 1.7 seconds (2026-11-21).
 
+Most of a start was then spent in two things: making every cell of the snapshot into a
+cell write, its cube's name and each element's name copied, before looking those names
+up; and the table of cells growing again and again as they came. The engine now reads
+the cells itself, looking each name up as it is read, and the snapshot says ahead of
+them how many cells each cube holds, so that room is made for them at once. Five million
+cells start in 1.9 s rather than 4.9 s, and ten million in 5.6 s rather than 13.9 s,
+with 976 MB at the most on the way rather than 1,044 MB (2026-11-22). A snapshot from
+before, without the counts, loads as it did.
+
 The cells a cube stores are listed a page of 10,000 at a time, in a fixed order. Each
 page put in order every cell up to its end, so the later pages of a large cube were the
 slowest: through a server holding 1.5 million cells the first page took 97 ms and the

@@ -162,7 +162,7 @@ Measured on one Windows machine with a build for release, a cube of four dimensi
 | Read by name, through the server | 5,000 cells in about 5 ms |
 | Memory a dimension element takes | about 500 bytes |
 | Start, a dimension of a million elements | 3 seconds |
-| Ten million cells | 865 MB held, 1.5 GB at the most; a 586 MB snapshot; a start of 14 seconds |
+| Ten million cells | 865 MB held, 1.5 GB at the most; a 586 MB snapshot; a start of 6 seconds |
 
 Every 64 MiB of log, about a million cells written, the log is replaced by a snapshot,
 written while reads carry on; writes wait for it, at ten million cells some 3.5 seconds.

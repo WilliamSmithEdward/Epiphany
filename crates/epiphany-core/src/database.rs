@@ -11,6 +11,7 @@
 //! transaction may commit a change between its read and its write.
 
 mod error;
+mod load;
 mod locks;
 mod migrate;
 mod spread;
@@ -141,7 +142,16 @@ pub struct NamedCells<'a> {
     cells: &'a [Cells],
 }
 
-impl NamedCells<'_> {
+impl<'a> NamedCells<'a> {
+    /// How many cells each cube stores, by its name: written ahead of the cells, it lets
+    /// whoever loads them make room for them at once ([`Database::reserve`]).
+    pub fn counts(&self) -> std::collections::BTreeMap<&'a str, usize> {
+        let cubes = self.model.cubes().iter().zip(self.cells);
+        cubes
+            .map(|(cube, cells)| (cube.name.as_str(), cells.len()))
+            .collect()
+    }
+
     fn each(&self) -> impl Iterator<Item = CellWrite> + '_ {
         let cubes = self.cells.iter().enumerate();
         cubes.flat_map(move |(cube, cells)| {
@@ -294,6 +304,13 @@ impl Database {
         }
         self.changed();
         skipped
+    }
+
+    /// Makes room in a cube for cells about to be loaded. Nothing if there is no such cube.
+    pub fn reserve(&mut self, cube: &str, cells: usize) {
+        if let Some(id) = self.model.cube_id(cube) {
+            self.cells[id].reserve(cells);
+        }
     }
 
     /// Records every later commit and model update in a journal.
