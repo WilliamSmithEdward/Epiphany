@@ -474,7 +474,11 @@ fn a_cell_that_nothing_feeds_is_left_out_and_can_be_found() {
 fn a_cell_explains_how_it_comes_by_its_value() {
     let feeder = "([Account].[Units], [Region].[North]) => [Account].[Revenue]";
     let database = priced(json!([feeder]));
-    let explain = |at: [&str; 3]| database.explain(None, &cell("Sales", &at), true).unwrap();
+    let explain = |at: [&str; 3]| {
+        database
+            .explain(None, &cell("Sales", &at), true, None)
+            .unwrap()
+    };
 
     // A calculated leaf that is fed, and by what.
     let revenue = explain(["North", "Jan", "Revenue"]);
@@ -519,7 +523,12 @@ fn a_cell_explains_how_it_comes_by_its_value() {
     // In a cube that is not fed, nothing is said about feeding.
     let unfed = priced(json!([]));
     let revenue = unfed
-        .explain(None, &cell("Sales", &["North", "Jan", "Revenue"]), true)
+        .explain(
+            None,
+            &cell("Sales", &["North", "Jan", "Revenue"]),
+            true,
+            None,
+        )
         .unwrap();
     assert_eq!(
         (revenue.fed, revenue.writable, revenue.value),

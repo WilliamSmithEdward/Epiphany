@@ -1262,7 +1262,7 @@ fn a_check_refuses_a_value_it_does_not_hold_for_or_warns_of_it() {
         holds: Vec::new(),
     };
     assert!(matches!(
-        database.spread(None, &spread),
+        database.spread(None, &spread, None),
         Err(Error::Write {
             error: CellError::Invalid(_),
             ..
@@ -1275,7 +1275,7 @@ fn a_check_refuses_a_value_it_does_not_hold_for_or_warns_of_it() {
         .write(None, &[set("Sales", ["B", "Units"], 150.0)])
         .unwrap();
     let invalid = |product: &str| {
-        let explained = database.explain(None, &cell("Sales", [product, "Units"]), false);
+        let explained = database.explain(None, &cell("Sales", [product, "Units"]), false, None);
         explained.unwrap().invalid
     };
     let unusual = Invalid {
@@ -1312,7 +1312,7 @@ fn a_detail_is_written_with_its_value_and_goes_when_the_value_is_written_plainly
     let id = database.begin();
     // Written in a transaction, the detail and the lines' sum wait there alone.
     let detail = lines(&[(" Shop ", 3.0), ("Web", 4.5)]);
-    database.write_detail(Some(id), &a, detail).unwrap();
+    database.write_detail(Some(id), &a, detail, None).unwrap();
     assert_eq!(units(&database, Some(id), "A"), 7.5);
     let kept = lines(&[("Shop", 3.0), ("Web", 4.5)]);
     assert_eq!(database.detail(Some(id), &a).unwrap(), kept);
@@ -1326,10 +1326,13 @@ fn a_detail_is_written_with_its_value_and_goes_when_the_value_is_written_plainly
     database.undo_to(id, point).unwrap();
     assert_eq!(database.detail(Some(id), &a).unwrap(), kept);
     database.commit(id).unwrap();
-    assert_eq!(database.explain(None, &a, false).unwrap().detail, kept);
+    assert_eq!(
+        database.explain(None, &a, false, None).unwrap().detail,
+        kept
+    );
 
     // No lines take it away and leave the value as it is.
-    database.write_detail(None, &a, Vec::new()).unwrap();
+    database.write_detail(None, &a, Vec::new(), None).unwrap();
     assert!(database.detail(None, &a).unwrap().is_empty());
     assert_eq!(units(&database, None, "A"), 7.5);
     // A detail is a leaf number's: a total's or a text cell's is refused, as are lines that
@@ -1337,12 +1340,12 @@ fn a_detail_is_written_with_its_value_and_goes_when_the_value_is_written_plainly
     let one = || lines(&[("x", 1.0)]);
     assert!(
         database
-            .write_detail(None, &units_of("All"), one())
+            .write_detail(None, &units_of("All"), one(), None)
             .is_err()
     );
     let note = cell("Sales", ["A", "Note"]);
-    assert!(database.write_detail(None, &note, one()).is_err());
-    let infinite = database.write_detail(None, &a, lines(&[("x", f64::INFINITY)]));
+    assert!(database.write_detail(None, &note, one(), None).is_err());
+    let infinite = database.write_detail(None, &a, lines(&[("x", f64::INFINITY)]), None);
     assert!(
         matches!(&infinite, Err(Error::Cell(CellError::Detail(_)))),
         "{infinite:?}"
@@ -1356,10 +1359,12 @@ fn a_detail_goes_where_its_cell_goes_and_is_published_with_a_sandbox() {
     let units_of = |product: &str| cell("Sales", [product, "Units"]);
     let both = lines(&[("x", 1.0), ("y", 2.0)]);
     database
-        .write_detail(None, &units_of("A"), both.clone())
+        .write_detail(None, &units_of("A"), both.clone(), None)
         .unwrap();
     let five = lines(&[("z", 5.0)]);
-    database.write_detail(None, &units_of("B"), five).unwrap();
+    database
+        .write_detail(None, &units_of("B"), five, None)
+        .unwrap();
 
     // In a model where B is gone and C comes before A, A's detail is where A is now.
     let mut definition = definition();
@@ -1378,7 +1383,7 @@ fn a_detail_goes_where_its_cell_goes_and_is_published_with_a_sandbox() {
     let id = database.create_sandbox("ada", "Plan").unwrap().transaction;
     let four = lines(&[("w", 4.0)]);
     database
-        .write_detail(Some(id), &units_of("C"), four.clone())
+        .write_detail(Some(id), &units_of("C"), four.clone(), None)
         .unwrap();
     assert!(database.detail(None, &units_of("C")).unwrap().is_empty());
     database.commit(id).unwrap();

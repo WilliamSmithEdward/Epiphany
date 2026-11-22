@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CellRef, CellWrite, CellWrites, Database, Error, Names, TransactionId};
 use crate::Scalar;
+use crate::access::Access;
 use crate::cells::{CellError, Coordinate, check};
 use crate::model::{ElementId, Model};
 
@@ -152,12 +153,13 @@ impl Database {
 
     /// Writes a leaf cell's supporting detail and, as one write with it, the lines' sum to the
     /// cell, within a transaction or committed at once. No lines take the detail away and
-    /// leave the value as it is.
+    /// leave the value as it is. `access` binds the one writing as in [`Database::write_batch`].
     pub fn write_detail(
         &mut self,
         transaction: Option<TransactionId>,
         cell: &CellRef,
         lines: Vec<Line>,
+        access: Option<&Access>,
     ) -> Result<(), Error> {
         let refused = |reason: String| Error::Cell(CellError::Detail(reason));
         if lines.len() > MOST_LINES {
@@ -192,7 +194,7 @@ impl Database {
             value,
         };
         self.within(transaction, |database, id| {
-            database.stage(id, &CellWrites::from(std::slice::from_ref(&write)))?;
+            database.stage(id, &CellWrites::from(std::slice::from_ref(&write)), access)?;
             // Staged plainly, the value took any detail away; the lines take its place.
             if let Some(lines) = lines {
                 let transaction = database.transactions.get_mut(&id).expect("staged in");

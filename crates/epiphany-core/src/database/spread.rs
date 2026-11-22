@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CellWrite, Database, Error, TransactionId};
 use crate::Scalar;
+use crate::access::Access;
 use crate::cells::{CellError, Leaves, advance, weight};
 use crate::model::{Cube, ElementId, ElementType};
 
@@ -42,14 +43,18 @@ pub enum SpreadMethod {
 impl Database {
     /// Shares a value out among the leaves of a cell, as one batch of writes: all of them or
     /// none. Leaves that a rule calculates, and those held, are left alone. Returns how many
-    /// cells were written. A leaf cell is simply written.
+    /// cells were written. A leaf cell is simply written. For one whom `access` binds, the
+    /// cell and its holds are refused as missing where an element of them is hidden from
+    /// them, and the spread as forbidden unless they may write every leaf beneath the cell.
     pub fn spread(
         &mut self,
         transaction: Option<TransactionId>,
         spread: &Spread,
+        access: Option<&Access>,
     ) -> Result<usize, Error> {
         self.expire();
         let (id, at) = self.locate(&spread.cube, &spread.at)?;
+        self.permitted(access, id, &at, spread.at.iter().map(String::as_str))?;
         let cube = &self.model.cubes()[id];
         let elements = || {
             let pairs = cube.dimensions.iter().zip(&at);
@@ -64,6 +69,24 @@ impl Database {
         }
         if !spread.value.is_finite() {
             return Err(refuse(CellError::NotFinite));
+        }
+        // A spread changes the leaves beneath the cell, which must all be the spreader's to
+        // write; what is hidden from them is not named.
+        if let Some((dimension, leaf)) =
+            access.and_then(|access| access.unwritable_beneath(&self.model, cube, &at))
+        {
+            let seen = access.is_some_and(|access| access.sees(dimension, leaf));
+            let dimension = &self.model.dimensions()[dimension as usize];
+            let reason = match seen {
+                true => format!(
+                    "you may only read element '{}' of dimension '{}', beneath the cell",
+                    dimension.elements[leaf as usize].name, dimension.name
+                ),
+                false => {
+                    "the cell adds up cells hidden from you, which a spread would change".to_owned()
+                }
+            };
+            return Err(refuse(CellError::Forbidden(reason)));
         }
         let consolidated = elements().any(|e| e.kind == ElementType::Consolidated);
         if cube
@@ -90,7 +113,11 @@ impl Database {
         let holds: Vec<Vec<Leaves>> = spread
             .holds
             .iter()
-            .map(|hold| Ok(leaves_of(&self.locate(&spread.cube, hold)?.1)))
+            .map(|hold| {
+                let (_, held) = self.locate(&spread.cube, hold)?;
+                self.permitted(access, id, &held, hold.iter().map(String::as_str))?;
+                Ok(leaves_of(&held))
+            })
             .collect::<Result<_, Error>>()?;
         let held = |leaf: &[ElementId]| holds.iter().any(|hold| weight(hold, leaf).is_some());
         let writable = |leaf: &[ElementId]| cube.rule_for_leaf(leaf, false).is_none();

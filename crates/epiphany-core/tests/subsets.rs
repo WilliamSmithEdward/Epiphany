@@ -1,5 +1,6 @@
 use epiphany_core::Scalar;
 use epiphany_core::database::{CellWrite, Database, Error};
+use epiphany_core::mdx::Asker;
 use epiphany_core::model::{Model, ModelDef, ModelError};
 use serde_json::{Value as Json, json};
 
@@ -165,7 +166,9 @@ fn database() -> Database {
 #[test]
 fn a_view_runs_its_query_and_may_use_subsets() {
     let mut database = database();
-    let result = database.view(None, "sales", "by region").unwrap();
+    let result = database
+        .view(None, "sales", "by region", &Asker::ANYONE)
+        .unwrap();
     let cells: Vec<Option<Scalar>> = [5.0, 5.0, 0.0, 7.0, 0.0, 7.0]
         .map(|n| Some(Scalar::Number(n)))
         .to_vec();
@@ -181,11 +184,11 @@ fn a_view_runs_its_query_and_may_use_subsets() {
     };
     database.write(Some(transaction), &[write]).unwrap();
     let pending = database
-        .view(Some(transaction), "Sales", "By region")
+        .view(Some(transaction), "Sales", "By region", &Asker::ANYONE)
         .unwrap();
     assert_eq!(pending.cells[0], Some(Scalar::Number(6.0)));
 
-    let missing = database.view(None, "Sales", "Nope");
+    let missing = database.view(None, "Sales", "Nope", &Asker::ANYONE);
     assert_eq!(
         missing,
         Err(Error::NotFound(
@@ -212,7 +215,7 @@ fn changing_only_subsets_and_views_keeps_every_cell() {
             .is_none()
     );
     assert!(matches!(
-        database.view(None, "Sales", "By region"),
+        database.view(None, "Sales", "By region", &Asker::ANYONE),
         Err(Error::NotFound(_))
     ));
     // Whether a subset is public or private may be said, and makes no difference here.
@@ -268,7 +271,9 @@ fn a_subset_that_reads_cells_selects_what_they_say_when_it_is_used() {
         .unwrap();
     assert_eq!(ask(&database, None, "Leader"), ["South"]);
     assert_eq!(ask(&database, None, "Others"), ["North"]);
-    let view = database.view(None, "Sales", "Leading").unwrap();
+    let view = database
+        .view(None, "Sales", "Leading", &Asker::ANYONE)
+        .unwrap();
     assert_eq!(view.axes[0].tuples[0][0].name, "South");
     let named = |database: &Database| -> Vec<String> {
         let region = database.model().dimension("Region").unwrap();
@@ -306,7 +311,14 @@ fn a_query_may_use_a_subset_its_asker_keeps_for_themself() {
     let columns = |subset: &str, third: &str| -> Result<Vec<String>, Error> {
         let query =
             format!("SELECT TM1SubsetToSet([Period], '{subset}'{third}) ON COLUMNS FROM [Sales]");
-        let result = database.query_as(None, &query, &|_| true, &[], &own)?;
+        let result = database.query_as(
+            None,
+            &query,
+            &Asker {
+                own: Some(&own),
+                ..Asker::ANYONE
+            },
+        )?;
         Ok(result.axes[0]
             .tuples
             .iter()

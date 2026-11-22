@@ -5,8 +5,9 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::parser::{Axis, Expr, Query};
-use super::{AxisResult, MdxError, MemberResult, MemberType, QueryResult};
+use super::{Asker, AxisResult, MdxError, MemberResult, MemberType, Own, QueryResult};
 use crate::Scalar;
+use crate::access::Access;
 use crate::model::{
     Cube, Dimension, DimensionId, DimensionType, Element, ElementId, ElementType, Model, key,
 };
@@ -123,6 +124,8 @@ pub(super) struct Evaluator<'a> {
     /// The subsets of the one asking, for `TM1SubsetToSet` with "private"; none where nobody
     /// asks, as for the model's views, subsets and rules.
     own: Option<Own<'a>>,
+    /// The elements the one asking may see, where some are hidden from them.
+    access: Option<&'a Access>,
     calculated: Vec<Calculated<'a>>,
     sets: HashMap<String, Vec<Tuple>>,
     /// How many calculated members are being evaluated inside one another.
@@ -138,10 +141,6 @@ pub(crate) type Expect<'a> = &'a dyn Fn(&[&[ElementId]]);
 /// Shows every leaf cell of the cube that may hold something, unless there are more than a
 /// number of them, or says that it cannot.
 pub(crate) type Occupied<'a> = &'a dyn Fn(usize, &mut dyn FnMut(&[ElementId])) -> bool;
-
-/// Finds a subset of the one asking a query, by its dimension's name and its own: the names
-/// of its members.
-pub(crate) type Own<'a> = &'a dyn Fn(&str, &str) -> Option<Vec<String>>;
 
 /// For work whose cells are read one at a time.
 pub(super) fn unexpected(_: &[&[ElementId]]) {}
@@ -204,13 +203,9 @@ pub(super) fn elements(
 }
 
 impl Query {
-    /// Runs the query against a cube, reading stored and consolidated cells through `read`,
-    /// after saying through `expect` which cells of the cube the axes will ask for.
-    /// `standing` names members, `(dimension, member)`, that the query stands at in place of
-    /// those its WHERE names for their dimensions, or beside them; where an axis places one
-    /// of their dimensions, the axis decides it. `own` finds the subsets of the one asking,
-    /// where someone asks.
-    #[allow(clippy::too_many_arguments)]
+    /// Runs the query against a cube for the one asking it, reading stored and consolidated
+    /// cells through `read`, after saying through `expect` which cells of the cube the axes
+    /// will ask for.
     pub(crate) fn evaluate(
         &self,
         model: &Model,
@@ -218,14 +213,15 @@ impl Query {
         read: Read,
         expect: Expect,
         occupied: Occupied,
-        standing: &[(&str, &str)],
-        own: Option<Own>,
+        asker: &Asker,
     ) -> Evaluated<QueryResult> {
         let cube = &model.cubes()[cube_id];
+        let standing = asker.standing;
         let mut evaluator = Evaluator::new(model, cube_id, cube, read);
         evaluator.expect = expect;
         evaluator.occupied = occupied;
-        evaluator.own = own;
+        evaluator.own = asker.own;
+        evaluator.access = asker.access;
         for member in &self.members {
             let [dimension, .., name] = member.name.as_slice() else {
                 return fail("a calculated member is named [Dimension].[Name]");
@@ -303,6 +299,11 @@ impl Query {
             }
         }
         context = with(&context, &slicer);
+        let elements = context.iter().map(|id| match *id {
+            Id::Element(element) => Some(element),
+            Id::Calculated(_) => None,
+        });
+        evaluator.seen_cell(cube, elements)?;
 
         let mut axes: Vec<&Axis> = self.axes.iter().collect();
         axes.sort_by_key(|axis| axis.ordinal);
@@ -566,6 +567,7 @@ impl<'a> Evaluator<'a> {
             expect: &unexpected,
             occupied: &|_, _| false,
             own: None,
+            access: None,
             calculated: Vec::new(),
             sets: HashMap::new(),
             depth: Cell::new(0),
@@ -576,11 +578,75 @@ impl<'a> Evaluator<'a> {
 
     /// The cell every dimension starts at: its first top element.
     pub(super) fn top(&self) -> Context {
-        let top = |dimension: &Dimension| {
-            let top = dimension.elements.iter().position(|e| e.parents.is_empty());
-            Id::Element(top.unwrap_or(0) as ElementId)
+        let top = |(position, dimension): (usize, &Dimension)| {
+            // A top element is one with no parent the one asking may see.
+            let sees = |element: ElementId| self.sees(position, element);
+            let tops = (0..dimension.elements.len() as ElementId).filter(|&element| {
+                let parents = &dimension.elements[element as usize].parents;
+                parents.iter().all(|&parent| !sees(parent))
+            });
+            let mut seen = tops.filter(|&element| sees(element));
+            // Where they may see none, the model's own top, which no cell is read at.
+            let top = seen.next().or_else(|| {
+                let tops = dimension.elements.iter().position(|e| e.parents.is_empty());
+                tops.map(|top| top as ElementId)
+            });
+            Id::Element(top.unwrap_or(0))
         };
-        self.dimensions().map(top).collect()
+        self.dimensions().enumerate().map(top).collect()
+    }
+
+    /// Whether the one asking may see an element of the dimension at a place in the cube.
+    fn sees(&self, position: usize, element: ElementId) -> bool {
+        let dimension = self.cube.dimensions[position];
+        self.access
+            .is_none_or(|access| access.sees(dimension, element))
+    }
+
+    /// Whether the one asking may see a member: every calculated member, and the elements
+    /// not hidden from them.
+    fn sees_member(&self, member: &Member) -> bool {
+        match member.id {
+            Id::Element(element) => self.sees(member.position, element),
+            Id::Calculated(_) => true,
+        }
+    }
+
+    /// A value as the one asking may see it: a set without the tuples that hold a member
+    /// hidden from them, and such a member, or a tuple that holds one, no member at all.
+    fn seen(&self, datum: Datum) -> Datum {
+        if self.access.is_none() {
+            return datum;
+        }
+        let seen = |member: &Member| self.sees_member(member);
+        match datum {
+            Datum::Set(mut set) => {
+                set.retain(|tuple| tuple.iter().all(seen));
+                Datum::Set(set)
+            }
+            Datum::Member(member) if !seen(&member) => Datum::Null,
+            Datum::Tuple(tuple) if !tuple.iter().all(seen) => Datum::Null,
+            datum => datum,
+        }
+    }
+
+    /// Refuses a cell of a cube at an element hidden from the one asking, where a dimension
+    /// of it has no element they may see for a query to stand at.
+    fn seen_cell(
+        &self,
+        cube: &Cube,
+        at: impl IntoIterator<Item = Option<ElementId>>,
+    ) -> Evaluated<()> {
+        let Some(access) = self.access else {
+            return Ok(());
+        };
+        for (&dimension, element) in cube.dimensions.iter().zip(at) {
+            if element.is_some_and(|element| !access.sees(dimension, element)) {
+                let name = &self.model.dimensions()[dimension as usize].name;
+                return fail(format!("you may see no element of dimension '{name}'"));
+            }
+        }
+        Ok(())
     }
 
     /// A set in the order of its hierarchies: each member before what is beneath it, or
@@ -683,7 +749,8 @@ impl<'a> Evaluator<'a> {
         let unknown = || MdxError::new(format!("unknown cube '{name}'"));
         let cube_id = self.model.cube_id(name).ok_or_else(unknown)?;
         let cube = &self.model.cubes()[cube_id];
-        let other = Evaluator::new(self.model, cube_id, cube, self.read);
+        let mut other = Evaluator::new(self.model, cube_id, cube, self.read);
+        other.access = self.access;
         let shared = |dimension: u32| self.cube.dimensions.iter().position(|&d| d == dimension);
         let element = |id: Id| match id {
             Id::Element(id) => Ok(id),
@@ -719,6 +786,7 @@ impl<'a> Evaluator<'a> {
             })?;
             at[position] = id;
         }
+        self.seen_cell(cube, at.iter().copied().map(Some))?;
         Ok((cube_id, at))
     }
 
@@ -798,7 +866,11 @@ impl<'a> Evaluator<'a> {
         let calculated = self.calculated.iter().position(|calculated| {
             calculated.position == position && key(calculated.name) == key(name)
         });
-        let element = || self.dimension(position).element_id(name).map(Id::Element);
+        // An element hidden from the one asking is not there for them, as one never made.
+        let element = || {
+            let found = self.dimension(position).element_id(name);
+            found.filter(|&id| self.sees(position, id)).map(Id::Element)
+        };
         match calculated.map(Id::Calculated).or_else(element) {
             Some(id) => Ok(Datum::Member(Member { position, id })),
             // `[Dimension].[Dimension]` is the hierarchy, which is the dimension itself.
@@ -817,7 +889,7 @@ impl<'a> Evaluator<'a> {
                 "more than {MOST_STEPS} steps are needed to work this out"
             ));
         }
-        Ok(match expression {
+        let datum = match expression {
             Expr::Number(number) => Datum::Number(*number),
             Expr::Text(text) => Datum::Text(text.clone()),
             Expr::Name(parts) => self.resolve(parts)?,
@@ -867,7 +939,10 @@ impl<'a> Evaluator<'a> {
             Expr::Not(operand) => Datum::Bool(!self.truth(operand, context)?),
             Expr::Negate(operand) => Datum::Number(-self.number(operand, context)?),
             Expr::Binary(left, operator, right) => self.binary(left, operator, right, context)?,
-        })
+        };
+        // Whatever names, lists or walks to the elements, those hidden from the one asking
+        // are left out of what it comes to.
+        Ok(self.seen(datum))
     }
 
     fn binary(
@@ -2371,8 +2446,10 @@ impl<'a> Evaluator<'a> {
     /// A built-in property of a member, or failing that its attribute of that name.
     fn property(&self, member: Member, name: &str) -> Evaluated<Datum> {
         let element = self.element(member).ok();
+        // Of the parents and children, those the one asking may see.
+        let seen = |id: &ElementId| self.sees(member.position, *id);
         let first = |ids: &[ElementId]| {
-            let parent = ids.first().map(|&id| Member {
+            let parent = ids.iter().find(|id| seen(id)).map(|&id| Member {
                 position: member.position,
                 id: Id::Element(id),
             });
@@ -2385,7 +2462,12 @@ impl<'a> Evaluator<'a> {
                 Datum::Number(element.map_or(0.0, |(_, element)| f64::from(element.level)))
             }
             ("CHILDREN_CARDINALITY", element) => {
-                Datum::Number(element.map_or(0.0, |(_, element)| element.children.len() as f64))
+                let children = element.map(|(_, element)| element.children.as_slice());
+                let seen = children
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|(id, _)| seen(id));
+                Datum::Number(seen.count() as f64)
             }
             ("PARENT_UNIQUE_NAME", Some((_, element))) => first(&element.parents),
             (_, Some((id, _))) => match self.dimension(member.position).attribute_value(id, name) {

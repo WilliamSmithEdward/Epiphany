@@ -814,7 +814,9 @@ fn a_cells_detail_outlives_the_process_with_its_value() {
         value,
     };
     let lines = vec![line("Office", 30.0), line("Store", 12.5)];
-    database.write_detail(None, &rent, lines.clone()).unwrap();
+    database
+        .write_detail(None, &rent, lines.clone(), None)
+        .unwrap();
     drop(database);
     // Opened again, the commit in the log gives it back; opened once more, the snapshot
     // that took the log's place does.
@@ -848,7 +850,7 @@ fn a_sandbox_outlives_the_process_until_it_is_deleted() {
         value: 40.0,
     }];
     database
-        .write_detail(Some(id), &salaries, detail.clone())
+        .write_detail(Some(id), &salaries, detail.clone(), None)
         .unwrap();
     drop(database);
 

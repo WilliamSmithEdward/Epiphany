@@ -87,7 +87,13 @@ impl Model {
                     });
                 }
                 let values = model.picklist(picklist, &dimension.name, &definition.name)?;
-                model.dimensions[id].elements[element].picklist = Some(values);
+                let of = match picklist {
+                    PicklistDef::Members(members) => model.dimension_id(&members.dimension),
+                    PicklistDef::Values(_) => None,
+                };
+                let element = &mut model.dimensions[id].elements[element];
+                element.picklist = Some(values);
+                element.picklist_of = of;
             }
         }
         // Rules and feeders may refer to other cubes, so every cube is in place first.
@@ -500,6 +506,9 @@ pub struct Element {
     /// For a string element, the values its text cells may be given, where it has a
     /// picklist: worked out with the model, from a list or a dimension's or subset's elements.
     pub picklist: Option<Vec<String>>,
+    /// The dimension whose elements the picklist offers, where it offers a dimension's or a
+    /// subset's: for those it offers to be told by what each user may see of them.
+    pub picklist_of: Option<DimensionId>,
 }
 
 impl Element {
@@ -565,6 +574,7 @@ impl Element {
             leaves: Vec::new(),
             attributes: values,
             picklist: None,
+            picklist_of: None,
         })
     }
 }

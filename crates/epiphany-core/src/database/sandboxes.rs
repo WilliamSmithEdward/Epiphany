@@ -248,7 +248,7 @@ impl Database {
                 }
             };
             let done = self
-                .stage(published, &batch)
+                .stage(published, &batch, None)
                 .map(|()| detailed(self))
                 .and_then(|()| self.commit(published));
             if let Err(error) = done {

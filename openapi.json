@@ -3627,6 +3627,28 @@
           }
         }
       },
+      "BTreeMap": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "description": "What a user may do. Each role may also do what the ones before it may.",
+            "enum": [
+              "none",
+              "read",
+              "write",
+              "admin"
+            ]
+          },
+          "propertyNames": {
+            "type": "string"
+          }
+        },
+        "propertyNames": {
+          "type": "string"
+        }
+      },
       "CellChange": {
         "type": "object",
         "description": "A change to a cell, as the history gives it back.",
@@ -5239,6 +5261,10 @@
               "type": "string"
             }
           },
+          "elements": {
+            "$ref": "#/components/schemas/BTreeMap",
+            "description": "The elements with a role of their own, which holds beneath them too."
+          },
           "idle_seconds": {
             "type": "integer",
             "format": "int64",
@@ -5589,6 +5615,10 @@
               "type": "string"
             }
           },
+          "elements": {
+            "$ref": "#/components/schemas/BTreeMap",
+            "description": "Elements with a role of their own, by dimension and element: none, read or write. It\nholds beneath the element too, unless a nearer element has its own; an element beneath\nseveral takes the highest of theirs. An administrator is bound by none."
+          },
           "password": {
             "type": [
               "string",
@@ -5621,6 +5651,10 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "elements": {
+            "$ref": "#/components/schemas/BTreeMap",
+            "description": "The elements with a role of their own, by dimension and element: `none`, `read` or\n`write`, holding beneath them too where nearer elements have none."
           },
           "name": {
             "type": "string"

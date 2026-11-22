@@ -18,18 +18,20 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
+use epiphany_core::access::{Access, Permit};
+use epiphany_core::cells::CellError;
 use epiphany_core::database::{
     Asked, CellChange, CellRef, CellRefs, CellWrite, CellWrites, Comment, Database, EarlierModel,
     Error, Explanation, HistoryRead, Line, LockMode, ModelUpdate, Sandbox, Spread, TransactionId,
 };
-use epiphany_core::mdx::QueryResult;
+use epiphany_core::mdx::{Asker, QueryResult};
 use epiphany_core::model::{
-    AttributeType, ChildDef, CubeDef, DashboardDef, Dimension, DimensionDef, DimensionType,
-    ElementId, ElementType, ModelDef, ViewDef, key,
+    AttributeType, ChildDef, CubeDef, DashboardDef, DimensionDef, DimensionId, DimensionType,
+    Element, ElementId, ElementType, Model, ModelDef, SubsetDef, ViewDef, key,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{Admitted, AuditEntry, Auth, Grants, Refusal, Role, UserView};
+use crate::auth::{Admitted, AuditEntry, Auth, ElementRoles, Grants, Refusal, Role, UserView};
 use crate::private::Refused;
 use utoipa::openapi::RefOr;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
@@ -488,6 +490,9 @@ struct Session {
     role: Role,
     /// The cubes on which the user has another role in place of that one.
     cubes: BTreeMap<String, Role>,
+    /// The elements with a role of their own, which holds beneath them too.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    elements: ElementRoles,
     /// For a view as another user, the administrator viewing.
     #[serde(skip_serializing_if = "Option::is_none")]
     viewer: Option<String>,
@@ -532,6 +537,7 @@ async fn sign_in(State(state): State<AppState>, Body(request): Body<SignIn>) -> 
                 idle_seconds,
                 role: grants.role(),
                 cubes: grants.cubes().clone(),
+                elements: grants.elements().clone(),
                 viewer: None,
             };
             (StatusCode::CREATED, Json(session)).into_response()
@@ -594,6 +600,12 @@ impl ApiError {
 impl From<Error> for ApiError {
     fn from(error: Error) -> Self {
         let status = match error {
+            // A cell the user may only read, as a cube they may only read.
+            Error::Cell(CellError::Forbidden(_))
+            | Error::Write {
+                error: CellError::Forbidden(_),
+                ..
+            } => StatusCode::FORBIDDEN,
             Error::Cell(_)
             | Error::Write { .. }
             | Error::Model(_)
@@ -701,25 +713,52 @@ struct ElementView {
     picklist: Option<Vec<String>>,
 }
 
-impl From<&Dimension> for DimensionView {
-    fn from(dimension: &Dimension) -> Self {
-        let name = |id: ElementId| dimension.elements[id as usize].name.clone();
-        let child = |&(id, weight): &(ElementId, f64)| ChildDef {
-            name: name(id),
+impl DimensionView {
+    /// A dimension as a user may see it: the elements hidden from them left out, as
+    /// elements, parents, children, the members of subsets and the values of picklists.
+    fn of(model: &Model, id: DimensionId, access: Option<&Access>) -> Self {
+        let dimension = &model.dimensions()[id as usize];
+        let seen = |element: ElementId| sees(access, id, element);
+        let name = |element: ElementId| dimension.elements[element as usize].name.clone();
+        let child = |&(element, weight): &(ElementId, f64)| ChildDef {
+            name: name(element),
             weight,
         };
-        let elements = dimension.elements.iter().map(|element| {
+        // A picklist that offers another dimension's elements offers those the user may see.
+        let offered = |element: &Element| {
+            let values = element.picklist.as_ref()?;
+            let Some(of) = element.picklist_of.filter(|_| access.is_some()) else {
+                return Some(values.clone());
+            };
+            let from = &model.dimensions()[of as usize];
+            let seen = |value: &&String| from.element_id(value).is_none_or(|e| sees(access, of, e));
+            Some(values.iter().filter(seen).cloned().collect())
+        };
+        let elements = dimension.elements.iter().enumerate();
+        let elements = elements.filter(|&(element, _)| seen(element as ElementId));
+        let elements = elements.map(|(_, element)| {
             let values = dimension.attributes.iter().zip(&element.attributes);
             ElementView {
                 name: element.name.clone(),
                 kind: element.kind,
                 level: element.level,
-                parents: element.parents.iter().map(|&id| name(id)).collect(),
-                children: element.children.iter().map(child).collect(),
+                parents: element
+                    .parents
+                    .iter()
+                    .copied()
+                    .filter(|&p| seen(p))
+                    .map(name)
+                    .collect(),
+                children: element
+                    .children
+                    .iter()
+                    .filter(|(c, _)| seen(*c))
+                    .map(child)
+                    .collect(),
                 attributes: values
                     .filter_map(|(attribute, value)| Some((attribute.name.clone(), value.clone()?)))
                     .collect(),
-                picklist: element.picklist.clone(),
+                picklist: offered(element),
             }
         });
         Self {
@@ -736,8 +775,8 @@ impl From<&Dimension> for DimensionView {
                 .subsets
                 .iter()
                 .map(|subset| {
-                    let names = subset.elements.iter().map(|&id| name(id));
-                    (subset.name.clone(), names.collect())
+                    let seen = subset.elements.iter().copied().filter(|&e| seen(e));
+                    (subset.name.clone(), seen.map(name).collect())
                 })
                 .collect(),
             subsets_reading_cells: dimension
@@ -904,16 +943,28 @@ struct ModelOutline {
 /// but each dimension only by its name, type and number of elements. What lists the cubes
 /// and views asks for this; `GET /dimensions/{name}` gives a dimension whole.
 #[utoipa::path(get, path = "/model/outline", responses((status = OK, body = ModelOutline, description = "The model, without its dimensions' elements")))]
-async fn get_outline(State(database): State<Shared>) -> Json<ModelOutline> {
+async fn get_outline(
+    State(database): State<Shared>,
+    Extension(grants): Held,
+) -> Json<ModelOutline> {
     let database = database.read().unwrap();
     let definition = database.definition();
+    let access = access(&grants, &database);
+    // Counted as the user may see them.
+    let count = |id: usize, all: usize| match access.as_deref() {
+        Some(access) => (0..all as ElementId)
+            .filter(|&e| access.sees(id as DimensionId, e))
+            .count(),
+        None => all,
+    };
     let dimensions = definition
         .dimensions
         .iter()
-        .map(|dimension| DimensionOutline {
+        .enumerate()
+        .map(|(id, dimension)| DimensionOutline {
             name: dimension.name.clone(),
             kind: dimension.kind,
-            element_count: dimension.elements.len(),
+            element_count: count(id, dimension.elements.len()),
         });
     Json(ModelOutline {
         version: database.model_version(),
@@ -925,12 +976,41 @@ async fn get_outline(State(database): State<Shared>) -> Json<ModelOutline> {
 
 /// The model definition and its version.
 #[utoipa::path(get, path = "/model", responses((status = OK, body = ModelView, description = "The model")))]
-async fn get_model(State(database): State<Shared>) -> Json<ModelView> {
+async fn get_model(State(database): State<Shared>, Extension(grants): Held) -> Json<ModelView> {
     let database = database.read().unwrap();
+    let mut model = database.definition().clone();
+    if let Some(access) = access(&grants, &database) {
+        for dimension in &mut model.dimensions {
+            hide_elements(database.model(), &access, dimension);
+        }
+    }
     Json(ModelView {
         version: database.model_version(),
-        model: database.definition().clone(),
+        model,
     })
+}
+
+/// Takes the elements hidden from a user out of a dimension's definition, as elements, as
+/// children and from the lists of subsets. The MDX of a subset stays as written, a text of
+/// the model, as its rules and views do.
+fn hide_elements(model: &Model, access: &Access, definition: &mut DimensionDef) {
+    let Some(id) = model.dimension_id(&definition.name) else {
+        return;
+    };
+    let dimension = &model.dimensions()[id as usize];
+    let seen = |name: &str| {
+        let found = dimension.element_id(name);
+        found.is_none_or(|element| access.sees(id, element))
+    };
+    definition.elements.retain(|element| seen(&element.name));
+    for element in &mut definition.elements {
+        element.children.retain(|child| seen(&child.name));
+    }
+    for subset in definition.subsets.values_mut() {
+        if let SubsetDef::Elements(names) = subset {
+            names.retain(|name| seen(name));
+        }
+    }
 }
 
 /// Replaces the model in one step. Stored cells that still fit the new model are kept.
@@ -967,6 +1047,7 @@ async fn put_model(
 )]
 async fn get_dimension(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Path(name): Path<String>,
 ) -> Result<Json<DimensionView>, ApiError> {
     let database = database.read().unwrap();
@@ -974,8 +1055,10 @@ async fn get_dimension(
         let message = format!("unknown dimension '{name}'");
         ApiError::new(StatusCode::NOT_FOUND, "unknown_dimension", message)
     };
-    let dimension = database.model().dimension(&name).ok_or_else(unknown)?;
-    let mut view = DimensionView::from(dimension);
+    let id = database.model().dimension_id(&name).ok_or_else(unknown)?;
+    let dimension = &database.model().dimensions()[id as usize];
+    let access = access(&grants, &database);
+    let mut view = DimensionView::of(database.model(), id, access.as_deref());
     // A subset that reads cells selects what the stored cells say now.
     for subset in dimension
         .subsets
@@ -983,9 +1066,10 @@ async fn get_dimension(
         .filter(|subset| subset.reads_cells())
     {
         let elements = database.subset_elements(&name, &subset.name)?;
-        let names = elements
-            .iter()
-            .map(|&id| dimension.elements[id as usize].name.clone());
+        let seen = elements
+            .into_iter()
+            .filter(|&e| sees(access.as_deref(), id, e));
+        let names = seen.map(|e| dimension.elements[e as usize].name.clone());
         view.subsets.insert(subset.name.clone(), names.collect());
     }
     Ok(Json(view))
@@ -1194,6 +1278,26 @@ struct Viewing;
 /// Who a server without users takes a request to be from.
 const OPEN_USER: &str = "this machine";
 
+/// What a user's roles on elements allow of each element of the model as it now is: none for
+/// a user whom none binds.
+fn access(grants: &Grants, database: &Database) -> Option<Arc<Access>> {
+    grants.access(database.model(), database.model_version())
+}
+
+/// What a user may do with a cell named by its cube and elements, where roles on elements
+/// bind them: one at an element hidden from them is refused as one at an element there is not.
+fn permit_of(grants: &Grants, database: &Database, cell: &CellRef) -> Result<Permit, ApiError> {
+    match access(grants, database) {
+        Some(access) => Ok(database.permit(cell, &access)?),
+        None => Ok(Permit::Write),
+    }
+}
+
+/// Whether a user may see an element of a dimension, where roles on elements bind them.
+fn sees(access: Option<&Access>, dimension: DimensionId, element: ElementId) -> bool {
+    access.is_none_or(|access| access.sees(dimension, element))
+}
+
 /// Refuses unless the user has at least a role on a cube.
 fn allow(grants: &Grants, cube: &str, needed: Role) -> Result<(), ApiError> {
     match grants.on(cube) >= needed {
@@ -1228,7 +1332,8 @@ async fn read_cells(
             Err(error) => CellResult::Error(error),
         }
     };
-    let cells = database.read_batch(request.transaction, &request.cells);
+    let access = access(&grants, &database);
+    let cells = database.read_batch(request.transaction, &request.cells, access.as_deref());
     Json(ReadResponse {
         cells: cells.into_iter().enumerate().map(result).collect(),
     })
@@ -1252,9 +1357,12 @@ async fn explain_cells(
     Body(request): Body<ExplainRequest>,
 ) -> Json<ExplainResponse> {
     let database = database.read().unwrap();
+    let access = access(&grants, &database);
     let explain = |cell: &CellRef| {
-        let explained = allow(&grants, &cell.cube, Role::Read)
-            .and_then(|()| Ok(database.explain(request.transaction, cell, request.feeders)?));
+        let explained = allow(&grants, &cell.cube, Role::Read).and_then(|()| {
+            let access = access.as_deref();
+            Ok(database.explain(request.transaction, cell, request.feeders, access)?)
+        });
         match explained {
             Ok(cell) => ExplainResult::Cell(cell),
             Err(error) => ExplainResult::Error(error),
@@ -1284,12 +1392,20 @@ async fn cell_history(
     Body(request): Body<HistoryRequest>,
 ) -> Result<Json<HistoryResponse>, ApiError> {
     allow(&grants, &request.cube, Role::Read)?;
-    let asked = Asked {
-        cube: Some(request.cube),
-        at: Some(request.at),
-        ..Asked::default()
+    let cell = CellRef {
+        cube: request.cube,
+        at: request.at,
     };
-    let history = database.read().unwrap().history(asked)?;
+    let history = {
+        let database = database.read().unwrap();
+        permit_of(&grants, &database, &cell)?;
+        let asked = Asked {
+            cube: Some(cell.cube),
+            at: Some(cell.at),
+            ..Asked::default()
+        };
+        database.history(asked)?
+    };
     Ok(Json(HistoryResponse {
         changes: read_history(history, request.most).await?,
     }))
@@ -1384,7 +1500,8 @@ async fn write_cells(
         })?;
     }
     let mut database = database.write_by(&user);
-    database.write_batch(request.transaction, &request.cells)?;
+    let access = access(&grants, &database);
+    database.write_batch(request.transaction, &request.cells, access.as_deref())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1429,7 +1546,8 @@ async fn write_detail(
         at: request.at,
     };
     let mut database = database.write_by(&user);
-    database.write_detail(request.transaction, &cell, request.lines)?;
+    let access = access(&grants, &database);
+    database.write_detail(request.transaction, &cell, request.lines, access.as_deref())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1455,7 +1573,8 @@ async fn spread_cells(
 ) -> Result<Json<SpreadResult>, ApiError> {
     allow(&grants, &request.spread.cube, Role::Write)?;
     let mut database = database.write_by(&user);
-    let written = database.spread(request.transaction, &request.spread)?;
+    let access = access(&grants, &database);
+    let written = database.spread(request.transaction, &request.spread, access.as_deref())?;
     Ok(Json(SpreadResult { written }))
 }
 
@@ -1484,12 +1603,18 @@ async fn query(
         .iter()
         .map(|at| (at.dimension.as_str(), at.member.as_str()))
         .collect();
+    let own = own_subsets(&state, &user, viewing.is_some());
+    let access = access(&grants, &database);
+    let asker = Asker {
+        may_read: &may_read,
+        standing: &standing,
+        own: Some(&own),
+        access: access.as_deref(),
+    };
     Ok(Json(database.query_as(
         request.transaction,
         &request.mdx,
-        &may_read,
-        &standing,
-        &own_subsets(&state, &user, viewing.is_some()),
+        &asker,
     )?))
 }
 
@@ -1550,7 +1675,8 @@ async fn stored_cells(
     allow(&grants, &cube, Role::Read)?;
     let database = database.read().unwrap();
     let (offset, limit) = (page.offset.unwrap_or(0), page.limit.unwrap_or(PAGE));
-    let (total, cells) = database.stored(&cube, offset, limit)?;
+    let access = access(&grants, &database);
+    let (total, cells) = database.stored(&cube, offset, limit, access.as_deref())?;
     Ok(Json(StoredCells { total, cells }))
 }
 
@@ -1570,9 +1696,16 @@ async fn run_view(
     Extension(grants): Held,
     Path((cube, view)): Path<(String, String)>,
 ) -> Result<Json<QueryResult>, ApiError> {
-    // A view is part of the model, so like a rule it may read what its cube's readers may not.
+    // A view is part of the model, so like a rule it may read what its cube's readers may not;
+    // but its answer is what the user may see of it.
     allow(&grants, &cube, Role::Read)?;
-    Ok(Json(database.read().unwrap().view(None, &cube, &view)?))
+    let database = database.read().unwrap();
+    let access = access(&grants, &database);
+    let asker = Asker {
+        access: access.as_deref(),
+        ..Asker::ANYONE
+    };
+    Ok(Json(database.view(None, &cube, &view, &asker)?))
 }
 
 /// Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's
@@ -1594,7 +1727,9 @@ async fn check_feeders(
     Path(cube): Path<String>,
 ) -> Result<Json<FeederCheck>, ApiError> {
     allow(&grants, &cube, Role::Read)?;
-    let unfed = database.read().unwrap().unfed(&cube, 100)?;
+    let database = database.read().unwrap();
+    let mut unfed = database.unfed(&cube, 100)?;
+    unfed.retain(|cell| permit_of(&grants, &database, cell).is_ok());
     Ok(Json(FeederCheck { unfed }))
 }
 
@@ -1910,7 +2045,14 @@ async fn put_private_view(
         let named = named.ok_or_else(|| unknown("cube", &cube))?;
         let may_read = |other: &str| grants.on(other) >= Role::Read;
         let own = own_subsets(&state, &user, false);
-        let answered = database.query_as(None, &view.mdx, &may_read, &[], &own)?;
+        let access = access(&grants, &database);
+        let asker = Asker {
+            may_read: &may_read,
+            own: Some(&own),
+            access: access.as_deref(),
+            ..Asker::ANYONE
+        };
+        let answered = database.query_as(None, &view.mdx, &asker)?;
         if key(&answered.cube) != key(&named) {
             let message = format!(
                 "the view's query selects from {}, not from {named}",
@@ -1973,6 +2115,7 @@ struct OwnSubset {
 )]
 async fn list_private_subsets(
     State(state): State<AppState>,
+    Extension(grants): Held,
     Extension(Signed(user)): Extension<Signed>,
     viewing: Option<Extension<Viewing>>,
     Path(dimension): Path<String>,
@@ -1984,9 +2127,17 @@ async fn list_private_subsets(
     if viewing.is_some() {
         return Ok(Json(BTreeMap::new()));
     }
+    // Of the members, those the dimension still has, and the user may see.
+    let access = access(&grants, &database);
+    let id = database
+        .model()
+        .dimension_id(&found.name)
+        .expect("found by name");
     let present = |members: Vec<String>| -> Vec<String> {
-        let found = members.iter().filter_map(|member| found.element(member));
-        found.map(|element| element.name.clone()).collect()
+        let found_ids = members.iter().filter_map(|member| found.element_id(member));
+        let seen = found_ids.filter(|&element| sees(access.as_deref(), id, element));
+        seen.map(|element| found.elements[element as usize].name.clone())
+            .collect()
     };
     let theirs = subsets.of(&user, &found.name).into_iter();
     Ok(Json(
@@ -2013,6 +2164,7 @@ async fn list_private_subsets(
 )]
 async fn put_private_subset(
     State(state): State<AppState>,
+    Extension(grants): Held,
     Extension(Signed(user)): Extension<Signed>,
     viewing: Option<Extension<Viewing>>,
     Path((dimension, name)): Path<(String, String)>,
@@ -2027,8 +2179,16 @@ async fn put_private_subset(
         let database = state.database.read().unwrap();
         let found = database.model().dimension(&dimension);
         let found = found.ok_or_else(|| unknown("dimension", &dimension))?;
+        // An element hidden from the user is one the dimension has not, for them.
+        let access = access(&grants, &database);
+        let id = database
+            .model()
+            .dimension_id(&found.name)
+            .expect("found by name");
         let members = subset.elements.iter().map(|member| {
-            let element = found.element(member).map(|element| element.name.clone());
+            let element = found.element_id(member);
+            let element = element.filter(|&element| sees(access.as_deref(), id, element));
+            let element = element.map(|element| found.elements[element as usize].name.clone());
             element.ok_or_else(|| invalid(format!("{} has no element '{member}'", found.name)))
         });
         (found.name.clone(), members.collect::<Result<Vec<_>, _>>()?)
@@ -2183,6 +2343,11 @@ struct UserPut {
     /// Cubes on which the user has another role in place of that one.
     #[serde(default)]
     cubes: BTreeMap<String, Role>,
+    /// Elements with a role of their own, by dimension and element: none, read or write. It
+    /// holds beneath the element too, unless a nearer element has its own; an element beneath
+    /// several takes the highest of theirs. An administrator is bound by none.
+    #[serde(default)]
+    elements: ElementRoles,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -2280,11 +2445,33 @@ async fn put_user(
     Path(name): Path<String>,
     Body(user): Body<UserPut>,
 ) -> Result<StatusCode, ApiError> {
-    let grants = Grants::new(user.role, user.cubes);
+    let invalid =
+        |message: String| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_user", message);
+    // Each element named must be the model's, and its role one an element takes.
+    {
+        let database = state.database.read().unwrap();
+        let model = database.model();
+        for (dimension, elements) in &user.elements {
+            let found = model.dimension(dimension);
+            let found =
+                found.ok_or_else(|| invalid(format!("there is no dimension '{dimension}'")))?;
+            for (element, &role) in elements {
+                if found.element_id(element).is_none() {
+                    return Err(invalid(format!(
+                        "{} has no element '{element}'",
+                        found.name
+                    )));
+                }
+                if role == Role::Admin {
+                    let why = format!("element '{element}' takes the role none, read or write");
+                    return Err(invalid(why));
+                }
+            }
+        }
+    }
+    let grants = Grants::new(user.role, user.cubes).with_elements(user.elements);
     let saved = users_of(&state)?.set(&name, user.password.as_deref(), grants);
-    saved.map_err(|message| {
-        ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_user", message)
-    })?;
+    saved.map_err(invalid)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2354,6 +2541,7 @@ async fn view_as(
         idle_seconds: auth.idle().as_secs(),
         role: grants.role(),
         cubes: grants.cubes().clone(),
+        elements: grants.elements().clone(),
         viewer: Some(viewer),
     };
     Ok((StatusCode::CREATED, Json(session)))
@@ -2470,7 +2658,16 @@ async fn list_comments(
     Path(cube): Path<String>,
 ) -> Result<Json<Comments>, ApiError> {
     allow(&grants, &cube, Role::Read)?;
-    let comments = database.read().unwrap().comments(&cube)?;
+    let database = database.read().unwrap();
+    let mut comments = database.comments(&cube)?;
+    // The comments on cells hidden from the user are not theirs to see.
+    comments.retain(|comment| {
+        let cell = CellRef {
+            cube: cube.clone(),
+            at: comment.at.clone(),
+        };
+        permit_of(&grants, &database, &cell).is_ok()
+    });
     Ok(Json(Comments { comments }))
 }
 
@@ -2495,12 +2692,16 @@ async fn add_comment(
     Body(post): Body<CommentPost>,
 ) -> Result<(StatusCode, Json<Comment>), ApiError> {
     allow(&grants, &cube, Role::Write)?;
+    let mut database = database.write();
+    let cell = CellRef {
+        cube: cube.clone(),
+        at: post.at.clone(),
+    };
+    permit_of(&grants, &database, &cell)?;
     let written = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_secs());
-    let comment = database
-        .write()
-        .comment(&cube, &post.at, &author, written, &post.text)?;
+    let comment = database.comment(&cube, &post.at, &author, written, &post.text)?;
     Ok((StatusCode::CREATED, Json(comment)))
 }
 

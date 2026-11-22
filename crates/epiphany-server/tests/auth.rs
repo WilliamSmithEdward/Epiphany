@@ -1388,3 +1388,176 @@ async fn a_server_without_users_lists_none_and_adds_none() {
         (StatusCode::NOT_FOUND, json!("no_users"))
     );
 }
+
+#[tokio::test]
+async fn a_users_roles_on_elements_hide_them_and_keep_them_from_being_changed() {
+    let (_home, app) = secured("element-roles", None);
+    let admin = token(&app).await;
+    let lin_path = "/admin/users/lin";
+    // The UK hidden from Lin, and operating expenses, salaries and rent beneath them, read only.
+    let elements =
+        json!({ "Entity": { "UK": "none" }, "Account": { "Operating Expenses": "read" } });
+    // An element or a dimension the model has not, and a role an element does not take, are
+    // refused.
+    for (refused, expected) in [
+        (
+            json!({ "Entity": { "Wales": "none" } }),
+            "Entity has no element 'Wales'",
+        ),
+        (
+            json!({ "Nowhere": { "UK": "none" } }),
+            "there is no dimension 'Nowhere'",
+        ),
+        (
+            json!({ "Entity": { "UK": "admin" } }),
+            "element 'UK' takes the role none, read or write",
+        ),
+    ] {
+        let user = json!({ "password": PASSWORD, "role": "write", "elements": refused });
+        let (status, _, body) = send(&app, "PUT", lin_path, Some(&admin), Some(user)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["message"], expected);
+    }
+    let user = json!({ "password": PASSWORD, "role": "write", "elements": elements });
+    let (status, _, _) = send(&app, "PUT", lin_path, Some(&admin), Some(user)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, listed) = send(&app, "GET", "/admin/users", Some(&admin), None).await;
+    let named = |list: &Value, name: &str| {
+        let found = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|each| each["name"] == name);
+        found.unwrap().clone()
+    };
+    assert_eq!(named(&listed["users"], "lin")["elements"], elements);
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    assert_eq!(signed["elements"], elements);
+    let lin = signed["token"].as_str().unwrap().to_owned();
+
+    // Values in both countries, written by the administrator.
+    let at = |account: &str, entity: &str| json!([account, entity, "Jan", "Actual"]);
+    let cell = |account: &str, entity: &str| json!({ "cube": "General Ledger", "at": at(account, entity) });
+    let value = |account: &str, entity: &str, value: f64| json!({ "cube": "General Ledger", "at": at(account, entity), "value": value });
+    let written = json!({ "cells": [
+        value("Product Revenue", "US", 100.0),
+        value("Product Revenue", "UK", 50.0),
+        value("Rent", "US", 10.0)
+    ] });
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&admin), Some(written)).await;
+    assert!(status.is_success());
+
+    // The UK is not there for Lin: not in the dimension, the outline or the model.
+    let names = |dimension: &Value| -> Vec<String> {
+        let elements = dimension["elements"].as_array().unwrap().iter();
+        elements
+            .map(|element| element["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (_, _, entity) = send(&app, "GET", "/dimensions/Entity", Some(&lin), None).await;
+    assert_eq!(names(&entity), ["Total Entity", "US"]);
+    assert_eq!(
+        entity["elements"][0]["children"],
+        json!([{ "name": "US", "weight": 1.0 }])
+    );
+    let (_, _, outline) = send(&app, "GET", "/model/outline", Some(&lin), None).await;
+    assert_eq!(named(&outline["dimensions"], "Entity")["element_count"], 2);
+    let (_, _, model) = send(&app, "GET", "/model", Some(&lin), None).await;
+    assert_eq!(
+        names(&named(&model["model"]["dimensions"], "Entity")),
+        ["Total Entity", "US"]
+    );
+    // No role on an element binds the administrator.
+    let (_, _, entity) = send(&app, "GET", "/dimensions/Entity", Some(&admin), None).await;
+    assert_eq!(names(&entity), ["Total Entity", "US", "UK"]);
+
+    // Its cells are refused as cells of an element there is not, but totals still count them.
+    let read = json!({ "cells": [
+        cell("Product Revenue", "UK"),
+        cell("Product Revenue", "Wales"),
+        cell("Product Revenue", "Total Entity")
+    ] });
+    let (_, _, cells) = send(&app, "POST", "/cells/read", Some(&lin), Some(read)).await;
+    assert_eq!(
+        cells["cells"][0]["error"]["message"],
+        "unknown element 'UK' in dimension 'Entity'"
+    );
+    assert_eq!(
+        cells["cells"][1]["error"]["code"],
+        cells["cells"][0]["error"]["code"]
+    );
+    assert_eq!(cells["cells"][2]["value"], 150.0);
+    let mdx = json!({ "mdx": "SELECT [Entity].Members ON COLUMNS FROM [General Ledger] WHERE ([Account].[Product Revenue], [Period].[Jan], [Version].[Actual])" });
+    let (status, _, answer) = send(&app, "POST", "/mdx", Some(&lin), Some(mdx)).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let columns: Vec<&str> = answer["axes"][0]["tuples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tuple| tuple[0]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        (columns, answer["cells"].clone()),
+        (vec!["Total Entity", "US"], json!([150.0, 100.0]))
+    );
+
+    // What Lin may only read is not Lin's to change, written, spread or explained.
+    let rent =
+        json!({ "cells": [value("Product Revenue", "US", 120.0), value("Rent", "US", 11.0)] });
+    let (status, _, refused) = send(&app, "POST", "/cells/write", Some(&lin), Some(rent)).await;
+    assert_eq!(
+        (status, refused["index"].clone()),
+        (StatusCode::FORBIDDEN, json!(1))
+    );
+    assert_eq!(
+        refused["message"],
+        "you may only read element 'Rent' of dimension 'Account'"
+    );
+    let spread = |account: &str| json!({ "spread": { "cube": "General Ledger", "at": at(account, "US"), "value": 300.0, "method": "equal" } });
+    let (status, _, refused) = send(
+        &app,
+        "POST",
+        "/cells/spread",
+        Some(&lin),
+        Some(spread("Operating Expenses")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        refused["message"],
+        "you may only read element 'Salaries' of dimension 'Account', beneath the cell"
+    );
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/spread",
+        Some(&lin),
+        Some(spread("Revenue")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let explain = json!({ "cells": [cell("Rent", "US"), cell("Product Revenue", "US")] });
+    let (_, _, explained) = send(&app, "POST", "/cells/explain", Some(&lin), Some(explain)).await;
+    assert_eq!(explained["cells"][0]["cell"]["writable"], false);
+    assert_eq!(explained["cells"][1]["cell"]["writable"], true);
+
+    // The stored cells listed are those Lin may see.
+    let (_, _, stored) = send(
+        &app,
+        "GET",
+        "/cubes/General%20Ledger/cells",
+        Some(&lin),
+        None,
+    )
+    .await;
+    let listed = stored["cells"].as_array().unwrap();
+    assert!(listed.iter().all(|cell| cell["at"][1] != "UK"), "{stored}");
+    assert_eq!(stored["total"].as_u64().unwrap() as usize, listed.len());
+
+    // A view as Lin sees what Lin sees.
+    let asked = json!({ "user": "lin" });
+    let (_, _, viewing) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(asked)).await;
+    let viewing = viewing["token"].as_str().unwrap().to_owned();
+    let (_, _, entity) = send(&app, "GET", "/dimensions/Entity", Some(&viewing), None).await;
+    assert_eq!(names(&entity), ["Total Entity", "US"]);
+}

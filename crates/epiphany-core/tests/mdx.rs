@@ -1,7 +1,7 @@
 use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
 use epiphany_core::database::{CellWrite, Database, Error};
-use epiphany_core::mdx::{MemberType, QueryResult};
+use epiphany_core::mdx::{Asker, MemberType, QueryResult};
 use epiphany_core::model::ModelDef;
 
 const CUBE: &str = "General Ledger";
@@ -112,7 +112,14 @@ fn columns_rows_and_a_slicer_address_cells() {
 fn members_stood_at_take_the_slicers_place() {
     let database = database();
     let stood = |mdx: &str, standing: &[(&str, &str)]| {
-        database.query_as(None, mdx, &|_| true, standing, &|_, _| None)
+        database.query_as(
+            None,
+            mdx,
+            &Asker {
+                standing,
+                ..Asker::ANYONE
+            },
+        )
     };
     let unique = |result: &QueryResult| -> Vec<String> {
         result

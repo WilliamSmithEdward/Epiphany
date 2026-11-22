@@ -37,9 +37,10 @@ use std::{fmt, io};
 use serde::{Deserialize, Serialize};
 
 use crate::Scalar;
+use crate::access::{Access, Permit};
 use crate::cells::CellError;
 use crate::cells::{At, Cells, Coordinate, Writes, check, coordinate, offered};
-use crate::mdx::{self, MdxError, QueryResult};
+use crate::mdx::{self, Asker, MdxError, QueryResult};
 use crate::model::{Cube, ElementId, Model, ModelDef, ModelError};
 use crate::reader::{Fed, Reader, Totals, feed};
 use locks::{Locks, Mode, Resource};
@@ -558,16 +559,24 @@ impl Database {
     /// The stored cells of one cube, addressed by name: how many there are, and those from
     /// `offset` on, at most `limit` of them. They come in the order of their elements in
     /// each dimension, the last dimension turning fastest, so that the same data always
-    /// lists the same way and can be taken a page at a time.
+    /// lists the same way and can be taken a page at a time. One whom `access` binds is shown
+    /// only the cells they may see.
     pub fn stored(
         &self,
         cube: &str,
         offset: usize,
         limit: usize,
+        access: Option<&Access>,
     ) -> Result<(usize, Vec<CellWrite>), Error> {
         let id = self.cube_id(cube)?;
         let cells = &self.cells[id];
-        let (total, page) = cells.page(offset, limit);
+        let definition = &self.model.cubes()[id];
+        let (total, page) = match access {
+            Some(access) => cells.page_kept(offset, limit, |at| {
+                access.cell(definition, at) > Permit::Hidden
+            }),
+            None => cells.page(offset, limit),
+        };
         let named = page.iter().map(|at| self.named(id, at, cells.value(at)));
         Ok((total, named.collect()))
     }
@@ -662,14 +671,17 @@ impl Database {
         transaction: Option<TransactionId>,
         cells: &[CellRef],
     ) -> Vec<Result<Scalar, Error>> {
-        self.read_batch(transaction, &CellRefs::from(cells))
+        self.read_batch(transaction, &CellRefs::from(cells), None)
     }
 
-    /// Reads every cell of a batch, as [`Database::read_many`] does.
+    /// Reads every cell of a batch, as [`Database::read_many`] does, for one whom `access`
+    /// binds, where elements' permits bind them: a cell at an element hidden from them is
+    /// refused as one at an element there is not.
     pub fn read_batch(
         &self,
         transaction: Option<TransactionId>,
         cells: &CellRefs,
+        access: Option<&Access>,
     ) -> Vec<Result<Scalar, Error>> {
         let reader = match self.reader(transaction) {
             Ok(reader) => reader,
@@ -678,9 +690,9 @@ impl Database {
         let mut names = Resolver::new(&self.model, cells.listed());
         let located: Vec<_> = (0..cells.len())
             .map(|cell| {
-                names
-                    .locate(cell)
-                    .map(|(cube, at)| (cube, Coordinate::from(at)))
+                let (cube, at) = names.locate(cell)?;
+                self.permitted(access, cube, at, cells.listed().at(cell))?;
+                Ok((cube, Coordinate::from(at)))
             })
             .collect();
         let mut expected: Vec<Vec<&[ElementId]>> = vec![Vec::new(); self.cells.len()];
@@ -718,14 +730,18 @@ impl Database {
     /// Says how a cell comes by its value: whether it is stored, calculated by a rule or added
     /// up, whether it is fed, and, when `feeders` is set, which feeders feed it and from
     /// where. Finding the feeders looks at every stored and fed cell, so it is slow for many
-    /// cells at once.
+    /// cells at once. For one whom `access` binds, a cell at an element hidden from them is
+    /// refused as one at an element there is not, one they may only read is not writable, and
+    /// the cells feeding it that they may not see are left out.
     pub fn explain(
         &self,
         transaction: Option<TransactionId>,
         cell: &CellRef,
         feeders: bool,
+        access: Option<&Access>,
     ) -> Result<Explanation, Error> {
         let (cube, at) = self.locate(&cell.cube, &cell.at)?;
+        let permit = self.permitted(access, cube, &at, cell.at.iter().map(String::as_str))?;
         let reader = self.reader(transaction)?;
         let failed = |error: MdxError| Error::Rule(error.to_string());
         let (text, consolidated) = reader.kind(cube, &at);
@@ -740,7 +756,15 @@ impl Database {
             true => reader.fed_by(cube, &at, 20).map_err(failed)?,
             false => Vec::new(),
         };
-        let fed_by = fed_by.into_iter().map(|(source, index, from)| {
+        let seen = |source: usize, from: &[ElementId]| {
+            access.is_none_or(|access| {
+                access.cell(&self.model.cubes()[source], from) > Permit::Hidden
+            })
+        };
+        let fed_by = fed_by
+            .into_iter()
+            .filter(|(source, _, from)| seen(*source, from));
+        let fed_by = fed_by.map(|(source, index, from)| {
             let from = self.named(source, &from, Scalar::Number(0.0));
             FedBy {
                 feeder: Statement {
@@ -778,7 +802,9 @@ impl Database {
                 _ => CellKind::Leaf,
             },
             stored: (!consolidated).then_some(stored),
-            writable: !consolidated && self.model.cubes()[cube].rule_for_leaf(&at, text).is_none(),
+            writable: !consolidated
+                && permit == Permit::Write
+                && self.model.cubes()[cube].rule_for_leaf(&at, text).is_none(),
             rule,
             fed: leaf.then(|| reader.is_fed(cube, &at)).flatten(),
             fed_by: fed_by.collect(),
@@ -823,24 +849,16 @@ impl Database {
         transaction: Option<TransactionId>,
         text: &str,
     ) -> Result<QueryResult, Error> {
-        self.query_as(transaction, text, &|_| true, &[], &|_, _| None)
+        self.query_as(transaction, text, &Asker::ANYONE)
     }
 
-    /// Answers an MDX query for someone who may read only some cubes: `may_read` says which,
-    /// by name. The query's own cube and any it looks cells up in must be among them. What
-    /// the model's rules read is the model's business and is not asked about. `standing`
-    /// names members, `(dimension, member)`, to stand at in place of those the query's WHERE
-    /// names for their dimensions, or beside them; an axis that places one of their
-    /// dimensions decides it. `own` finds the subsets they keep for themselves, which
-    /// `TM1SubsetToSet` with "private" uses: by dimension and name, the names of a subset's
-    /// members.
+    /// Answers an MDX query for one who asks it: the cubes they may read, the members they
+    /// stand at, the subsets they keep and the elements they may see, as [`Asker`] says.
     pub fn query_as(
         &self,
         transaction: Option<TransactionId>,
         text: &str,
-        may_read: &dyn Fn(&str) -> bool,
-        standing: &[(&str, &str)],
-        own: &dyn Fn(&str, &str) -> Option<Vec<String>>,
+        asker: &Asker,
     ) -> Result<QueryResult, Error> {
         let query = mdx::parse(text)?;
         let cube = self.cube_id(&query.cube)?;
@@ -850,7 +868,7 @@ impl Database {
             .model
             .cubes()
             .iter()
-            .map(|cube| may_read(&cube.name))
+            .map(|cube| (asker.may_read)(&cube.name))
             .collect();
         if !readable[cube] {
             return Err(Error::Forbidden(refusal(cube)));
@@ -863,8 +881,7 @@ impl Database {
         let expect = |cells: &[&[ElementId]]| reader.expect(cube, cells);
         let occupied =
             |most: usize, show: &mut dyn FnMut(&[ElementId])| reader.occupied(cube, most, show);
-        let own = Some(own);
-        Ok(query.evaluate(&self.model, cube, &read, &expect, &occupied, standing, own)?)
+        Ok(query.evaluate(&self.model, cube, &read, &expect, &occupied, asker)?)
     }
 
     /// The elements a subset of a dimension selects now: as the model worked them out, or,
@@ -893,16 +910,22 @@ impl Database {
         transaction: Option<TransactionId>,
         writes: &[CellWrite],
     ) -> Result<(), Error> {
-        self.write_batch(transaction, &CellWrites::from(writes))
+        self.write_batch(transaction, &CellWrites::from(writes), None)
     }
 
-    /// Writes every cell of a batch, as [`Database::write`] does.
+    /// Writes every cell of a batch, as [`Database::write`] does, for one whom `access`
+    /// binds, where elements' permits bind them: a write to a cell at an element hidden from
+    /// them is refused as one at an element there is not, and one to a cell they may only read
+    /// as forbidden.
     pub fn write_batch(
         &mut self,
         transaction: Option<TransactionId>,
         batch: &CellWrites,
+        access: Option<&Access>,
     ) -> Result<(), Error> {
-        self.within(transaction, |database, id| database.stage(id, batch))
+        self.within(transaction, |database, id| {
+            database.stage(id, batch, access)
+        })
     }
 
     /// Makes a change to a transaction's pending cells, or makes it alone and commits it at
@@ -1181,23 +1204,30 @@ impl Database {
         transaction: Option<TransactionId>,
         cube: &str,
         view: &str,
+        asker: &Asker,
     ) -> Result<QueryResult, Error> {
         let cube = &self.model.cubes()[self.cube_id(cube)?];
         let saved = cube
             .view(view)
             .ok_or_else(|| Error::NotFound(format!("cube '{}' has no view '{view}'", cube.name)))?;
-        self.query(transaction, &saved.mdx)
+        self.query_as(transaction, &saved.mdx, asker)
     }
 
     /// Checks a batch of writes and adds it to a transaction's pending writes. A sandbox's
     /// writes take no locks and wait on nobody's: the locks are taken as it is published.
-    fn stage(&mut self, id: TransactionId, batch: &CellWrites) -> Result<(), Error> {
+    fn stage(
+        &mut self,
+        id: TransactionId,
+        batch: &CellWrites,
+        access: Option<&Access>,
+    ) -> Result<(), Error> {
         let kept = self.transaction(id)?.kept.is_some();
         let mut names = Resolver::new(&self.model, batch.listed());
         let mut located: Vec<(usize, Coordinate)> = Vec::with_capacity(batch.len());
         for index in 0..batch.len() {
             let mut locate = || {
                 let (cube, at) = names.locate(index)?;
+                self.writable(access, cube, at, batch.listed().at(index))?;
                 let definition = &self.model.cubes()[cube];
                 let value = batch.value(index);
                 check(&self.model, definition, at, value)?;
@@ -1384,6 +1414,65 @@ impl Database {
             cube: cube.to_owned(),
         };
         self.model.cube_id(cube).ok_or_else(unknown)
+    }
+
+    /// What one may do with a cell named by its cube and elements, where elements' permits
+    /// bind them, as [`Database::read_batch`] finds it.
+    pub fn permit(&self, cell: &CellRef, access: &Access) -> Result<Permit, Error> {
+        let (cube, at) = self.locate(&cell.cube, &cell.at)?;
+        let names = cell.at.iter().map(String::as_str);
+        Ok(self.permitted(Some(access), cube, &at, names)?)
+    }
+
+    /// What one may do with a cell of a cube, where elements' permits bind them. A cell at an
+    /// element hidden from them is refused as one at an element the dimension does not have,
+    /// by the name it was asked for by, so that what is hidden cannot be told from what is
+    /// not there.
+    fn permitted<'n>(
+        &self,
+        access: Option<&Access>,
+        cube: usize,
+        at: &[ElementId],
+        names: impl IntoIterator<Item = &'n str>,
+    ) -> Result<Permit, CellError> {
+        let Some(access) = access else {
+            return Ok(Permit::Write);
+        };
+        let definition = &self.model.cubes()[cube];
+        for ((&dimension, &element), name) in definition.dimensions.iter().zip(at).zip(names) {
+            if !access.sees(dimension, element) {
+                let dimension = self.model.dimensions()[dimension as usize].name.clone();
+                let element = name.to_owned();
+                return Err(CellError::UnknownElement { dimension, element });
+            }
+        }
+        Ok(access.cell(definition, at))
+    }
+
+    /// Refuses a change to a cell that one may not see, as [`Database::permitted`] does, or
+    /// may only read, saying which of its elements they may only read.
+    fn writable<'n>(
+        &self,
+        access: Option<&Access>,
+        cube: usize,
+        at: &[ElementId],
+        names: impl IntoIterator<Item = &'n str>,
+    ) -> Result<(), CellError> {
+        let (Some(access), Permit::Read) = (access, self.permitted(access, cube, at, names)?)
+        else {
+            return Ok(());
+        };
+        let dimensions = self.model.cubes()[cube].dimensions.iter().zip(at);
+        let mut read_only = dimensions.filter(|&(&d, &e)| access.of(d, e) < Permit::Write);
+        let (&dimension, &element) = read_only
+            .next()
+            .expect("a cell is read only for one of them");
+        let dimension = &self.model.dimensions()[dimension as usize];
+        let element = &dimension.elements[element as usize].name;
+        Err(CellError::Forbidden(format!(
+            "you may only read element '{element}' of dimension '{}'",
+            dimension.name
+        )))
     }
 
     /// Resolves a cube name and element names into a cube id and a coordinate.

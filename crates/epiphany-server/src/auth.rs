@@ -28,7 +28,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
-use epiphany_core::model::{ViewDef, key};
+use epiphany_core::access::{Access, Permit};
+use epiphany_core::model::{Model, ViewDef, key};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use utoipa::ToSchema;
@@ -94,7 +95,11 @@ impl fmt::Display for Role {
     }
 }
 
-/// What a signed-in user may do: a role, and for some cubes another role in its place.
+/// Roles on elements, by dimension and then element, as given: `none`, `read` or `write`.
+pub type ElementRoles = BTreeMap<String, BTreeMap<String, Role>>;
+
+/// What a signed-in user may do: a role, for some cubes another role in its place, and for
+/// some elements a role of their own, which holds beneath them too.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Grants {
     role: Role,
@@ -102,7 +107,29 @@ pub struct Grants {
     cubes: BTreeMap<String, Role>,
     /// The same, by name in lower case without spaces.
     found: HashMap<String, Role>,
+    elements: ElementRoles,
+    /// What the roles on elements come to for the model as it last was.
+    worked: Worked,
 }
+
+/// The permits a user's roles on elements come to for one version of the model, kept until
+/// the model changes. A copy of grants works them out again.
+#[derive(Debug, Default)]
+struct Worked(Mutex<Option<(u64, Arc<Access>)>>);
+
+impl Clone for Worked {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for Worked {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for Worked {}
 
 impl Grants {
     pub fn new(role: Role, cubes: BTreeMap<String, Role>) -> Self {
@@ -110,7 +137,18 @@ impl Grants {
             .iter()
             .map(|(name, &role)| (key(name), role))
             .collect();
-        Self { role, cubes, found }
+        Self {
+            role,
+            cubes,
+            found,
+            ..Self::default()
+        }
+    }
+
+    /// The same grants with these roles on elements.
+    pub fn with_elements(mut self, elements: ElementRoles) -> Self {
+        self.elements = elements;
+        self
     }
 
     /// The role that holds wherever a cube has none of its own. Changing the model takes
@@ -123,6 +161,11 @@ impl Grants {
         &self.cubes
     }
 
+    /// The roles on elements, as given.
+    pub fn elements(&self) -> &ElementRoles {
+        &self.elements
+    }
+
     /// The role on one cube.
     pub fn on(&self, cube: &str) -> Role {
         self.found.get(&key(cube)).copied().unwrap_or(self.role)
@@ -133,6 +176,32 @@ impl Grants {
         self.cubes.values().copied().fold(self.role, Role::max)
     }
 
+    /// What the roles on elements allow of each element of a model at a version: nothing to
+    /// an administrator, who may do anything, or to a user with no role on any element.
+    pub fn access(&self, model: &Model, version: u64) -> Option<Arc<Access>> {
+        if self.role == Role::Admin || self.elements.is_empty() {
+            return None;
+        }
+        let mut worked = self.worked.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, access)) = worked.as_ref().filter(|(at, _)| *at == version) {
+            return Some(Arc::clone(access));
+        }
+        let permit = |role: &Role| match role {
+            Role::None => Permit::Hidden,
+            Role::Read => Permit::Read,
+            Role::Write | Role::Admin => Permit::Write,
+        };
+        let given = self.elements.iter().map(|(dimension, elements)| {
+            let elements = elements
+                .iter()
+                .map(|(name, role)| (name.clone(), permit(role)));
+            (dimension.clone(), elements.collect())
+        });
+        let access = Arc::new(Access::new(model, &given.collect()));
+        *worked = Some((version, Arc::clone(&access)));
+        Some(access)
+    }
+
     /// The same grants with none above reading: what another may see through them, changing
     /// nothing.
     pub fn read_only(&self) -> Self {
@@ -141,7 +210,13 @@ impl Grants {
             .cubes
             .iter()
             .map(|(cube, &role)| (cube.clone(), read(role)));
-        Self::new(read(self.role), cubes.collect())
+        let elements = self.elements.iter().map(|(dimension, elements)| {
+            let elements = elements
+                .iter()
+                .map(|(name, &role)| (name.clone(), read(role)));
+            (dimension.clone(), elements.collect())
+        });
+        Self::new(read(self.role), cubes.collect()).with_elements(elements.collect())
     }
 }
 
@@ -156,6 +231,9 @@ struct User {
     /// Cubes on which the user has another role in place of that one.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     cubes: BTreeMap<String, Role>,
+    /// Elements with a role of their own, which holds beneath them too.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    elements: ElementRoles,
 }
 
 /// A user as the server holds them while it runs.
@@ -175,6 +253,10 @@ pub struct UserView {
     pub role: Role,
     /// The cubes on which the user has another role in place of that one.
     pub cubes: BTreeMap<String, Role>,
+    /// The elements with a role of their own, by dimension and element: `none`, `read` or
+    /// `write`, holding beneath them too where nearer elements have none.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub elements: ElementRoles,
     /// How many sessions the user has open.
     pub sessions: usize,
 }
@@ -252,7 +334,8 @@ impl Auth {
         let users: HashMap<String, Account> = users
             .into_iter()
             .map(|user| {
-                let grants = Arc::new(Grants::new(user.role, user.cubes));
+                let grants = Grants::new(user.role, user.cubes).with_elements(user.elements);
+                let grants = Arc::new(grants);
                 let account = Account {
                     hash: user.password,
                     grants,
@@ -492,6 +575,7 @@ impl Auth {
                 name: account.name.clone(),
                 role: account.grants.role(),
                 cubes: account.grants.cubes().clone(),
+                elements: account.grants.elements().clone(),
                 sessions: open.get(key).copied().unwrap_or(0),
             })
             .collect();
@@ -618,6 +702,7 @@ fn save(directory: &Path, users: &HashMap<String, Account>) -> Result<(), Box<dy
             password: account.hash.clone(),
             role: account.grants.role(),
             cubes: account.grants.cubes().clone(),
+            elements: account.grants.elements().clone(),
         })
         .collect();
     stored.sort_by_key(|user| user.name.to_lowercase());
@@ -647,6 +732,7 @@ pub fn set_user(
         password: hash(password)?,
         role: grants.role(),
         cubes: grants.cubes().clone(),
+        elements: grants.elements().clone(),
     });
     Ok(write_json(&path, &users)?)
 }

@@ -512,6 +512,20 @@ impl Cells {
         (total, in_order(self.stored_at().collect(), start, end))
     }
 
+    /// The same of the stored cells that `keep` keeps: how many it keeps, and those of them
+    /// from `offset` on, at most `limit`.
+    pub(crate) fn page_kept(
+        &self,
+        offset: usize,
+        limit: usize,
+        keep: impl Fn(&[ElementId]) -> bool,
+    ) -> (usize, Vec<At<'_>>) {
+        let kept: Vec<At<'_>> = self.stored_at().filter(|at| keep(at)).collect();
+        let total = kept.len();
+        let end = offset.saturating_add(limit).min(total);
+        (total, in_order(kept, offset.min(end), end))
+    }
+
     /// What is stored at a leaf cell: its text, or its number, zero if it holds none.
     pub(crate) fn value(&self, at: &[ElementId]) -> Scalar {
         match self.texts.get(at) {
@@ -966,6 +980,9 @@ pub enum CellError {
     Invalid(String),
     /// A cell's supporting detail cannot be written as it is; the text says why.
     Detail(String),
+    /// The one asking may not change the cell: an element of it, or of what a spread would
+    /// change, is one they may only read. The text says which.
+    Forbidden(String),
 }
 
 impl CellError {
@@ -983,6 +1000,7 @@ impl CellError {
             Self::NotFinite => "not_finite",
             Self::Spread(_) => "spread_failed",
             Self::NotOffered { .. } => "not_offered",
+            Self::Forbidden(_) => "forbidden",
         }
     }
 }
@@ -1001,7 +1019,10 @@ impl fmt::Display for CellError {
             Self::WrongType => write!(f, "the value has the wrong type for the cell"),
             Self::Calculated => write!(f, "the cell is calculated by a rule and cannot be written"),
             Self::NotFinite => write!(f, "the number is not finite"),
-            Self::Spread(reason) | Self::Invalid(reason) | Self::Detail(reason) => reason.fmt(f),
+            Self::Spread(reason)
+            | Self::Invalid(reason)
+            | Self::Detail(reason)
+            | Self::Forbidden(reason) => reason.fmt(f),
             Self::NotOffered { offered } => {
                 // A long list is told by its first few.
                 let shown: Vec<&str> = offered.iter().take(8).map(String::as_str).collect();
