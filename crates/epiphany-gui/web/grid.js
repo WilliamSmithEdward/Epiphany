@@ -453,10 +453,12 @@ export const grid = {
     const grid = this.grid;
     const cells = grid.rowTuples.length * grid.columnCount;
     grid.legend = h('span', { class: 'legend-input muted', title: 'Tinted cells take a value: type into one, or paste', hidden: !this.writable.size }, 'Can be written');
+    grid.invalidLegend = h('span', { class: 'legend-invalid muted', title: 'Underlined values break a check of the cube. Point at one to read what it says.', hidden: !this.invalid.size }, 'Breaks a check');
     mount(this.statusLine,
       h('span', {}, `${grid.rowTuples.length.toLocaleString()} rows × ${grid.columnCount.toLocaleString()} columns`),
       h('span', { class: 'muted' }, `${cells.toLocaleString()} cells in ${Math.round(this.took)} ms`),
       grid.legend,
+      grid.invalidLegend,
       this.differing ? h('span', {
         class: 'legend-sandboxed muted',
         title: `Marked cells hold values the sandbox ${this.sandbox.name} changes. ${this.compare ? 'The stored value is struck through beside each.' : 'Show the stored values beside them from the sandbox menu.'}`,

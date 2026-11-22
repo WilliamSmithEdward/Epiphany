@@ -90,6 +90,19 @@ pub struct Explanation {
     pub fed: Option<bool>,
     /// The feeders that feed the cell, when asked for.
     pub fed_by: Vec<FedBy>,
+    /// The checks of the cube that the cell's value breaks, in the order they are made.
+    pub invalid: Vec<Invalid>,
+}
+
+/// A check of a cube that a cell's value breaks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct Invalid {
+    /// What the check says of such a value.
+    pub message: String,
+    /// Whether the check refuses such a value as it is written. One it breaks all the same
+    /// was there before the check was.
+    pub refuses: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -700,6 +713,16 @@ impl Database {
             &at,
             pending.map_or(&Writes::default(), |pending| &pending.writes[cube]),
         );
+        let mut invalid = Vec::new();
+        for validation in &self.model.cubes()[cube].validations {
+            let covered = validation.check.covers(&at, text, consolidated);
+            if covered && !reader.holds(cube, &validation.check, &at).map_err(failed)? {
+                invalid.push(Invalid {
+                    message: validation.message.clone(),
+                    refuses: validation.refuse,
+                });
+            }
+        }
         Ok(Explanation {
             value: reader.read(cube, &at).map_err(failed)?,
             kind: match (text, consolidated) {
@@ -712,6 +735,7 @@ impl Database {
             rule,
             fed: leaf.then(|| reader.is_fed(cube, &at)).flatten(),
             fed_by: fed_by.collect(),
+            invalid,
         })
     }
 
@@ -917,15 +941,20 @@ impl Database {
             )));
         }
         self.changing(id, |database| {
-            let transaction = database.transactions.get_mut(&id).expect("checked above");
-            for (cube, at, before) in transaction.undo.drain(point..).rev() {
-                match before {
-                    Some(value) => transaction.writes[cube].insert(at, value),
-                    None => transaction.writes[cube].remove(&at),
-                };
-            }
+            database.take_back(id, point);
             Ok(())
         })
+    }
+
+    /// Takes back a transaction's writes since a point, the last first.
+    fn take_back(&mut self, id: TransactionId, point: usize) {
+        let transaction = self.transactions.get_mut(&id).expect("a live transaction");
+        for (cube, at, before) in transaction.undo.drain(point..).rev() {
+            match before {
+                Some(value) => transaction.writes[cube].insert(at, value),
+                None => transaction.writes[cube].remove(&at),
+            };
+        }
     }
 
     /// Locks a cube, or the whole server when no cube is named, until the transaction ends.
@@ -974,9 +1003,9 @@ impl Database {
 
         let model = Model::compile(&definition)?;
         // A change to subsets, attributes, picklists, the names of levels, views, rules,
-        // feeders and dashboards alone leaves every cell where it is: it neither adds, takes
-        // away nor reorders an element, nor changes one's type or a cube's dimensions. Saving
-        // a dashboard need not carry millions of cells over and write them all out again.
+        // feeders, checks and dashboards alone leaves every cell where it is: it neither adds,
+        // takes away nor reorders an element, nor changes one's type or a cube's dimensions.
+        // Saving a dashboard need not carry millions of cells over and write them all out again.
         let structure = |definition: &ModelDef| {
             let mut structure = definition.clone();
             structure.dashboards.clear();
@@ -993,6 +1022,7 @@ impl Database {
                 cube.views.clear();
                 cube.rules.clear();
                 cube.feeders.clear();
+                cube.validations.clear();
             }
             structure
         };
@@ -1073,9 +1103,46 @@ impl Database {
             self.claim(id, &located, batch)?;
         }
         let transaction = self.transactions.get_mut(&id).expect("checked above");
-        for (index, (cube, at)) in located.into_iter().enumerate() {
-            let before = transaction.writes[cube].insert(at.clone(), batch.value(index).clone());
-            transaction.undo.push((cube, at, before));
+        let point = transaction.undo.len();
+        for (index, (cube, at)) in located.iter().enumerate() {
+            let before = transaction.writes[*cube].insert(at.clone(), batch.value(index).clone());
+            transaction.undo.push((*cube, at.clone(), before));
+        }
+        // The checks are made with the whole batch in place, for one may read other cells
+        // the batch writes; a value one refuses takes the batch back.
+        if let Err(error) = self.validate(id, &located) {
+            self.take_back(id, point);
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Makes the checks that refuse values at each cell of a batch pending in a transaction,
+    /// reading cells as the transaction would leave them.
+    fn validate(&self, id: TransactionId, located: &[(usize, Coordinate)]) -> Result<(), Error> {
+        let refusing = |cube: usize| {
+            let validations = self.model.cubes()[cube].validations.iter();
+            validations.filter(|validation| validation.refuse)
+        };
+        if located
+            .iter()
+            .all(|&(cube, _)| refusing(cube).next().is_none())
+        {
+            return Ok(());
+        }
+        let reader = self.reader(Some(id))?;
+        for (index, (cube, at)) in located.iter().enumerate() {
+            let (text, consolidated) = reader.kind(*cube, at);
+            for validation in refusing(*cube) {
+                if !validation.check.covers(at, text, consolidated) {
+                    continue;
+                }
+                let held = reader.holds(*cube, &validation.check, at);
+                if !held.map_err(|error| Error::Rule(error.to_string()))? {
+                    let error = CellError::Invalid(validation.message.clone());
+                    return Err(Error::Write { index, error });
+                }
+            }
         }
         Ok(())
     }

@@ -115,8 +115,28 @@ impl Model {
             for fed in feeders.iter().flat_map(|feeder| &feeder.feeds) {
                 model.cubes[*fed].sparse = true;
             }
+            // A check is a rule whose expression says whether a value is acceptable.
+            let mut validations = Vec::new();
+            for (number, validation) in definition.validations.iter().enumerate() {
+                let text = format!("{} = {}", validation.cells, validation.valid);
+                let check =
+                    mdx::compile_rule(&model, id, &text).map_err(|error| ModelError::Mdx {
+                        within: within("validation", number),
+                        error: error.to_string(),
+                    })?;
+                let message = match validation.message.trim() {
+                    "" => format!("the value breaks {}", within("validation", number)),
+                    message => message.to_owned(),
+                };
+                validations.push(Validation {
+                    check,
+                    message,
+                    refuse: validation.refuse,
+                });
+            }
             model.cubes[id].rules = rules;
             model.cubes[id].feeders = feeders;
+            model.cubes[id].validations = validations;
         }
         for (id, definition) in def.cubes.iter().enumerate() {
             let within = format!("cube '{}'", definition.name);
@@ -226,9 +246,20 @@ pub struct Cube {
     /// The rules that calculate cells, in the order they are tried.
     pub rules: Vec<Rule>,
     pub feeders: Vec<Feeder>,
+    /// The checks of its values, in the order they are made.
+    pub validations: Vec<Validation>,
     /// Whether some feeder feeds this cube, in which case its consolidations add up only
     /// stored and fed cells.
     pub sparse: bool,
+}
+
+/// A check of the values in an area of a cube: a rule whose expression holds wherever a
+/// value is acceptable, what is said where it does not, and whether such a value is refused.
+#[derive(Debug)]
+pub struct Validation {
+    pub check: Rule,
+    pub message: String,
+    pub refuse: bool,
 }
 
 #[derive(Debug)]
@@ -271,6 +302,7 @@ impl Cube {
             views: def.views.iter().map(view).collect(),
             rules: Vec::new(),
             feeders: Vec::new(),
+            validations: Vec::new(),
             sparse: false,
         })
     }

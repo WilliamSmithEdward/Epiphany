@@ -9,8 +9,8 @@ use common::{Rng, Shape, random_model};
 use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
 use epiphany_core::database::{
-    CellRef, CellWrite, Changes, Database, Error, Journal, KeptSandbox, LockMode, ModelUpdate,
-    NamedCells, NamedWrites,
+    CellRef, CellWrite, Changes, Database, Error, Invalid, Journal, KeptSandbox, LockMode,
+    ModelUpdate, NamedCells, NamedWrites, Spread, SpreadMethod,
 };
 use epiphany_core::model::{MembersDef, ModelDef, ModelError, PicklistDef, SubsetDef};
 use serde_json::json;
@@ -1198,4 +1198,99 @@ fn a_sandbox_is_kept_by_the_journal_and_carried_into_a_new_model() {
 
     database.delete_sandbox("ada", "Plan").unwrap();
     assert_eq!(kept.lock().unwrap()[&id], None);
+}
+
+/// A check of the cube `Sales`, as the model writes one.
+fn check(
+    cells: &str,
+    valid: &str,
+    message: &str,
+    refuse: bool,
+) -> epiphany_core::model::ValidationDef {
+    let check = json!({ "cells": cells, "valid": valid, "message": message, "refuse": refuse });
+    serde_json::from_value(check).unwrap()
+}
+
+#[test]
+fn a_check_refuses_a_value_it_does_not_hold_for_or_warns_of_it() {
+    let mut checked = definition();
+    checked.cubes[0].validations = vec![
+        check(
+            "N: [Measure].[Units]",
+            "[Measure].[Units] >= 0",
+            "Units are never negative.",
+            true,
+        ),
+        check(
+            "[Measure].[Units]",
+            "[Measure].[Units] <= 100",
+            "Over 100 units is unusual.",
+            false,
+        ),
+    ];
+    let mut database = Database::new(checked).unwrap();
+
+    // Refused, a value takes its batch with it, and the error names the check.
+    let writes = [
+        set("Sales", ["A", "Units"], 5.0),
+        set("Sales", ["B", "Units"], -1.0),
+    ];
+    let refused = database.write(None, &writes).unwrap_err();
+    let negative = |message: &String| message == "Units are never negative.";
+    assert!(
+        matches!(&refused, Error::Write { index: 1, error: CellError::Invalid(message) } if negative(message)),
+        "{refused:?}"
+    );
+    assert_eq!(refused.code(), "invalid_value");
+    assert_eq!(units(&database, None, "A"), 0.0);
+    // In a transaction, the batch refused is taken back, and what came before it stays.
+    let id = database.begin();
+    database
+        .write(Some(id), &[set("Sales", ["A", "Units"], 5.0)])
+        .unwrap();
+    let again = database.write(Some(id), &[set("Sales", ["A", "Units"], -5.0)]);
+    assert!(again.is_err());
+    assert_eq!(units(&database, Some(id), "A"), 5.0);
+    assert_eq!(database.savepoint(id).unwrap(), 1);
+    database.commit(id).unwrap();
+    // A spread is checked as the writes it makes are.
+    let spread = Spread {
+        cube: "Sales".to_owned(),
+        at: vec!["All".to_owned(), "Units".to_owned()],
+        value: -10.0,
+        method: SpreadMethod::Equal,
+        holds: Vec::new(),
+    };
+    assert!(matches!(
+        database.spread(None, &spread),
+        Err(Error::Write {
+            error: CellError::Invalid(_),
+            ..
+        })
+    ));
+
+    // A value that only breaks a warning is kept, and explained as breaking it, as is a
+    // total it makes break it too.
+    database
+        .write(None, &[set("Sales", ["B", "Units"], 150.0)])
+        .unwrap();
+    let invalid = |product: &str| {
+        let explained = database.explain(None, &cell("Sales", [product, "Units"]), false);
+        explained.unwrap().invalid
+    };
+    let unusual = Invalid {
+        message: "Over 100 units is unusual.".to_owned(),
+        refuses: false,
+    };
+    assert_eq!(invalid("B"), [unusual]);
+    assert_eq!(invalid("All"), invalid("B"));
+    assert!(invalid("A").is_empty());
+
+    // A check that names what is not there is refused with the model, which says which.
+    let mut broken = definition();
+    broken.cubes[0].validations = vec![check("[Nowhere]", "1", "", false)];
+    assert!(matches!(
+        Database::new(broken),
+        Err(ModelError::Mdx { within, .. }) if within == "validation 1 of cube 'Sales'"
+    ));
 }

@@ -961,12 +961,16 @@ pub enum CellError {
     NotOffered {
         offered: Vec<String>,
     },
+    /// The value breaks a check of the cube that refuses such values; the check's message
+    /// says why.
+    Invalid(String),
 }
 
 impl CellError {
     /// A stable identifier for the kind of error.
     pub fn code(&self) -> &'static str {
         match self {
+            Self::Invalid(_) => "invalid_value",
             Self::Arity { .. } => "wrong_arity",
             Self::UnknownElement { .. } => "unknown_element",
             Self::UnknownCube { .. } => "unknown_cube",
@@ -994,7 +998,7 @@ impl fmt::Display for CellError {
             Self::WrongType => write!(f, "the value has the wrong type for the cell"),
             Self::Calculated => write!(f, "the cell is calculated by a rule and cannot be written"),
             Self::NotFinite => write!(f, "the number is not finite"),
-            Self::Spread(reason) => reason.fmt(f),
+            Self::Spread(reason) | Self::Invalid(reason) => reason.fmt(f),
             Self::NotOffered { offered } => {
                 // A long list is told by its first few.
                 let shown: Vec<&str> = offered.iter().take(8).map(String::as_str).collect();

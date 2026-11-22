@@ -16,7 +16,7 @@ use crate::model::{Cube, DimensionId, ElementId, Model, key};
 pub(crate) use parser::Query;
 pub use rules::{Feeder, Rule};
 pub(crate) use rules::{
-    Outcome, compile_feeder, compile_rule, evaluate_rule, feeder_targets, matches,
+    Outcome, compile_feeder, compile_rule, evaluate_rule, feeder_targets, holds, matches,
 };
 
 /// Parses the text of a query.
@@ -38,6 +38,7 @@ pub(crate) fn subset(
         views: Vec::new(),
         rules: Vec::new(),
         feeders: Vec::new(),
+        validations: Vec::new(),
         sparse: false,
     };
     eval::elements(model, &alone, &set)

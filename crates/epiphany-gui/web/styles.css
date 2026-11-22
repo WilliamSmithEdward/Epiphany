@@ -803,6 +803,11 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .pivot tbody tr:hover td.editable:not(.edited) { background-color: color-mix(in oklab, var(--good) 10%, var(--accent-soft)); }
 .legend-input::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; background: color-mix(in oklab, var(--good) 22%, var(--surface)); border: 1px solid color-mix(in oklab, var(--good) 45%, transparent); }
 
+/* ---- Values that break a check of their cube ---- */
+
+.pivot td.invalid { text-decoration: underline wavy var(--bad); text-decoration-skip-ink: none; text-underline-offset: 4px; }
+.legend-invalid::before { content: "123" / ""; margin-right: 6px; color: var(--text-3); text-decoration: underline wavy var(--bad); text-decoration-skip-ink: none; text-underline-offset: 3px; }
+
 /* ---- Sandboxes ---- */
 
 /* The button that says where the values come from, accented while a sandbox is worked in. */

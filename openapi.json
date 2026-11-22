@@ -3161,6 +3161,13 @@
             },
             "description": "Statements that calculate cells, each `[N: | C: | S:] area = expression`. The area is a\nmember or a tuple, such as `[Account].[Margin]`; the expression is written as in MDX.\nThe first rule that covers a cell decides it."
           },
+          "validations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationDef"
+            },
+            "description": "Checks of the values in the cube's cells, in the order they are made."
+          },
           "views": {
             "type": "object",
             "description": "Saved queries against this cube, by name.",
@@ -3617,7 +3624,8 @@
           "value",
           "kind",
           "writable",
-          "fed_by"
+          "fed_by",
+          "invalid"
         ],
         "properties": {
           "fed": {
@@ -3633,6 +3641,13 @@
               "$ref": "#/components/schemas/FedBy"
             },
             "description": "The feeders that feed the cell, when asked for."
+          },
+          "invalid": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Invalid"
+            },
+            "description": "The checks of the cube that the cell's value breaks, in the order they are made."
           },
           "kind": {
             "$ref": "#/components/schemas/CellKind"
@@ -3811,6 +3826,24 @@
               "$ref": "#/components/schemas/CellChange"
             },
             "description": "The newest first."
+          }
+        }
+      },
+      "Invalid": {
+        "type": "object",
+        "description": "A check of a cube that a cell's value breaks.",
+        "required": [
+          "message",
+          "refuses"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "What the check says of such a value."
+          },
+          "refuses": {
+            "type": "boolean",
+            "description": "Whether the check refuses such a value as it is written. One it breaks all the same\nwas there before the check was."
           }
         }
       },
@@ -4702,6 +4735,34 @@
             "minimum": 0
           }
         }
+      },
+      "ValidationDef": {
+        "type": "object",
+        "description": "A check of the values in an area of a cube. A value written where it does not hold is\nrefused, or, where the check only warns, kept and marked as breaking it.",
+        "required": [
+          "cells",
+          "valid",
+          "message"
+        ],
+        "properties": {
+          "cells": {
+            "type": "string",
+            "description": "The cells checked: an area as a rule names one, such as `N: [Account].[Salaries]`;\n`N:`, `C:` or `S:` before it keeps to leaf, consolidated or text cells."
+          },
+          "message": {
+            "type": "string",
+            "description": "What is said of a value where the check does not hold."
+          },
+          "refuse": {
+            "type": "boolean",
+            "description": "Whether such a value is refused as it is written, rather than kept and warned of."
+          },
+          "valid": {
+            "type": "string",
+            "description": "What holds wherever a value is acceptable, written as a rule's expression is and\nworked out at each cell checked, such as `[Account].[Salaries] >= 0`. True, any number\nbut zero and any text but none hold; so does an expression that cannot be worked out."
+          }
+        },
+        "additionalProperties": false
       },
       "ViewDef": {
         "type": "object",

@@ -175,6 +175,26 @@ pub(crate) fn evaluate_rule(
     })
 }
 
+/// Whether a check holds at a cell it covers: its expression is true, a number other than
+/// zero, or nothing at all, as where it cannot be worked out for want of a value.
+pub(crate) fn holds(
+    model: &Model,
+    cube_id: usize,
+    check: &Rule,
+    at: &[ElementId],
+    read: Read,
+) -> Evaluated<bool> {
+    let evaluator = Evaluator::new(model, cube_id, &model.cubes()[cube_id], read);
+    let context = context(at);
+    let value = evaluator.evaluate(&check.expression, &context)?;
+    Ok(match evaluator.scalar(value, &context)? {
+        Datum::Bool(truth) => truth,
+        Datum::Number(number) => number != 0.0,
+        Datum::Text(text) => !text.is_empty(),
+        _ => true,
+    })
+}
+
 /// The cells a feeder feeds from one cell of its source area: for each target, its cube and
 /// the element it has in each dimension, which may be a consolidation standing for its leaves.
 pub(crate) fn feeder_targets(

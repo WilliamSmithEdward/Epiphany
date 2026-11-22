@@ -14,7 +14,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::Scalar;
 use crate::cells::{At, Cells, Coordinate, Leaves, Writes, advance, weight};
-use crate::mdx::{MdxError, Outcome, evaluate_rule, feeder_targets, matches};
+use crate::mdx::{MdxError, Outcome, Rule, evaluate_rule, feeder_targets, holds, matches};
 use crate::model::{Cube, Element, ElementId, ElementType, Model};
 
 /// The fed leaf cells of each cube, for the cubes that are fed.
@@ -420,6 +420,13 @@ impl<'a> Reader<'a> {
             }
         }
         Ok(None)
+    }
+
+    /// Whether a check of a cube holds at a cell it covers, the cell's value and any other it
+    /// reads as this reader sees them.
+    pub(crate) fn holds(&self, cube: usize, check: &Rule, at: &[ElementId]) -> Read<bool> {
+        let read = |cube: usize, at: &[ElementId]| self.read(cube, at);
+        holds(self.model, cube, check, at, &read)
     }
 
     /// Whether a leaf cell is fed, in a cube that is fed at all.

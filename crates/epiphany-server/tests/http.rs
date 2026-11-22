@@ -117,6 +117,33 @@ async fn a_bad_cell_in_a_write_rejects_the_whole_batch() {
 }
 
 #[tokio::test]
+async fn a_check_refuses_a_value_or_marks_it_as_breaking_the_check() {
+    let app = example();
+    let (_, mut cube) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
+    cube["validations"] = json!([
+        { "cells": "N: [Account].[Rent]", "valid": "[Account].[Rent] >= 0", "message": "Rent is never negative.", "refuse": true },
+        { "cells": "[Account].[Rent]", "valid": "[Account].[Rent] < 1000", "message": "Rent of 1,000 or more is unusual." },
+    ]);
+    let update = json!({ "based_on": 1, "cube": cube });
+    let (status, _) = call(&app, "PUT", "/cubes/General%20Ledger", Some(update)).await;
+    assert!(status.is_success(), "{status}");
+
+    let rent = ["Rent", "US", "Jan", "Actual"];
+    let writing = |value: i32| Some(json!({ "cells": [write(rent, json!(value))] }));
+    let (status, body) = call(&app, "POST", "/cells/write", writing(-5)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let refused =
+        json!({ "code": "invalid_value", "message": "Rent is never negative.", "index": 0 });
+    assert_eq!(body, refused);
+    let (status, _) = call(&app, "POST", "/cells/write", writing(1500)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let explain = json!({ "cells": [cell(rent)] });
+    let (_, body) = call(&app, "POST", "/cells/explain", Some(explain)).await;
+    let unusual = json!([{ "message": "Rent of 1,000 or more is unusual.", "refuses": false }]);
+    assert_eq!(body["cells"][0]["cell"]["invalid"], unusual);
+}
+
+#[tokio::test]
 async fn the_model_is_served_as_defined() {
     let (status, body) = call(&example(), "GET", "/model", None).await;
     assert_eq!(status, StatusCode::OK);

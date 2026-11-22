@@ -333,4 +333,27 @@ pub struct CubeDef {
     /// that is fed consolidates only its stored and fed cells.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub feeders: Vec<String>,
+    /// Checks of the values in the cube's cells, in the order they are made.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub validations: Vec<ValidationDef>,
+}
+
+/// A check of the values in an area of a cube. A value written where it does not hold is
+/// refused, or, where the check only warns, kept and marked as breaking it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ValidationDef {
+    /// The cells checked: an area as a rule names one, such as `N: [Account].[Salaries]`;
+    /// `N:`, `C:` or `S:` before it keeps to leaf, consolidated or text cells.
+    pub cells: String,
+    /// What holds wherever a value is acceptable, written as a rule's expression is and
+    /// worked out at each cell checked, such as `[Account].[Salaries] >= 0`. True, any number
+    /// but zero and any text but none hold; so does an expression that cannot be worked out.
+    pub valid: String,
+    /// What is said of a value where the check does not hold.
+    pub message: String,
+    /// Whether such a value is refused as it is written, rather than kept and warned of.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refuse: bool,
 }

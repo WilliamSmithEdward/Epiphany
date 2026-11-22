@@ -109,6 +109,22 @@ or of one of its subsets, in order.
 A write of other text to such a cell is refused (`not_offered`), saying what is offered.
 Emptying a cell is always allowed, and text stored before the picklist was given is kept.
 
+A cube may check the values in its cells. A check names the cells it checks as a rule's
+area does, and an expression, written as a rule's is, that holds where a value is acceptable:
+
+```json
+"validations": [
+  { "cells": "N: [Account].[Salaries]", "valid": "[Account].[Salaries] >= 0",
+    "message": "Salaries are never negative.", "refuse": true },
+  { "cells": "[Account].[Travel]", "valid": "[Account].[Travel] <= [Account].[Travel Budget]",
+    "message": "Travel is over its budget." }
+]
+```
+
+A value a refusing check does not hold for is refused as it is written (`invalid_value`, with
+the check's message), and its whole batch with it. A value that breaks a check that only warns
+is kept, and `POST /cells/explain` lists, for each cell, the checks its value breaks.
+
 ## The API
 
 Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also served at

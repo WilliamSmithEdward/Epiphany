@@ -982,9 +982,10 @@ class CubeEditor extends Editor {
   }
 
   draw() {
-    this.drawTabs([['main', 'Dimensions'], ['rules', 'Rules and feeders'], ['views', 'Views'], ['json', 'JSON']]);
+    this.drawTabs([['main', 'Dimensions'], ['rules', 'Rules and feeders'], ['checks', 'Checks'], ['views', 'Views'], ['json', 'JSON']]);
     this.drawStrip();
     if (this.tab === 'rules') return this.drawRules();
+    if (this.tab === 'checks') return this.drawChecks();
     if (this.tab === 'views') return this.drawViews();
     if (this.tab === 'json') return this.drawJson('Everything the cube holds. Edits apply when you choose to use them, and are saved with Save.');
     this.drawDimensions();
@@ -1042,6 +1043,52 @@ class CubeEditor extends Editor {
       area('rules', 'Rules', 'One a line: [N: | C: | S:] area = expression. The first that covers a cell decides it.'),
       area('feeders', 'Feeders', 'One a line: source => target, … They say which calculated cells may hold a value.'),
       h('div', { class: 'toolbar' }, check, h('span', { class: 'hint' }, 'Looks for calculated cells that hold a value but are not fed. It checks what is saved.'))));
+  }
+
+  /**
+   * The cube's checks of its values: for each, the cells it checks, what holds where a value
+   * is acceptable, what is said where not, and whether such a value is refused as it is
+   * written or kept and marked.
+   */
+  drawChecks() {
+    const checks = this.working.validations ?? [];
+    const keep = (list) => {
+      if (list.length) this.working.validations = list;
+      else delete this.working.validations;
+      this.changed();
+    };
+    // A field typed into changes its check where it is, and only the strip is drawn again,
+    // so that Tab goes on to the next field.
+    const field = (check, index, key, label, example) => {
+      const id = `check-${index}-${key}`;
+      const input = h('input', { class: 'input mono', id, value: check[key] ?? '', placeholder: example, spellcheck: 'false', autocomplete: 'off' });
+      input.addEventListener('change', () => {
+        check[key] = input.value.trim();
+        this.drawStrip();
+      });
+      return h('div', { class: 'field' }, h('label', { for: id }, label), input);
+    };
+    const card = (check, index) => {
+      const refuse = h('input', { type: 'checkbox', checked: Boolean(check.refuse) });
+      refuse.addEventListener('change', () => {
+        if (refuse.checked) check.refuse = true;
+        else delete check.refuse;
+        this.drawStrip();
+      });
+      return h('div', { class: 'card' },
+        h('div', { class: 'card-head' }, icon('check', 16), h('h3', { class: 'grow' }, `Check ${index + 1}`),
+          h('button', { class: 'button small danger', onclick: () => keep(checks.filter((each) => each !== check)) }, 'Remove')),
+        h('div', { class: 'card-body facts' },
+          field(check, index, 'cells', 'Cells', 'N: [Account].[Salaries]'),
+          field(check, index, 'valid', 'Valid where', '[Account].[Salaries] >= 0'),
+          field(check, index, 'message', 'Message', 'Salaries are never negative.'),
+          h('label', { class: 'check' }, refuse, 'Refuse such a value as it is written, rather than keep it and mark it')));
+    };
+    mount(this.body, h('div', { class: 'facts' },
+      checks.length ? checks.map(card) : h('div', { class: 'card' }, empty('check', 'No checks yet', 'A check marks the values that break it, or refuses them as they are written.')),
+      h('div', { class: 'toolbar' },
+        h('button', { class: 'button', onclick: () => keep([...checks, { cells: '', valid: '', message: '' }]) }, icon('plus', 16), 'Add a check'),
+        h('span', { class: 'hint' }, 'Cells name an area as a rule does; N:, C: or S: before it keeps to leaf, consolidated or text cells. Valid where is written as a rule\'s expression is: true, or a number but zero, where a value is acceptable.'))));
   }
 
   /** Looks for calculated cells that hold a value but are not fed; `button` shows it at work. */

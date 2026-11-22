@@ -87,6 +87,7 @@ pub fn random_model(rng: &mut Rng, dimensions: usize, shape: &Shape) -> ModelDef
             views: Default::default(),
             rules: Vec::new(),
             feeders: Vec::new(),
+            validations: Vec::new(),
         }],
         ..ModelDef::default()
     }

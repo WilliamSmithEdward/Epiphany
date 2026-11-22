@@ -56,10 +56,11 @@ export const writeback = {
 
   /** Forgets which cells may be written, for a new answer to the query. */
   forgetWritable() {
-    // The cells that may be written, as "row,column"; why others may not; and, by row, the
-    // asking about them, and the rows answered.
+    // The cells that may be written, as "row,column"; why others may not; the checks of the
+    // cube each cell's value breaks; and, by row, the asking about them, and the rows answered.
     this.writable = new Set();
     this.why = new Map();
+    this.invalid = new Map();
     this.explained = new Map();
     this.known = new Set();
   },
@@ -68,24 +69,32 @@ export const writeback = {
    * Asks the server which cells of the rows given may be written, for those rows not asked
    * about yet, at most 20,000 cells a call, and marks them where they are drawn when it
    * answers. Resolves once every row given is answered. Without an answer, nothing in them
-   * is offered for writing; the grid still shows.
+   * is offered for writing; the grid still shows. A cube with checks has every cell asked
+   * about, totals too and whoever reads them, for the values that break a check to be marked.
    */
   explainRows(rows) {
     const result = this.result;
-    if (!result || !this.mayWrite()) return Promise.resolve();
+    const writing = this.mayWrite();
+    const checking = Boolean(this.cube.validations?.length);
+    if (!result || (!writing && !checking)) return Promise.resolve();
     const [columns, rowAxis] = result.axes;
     const leaf = (m) => m.type === 'numeric' || m.type === 'string';
-    if (!(result.slicer ?? []).every(leaf)) return Promise.resolve();
-    const leaves = columns.tuples.flatMap((tuple, c) => (tuple.every(leaf) ? [c] : []));
+    const writable = writing && (result.slicer ?? []).every(leaf);
+    if (!writable && !checking) return Promise.resolve();
+    const asked = (tuple) => checking || tuple.every(leaf);
+    const wanted = columns.tuples.flatMap((tuple, c) => (asked(tuple) ? [c] : []));
     const batches = [];
     let batch = null;
     for (const r of new Set(rows)) {
       if (this.explained.has(r)) continue;
-      if (!batch || batch.cells.length + leaves.length > 20000) batches.push((batch = { rows: [], cells: [], places: [] }));
+      if (!batch || batch.cells.length + wanted.length > 20000) batches.push((batch = { rows: [], cells: [], places: [] }));
       batch.rows.push(r);
-      if (rowAxis && !rowAxis.tuples[r].every(leaf)) continue;
-      for (const c of leaves) {
-        batch.cells.push({ cube: this.cube.name, at: this.coordinate(r, c) });
+      if (rowAxis && !asked(rowAxis.tuples[r])) continue;
+      for (const c of wanted) {
+        // A calculated member's cell is the query's, and nobody's to check.
+        const at = this.coordinate(r, c);
+        if (!at) continue;
+        batch.cells.push({ cube: this.cube.name, at });
         batch.places.push(`${r},${c}`);
       }
     }
@@ -96,8 +105,10 @@ export const writeback = {
       const answered = asked.then((answer) => {
         if (this.result !== result) return;
         answer?.cells.forEach((cell, index) => {
-          if (cell.cell?.writable) this.writable.add(each.places[index]);
-          else if (cell.cell?.rule) this.why.set(each.places[index], `A rule works this cell out: ${cell.cell.rule.text ?? ''}`.trim());
+          const place = each.places[index];
+          if (cell.cell?.writable && writable) this.writable.add(place);
+          else if (cell.cell?.rule) this.why.set(place, `A rule works this cell out: ${cell.cell.rule.text ?? ''}`.trim());
+          if (cell.cell?.invalid?.length) this.invalid.set(place, cell.cell.invalid);
         });
         for (const r of each.rows) this.known.add(r);
         this.markWritable(each.rows);
@@ -125,6 +136,7 @@ export const writeback = {
       for (let c = 0; c < grid.columnCount; c += 1) this.markWriting(tr.children[grid.rowWidth + c], r, c);
     }
     if (grid.legend) grid.legend.hidden = !this.writable.size;
+    if (grid.invalidLegend) grid.invalidLegend.hidden = !this.invalid.size;
   },
 
   /** The values a cell's picklist offers, where its element in the cube's last dimension has one. */
@@ -146,16 +158,22 @@ export const writeback = {
     const spreadable = spreads && (total(tuple) || total(column)) && !editable && ![...tuple, ...column].some((m) => m.type === 'calculated');
     const held = this.holds.size > 0 && this.holds.has(this.key(r, c));
     const stored = this.storedText(r, c);
+    const invalid = this.invalid.get(`${r},${c}`);
     td.classList.toggle('editable', editable);
     td.classList.toggle('picklist', editable && typeof this.valueAt(r, c) !== 'number' && Boolean(this.picklistAt(r, c)));
     td.classList.toggle('edited', edited);
     td.classList.toggle('sandboxed', stored !== null);
     td.classList.toggle('spreadable', spreadable);
     td.classList.toggle('held', held);
-    const title = held ? 'Held: spreads leave it as it is'
-      : edited ? 'Changed, not yet saved'
-        : stored !== null ? `Changed in ${this.sandbox.name}. Stored: ${stored || 'nothing'}`
-          : spreadable ? 'Type a value to spread it over the leaves beneath' : null;
+    td.classList.toggle('invalid', Boolean(invalid));
+    // Everything there is to say of the cell, the checks it breaks first.
+    const title = [
+      ...(invalid ?? []).map((check) => check.message),
+      held ? 'Held: spreads leave it as it is' : null,
+      edited ? 'Changed, not yet saved' : null,
+      stored !== null ? `Changed in ${this.sandbox.name}. Stored: ${stored || 'nothing'}` : null,
+      spreadable && !held ? 'Type a value to spread it over the leaves beneath' : null,
+    ].filter(Boolean).join('\n');
     if (title) td.title = title;
     else td.removeAttribute('title');
   },
@@ -264,9 +282,10 @@ export const writeback = {
   /**
    * Changes values within the edit transaction through `send`, which posts the change and
    * resolves with what to say of it. The change goes on the history of changes: the point in
-   * the transaction it was made from, to go back to, and how to make it again.
+   * the transaction it was made from, to go back to, and how to make it again. A change
+   * refused leaves the keys on `from`, the cell it was made in, to be put right there.
    */
-  async changeValues(label, send, redoing = false) {
+  async changeValues(label, send, redoing = false, from = null) {
     const before = { edits: new Map(this.edits), changes: this.changes ?? 0 };
     let said;
     let point;
@@ -275,6 +294,7 @@ export const writeback = {
       ({ point } = await get(`/transactions/${this.tx}/point`));
       said = await send();
     } catch (problem) {
+      if (from) this.focusAfter = from;
       this.refused(problem);
       return;
     }
@@ -298,8 +318,27 @@ export const writeback = {
       // In a sandbox, the cells it changes are marked against the stored values instead.
       if (!this.sandbox) for (const { at, value } of written) this.edits.set(JSON.stringify(at), value);
       this.changes = (this.changes ?? 0) + written.length;
+      await this.warnOfChecks(written.map(({ at }) => at));
       return done;
-    });
+    }, false, [cells[0].r, cells[0].c]);
+  },
+
+  /**
+   * Says which of the cube's checks the values just written break, where it has checks that
+   * only warn: the values are kept, and marked in the grid. A check that refuses them has
+   * refused the write already.
+   */
+  async warnOfChecks(written) {
+    if (!this.cube.validations?.length) return;
+    const cells = written.slice(0, 1000).map((at) => ({ cube: this.cube.name, at }));
+    const answer = await post('/cells/explain', { cells, transaction: this.tx ?? undefined }, { quiet: true }).catch(() => null);
+    const broken = new Map();
+    for (const check of (answer?.cells ?? []).flatMap((cell) => cell.cell?.invalid ?? [])) {
+      broken.set(check.message, (broken.get(check.message) ?? 0) + 1);
+    }
+    if (!broken.size) return;
+    const said = [...broken].map(([message, count]) => (count > 1 ? `${message} (${count.toLocaleString()} cells)` : message));
+    notify(`Kept, but ${said.join(' ')}`, 'bad');
   },
 
   /** The value a cell of the result holds. */
@@ -464,7 +503,7 @@ export const writeback = {
       const answer = await post('/cells/spread', { transaction: this.tx, spread: { cube: this.cube.name, at, value, method, holds } });
       this.changes = (this.changes ?? 0) + 1;
       return `Spread over ${answer.written.toLocaleString()} cell${answer.written === 1 ? '' : 's'}.`;
-    });
+    }, false, [r, c]);
   },
 
   async ensureTransaction() {

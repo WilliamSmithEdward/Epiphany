@@ -490,7 +490,8 @@ fn a_cell_explains_how_it_comes_by_its_value() {
             "fed_by": [{
                 "feeder": { "number": 1, "text": feeder },
                 "from": { "cube": "Sales", "at": ["North", "Jan", "Units"] }
-            }]
+            }],
+            "invalid": []
         })
     );
     // A calculated leaf that nothing feeds.
@@ -511,7 +512,7 @@ fn a_cell_explains_how_it_comes_by_its_value() {
         serde_json::to_value(&total).unwrap(),
         json!({
             "value": 50.0, "kind": "consolidated", "stored": null, "writable": false,
-            "rule": null, "fed": null, "fed_by": []
+            "rule": null, "fed": null, "fed_by": [], "invalid": []
         })
     );
     // In a cube that is not fed, nothing is said about feeding.
