@@ -321,7 +321,14 @@ class Explorer {
       },
     }, icon('grid', 16), 'Views', icon('down', 14));
     // Where the values come from: the stored ones, or a sandbox of the user's.
-    this.sandboxButton = h('button', { class: 'button sandbox-button', 'aria-haspopup': 'menu', onclick: (event) => this.sandboxMenu(event.currentTarget) });
+    this.sandboxButton = h('button', {
+      class: 'button sandbox-button',
+      'aria-haspopup': 'menu',
+      onclick: (event) => {
+        const button = event.currentTarget;
+        working(button, () => this.sandboxMenu(button));
+      },
+    });
     this.tabs = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Show as' });
     this.finder = this.buildFinder();
     const outputRow = h('div', { class: 'output-row' }, this.output, this.commentPanel);
