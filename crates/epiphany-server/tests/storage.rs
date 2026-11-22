@@ -72,17 +72,7 @@ fn a_directory_serves_one_database_at_a_time() {
         "{refused}"
     );
     drop(first);
-    // Another test starting a server at this moment holds a copy of every open file of
-    // this process, the lock among them, until the server's own program takes its place,
-    // so the lock may outlast the database by an instant.
-    let reopened = (0..50).any(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        open(&home.0).is_ok()
-    });
-    assert!(
-        reopened,
-        "the directory stayed locked after its database was dropped"
-    );
+    home.open();
 }
 
 #[test]
