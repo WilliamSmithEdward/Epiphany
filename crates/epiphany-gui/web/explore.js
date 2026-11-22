@@ -168,6 +168,14 @@ class Explorer {
     this.tx = null;
     this.edits = new Map();
     this.writable = new Set();
+    // Cells held, which spreads leave as they are: by their place in the cube, so that a hold
+    // outlasts sorting, pivoting and saving, until it is released.
+    // A hold that no longer fits the cube, after a change to the model, is let go.
+    const fits = (key) => {
+      const at = JSON.parse(key);
+      return at.length === cube.dimensions.length && at.every((name, index) => dims.get(cube.dimensions[index])?.byName.has(name));
+    };
+    this.holds = new Set(JSON.parse(localStorage.getItem(`epiphany.holds.${cube.name}`) ?? '[]').filter(fits));
     addEventListener('beforeunload', (event) => {
       if (this.tx && this.changes && this.page.isConnected) event.preventDefault();
     });
@@ -1029,10 +1037,11 @@ class Explorer {
         const editable = this.writable.has(`${r},${c}`);
         const edited = editable && this.edits.has(this.key(r, c));
         const spreadable = spreads && totalCell && !editable && ![...tuple, ...columnTuples[c]].some((m) => m.type === 'calculated');
+        const held = this.holds.size > 0 && this.holds.has(this.key(r, c));
         tr.append(h('td', {
-          class: `${totalCell ? 'total' : ''} ${number ? 'n' : 's'} ${number && value < 0 ? 'negative' : ''} ${editable ? 'editable' : ''} ${edited ? 'edited' : ''} ${spreadable ? 'spreadable' : ''}`,
+          class: `${totalCell ? 'total' : ''} ${number ? 'n' : 's'} ${number && value < 0 ? 'negative' : ''} ${editable ? 'editable' : ''} ${edited ? 'edited' : ''} ${spreadable ? 'spreadable' : ''} ${held ? 'held' : ''}`,
           tabindex: r === 0 && c === 0 ? '0' : '-1',
-          title: edited ? 'Changed, not yet saved' : spreadable ? 'Type a value to spread it over the leaves beneath' : undefined,
+          title: held ? 'Held: spreads leave it as it is' : edited ? 'Changed, not yet saved' : spreadable ? 'Type a value to spread it over the leaves beneath' : undefined,
           dataset: { r, c },
         }, formatValue(value, this.layout.format)));
       }
@@ -1098,6 +1107,7 @@ class Explorer {
       rowTuples.length > limit ? h('span', { class: 'badge warn' }, `Showing the first ${limit.toLocaleString()} rows`) : null,
       this.writable.size ? h('span', { class: 'legend-input muted', title: 'Tinted cells take a value: type into one, or paste' }, 'Can be written') : null,
       this.layout.format?.scale ? h('span', { class: 'badge' }, SCALES[this.layout.format.scale][1]) : null,
+      this.holds.size ? h('span', { class: 'badge held-badge', title: 'Spreads leave held cells as they are. Release them from a cell\'s menu.' }, `${this.holds.size.toLocaleString()} held`) : null,
       this.layout.sort ? h('span', { class: 'badge accent' }, `Sorted ${this.layout.sort.descending ? 'largest' : 'smallest'} first`) : null,
       summary);
   }
@@ -1553,6 +1563,12 @@ class Explorer {
       this.mayWrite() && this.coordinate(r, c) && [...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
         ? { label: 'Spread a value over its leaves…', icon: 'sigma', action: () => this.spread(r, c) }
         : null,
+      this.mayWrite() && this.coordinate(r, c)
+        ? (this.holds.has(this.key(r, c))
+          ? { label: 'Release the hold', icon: 'lock', action: () => this.hold(r, c, false) }
+          : { label: 'Hold it, as spreads go', icon: 'lock', action: () => this.hold(r, c, true) })
+        : null,
+      this.holds.size ? { label: `Release every hold (${this.holds.size.toLocaleString()})`, icon: 'lock', action: () => this.hold(null, null, false) } : null,
       { label: 'Explain this value', icon: 'info', action: () => this.explain(rowTuple, columnTuple) },
       [...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
         ? { label: 'Show the leaves beneath', icon: 'level', action: () => this.drillToLeaves(rowTuple, columnTuple) }
@@ -1884,11 +1900,24 @@ class Explorer {
     await this.spreadValue(r, c, asked.value, asked.method);
   }
 
+  /**
+   * Holds a cell, so that spreads leave it as it is, or releases it; with no cell given,
+   * releases every hold. Holds are kept in this browser until released.
+   */
+  hold(r, c, held) {
+    if (r === null) this.holds.clear();
+    else if (held) this.holds.add(this.key(r, c));
+    else this.holds.delete(this.key(r, c));
+    localStorage.setItem(`epiphany.holds.${this.cube.name}`, JSON.stringify([...this.holds]));
+    this.draw();
+  }
+
   /** Shares a value out among the leaves beneath a total, within the edit transaction. */
   async spreadValue(r, c, value, method) {
     const at = this.coordinate(r, c);
+    const holds = [...this.holds].map((key) => JSON.parse(key));
     await this.changeValues(`the spread over ${at.join(' · ')}`, async () => {
-      const answer = await post('/cells/spread', { transaction: this.tx, spread: { cube: this.cube.name, at, value, method } });
+      const answer = await post('/cells/spread', { transaction: this.tx, spread: { cube: this.cube.name, at, value, method, holds } });
       this.changes = (this.changes ?? 0) + 1;
       return `Spread over ${answer.written.toLocaleString()} cell${answer.written === 1 ? '' : 's'}.`;
     });

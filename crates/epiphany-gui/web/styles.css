@@ -770,3 +770,9 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 
 .pivot td.spreadable { cursor: cell; }
 .pivot td.spreadable:hover { background-image: linear-gradient(to right, var(--accent) 60%, transparent 0); background-size: 6px 2px; background-repeat: repeat-x; background-position: left bottom; }
+
+/* ---- Held cells ---- */
+
+.pivot td.held { box-shadow: inset 3px 0 0 var(--text-3); }
+.pivot td.held.selected { box-shadow: inset 3px 0 0 var(--text-3); }
+.badge.held-badge { background: var(--surface-3); }

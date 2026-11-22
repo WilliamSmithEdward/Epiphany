@@ -59,6 +59,18 @@ fn spread(at: [&str; 3], value: f64, method: SpreadMethod) -> Spread {
         at: at.map(str::to_owned).to_vec(),
         value,
         method,
+        holds: Vec::new(),
+    }
+}
+
+/// A spread that leaves the cells given as they are.
+fn holding(spread: Spread, holds: &[[&str; 3]]) -> Spread {
+    Spread {
+        holds: holds
+            .iter()
+            .map(|at| at.map(str::to_owned).to_vec())
+            .collect(),
+        ..spread
     }
 }
 
@@ -159,6 +171,61 @@ fn weights_are_respected() {
         "{outcome:?}"
     );
     assert_eq!(get(&database, profit), 80.0);
+}
+
+#[test]
+fn cells_held_keep_their_values_and_the_rest_take_the_difference() {
+    let filled = || {
+        let mut database = database(json!([]));
+        for (leaf, value) in LEAVES.iter().zip([10.0, 20.0, 30.0, 40.0]) {
+            set(&mut database, *leaf, value);
+        }
+        database
+    };
+    let values = |database: &Database| LEAVES.map(|leaf| get(database, leaf));
+
+    // In proportion: North in January keeps its 10, and the other three share 190 as they
+    // shared 90.
+    let mut database = filled();
+    let proportional = spread(QUARTER, 200.0, SpreadMethod::Proportional);
+    database
+        .spread(None, &holding(proportional, &[LEAVES[0]]))
+        .unwrap();
+    let [kept, rest @ ..] = values(&database);
+    assert_eq!(kept, 10.0);
+    let expected = [20.0, 30.0, 40.0].map(|value| value * 190.0 / 90.0);
+    for (got, want) in rest.iter().zip(expected) {
+        assert!((got - want).abs() < 1e-9, "{got} against {want}");
+    }
+    assert!((get(&database, QUARTER) - 200.0).abs() < 1e-9);
+
+    // Equally, with all of the North held through its quarter: the South shares what is left.
+    let mut database = filled();
+    let equal = spread(QUARTER, 100.0, SpreadMethod::Equal);
+    database
+        .spread(None, &holding(equal, &[["North", "Q1", "Units"]]))
+        .unwrap();
+    assert_eq!(values(&database), [10.0, 20.0, 35.0, 35.0]);
+
+    // Repeated, every leaf but the one held takes the value itself.
+    let mut database = filled();
+    let repeat = spread(QUARTER, 5.0, SpreadMethod::Repeat);
+    database
+        .spread(None, &holding(repeat, &[LEAVES[3]]))
+        .unwrap();
+    assert_eq!(values(&database), [5.0, 5.0, 5.0, 40.0]);
+
+    // With every leaf held, nothing can take a share.
+    let mut database = filled();
+    let everything = holding(spread(QUARTER, 1.0, SpreadMethod::Equal), &[QUARTER]);
+    assert!(matches!(
+        database.spread(None, &everything),
+        Err(Error::Write {
+            error: CellError::Spread(_),
+            ..
+        })
+    ));
+    assert_eq!(values(&database), [10.0, 20.0, 30.0, 40.0]);
 }
 
 #[test]
@@ -278,6 +345,7 @@ fn a_spread_too_wide_is_refused_unless_it_only_scales_what_is_there() {
         at: vec!["all".to_owned(); 4],
         value,
         method,
+        holds: Vec::new(),
     };
     // A hundred million leaves are too many to write one by one.
     let outcome = database.spread(None, &grand(1.0, SpreadMethod::Equal));

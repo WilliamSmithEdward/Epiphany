@@ -3344,6 +3344,16 @@
           "cube": {
             "type": "string"
           },
+          "holds": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Cells the spread leaves as they are, each by one element name or alias for each\ndimension: a leaf, or a consolidated cell whose leaves are all held. The value given is\nshared among the other leaves, less what the held ones add to it."
+          },
           "method": {
             "$ref": "#/components/schemas/SpreadMethod"
           },
