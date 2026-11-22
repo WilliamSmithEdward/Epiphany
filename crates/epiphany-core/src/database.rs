@@ -376,23 +376,7 @@ impl Database {
     ) -> Result<(usize, Vec<CellWrite>), Error> {
         let id = self.cube_id(cube)?;
         let cells = &self.cells[id];
-        let mut stored: Vec<At> = cells.stored_at().collect();
-        let total = stored.len();
-        // Only the cells of the page need be in order. Those that come after it are set
-        // apart, then those that come before it, each in one pass that does not order them;
-        // what is left is the page, and only it is ordered and copied out. Putting every cell
-        // up to the page's end in order made the last pages of a large cube the slowest.
-        let end = offset.saturating_add(limit).min(total);
-        let start = offset.min(end);
-        if end < total {
-            stored.select_nth_unstable(end);
-            stored.truncate(end);
-        }
-        if 0 < start && start < stored.len() {
-            stored.select_nth_unstable(start);
-        }
-        let page = &mut stored[start..];
-        page.sort_unstable();
+        let (total, page) = cells.page(offset, limit);
         let named = page.iter().map(|at| self.named(id, at, cells.value(at)));
         Ok((total, named.collect()))
     }

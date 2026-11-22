@@ -164,9 +164,10 @@ impl<V> Default for Table<V> {
     }
 }
 
-/// Where each dimension's element is kept in a packed coordinate: its bits, from the
-/// lowest. No dimensions before the first value is stored.
-#[derive(Debug, Clone, Copy, Default)]
+/// Where each dimension's element is kept in a packed coordinate: its bits, the first
+/// dimension's highest, so that packed coordinates are in the order of their elements as
+/// numbers are. No dimensions before the first value is stored.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 struct Layout {
     dimensions: usize,
     shifts: [u32; FEW],
@@ -180,7 +181,7 @@ impl Layout {
             ..Self::default()
         };
         let mut shift = 0;
-        for (dimension, &width) in widths.iter().enumerate() {
+        for (dimension, &width) in widths.iter().enumerate().rev() {
             layout.shifts[dimension] = shift;
             layout.masks[dimension] = (1u64 << width) - 1;
             shift += width;
@@ -461,6 +462,37 @@ impl Cells {
         numbers.chain(self.texts.iter().map(|(at, _)| at))
     }
 
+    /// How many cells are stored, and where those are from `offset` on, at most `limit` of
+    /// them, in the order of their elements, the last dimension turning fastest.
+    ///
+    /// Packed coordinates are ordered as numbers, the first dimension in the highest bits:
+    /// eight bytes a cell to set in order, where their places took 56, 560 MB for ten
+    /// million cells, and only the page is unpacked.
+    pub(crate) fn page(&self, offset: usize, limit: usize) -> (usize, Vec<At<'_>>) {
+        let total = self.len();
+        let end = offset.saturating_add(limit).min(total);
+        let start = offset.min(end);
+        if let (
+            Table::Packed { layout, cells },
+            Table::Packed {
+                layout: texts_layout,
+                cells: texts,
+            },
+        ) = (&self.numbers, &self.texts)
+            && (texts.is_empty() || layout == texts_layout)
+        {
+            let packed = cells.keys().chain(texts.keys()).copied().collect();
+            let page = in_order(packed, start, end);
+            return (
+                total,
+                page.into_iter()
+                    .map(|packed| layout.unpack(packed))
+                    .collect(),
+            );
+        }
+        (total, in_order(self.stored_at().collect(), start, end))
+    }
+
     /// What is stored at a leaf cell: its text, or its number, zero if it holds none.
     pub(crate) fn value(&self, at: &[ElementId]) -> Scalar {
         match self.texts.get(at) {
@@ -725,6 +757,23 @@ impl Cells {
 /// million of them, thirty-two megabytes.
 const MOST_IN_A_ROW: u64 = 1 << 22;
 
+/// Those from `start` to `end` of all the items, in order. Only they need be in order: the
+/// items after them are set apart, then those before, each in one pass that does not order
+/// them. Putting every item up to the end in order made the last pages of a large cube the
+/// slowest.
+fn in_order<T: Ord>(mut all: Vec<T>, start: usize, end: usize) -> Vec<T> {
+    if end < all.len() {
+        all.select_nth_unstable(end);
+        all.truncate(end);
+    }
+    if 0 < start && start < all.len() {
+        all.select_nth_unstable(start);
+    }
+    let mut page = all.split_off(start.min(all.len()));
+    page.sort_unstable();
+    page
+}
+
 /// Moves to the next combination of one leaf per dimension, the last dimension turning
 /// fastest. `positions` says which leaf each dimension is at and `at` is the combination.
 /// Returns false once every combination has been visited.
@@ -969,5 +1018,47 @@ mod tests {
             Table::Plain(_)
         ));
         assert!(matches!(Table::<f64>::laid_out(&[1; 9]), Table::Plain(_)));
+    }
+
+    #[test]
+    fn a_page_of_cells_comes_in_the_order_of_their_elements_however_they_are_kept() {
+        for (dimensions, laid_out) in [(3, false), (3, true), (9, false)] {
+            let mut cells = match laid_out {
+                true => Cells {
+                    numbers: Table::laid_out(&[9; 3]),
+                    texts: Table::laid_out(&[9; 3]),
+                },
+                false => Cells::default(),
+            };
+            let mut seed = 7u64;
+            let mut all = Vec::new();
+            for i in 0..500 {
+                let at: Vec<ElementId> = (0..dimensions)
+                    .map(|_| {
+                        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                        (seed >> 40) as ElementId % 300
+                    })
+                    .collect();
+                // A few texts among the numbers.
+                match i % 50 {
+                    0 => cells.set(&at, Scalar::Text("t".to_owned())),
+                    _ => cells.set(&at, Scalar::Number(1.0)),
+                }
+                all.push(at);
+            }
+            all.sort_unstable();
+            all.dedup();
+            for (offset, limit) in [(0, 10), (0, 1000), (123, 45), (490, 100), (1000, 5)] {
+                let (total, page) = cells.page(offset, limit);
+                let page: Vec<Vec<ElementId>> = page.iter().map(|at| at.to_vec()).collect();
+                let expected: Vec<Vec<ElementId>> =
+                    all.iter().skip(offset).take(limit).cloned().collect();
+                assert_eq!(
+                    (total, page),
+                    (all.len(), expected),
+                    "{dimensions} {offset}"
+                );
+            }
+        }
     }
 }
