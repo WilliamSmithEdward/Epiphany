@@ -244,6 +244,7 @@ fn definition() -> ModelDef {
             .map(|text| serde_json::from_str(text).unwrap())
             .collect(),
         cubes: vec![serde_json::from_str(cube).unwrap()],
+        ..ModelDef::default()
     }
 }
 

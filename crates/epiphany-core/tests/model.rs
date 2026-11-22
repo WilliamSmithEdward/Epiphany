@@ -25,6 +25,7 @@ fn example() -> Model {
             .map(|text| serde_json::from_str(text).expect("dimension parses"))
             .collect(),
         cubes: vec![serde_json::from_str(cube).expect("cube parses")],
+        ..ModelDef::default()
     };
     Model::compile(&def).expect("example model is valid")
 }

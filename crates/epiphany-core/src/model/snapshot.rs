@@ -111,6 +111,27 @@ impl Model {
                 })?;
             }
         }
+        // Every tile of a dashboard shows a view that is there.
+        index(
+            "dashboard",
+            WITHIN,
+            def.dashboards.iter().map(|d| d.name.as_str()),
+        )?;
+        for dashboard in &def.dashboards {
+            let within = format!("dashboard '{}'", dashboard.name);
+            for tile in &dashboard.tiles {
+                let cube = resolve(&model.cube_ids, "cube", &within, &tile.cube)?;
+                let views = def.cubes[cube as usize].views.keys().map(String::as_str);
+                let within = format!("{within}, cube '{}'", tile.cube);
+                resolve(&index("view", &within, views)?, "view", &within, &tile.view)?;
+                if !(1..=2).contains(&tile.width) {
+                    return Err(ModelError::TileWidth {
+                        dashboard: dashboard.name.clone(),
+                        width: tile.width,
+                    });
+                }
+            }
+        }
         Ok(model)
     }
 

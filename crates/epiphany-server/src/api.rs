@@ -24,8 +24,8 @@ use epiphany_core::database::{
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
-    AttributeType, ChildDef, CubeDef, Dimension, DimensionDef, DimensionType, ElementId,
-    ElementType, ModelDef,
+    AttributeType, ChildDef, CubeDef, DashboardDef, Dimension, DimensionDef, DimensionType,
+    ElementId, ElementType, ModelDef,
 };
 use serde::{Deserialize, Serialize};
 
@@ -157,6 +157,7 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(commit_transaction))
         .routes(routes!(rollback_transaction))
         .routes(routes!(lock))
+        .routes(routes!(put_dashboard, delete_dashboard))
         .routes(routes!(server_status))
         .routes(routes!(list_users))
         .routes(routes!(put_user, delete_user))
@@ -1311,6 +1312,82 @@ async fn lock(
     let mut database = database.write();
     database.lock(id, request.cube.as_deref(), request.mode)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/* ---- Dashboards: pages of saved views, kept with the model ---- */
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct DashboardPut {
+    /// The model version the dashboard was edited from.
+    based_on: u64,
+    dashboard: DashboardDef,
+}
+
+/// Where a dashboard is in the definition, by its name ignoring case and spaces.
+fn dashboard_at(definition: &ModelDef, name: &str) -> Option<usize> {
+    let key = |text: &str| -> String {
+        text.chars()
+            .filter(|character| !character.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    definition
+        .dashboards
+        .iter()
+        .position(|dashboard| key(&dashboard.name) == key(name))
+}
+
+/// Replaces one dashboard, or adds it if the model has none of that name. Every tile must
+/// show a view the cube has. Dashboards are kept with the model, under its version.
+#[utoipa::path(
+    put,
+    path = "/dashboards/{name}",
+    params(("name" = String, Path, description = "The dashboard to replace, ignoring case and spaces")),
+    request_body = DashboardPut,
+    responses(
+        (status = OK, body = ModelUpdate, description = "The dashboard was replaced or added"),
+        (status = CONFLICT, body = ApiError, description = "Stale version"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "A tile shows no view the cube has, or the request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
+)]
+async fn put_dashboard(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+    Body(request): Body<DashboardPut>,
+) -> Result<Json<ModelUpdate>, ApiError> {
+    change(&database, request.based_on, |_, definition| {
+        match dashboard_at(definition, &name) {
+            Some(at) => definition.dashboards[at] = request.dashboard,
+            None => definition.dashboards.push(request.dashboard),
+        }
+        Ok(())
+    })
+}
+
+/// Removes one dashboard.
+#[utoipa::path(
+    delete,
+    path = "/dashboards/{name}",
+    params(("name" = String, Path, description = "Dashboard name, ignoring case and spaces"), Based),
+    responses(
+        (status = OK, body = ModelUpdate, description = "The dashboard was removed"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown dashboard"),
+        (status = CONFLICT, body = ApiError, description = "Stale version"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
+)]
+async fn delete_dashboard(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+    Query(based): Query<Based>,
+) -> Result<Json<ModelUpdate>, ApiError> {
+    change(&database, based.based_on, |_, definition| {
+        let at = dashboard_at(definition, &name).ok_or_else(|| unknown("dashboard", &name))?;
+        definition.dashboards.remove(at);
+        Ok(())
+    })
 }
 
 /* ---- Administration: the server's state, its users, sessions and transactions ---- */

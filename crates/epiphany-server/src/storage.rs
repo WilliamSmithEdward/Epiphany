@@ -213,9 +213,15 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
 
 /// Loads every `dimensions/*.json` and `cubes/*.json` under a model directory, in name order.
 pub fn load_model(directory: &Path) -> Result<ModelDef, Box<dyn Error>> {
+    let dashboards = directory.join("dashboards");
     Ok(ModelDef {
         dimensions: load_all(&directory.join("dimensions"))?,
         cubes: load_all(&directory.join("cubes"))?,
+        // A model need have no dashboards, and no folder for them.
+        dashboards: match dashboards.is_dir() {
+            true => load_all(&dashboards)?,
+            false => Vec::new(),
+        },
     })
 }
 
@@ -349,6 +355,11 @@ impl Journal for Files {
             &d.name
         })?;
         write_each(&next.join("cubes"), &definition.cubes, |c| &c.name)?;
+        if !definition.dashboards.is_empty() {
+            write_each(&next.join("dashboards"), &definition.dashboards, |d| {
+                &d.name
+            })?;
+        }
         write_json(&next.join("model.json"), &ModelFile { version })?;
 
         // Keep the model being replaced as a numbered copy, then put the new one in its place.

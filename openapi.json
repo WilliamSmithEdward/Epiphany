@@ -1079,6 +1079,183 @@
         }
       }
     },
+    "/dashboards/{name}": {
+      "put": {
+        "summary": "Replaces one dashboard, or adds it if the model has none of that name. Every tile must\nshow a view the cube has. Dashboards are kept with the model, under its version.",
+        "operationId": "put_dashboard",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The dashboard to replace, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DashboardPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The dashboard was replaced or added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelUpdate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A tile shows no view the cube has, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Removes one dashboard.",
+        "operationId": "delete_dashboard",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Dashboard name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "based_on",
+            "in": "query",
+            "description": "The model version the removal was decided from.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dashboard was removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelUpdate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dashboard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dimensions/{name}": {
       "get": {
         "summary": "One dimension, with each element's level, parents, children and attributes.",
@@ -2069,6 +2246,49 @@
           }
         }
       },
+      "DashboardDef": {
+        "type": "object",
+        "description": "A page of tiles, each showing a view saved with a cube.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What the dashboard is for, shown beneath its name."
+          },
+          "name": {
+            "type": "string"
+          },
+          "tiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TileDef"
+            },
+            "description": "The tiles, in the order they are laid out."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DashboardPut": {
+        "type": "object",
+        "required": [
+          "based_on",
+          "dashboard"
+        ],
+        "properties": {
+          "based_on": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model version the dashboard was edited from.",
+            "minimum": 0
+          },
+          "dashboard": {
+            "$ref": "#/components/schemas/DashboardDef"
+          }
+        },
+        "additionalProperties": false
+      },
       "DimensionDef": {
         "type": "object",
         "required": [
@@ -2544,6 +2764,13 @@
               "$ref": "#/components/schemas/CubeDef"
             }
           },
+          "dashboards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardDef"
+            },
+            "description": "Pages of saved views, each shown as a chart, a figure or a grid."
+          },
           "dimensions": {
             "type": "array",
             "items": {
@@ -3005,6 +3232,48 @@
           }
         ],
         "description": "A selection of a dimension's elements."
+      },
+      "TileDef": {
+        "type": "object",
+        "description": "One tile of a dashboard: a view of a cube, and how it is shown.",
+        "required": [
+          "cube",
+          "view"
+        ],
+        "properties": {
+          "cube": {
+            "type": "string"
+          },
+          "show": {
+            "$ref": "#/components/schemas/TileShow"
+          },
+          "title": {
+            "type": "string",
+            "description": "A title of its own; the view's name unless given."
+          },
+          "view": {
+            "type": "string",
+            "description": "A view saved with the cube."
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many columns of the page the tile takes: one or two.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "TileShow": {
+        "type": "string",
+        "description": "How a tile shows its view.",
+        "enum": [
+          "figure",
+          "bars",
+          "stacked",
+          "lines",
+          "grid"
+        ]
       },
       "TransactionInfo": {
         "type": "object",

@@ -5,8 +5,8 @@ mod error;
 mod snapshot;
 
 pub use definition::{
-    AttributeType, ChildDef, CubeDef, DimensionDef, DimensionType, ElementDef, ElementType,
-    ModelDef, SubsetDef, ViewDef,
+    AttributeType, ChildDef, CubeDef, DashboardDef, DimensionDef, DimensionType, ElementDef,
+    ElementType, ModelDef, SubsetDef, TileDef, TileShow, ViewDef,
 };
 pub use error::ModelError;
 pub(crate) use snapshot::key;

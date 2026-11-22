@@ -848,3 +848,55 @@ async fn a_snapshot_is_written_while_reads_go_on_and_writes_wait() {
     let (_, body) = call(&app, "POST", "/cells/read", Some(reads)).await;
     assert_eq!(body, json!({ "cells": [{ "value": 30.0 }] }));
 }
+
+#[tokio::test]
+async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
+    let app = example();
+    let (_, mut cube) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
+    cube["views"] = json!({ "By entity": { "mdx": "SELECT {[Entity].Members} ON COLUMNS FROM [General Ledger]" } });
+    call(
+        &app,
+        "PUT",
+        "/cubes/General%20Ledger",
+        Some(json!({ "based_on": 1, "cube": cube })),
+    )
+    .await;
+
+    let dashboard = json!({
+        "name": "Finance",
+        "tiles": [
+            { "cube": "General Ledger", "view": "By entity", "show": "figure" },
+            { "title": "Entities", "cube": "general ledger", "view": "by entity", "width": 2 }
+        ]
+    });
+    let put = json!({ "based_on": 2, "dashboard": dashboard });
+    let (status, body) = call(&app, "PUT", "/dashboards/Finance", Some(put)).await;
+    assert_eq!(
+        (status, body["version"].clone()),
+        (StatusCode::OK, json!(3))
+    );
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    assert_eq!(served["model"]["dashboards"][0]["tiles"][1]["width"], 2);
+    assert_eq!(
+        served["model"]["dashboards"][0]["tiles"][0]["show"],
+        "figure"
+    );
+
+    // A tile must show a view the cube has, one or two columns wide.
+    for tile in [
+        json!({ "cube": "General Ledger", "view": "Nowhere" }),
+        json!({ "cube": "Nowhere", "view": "By entity" }),
+        json!({ "cube": "General Ledger", "view": "By entity", "width": 3 }),
+    ] {
+        let put = json!({ "based_on": 3, "dashboard": { "name": "Broken", "tiles": [tile] } });
+        let (status, body) = call(&app, "PUT", "/dashboards/Broken", Some(put)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+
+    let (status, _) = call(&app, "DELETE", "/dashboards/finance?based_on=3", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    assert!(served["model"].get("dashboards").is_none());
+    let (status, _) = call(&app, "DELETE", "/dashboards/finance?based_on=4", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

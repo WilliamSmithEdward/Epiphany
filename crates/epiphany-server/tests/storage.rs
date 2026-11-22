@@ -706,3 +706,25 @@ fn a_snapshot_cell_named_twice_is_damage_and_one_given_as_a_list_loads() {
         assert!(error.contains("duplicate field"), "{error}");
     }
 }
+
+#[test]
+fn a_dashboard_is_kept_with_the_model_on_disk() {
+    let home = Home::new("dashboards");
+    let mut database = home.open();
+    let mut definition = database.definition().clone();
+    definition.cubes[0].views.insert(
+        "All".to_owned(),
+        serde_json::from_value(
+            json!({ "mdx": "SELECT {[Entity].Members} ON COLUMNS FROM [General Ledger]" }),
+        )
+        .unwrap(),
+    );
+    definition.dashboards.push(
+        serde_json::from_value(json!({ "name": "Finance", "tiles": [{ "cube": CUBE, "view": "All", "show": "lines" }] })).unwrap(),
+    );
+    database.update_model(1, definition).unwrap();
+    drop(database);
+    assert!(home.path("model/dashboards/Finance.json").exists());
+    let reopened = home.open();
+    assert_eq!(reopened.definition().dashboards[0].name, "Finance");
+}

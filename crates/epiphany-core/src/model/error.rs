@@ -67,6 +67,11 @@ pub enum ModelError {
         element: String,
         most: usize,
     },
+    /// A dashboard tile is not one or two columns wide.
+    TileWidth {
+        dashboard: String,
+        width: u8,
+    },
 }
 
 impl fmt::Display for ModelError {
@@ -113,6 +118,10 @@ impl fmt::Display for ModelError {
             } => write!(
                 f,
                 "the hierarchy of dimension '{dimension}' is more than {most} levels deep at element '{element}'"
+            ),
+            Self::TileWidth { dashboard, width } => write!(
+                f,
+                "a tile of dashboard '{dashboard}' is {width} columns wide; a tile is one or two"
             ),
         }
     }

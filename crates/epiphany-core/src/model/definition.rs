@@ -14,6 +14,63 @@ pub struct ModelDef {
     pub dimensions: Vec<DimensionDef>,
     #[serde(default)]
     pub cubes: Vec<CubeDef>,
+    /// Pages of saved views, each shown as a chart, a figure or a grid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dashboards: Vec<DashboardDef>,
+}
+
+/// A page of tiles, each showing a view saved with a cube.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct DashboardDef {
+    pub name: String,
+    /// What the dashboard is for, shown beneath its name.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// The tiles, in the order they are laid out.
+    #[serde(default)]
+    pub tiles: Vec<TileDef>,
+}
+
+/// One tile of a dashboard: a view of a cube, and how it is shown.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TileDef {
+    /// A title of its own; the view's name unless given.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub title: String,
+    pub cube: String,
+    /// A view saved with the cube.
+    pub view: String,
+    #[serde(default)]
+    pub show: TileShow,
+    /// How many columns of the page the tile takes: one or two.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub width: u8,
+}
+
+fn one() -> u8 {
+    1
+}
+
+fn is_one(width: &u8) -> bool {
+    *width == 1
+}
+
+/// How a tile shows its view.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum TileShow {
+    /// The first cell, large, as a key figure.
+    Figure,
+    #[default]
+    Bars,
+    Stacked,
+    Lines,
+    Grid,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
