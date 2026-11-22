@@ -41,15 +41,20 @@ function defaultLayout(cube, dims) {
   };
 }
 
-/** The members an axis entry shows: each chosen member, then its children where it is open. */
+/**
+ * The members an axis entry shows: each chosen member, and its children where it is open;
+ * the children after it, or before it where the entry puts totals last.
+ */
 function shown(entry, dim) {
   const open = new Set(entry.expanded);
   const out = [];
   const visit = (name, depth) => {
-    out.push({ name, depth });
+    const after = entry.totalsLast && open.has(name);
+    if (!after) out.push({ name, depth });
     if (open.has(name)) {
       for (const child of dim.byName.get(name)?.children ?? []) visit(child.name, depth + 1);
     }
+    if (after) out.push({ name, depth });
   };
   for (const name of entry.members) visit(name, 0);
   return out;
@@ -612,6 +617,14 @@ class Explorer {
         action: () => this.setOpen(place, dimension, () => within.filter((name) => dim.byName.get(name).level > level)),
       })),
       { label: 'Close every level', icon: 'collapse', disabled: !entry.expanded.length, action: () => this.setOpen(place, dimension, () => []) },
+      {
+        label: entry.totalsLast ? 'Totals before their members' : 'Totals after their members',
+        icon: 'sigma',
+        action: () => this.change((layout) => {
+          const target = layout[place].find((candidate) => candidate.dimension === dimension);
+          target.totalsLast = !target.totalsLast;
+        }),
+      },
     ];
   }
 
