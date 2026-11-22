@@ -2,13 +2,13 @@
 // of the query that layout makes.
 
 import { ApiError, get, modelVersion, part, post, put } from './api.js';
-import { empty, failure, go, model, state } from './app.js';
+import { empty, failure, go, loading, model, state } from './app.js';
 import { chart, shape } from './chart.js';
 import { CALCULATIONS, defaultLayout, mdx, saved, shown } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
-import { dialog, download, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES } from './ui.js';
+import { dialog, download, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid } from './grid.js';
 import { writeback } from './writeback.js';
@@ -303,6 +303,7 @@ class Explorer {
     }, icon('grid', 16), 'Views', icon('down', 14));
     this.tabs = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Show as' });
     this.finder = this.buildFinder();
+    const outputRow = h('div', { class: 'output-row' }, this.output, this.commentPanel);
     this.page = h('div', { class: 'explorer' },
       this.fields,
       h('section', { class: 'work' },
@@ -310,10 +311,16 @@ class Explorer {
           h('div', { class: 'toolbar' }, icon('cube', 20), cubes, viewButton, this.finder.box, h('div', { class: 'grow' }), this.tabs),
           this.toolbar,
           this.layoutBar),
-        h('div', { class: 'output-row' }, this.output, this.commentPanel),
+        outputRow,
         this.pendingBar,
         this.statusLine));
     mount(target, this.page);
+    // The field list as wide as its dimensions' names need, and the comments as wide as
+    // they were dragged to be.
+    const width = textWidths();
+    const names = this.cube.dimensions.map(width);
+    splitter(this.page, { name: 'fields', key: 'fields', min: 220, max: 560, fit: () => Math.ceil(Math.max(130, ...names) + 150) }).fit();
+    splitter(outputRow, { name: 'comments', key: 'comments', min: 260, max: 720, edge: 'start', fit: () => 340 }).fit();
     this.drawFields();
     this.drawTabs();
     this.drawToolbar();
@@ -344,8 +351,8 @@ class Explorer {
     mount(this.pendingBar,
       icon('edit', 16),
       h('span', { class: 'grow' }, `${count} unsaved change${count === 1 ? '' : 's'}. Totals already include them; nothing is stored until you save.`),
-      h('button', { class: 'button small', onclick: () => this.discard() }, 'Discard'),
-      h('button', { class: 'button small primary', onclick: () => this.save() }, icon('save', 14), 'Save changes'));
+      h('button', { class: 'button small', onclick: (event) => working(event.currentTarget, () => this.discard()) }, 'Discard'),
+      h('button', { class: 'button small primary', onclick: (event) => working(event.currentTarget, () => this.save()) }, icon('save', 14), 'Save changes'));
   }
 
   drawTabs() {
@@ -708,6 +715,10 @@ class Explorer {
   /* ---- Running the query ---- */
   async run() {
     const ticket = ++this.ticket;
+    // A query still running for an earlier layout is let go.
+    this.stopping?.abort();
+    const stopping = new AbortController();
+    this.stopping = stopping;
     this.stale = false;
     this.output.classList.remove('stale');
     const text = mdx(this.layout, this.dims);
@@ -717,10 +728,14 @@ class Explorer {
       this.draw();
       return;
     }
+    // The first answer is awaited in the grid's outline; after that, the last answer stays,
+    // fading if the next is slow to come.
+    if (!this.result && !this.error && this.view !== 'mdx') mount(this.output, loading('lines'));
     this.output.classList.add('busy');
     const started = performance.now();
+    const telling = setTimeout(() => this.drawRunning(started, stopping), 700);
     try {
-      const result = await post('/mdx', { mdx: text, transaction: this.tx ?? undefined });
+      const result = await post('/mdx', { mdx: text, transaction: this.tx ?? undefined }, { quiet: true, signal: stopping.signal });
       if (ticket !== this.ticket) return;
       this.result = result;
       this.error = null;
@@ -731,14 +746,44 @@ class Explorer {
       if (ticket !== this.ticket) return;
     } catch (problem) {
       if (ticket !== this.ticket) return;
+      if (problem.code === 'stopped') {
+        this.stopped();
+        return;
+      }
       this.result = null;
       this.error = problem;
     } finally {
+      clearTimeout(telling);
       if (ticket === this.ticket) this.output.classList.remove('busy');
     }
     this.drawToolbar();
     this.draw();
     if (this.commentCell) this.drawComments();
+  }
+
+  /** Says the query is still running, and for how long, with a button to stop waiting. */
+  drawRunning(started, stopping) {
+    const time = h('span', { class: 'muted', 'aria-hidden': 'true' });
+    const tick = () => {
+      if (!time.isConnected) return;
+      time.textContent = `${((performance.now() - started) / 1000).toFixed(1)} s`;
+      setTimeout(tick, 100);
+    };
+    mount(this.statusLine,
+      h('span', { class: 'running' }, h('span', { class: 'spinner small', 'aria-hidden': 'true' }), 'Running the query…', time),
+      h('button', { class: 'button small quiet', onclick: () => stopping.abort() }, icon('close', 14), 'Stop'));
+    tick();
+  }
+
+  /** A query stopped before it answered: what was shown stays, marked out of date. */
+  stopped() {
+    this.stale = true;
+    this.output.classList.add('stale');
+    this.drawToolbar();
+    if (!this.result && !this.error && this.view !== 'mdx') {
+      mount(this.output, empty('pause', 'Stopped', 'The query was stopped before it answered. Run it when you are ready.'));
+    }
+    mount(this.statusLine, h('span', { class: 'muted' }, this.result ? 'Stopped. The grid shows the last answer; Run asks again.' : 'Stopped.'));
   }
 
   draw() {
@@ -824,6 +869,7 @@ class Explorer {
 
   /* ---- Chart ---- */
   drawChart() {
+    mount(this.statusLine);
     const settings = this.layout.chart ?? { kind: 'bars', byColumns: false };
     const set = (change) => {
       this.layout.chart = { ...settings, ...change };

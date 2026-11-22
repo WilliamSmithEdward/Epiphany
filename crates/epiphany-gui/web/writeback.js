@@ -76,7 +76,7 @@ export const writeback = {
     }
     if (!asked.length) return { writable: found, why };
     try {
-      const answer = await post('/cells/explain', { cells: asked, transaction: this.tx ?? undefined });
+      const answer = await post('/cells/explain', { cells: asked, transaction: this.tx ?? undefined }, { quiet: true });
       answer.cells.forEach((cell, index) => {
         if (cell.cell?.writable) found.add(places[index]);
         else if (cell.cell?.rule) why.set(places[index], `A rule works this cell out: ${cell.cell.rule.text ?? ''}`.trim());

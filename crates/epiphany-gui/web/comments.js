@@ -4,7 +4,7 @@
 
 import { del, get, part, post } from './api.js';
 import { state } from './app.js';
-import { dialog, h, icon, mount, notify } from './ui.js';
+import { dialog, h, icon, mount, notify, working } from './ui.js';
 
 /** Comments: methods of the explorer. */
 export const comments = {
@@ -12,7 +12,7 @@ export const comments = {
   async loadComments() {
     this.commented = new Map();
     try {
-      const found = await get(`/cubes/${part(this.cube.name)}/comments`);
+      const found = await get(`/cubes/${part(this.cube.name)}/comments`, { quiet: true });
       for (const comment of found.comments) {
         const key = JSON.stringify(comment.at);
         this.commented.set(key, [...(this.commented.get(key) ?? []), comment]);
@@ -73,11 +73,11 @@ export const comments = {
     const admin = state.user?.role === 'admin';
     const mayWrite = this.mayWrite();
     const text = h('textarea', { class: 'textarea', rows: 3, maxlength: 10000, placeholder: 'Say what explains the number', 'aria-label': 'A new comment', disabled: !mayWrite });
-    const add = h('button', { class: 'button small primary', type: 'button', disabled: !mayWrite, onclick: () => this.addComment(text.value) }, 'Comment');
+    const add = h('button', { class: 'button small primary', type: 'button', disabled: !mayWrite, onclick: () => working(add, () => this.addComment(text.value)) }, 'Comment');
     text.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
-        this.addComment(text.value);
+        working(add, () => this.addComment(text.value));
       } else if (event.key === 'Escape') {
         event.preventDefault();
         this.closeComments();

@@ -6,7 +6,7 @@ import { empty } from './app.js';
 import { member, saved } from './layout.js';
 import { cellText, Selection } from './selection.js';
 import { beneath } from './tree.js';
-import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, SCALES } from './ui.js';
+import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, SCALES, working } from './ui.js';
 
 /**
  * What a spreading code typed into a total asks for: `{ method, value }`, the value being
@@ -827,19 +827,23 @@ export const grid = {
         facts.stored !== null && facts.stored !== undefined && facts.rule ? row('Stored beneath it', String(facts.stored)) : null,
         row('Can be written', facts.writable ? 'Yes' : 'No'),
         facts.fed === null || facts.fed === undefined ? null : row('Fed', facts.fed ? 'Yes' : h('span', {}, 'No: consolidations leave it out. ',
-          h('button', { class: 'button small', type: 'button', onclick: () => this.checkFeeders() }, 'Check the feeders')))),
+          h('button', { class: 'button small', type: 'button', onclick: (event) => this.checkFeeders(event.currentTarget) }, 'Check the feeders')))),
     });
   },
 
-  /** Looks for cells of the cube that rules calculate and hold a value, but that no feeder feeds. */
-  async checkFeeders() {
+  /**
+   * Looks for cells of the cube that rules calculate and hold a value, but that no feeder
+   * feeds; `button` shows it at work.
+   */
+  async checkFeeders(button) {
     let found;
     try {
-      found = await get(`/cubes/${part(this.cube.name)}/feeders/check`);
+      found = await working(button, () => get(`/cubes/${part(this.cube.name)}/feeders/check`));
     } catch (problem) {
       notify(problem.message, 'bad');
       return;
     }
+    if (!found) return;
     const unfed = found.unfed ?? [];
     await dialog({
       title: unfed.length ? `${unfed.length.toLocaleString()}${unfed.length >= 100 ? ' or more' : ''} cells not fed` : 'Every calculated cell is fed',

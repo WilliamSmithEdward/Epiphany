@@ -1,8 +1,8 @@
 // Administration: the server's state, its users and their roles, and open transactions.
 
 import { del, get, part, post, put } from './api.js';
-import { empty, failure, model, state } from './app.js';
-import { dialog, h, icon, mount, notify } from './ui.js';
+import { empty, failure, loading, model, state } from './app.js';
+import { dialog, h, icon, mount, notify, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
 
@@ -32,17 +32,21 @@ export async function render(target) {
 class AdminPage {
   constructor(target) {
     this.statusCard = h('section', { class: 'admin-section', 'aria-label': 'Server' });
-    this.usersCard = h('section', { class: 'card', 'aria-label': 'Users' });
-    this.transactionsCard = h('section', { class: 'card', 'aria-label': 'Open transactions' });
+    this.usersCard = h('section', { class: 'card fit', 'aria-label': 'Users' });
+    this.transactionsCard = h('section', { class: 'card fit', 'aria-label': 'Open transactions' });
     this.updated = h('span', { class: 'muted' });
     mount(target, h('div', { class: 'page' },
       h('div', { class: 'page-head' },
         h('div', { class: 'grow' }, h('h1', {}, 'Administration'), h('p', {}, 'The server, its users and the work in progress on it.')),
         this.updated,
-        h('button', { class: 'button', onclick: () => this.load() }, icon('refresh', 16), 'Refresh')),
+        h('button', { class: 'button', onclick: (event) => working(event.currentTarget, () => this.load()) }, icon('refresh', 16), 'Refresh')),
       this.statusCard,
       this.usersCard,
       this.transactionsCard));
+    // Until the first answer, each part holds its outline.
+    mount(this.statusCard, loading('cards'));
+    mount(this.usersCard, h('div', { class: 'card-body' }, loading('lines')));
+    mount(this.transactionsCard, h('div', { class: 'card-body' }, loading('lines')));
     this.load();
     // Kept current while the page is open.
     this.timer = setInterval(() => {
@@ -51,19 +55,25 @@ class AdminPage {
     }, 15000);
   }
 
-  async load(quietly) {
+  /** Fetches the page's parts; `quietly`, as the page keeps itself current, without a word. */
+  async load(quietly = false) {
     try {
       const [status, users, transactions] = await Promise.all([
-        get('/admin/status'),
-        get('/admin/users'),
-        get('/admin/transactions'),
+        get('/admin/status', { quiet: quietly }),
+        get('/admin/users', { quiet: quietly }),
+        get('/admin/transactions', { quiet: quietly }),
       ]);
       this.drawStatus(status);
       this.drawUsers(users);
       this.drawTransactions(transactions);
+      this.usersCard.hidden = false;
+      this.transactionsCard.hidden = false;
       this.updated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     } catch (problem) {
       if (quietly) return;
+      // What could not be fetched is not shown as if it were coming.
+      this.usersCard.hidden = true;
+      this.transactionsCard.hidden = true;
       mount(this.statusCard, h('div', { class: 'card' }, failure(problem, () => this.load())));
     }
   }
@@ -85,7 +95,7 @@ class AdminPage {
         tile('Transactions open', status.transactions.toLocaleString(), 'lock', null),
         tile('On disk', bytes((status.log_bytes ?? 0) + (status.snapshot_bytes ?? 0)), 'save', `Log ${bytes(status.log_bytes)} · snapshot ${bytes(status.snapshot_bytes)}`),
         status.memory_bytes !== null ? tile('Memory held', bytes(status.memory_bytes), 'server', null) : null),
-      status.cubes.length ? h('div', { class: 'card' },
+      status.cubes.length ? h('div', { class: 'card fit' },
         h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Cells by cube')),
         h('table', { class: 'table' },
           h('thead', {}, h('tr', {}, h('th', {}, 'Cube'), h('th', { class: 'num-col' }, 'Cells stored'), h('th', { class: 'bar-col' }, ''))),
@@ -105,7 +115,7 @@ class AdminPage {
   drawUsers(list) {
     const head = h('div', { class: 'card-head' },
       h('h3', { class: 'grow' }, 'Users'),
-      list.signing_in ? h('button', { class: 'button small primary', onclick: () => this.editUser() }, icon('plus', 14), 'Add user') : null);
+      list.signing_in ? h('button', { class: 'button small primary', onclick: (event) => this.editUser(null, event.currentTarget) }, icon('plus', 14), 'Add user') : null);
     if (!list.signing_in) {
       mount(this.usersCard, head, empty('users', 'No one needs to sign in', 'This server has no users, so it only listens on its own machine. Add the first with “epiphany-server user”, then restart the server; after that, users are managed here.'));
       return;
@@ -122,16 +132,21 @@ class AdminPage {
             h('td', { class: 'muted' }, cubes.length ? cubes.map(([cube, role]) => `${cube}: ${ROLES[role].toLowerCase()}`).join(' · ') : '—'),
             h('td', { class: 'num-col num' }, user.sessions.toLocaleString()),
             h('td', { class: 'actions' },
-              h('button', { class: 'button small quiet', onclick: () => this.editUser(user) }, icon('edit', 14), 'Edit'),
-              h('button', { class: 'button small quiet', disabled: !user.sessions, onclick: () => this.signOut(user) }, icon('out', 14), 'Sign out'),
+              h('button', { class: 'button small quiet', onclick: (event) => this.editUser(user, event.currentTarget) }, icon('edit', 14), 'Edit'),
+              h('button', { class: 'button small quiet', disabled: !user.sessions, onclick: (event) => working(event.currentTarget, () => this.signOut(user)) }, icon('out', 14), 'Sign out'),
               h('button', { class: 'button small quiet danger', onclick: () => this.removeUser(user) }, icon('trash', 14), 'Remove')));
         }))));
   }
 
-  /** Adds a user, or edits one: their password, role and roles on particular cubes. */
-  async editUser(user) {
+  /**
+   * Adds a user, or edits one: their password, role and roles on particular cubes. The
+   * button that asked shows it at work while the cubes are fetched.
+   */
+  async editUser(user, button) {
     const adding = !user;
-    const cubes = (await model()).cubes.map((cube) => cube.name);
+    const definition = await working(button, () => model());
+    if (!definition) return;
+    const cubes = definition.cubes.map((cube) => cube.name);
     const name = h('input', { class: 'input', id: 'user-name', required: adding, readonly: !adding, autocomplete: 'off' });
     name.value = user?.name ?? '';
     const password = h('input', { class: 'input', id: 'user-password', type: 'password', autocomplete: 'new-password', required: adding });

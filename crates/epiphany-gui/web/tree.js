@@ -1,30 +1,28 @@
 // Trees of members, as the set editor, the member picker and the dimension editor show them:
 // the rows to draw, given what is open and what is searched for; the members to open to
-// show what was found; the keys that move about a tree; the buttons that open and close it;
-// and the words found, marked where they occur.
+// show what was found; long lists drawn only where they can be seen; the keys that move
+// about a tree; the buttons that open and close it; and the words found, marked.
 
 import { h, icon } from './ui.js';
 
-/** At most this many rows are drawn; past it, the reader is asked to search. */
-export const ROW_LIMIT = 2000;
+/** How tall a row of a list or tree is, in pixels: every row the same, to draw only those in view. */
+export const ROW = 28;
+
+/** How far a row of a tree is indented for each level beneath the top, in pixels, as the styles have it. */
+export const INDENT = 18;
 
 /**
- * The rows a tree shows, in order, each `{ name, parent, depth, kids, open, match, context }`.
- * Browsing, they are the roots and the children of the members open. Searching, with
- * `matches` the names found, they are the matches and the members above them, which are
- * `context` unless they match too; a match that is opened shows every child. `cut` says
- * the rows stopped at `limit`.
+ * The rows a tree shows, in order, each `{ name, parent, depth, kids, open, match, context,
+ * position, siblings }`. Browsing, they are the roots and the children of the members open.
+ * Searching, with `matches` the names found, they are the matches and the members above
+ * them, which are `context` unless they match too; a match that is opened shows every
+ * child. `position` and `siblings` place a row among the rows shown beside it.
  */
-export function treeRows({ roots, children, open, matches = null, limit = ROW_LIMIT }) {
+export function treeRows({ roots, children, open, matches = null }) {
   const leads = leadsTo(children, matches);
   const rows = [];
-  let cut = false;
   const visit = (name, parent, depth, trail, whole) => {
     if (trail.has(name)) return;
-    if (rows.length >= limit) {
-      cut = true;
-      return;
-    }
     const kids = children(name);
     const match = Boolean(matches?.has(name));
     const opened = kids.length > 0 && open.has(name);
@@ -35,7 +33,16 @@ export function treeRows({ roots, children, open, matches = null, limit = ROW_LI
     for (const kid of kids) if (!matches || beneath || leads(kid)) visit(kid, name, depth + 1, next, beneath);
   };
   for (const root of roots) if (leads(root)) visit(root, null, 0, new Set(), false);
-  return { rows, cut };
+  // Each row's place among the rows shown beside it, for those who hear the tree read.
+  const groups = [];
+  const levels = [];
+  for (const row of rows) {
+    levels.length = row.depth + 1;
+    if (!levels[row.depth]) groups.push((levels[row.depth] = []));
+    row.position = levels[row.depth].push(row);
+  }
+  for (const group of groups) for (const row of group) row.siblings = group.length;
+  return { rows };
 }
 
 /** The members to open so that every match shows: each with a match beneath it. */
@@ -103,64 +110,158 @@ export function marked(text, words) {
   return parts;
 }
 
+/**
+ * The rows of a long list, drawn only where they can be seen in `scroller`, so that a list of
+ * any length shows at once and scrolls smoothly. Every row is `ROW` pixels tall; `draw(index)`
+ * makes a row's element. The row holding the focus is kept, wherever it is, so that the keys
+ * stay on it as the list scrolls. `covered()` is how much of the scroller's top a heading
+ * pinned there hides.
+ */
+export class Rows {
+  constructor(scroller, draw, { covered = () => 0 } = {}) {
+    this.scroller = scroller;
+    this.draw = draw;
+    this.covered = covered;
+    this.count = 0;
+    this.drawn = new Map();
+    this.element = h('div', { class: 'rows' });
+    let queued = false;
+    scroller.addEventListener('scroll', () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        this.update();
+      });
+    });
+    new ResizeObserver(() => this.update()).observe(scroller);
+  }
+
+  /** Shows `count` rows, drawn afresh. */
+  show(count) {
+    for (const element of this.drawn.values()) element.remove();
+    this.drawn.clear();
+    this.count = count;
+    this.element.style.height = `${count * ROW}px`;
+    this.update();
+  }
+
+  /** How many rows the scroller shows at once. */
+  get page() {
+    return Math.max(1, Math.floor(this.scroller.clientHeight / ROW) - 1);
+  }
+
+  /**
+   * Where the rows begin, down what the scroller scrolls: as laid out, whatever transforms
+   * it, such as a dialog's opening. The styles make the scroller the rows' offset parent.
+   */
+  offset() {
+    return this.element.offsetTop;
+  }
+
+  /** Draws the rows in view, a few beyond, and lets go of the rest but the one with the focus. */
+  update() {
+    if (!this.element.isConnected) return;
+    const top = this.scroller.scrollTop - this.offset();
+    const first = Math.max(0, Math.floor(top / ROW) - 8);
+    const last = Math.min(this.count, Math.ceil((top + this.scroller.clientHeight) / ROW) + 8);
+    for (const [index, element] of this.drawn) {
+      if ((index < first || index >= last) && !element.contains(document.activeElement)) {
+        element.remove();
+        this.drawn.delete(index);
+      }
+    }
+    for (let index = first; index < last; index += 1) if (!this.drawn.has(index)) this.place(index);
+  }
+
+  /** Draws a row in its place, among the others in order, so that the page reads in order. */
+  place(index) {
+    const element = this.draw(index);
+    element.style.top = `${index * ROW}px`;
+    let next = null;
+    for (const [other, drawn] of this.drawn) if (other > index && (!next || other < next.index)) next = { index: other, drawn };
+    this.element.insertBefore(element, next?.drawn ?? null);
+    this.drawn.set(index, element);
+    return element;
+  }
+
+  /** A row's element, scrolled into view and drawn if it was not; null past the ends. */
+  reveal(index) {
+    if (index < 0 || index >= this.count) return null;
+    const top = this.offset() + index * ROW;
+    const covered = this.covered();
+    if (top < this.scroller.scrollTop + covered) this.scroller.scrollTop = top - covered;
+    else if (top + ROW > this.scroller.scrollTop + this.scroller.clientHeight) this.scroller.scrollTop = top + ROW - this.scroller.clientHeight;
+    this.update();
+    return this.drawn.get(index) ?? this.place(index);
+  }
+
+  /** A row's element, where it is drawn. */
+  at(index) {
+    return this.drawn.get(index) ?? null;
+  }
+}
+
 let typed = '';
 let typedAt = 0;
 
 /**
- * Moves about a tree whose rows carry `data-name`, `aria-level` and, where they have
- * children, `aria-expanded`, as the WAI-ARIA tree pattern has it. Up and Down, Home and
- * End move; Right opens a row, or moves to its first child; Left closes it, or moves to its
- * parent; `*` opens it and its siblings; Enter acts on it; and typing moves to the next row
- * whose name begins with what was typed. `go(name, event)` moves to a row, `open(names,
- * opened)` opens or closes rows, and `act(name, event)` acts on one. Returns whether the
- * key was taken.
+ * Moves about a tree, as the WAI-ARIA tree pattern has it, from the row `at` of `rows` (as
+ * `treeRows` gives them). Up and Down, Page Up and Page Down, Home and End move; Right opens
+ * a row, or moves to its first child; Left closes it, or moves to its parent; `*` opens it
+ * and its siblings; Enter acts on it; and typing moves to the next row whose name begins
+ * with what was typed. `go(name, event)` moves to a row, `open(names, opened)` opens or
+ * closes rows, `act(name, event)` acts on one, and `page` is how many rows a page moves.
+ * Returns whether the key was taken.
  */
-export function treeKey(event, { go, open, act }) {
-  const row = event.target.closest('[role=treeitem][data-name]');
-  const tree = row?.closest('[role=tree]');
-  if (!tree || event.altKey || event.ctrlKey || event.metaKey) return false;
-  const rows = [...tree.querySelectorAll('[role=treeitem][data-name]')];
-  const at = rows.indexOf(row);
-  const level = (element) => Number(element.getAttribute('aria-level'));
-  const expanded = row.getAttribute('aria-expanded');
-  const name = row.dataset.name;
-  const parent = () => rows.slice(0, at).reverse().find((other) => level(other) < level(row));
-  let target = null;
+export function treeKey(event, rows, at, { go, open, act, page = 10 }) {
+  const row = rows[at];
+  if (!row || event.altKey || event.ctrlKey || event.metaKey) return false;
+  const parent = () => {
+    for (let index = at - 1; index >= 0; index -= 1) if (rows[index].depth < row.depth) return index;
+    return -1;
+  };
+  let target = -1;
   switch (event.key) {
     case 'ArrowDown':
-      target = rows[Math.min(at + 1, rows.length - 1)];
+      target = Math.min(at + 1, rows.length - 1);
       break;
     case 'ArrowUp':
-      target = rows[Math.max(at - 1, 0)];
+      target = Math.max(at - 1, 0);
+      break;
+    case 'PageDown':
+      target = Math.min(at + page, rows.length - 1);
+      break;
+    case 'PageUp':
+      target = Math.max(at - page, 0);
       break;
     case 'Home':
-      target = rows[0];
+      target = 0;
       break;
     case 'End':
-      target = rows[rows.length - 1];
+      target = rows.length - 1;
       break;
     case 'ArrowRight':
-      if (expanded === 'false') open([name], true);
-      else if (expanded === 'true') target = rows[at + 1];
+      if (row.kids && !row.open) open([row.name], true);
+      else if (row.kids) target = at + 1;
       else return false;
       break;
     case 'ArrowLeft':
-      if (expanded === 'true') open([name], false);
-      else if (!(target = parent())) return false;
+      if (row.kids && row.open) open([row.name], false);
+      else if ((target = parent()) < 0) return false;
       break;
     case '*': {
-      const above = parent();
       const siblings = [];
-      for (const other of rows.slice(above ? rows.indexOf(above) + 1 : 0)) {
-        if (level(other) < level(row)) break;
-        if (level(other) === level(row) && other.getAttribute('aria-expanded') === 'false') siblings.push(other.dataset.name);
+      for (let index = parent() + 1; index < rows.length; index += 1) {
+        if (rows[index].depth < row.depth) break;
+        if (rows[index].depth === row.depth && rows[index].kids && !rows[index].open) siblings.push(rows[index].name);
       }
       if (siblings.length) open(siblings, true);
       break;
     }
     case 'Enter':
       if (!act) return false;
-      act(name, event);
+      act(row.name, event);
       break;
     default: {
       if (event.key.length !== 1 || event.key === ' ') return false;
@@ -169,15 +270,54 @@ export function treeKey(event, { go, open, act }) {
       typed = now - typedAt > 700 ? event.key.toLowerCase() : typed + event.key.toLowerCase();
       typedAt = now;
       const again = typed.length === 1 || [...typed].every((letter) => letter === typed[0]);
-      const start = again ? at + 1 : at;
-      const order = [...rows.slice(start), ...rows.slice(0, start)];
       const word = again ? typed[0] : typed;
-      target = order.find((other) => other.dataset.name.toLowerCase().startsWith(word));
+      for (let step = again ? 1 : 0; step <= rows.length; step += 1) {
+        const index = (at + step) % rows.length;
+        if (rows[index].name.toLowerCase().startsWith(word)) {
+          target = index;
+          break;
+        }
+      }
     }
   }
   event.preventDefault();
-  if (target && target !== row) go(target.dataset.name, event);
+  if (target >= 0 && target !== at) go(rows[target].name, event);
   return true;
+}
+
+/**
+ * A row of a tree: saying what it is to those who hear it read, its level and its place
+ * among the rows beside it, and indented to its depth. `props` and `children` are its own.
+ */
+export function treeRow(row, selected, props, ...children) {
+  const element = h('div', {
+    role: 'treeitem',
+    'aria-level': row.depth + 1,
+    'aria-setsize': row.siblings,
+    'aria-posinset': row.position,
+    'aria-selected': String(selected),
+    'aria-expanded': row.kids ? String(row.open) : null,
+    ...props,
+    class: `tree-row ${props.class ?? ''}`,
+    dataset: { name: row.name, ...props.dataset },
+  }, ...children);
+  element.style.setProperty('--depth', row.depth);
+  return element;
+}
+
+/** The button that opens or closes a row of a tree, or the space for one; `toggle(opened)` does it. */
+export function twisty(row, toggle) {
+  if (!row.kids) return h('span', { class: 'twisty' });
+  return h('button', {
+    class: 'twisty',
+    type: 'button',
+    tabindex: '-1',
+    'aria-label': row.open ? `Close ${row.name}` : `Open ${row.name}`,
+    onclick: (event) => {
+      event.stopPropagation();
+      toggle(!row.open);
+    },
+  }, icon(row.open ? 'down' : 'chevron', 12));
 }
 
 /**

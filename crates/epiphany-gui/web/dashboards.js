@@ -7,7 +7,7 @@ import { del, modelVersion, part, post, put } from './api.js';
 import { chart, shape, sparkline } from './chart.js';
 import { empty, failure, go, model, state } from './app.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, formatValue, h, icon, menu, mount, notify } from './ui.js';
+import { dialog, formatValue, h, icon, menu, mount, notify, working } from './ui.js';
 
 /** The ways a tile shows its view. */
 const SHOWS = { figure: 'Key figure', bars: 'Bars', stacked: 'Stacked bars', lines: 'Lines', grid: 'Grid' };
@@ -77,8 +77,10 @@ class Dashboards {
       h('button', {
         class: 'chip-main',
         title: `Show every tile at a member of ${dimensionName}`,
-        onclick: async () => {
-          const member = await chooseMember(await dimension(dimensionName), { title: `Show every tile at a member of ${dimensionName}`, current: chosen[dimensionName] });
+        onclick: async (event) => {
+          const dim = await working(event.currentTarget, () => dimension(dimensionName));
+          if (!dim) return;
+          const member = await chooseMember(dim, { title: `Show every tile at a member of ${dimensionName}`, current: chosen[dimensionName] });
           if (member !== null) this.choose(dimensionName, member);
         },
       }, h('strong', {}, dimensionName), h('span', { class: 'chip-summary' }, chosen[dimensionName] ?? 'As each view has it')),
@@ -152,10 +154,14 @@ class Dashboards {
       ? [
         h('button', { class: 'button', onclick: () => this.addTile() }, icon('plus', 16), 'Add a tile'),
         h('button', { class: 'button', onclick: () => this.stopEditing() }, 'Cancel'),
-        h('button', { class: 'button primary', onclick: () => this.save() }, icon('save', 16), 'Save'),
+        h('button', { class: 'button primary', onclick: (event) => working(event.currentTarget, () => this.save()) }, icon('save', 16), 'Save'),
       ]
       : [
-        h('button', { class: 'button quiet', title: 'Run every tile again', onclick: () => this.draw() }, icon('refresh', 16), 'Refresh'),
+        h('button', {
+          class: 'button quiet',
+          title: 'Run every tile again',
+          onclick: (event) => working(event.currentTarget, () => Promise.all(this.filling.map((fill) => fill()))),
+        }, icon('refresh', 16), 'Refresh'),
         this.admin ? h('button', { class: 'button', onclick: () => this.edit() }, icon('edit', 16), 'Edit') : null,
         this.admin ? h('button', { class: 'button', onclick: () => this.create() }, icon('plus', 16), 'New') : null,
         this.admin ? h('button', { class: 'button danger quiet', onclick: () => this.remove() }, icon('trash', 16), 'Delete') : null,
@@ -165,6 +171,8 @@ class Dashboards {
         h('input', { class: 'input dash-name', 'aria-label': 'Name of the dashboard', value: shown.name, oninput: (event) => { this.editing.name = event.target.value; } }),
         h('input', { class: 'input', 'aria-label': 'What the dashboard is for', placeholder: 'What it is for, in a line', value: shown.description ?? '', oninput: (event) => { this.editing.description = event.target.value; } }))
       : h('div', { class: 'grow' }, h('h1', {}, shown.name), shown.description ? h('p', {}, shown.description) : null);
+    // How to run each tile again, for Refresh.
+    this.filling = [];
     const tiles = shown.tiles.map((tile, index) => this.tile(tile, index));
     mount(this.target, h('div', { class: `page dashboard${editing ? ' editing' : ''}` },
       this.list().length > 1 && !editing ? tabs : null,
@@ -182,7 +190,8 @@ class Dashboards {
     const view = this.definition.cubes.find((cube) => cube.name === tile.cube)?.views?.[tile.view];
     const title = tile.title || tile.view;
     const standing = this.standing(tile).map((at) => at.member);
-    const body = h('div', { class: 'tile-body', 'aria-busy': 'true' }, h('div', { class: 'skeleton' }));
+    // Until its answer comes, a tile holds the outline of what it shows.
+    const body = h('div', { class: 'tile-body' }, h('div', { class: `skeleton ${tile.show ?? 'bars'}` }));
     const open = `/explore?cube=${encodeURIComponent(tile.cube)}&view=${encodeURIComponent(tile.view)}`;
     const card = h('section', {
       class: `card dash-tile${tile.width === 2 ? ' wide' : ''}`,
@@ -195,23 +204,30 @@ class Dashboards {
       this.editing ? this.tileControls(tile, index) : h('a', { class: 'button small quiet icon', href: open, 'data-link': '', title: 'Open in Explore', 'aria-label': `Open ${title} in Explore` }, icon('explore', 16))),
     body);
     if (this.editing) this.draggable(card, index);
-    this.fill(body, tile, view);
+    const fill = () => this.fill(body, tile, view);
+    this.filling.push(fill);
+    fill();
     return card;
   }
 
-  /** Runs a tile's view and shows the answer as the tile asks. */
+  /**
+   * Runs a tile's view and shows the answer as the tile asks. Run again, a tile keeps its
+   * last answer, fading after a moment, until the new one comes.
+   */
   async fill(body, tile, view) {
     if (!view) {
       mount(body, empty('alert', 'The view is gone', `${tile.cube} has no view called ${tile.view}. It may have been renamed or removed.`));
-      body.removeAttribute('aria-busy');
       return;
     }
+    body.setAttribute('aria-busy', 'true');
+    body.classList.add('busy');
     try {
-      const result = await post('/mdx', { mdx: view.mdx, context: this.standing(tile) });
+      const result = await post('/mdx', { mdx: view.mdx, context: this.standing(tile) }, { quiet: true });
       mount(body, this.show(result, tile.show ?? 'bars', view.format));
     } catch (problem) {
       mount(body, failure(problem, () => this.fill(body, tile, view)));
     }
+    body.classList.remove('busy');
     body.removeAttribute('aria-busy');
   }
 
@@ -413,19 +429,17 @@ class Dashboards {
 
   async remove() {
     const name = this.name;
-    const agreed = await dialog({
+    const deleted = await dialog({
       title: `Delete ${name}?`,
       body: h('p', {}, 'The dashboard goes for everyone. The views its tiles show stay with their cubes.'),
       confirm: 'Delete',
       danger: true,
+      onsubmit: async () => {
+        await del(`/dashboards/${part(name)}?based_on=${Number(modelVersion ?? state.version)}`);
+        return true;
+      },
     });
-    if (!agreed) return;
-    try {
-      await del(`/dashboards/${part(name)}?based_on=${Number(modelVersion ?? state.version)}`);
-    } catch (problem) {
-      notify(problem.message, 'bad');
-      return;
-    }
+    if (!deleted) return;
     notify(`Deleted ${name}.`, 'good');
     await this.reload(null);
   }

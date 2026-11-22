@@ -1,18 +1,21 @@
 // The application: signing in, the shell around every page, and moving between pages.
 
 import { ApiError, api, events, get } from './api.js';
-import { dialog, h, icon, menu, mount, notify } from './ui.js';
+import { dialog, h, icon, menu, mount, notify, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
 
-/** The pages, in the order the navigation lists them. `admin` pages need the admin role. */
+/**
+ * The pages, in the order the navigation lists them. `admin` pages need the admin role;
+ * `shape` is the outline shown while a page loads.
+ */
 const PAGES = [
-  { path: '/', title: 'Overview', icon: 'home', load: async () => ({ render: overview }) },
-  { path: '/explore', title: 'Explore', icon: 'explore', load: () => import('./explore.js') },
-  { path: '/dashboards', title: 'Dashboards', icon: 'dashboard', load: () => import('./dashboards.js') },
-  { path: '/model', title: 'Model', icon: 'model', load: () => import('./model.js'), section: 'Manage', admin: true },
-  { path: '/admin', title: 'Administration', icon: 'admin', load: () => import('./admin.js'), admin: true },
+  { path: '/', title: 'Overview', icon: 'home', shape: 'cards', load: async () => ({ render: overview }) },
+  { path: '/explore', title: 'Explore', icon: 'explore', shape: 'panes', load: () => import('./explore.js') },
+  { path: '/dashboards', title: 'Dashboards', icon: 'dashboard', shape: 'cards', load: () => import('./dashboards.js') },
+  { path: '/model', title: 'Model', icon: 'model', shape: 'panes', load: () => import('./model.js'), section: 'Manage', admin: true },
+  { path: '/admin', title: 'Administration', icon: 'admin', shape: 'cards', load: () => import('./admin.js'), admin: true },
 ];
 
 const root = document.getElementById('app');
@@ -55,7 +58,7 @@ function unreachable(problem) {
     h('div', { class: 'card' },
       brand(),
       h('div', { class: 'banner bad' }, icon('alert'), problem.message),
-      h('button', { class: 'button primary', onclick: start }, icon('refresh', 16), 'Try again'))));
+      h('button', { class: 'button primary', onclick: (event) => working(event.currentTarget, start) }, icon('refresh', 16), 'Try again'))));
 }
 
 function brand() {
@@ -69,24 +72,22 @@ function signIn(reason) {
   const error = h('p', { class: 'error-text', role: 'alert', hidden: !reason }, reason ?? '');
   const submit = h('button', { class: 'button primary', type: 'submit' }, 'Sign in');
   const form = h('form', {
-    onsubmit: async (event) => {
+    onsubmit: (event) => {
       event.preventDefault();
-      submit.disabled = true;
-      submit.replaceChildren(h('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Signing in…');
-      error.hidden = true;
-      try {
-        const session = await api('POST', '/gui/session', { name: name.value.trim(), password: password.value });
-        state.user = session.user;
-        shell();
-      } catch (problem) {
-        error.textContent = problem.status === 401
-          ? 'That name and password do not match.'
-          : problem.message;
-        error.hidden = false;
-        password.select();
-        submit.disabled = false;
-        submit.replaceChildren('Sign in');
-      }
+      working(submit, async () => {
+        error.hidden = true;
+        try {
+          const session = await api('POST', '/gui/session', { name: name.value.trim(), password: password.value });
+          state.user = session.user;
+          shell();
+        } catch (problem) {
+          error.textContent = problem.status === 401
+            ? 'That name and password do not match.'
+            : problem.message;
+          error.hidden = false;
+          password.select();
+        }
+      });
     },
   },
   h('div', { class: 'field' }, h('label', { for: 'name' }, 'Name'), name),
@@ -278,7 +279,7 @@ async function route() {
     return;
   }
   document.title = `${entry.title} · Epiphany`;
-  mount(page, h('div', { class: 'page' }, loading()));
+  mount(page, h('div', { class: 'page' }, loading(entry.shape)));
   try {
     const module = await entry.load();
     if (ticket !== rendering) return;
@@ -306,8 +307,20 @@ document.addEventListener('click', (event) => {
 
 /* ---- Shared states of a page ---- */
 
-export function loading() {
-  return h('div', { class: 'empty', 'aria-busy': 'true' }, h('div', { class: 'spinner' }), h('p', {}, 'Loading…'));
+/**
+ * The outline of what is loading, in grey: `cards` for a page of cards, `panes` for a list
+ * beside a work area, and `lines` for rows of a table or grid. It shows after a moment, so
+ * that a quick load shows nothing at all.
+ */
+export function loading(shape = 'lines') {
+  const bones = (count, kind) => Array.from({ length: count }, () => h('div', { class: `skeleton ${kind}` }));
+  const lines = (count) => h('div', { class: 'lines' }, bones(count, 'line'));
+  const shapes = {
+    cards: () => [bones(1, 'title'), h('div', { class: 'grid-cards' }, bones(4, 'card')), lines(5)],
+    panes: () => h('div', { class: 'panes' }, lines(12), h('div', { class: 'lines' }, bones(1, 'title'), bones(11, 'line'))),
+    lines: () => lines(12),
+  };
+  return h('div', { class: 'loading', role: 'status', 'aria-busy': 'true' }, h('span', { class: 'visually-hidden' }, 'Loading…'), shapes[shape]());
 }
 
 export function empty(iconName, title, text, ...actions) {
@@ -340,7 +353,7 @@ function watch() {
   clearInterval(watching);
   const check = async () => {
     try {
-      const session = await api('GET', '/gui/session');
+      const session = await api('GET', '/gui/session', undefined, { quiet: true });
       setStatus(true);
       if (!session.signed_in && !session.open && state.user && !state.open) {
         events.dispatchEvent(new Event('signed-out'));
@@ -363,23 +376,16 @@ function setStatus(up) {
 
 async function palette() {
   if (document.querySelector('dialog.palette')) return;
-  const commands = visible().map((entry) => ({ label: entry.title, kind: 'Page', icon: entry.icon, run: () => go(entry.path) }));
-  try {
-    const definition = await model();
-    for (const cube of definition.cubes) {
-      commands.push({ label: `Explore ${cube.name}`, kind: 'Cube', icon: 'cube', run: () => go(`/explore?cube=${encodeURIComponent(cube.name)}`) });
-    }
-    for (const dashboard of definition.dashboards ?? []) {
-      commands.push({ label: dashboard.name, kind: 'Dashboard', icon: 'dashboard', run: () => go(`/dashboards?name=${encodeURIComponent(dashboard.name)}`) });
-    }
-  } catch {
-    // The pages are still there to choose.
-  }
-  commands.push(
+  const pages = visible().map((entry) => ({ label: entry.title, kind: 'Page', icon: entry.icon, run: () => go(entry.path) }));
+  const others = [
     { label: 'Use the light theme', kind: 'Theme', icon: 'sun', run: () => chooseTheme('light') },
     { label: 'Use the dark theme', kind: 'Theme', icon: 'moon', run: () => chooseTheme('dark') },
-    { label: 'Follow the system theme', kind: 'Theme', icon: 'monitor', run: () => chooseTheme('system') });
-  if (!state.open) commands.push({ label: 'Sign out', kind: 'Session', icon: 'out', run: signOut });
+    { label: 'Follow the system theme', kind: 'Theme', icon: 'monitor', run: () => chooseTheme('system') },
+    ...(state.open ? [] : [{ label: 'Sign out', kind: 'Session', icon: 'out', run: signOut }]),
+  ];
+  // The pages are there at once; the cubes and dashboards join them as the model comes.
+  let found = [];
+  let finding = !state.model;
 
   const input = h('input', { placeholder: 'Type a cube, page or command', 'aria-label': 'Search', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'palette-list', autocomplete: 'off' });
   const list = h('ul', { id: 'palette-list', role: 'listbox' });
@@ -388,7 +394,7 @@ async function palette() {
   let selected = 0;
   const draw = () => {
     const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
-    shown = commands.filter((command) => words.every((word) => command.label.toLowerCase().includes(word)));
+    shown = [...pages, ...found, ...others].filter((command) => words.every((word) => command.label.toLowerCase().includes(word)));
     selected = Math.min(selected, Math.max(0, shown.length - 1));
     mount(list, shown.length
       ? shown.map((command, index) => h('li', {
@@ -403,7 +409,8 @@ async function palette() {
         },
         onclick: () => choose(index),
       }, icon(command.icon, 16), command.label, h('span', { class: 'kind' }, command.kind)))
-      : h('li', { class: 'none' }, 'Nothing matches'));
+      : finding ? null : h('li', { class: 'none' }, 'Nothing matches'),
+    finding ? h('li', { class: 'none finding' }, h('span', { class: 'spinner small', 'aria-hidden': 'true' }), 'Finding cubes and dashboards…') : null);
     input.setAttribute('aria-activedescendant', shown.length ? `palette-${selected}` : '');
     list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   };
@@ -434,6 +441,24 @@ async function palette() {
   draw();
   element.showModal();
   input.focus();
+  try {
+    const definition = await model();
+    found = [
+      ...definition.cubes.map((cube) => ({ label: `Explore ${cube.name}`, kind: 'Cube', icon: 'cube', run: () => go(`/explore?cube=${encodeURIComponent(cube.name)}`) })),
+      ...(definition.dashboards ?? []).map((dashboard) => ({ label: dashboard.name, kind: 'Dashboard', icon: 'dashboard', run: () => go(`/dashboards?name=${encodeURIComponent(dashboard.name)}`) })),
+    ];
+  } catch {
+    // The pages are still there to choose.
+  }
+  finding = false;
+  if (!element.open) return;
+  // The command chosen stays chosen as the others join the list.
+  const was = shown[selected];
+  draw();
+  if (was && shown.includes(was) && shown.indexOf(was) !== selected) {
+    selected = shown.indexOf(was);
+    draw();
+  }
 }
 
 addEventListener('keydown', (event) => {

@@ -4,8 +4,8 @@
 
 import { del, get, part, put } from './api.js';
 import { empty, failure, go } from './app.js';
-import { beneath, marked, openButtons, reveal, ROW_LIMIT, searchBox, treeKey, treeRows } from './tree.js';
-import { dialog, h, icon, menu, mount, notify, parseNumber } from './ui.js';
+import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
+import { dialog, h, icon, menu, mount, notify, parseNumber, splitter, textWidths, working } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 
@@ -25,7 +25,12 @@ class ModelPage {
     const cube = params.get('cube');
     this.list = h('nav', { class: 'model-list', 'aria-label': 'Dimensions and cubes' });
     this.pane = h('section', { class: 'model-pane' });
-    mount(target, h('div', { class: 'model-page' }, this.list, this.pane));
+    const page = h('div', { class: 'model-page' }, this.list, this.pane);
+    mount(target, page);
+    // As wide as the names it lists need: icon, name, count and padding.
+    const width = textWidths();
+    const names = [...this.definition.dimensions, ...this.definition.cubes].map((item) => width(item.name));
+    splitter(page, { name: 'model-list', key: 'model', min: 200, max: 520, fit: () => Math.ceil(Math.max(120, ...names) + 130) }).fit();
     this.drawList(dimension, cube);
     if (dimension) this.open('dimension', dimension);
     else if (cube) this.open('cube', cube);
@@ -63,7 +68,7 @@ class ModelPage {
     search.addEventListener('input', draw);
     mount(this.list,
       h('div', { class: 'model-head' }, h('h2', {}, 'Model'), h('span', { class: 'badge' }, `Version ${this.version}`),
-        h('button', { class: 'button quiet small icon', 'aria-label': 'Earlier versions of the model', title: 'Earlier versions, to compare and restore', onclick: () => this.showHistory() }, icon('undo', 16))),
+        h('button', { class: 'button quiet small icon', 'aria-label': 'Earlier versions of the model', title: 'Earlier versions, to compare and restore', onclick: (event) => this.showHistory(event.currentTarget) }, icon('undo', 16))),
       h('div', { class: 'search' }, icon('search', 16), search),
       items);
     draw();
@@ -106,58 +111,63 @@ class ModelPage {
   }
 
   async remove(kind, name) {
-    const agreed = await dialog({
+    const update = await dialog({
       title: `Remove ${name}?`,
       body: h('p', {}, kind === 'cube'
         ? `The cube ${name} and every cell stored in it are removed. This cannot be undone.`
         : `The dimension ${name} is removed. A dimension a cube still uses cannot be removed.`),
       confirm: `Remove ${kind}`,
       danger: true,
+      onsubmit: async () => {
+        try {
+          return await del(`/${kind === 'cube' ? 'cubes' : 'dimensions'}/${part(name)}?based_on=${this.version}`);
+        } catch (problem) {
+          throw new Error(problem.status === 409 ? 'Someone changed the model since you opened it. Reload the page, then try again.' : problem.message);
+        }
+      },
     });
-    if (!agreed) return;
-    try {
-      const update = await del(`/${kind === 'cube' ? 'cubes' : 'dimensions'}/${part(name)}?based_on=${this.version}`);
-      this.version = update.version;
-      notify(`Removed ${name}.`, 'good');
-      this.editor = null;
-      go('/model');
-    } catch (problem) {
-      this.refused(problem);
-    }
+    if (!update) return;
+    this.version = update.version;
+    notify(`Removed ${name}.`, 'good');
+    this.editor = null;
+    go('/model');
   }
 
   /**
    * The earlier versions of the model the server keeps: each can be compared with the
-   * current one and restored, which makes it the newest version.
+   * current one and restored, which makes it the newest version. `button` shows the
+   * fetching at work.
    */
-  async showHistory() {
+  async showHistory(button) {
     let earlier;
     try {
-      earlier = await get('/admin/models');
+      earlier = await working(button, () => get('/admin/models'));
     } catch (problem) {
       notify(problem.message, 'bad');
       return;
     }
+    if (!earlier) return;
     const when = (seconds) => (seconds ? new Date(seconds * 1000).toLocaleString() : '');
     const list = h('ul', { class: 'history-list' }, earlier.length
       ? earlier.map((kept) => h('li', {},
         h('span', { class: 'grow' }, h('strong', {}, `Version ${kept.version}`), kept.name !== String(kept.version) ? h('span', { class: 'muted' }, ` (${kept.name})`) : null),
         h('span', { class: 'muted' }, when(kept.saved)),
-        h('button', { class: 'button small', type: 'button', onclick: () => this.compare(kept) }, 'Compare and restore…')))
+        h('button', { class: 'button small', type: 'button', onclick: (event) => this.compare(kept, event.currentTarget) }, 'Compare and restore…')))
       : h('li', { class: 'muted' }, 'No earlier versions are kept yet: each change to the model keeps the one it replaces.'));
     await dialog({ title: 'Earlier versions of the model', confirm: 'Close', cancel: null, body: list });
   }
 
   /** Shows what restoring an earlier model would change, and restores it if asked to. */
-  async compare(kept) {
-    document.querySelector('dialog[open]')?.close();
+  async compare(kept, button) {
     let earlier;
     try {
-      earlier = (await get(`/admin/models/${part(kept.name)}`)).model;
+      earlier = (await working(button, () => get(`/admin/models/${part(kept.name)}`)))?.model;
     } catch (problem) {
       notify(problem.message, 'bad');
       return;
     }
+    if (!earlier) return;
+    document.querySelector('dialog[open]')?.close();
     const said = [['dimensions', 'Dimensions'], ['cubes', 'Cubes'], ['dashboards', 'Dashboards']].flatMap(([key, label]) => {
       const byName = (list) => new Map((list ?? []).map((item) => [item.name, JSON.stringify(item)]));
       const [now, then] = [byName(this.definition[key]), byName(earlier[key])];
@@ -280,7 +290,7 @@ class Editor {
       icon('edit', 16),
       h('span', { class: 'grow' }, `Unsaved changes to ${this.working.name}.`),
       h('button', { class: 'button small', onclick: () => this.discard() }, 'Discard'),
-      h('button', { class: 'button small primary', onclick: () => this.save() }, icon('save', 14), 'Save'));
+      h('button', { class: 'button small primary', onclick: (event) => working(event.currentTarget, () => this.save()) }, icon('save', 14), 'Save'));
   }
 
   drawTabs(tabs) {
@@ -325,7 +335,7 @@ class Editor {
     const text = h('textarea', { class: 'textarea json-editor', spellcheck: 'false', 'aria-label': 'Definition as JSON', rows: 24 });
     text.value = JSON.stringify(this.working, null, 2);
     const error = h('p', { class: 'error-text', role: 'alert', hidden: true });
-    mount(this.body, h('div', { class: 'card card-body facts' },
+    mount(this.body, h('div', { class: 'card card-body facts json-card' },
       h('p', { class: 'muted' }, note),
       text,
       error,
@@ -373,8 +383,8 @@ class DimensionEditor extends Editor {
         this.drawTree();
       },
       ondown: () => {
-        const first = this.tree?.querySelector('.element-row.match') ?? this.tree?.querySelector('.element-row');
-        if (first) this.select(first.dataset.name);
+        const first = this.rows?.find((row) => row.match) ?? this.rows?.[0];
+        if (first) this.select(first.name);
       },
     });
     this.draw();
@@ -400,7 +410,45 @@ class DimensionEditor extends Editor {
   select(name) {
     this.selected = name;
     this.draw();
-    this.tree?.querySelector(`.element-row[data-name="${CSS.escape(name)}"]`)?.focus();
+    this.focusRow(name);
+  }
+
+  /** Puts the keys on an element's row of the tree, scrolled into view. */
+  focusRow(name) {
+    this.list?.reveal(this.rows.findIndex((row) => row.name === name))?.focus();
+  }
+
+  /** Opens or closes elements of the tree as shown, the keys staying where they were. */
+  toggle(names, opened) {
+    const into = this.found ?? this.open;
+    for (const name of names) {
+      if (opened) into.add(name);
+      else into.delete(name);
+    }
+    const focused = document.activeElement?.closest?.('.element-row')?.dataset.name;
+    this.drawTree();
+    if (focused) this.focusRow(focused);
+  }
+
+  /**
+   * How wide the list of elements must be to show each whole, indented to its depth, with
+   * its type beside it.
+   */
+  listWidth() {
+    const { roots, children } = this.hierarchy();
+    const depths = new Map();
+    const queue = roots.map((name) => [name, 0]);
+    for (const [name, depth] of queue) {
+      if (depths.has(name)) continue;
+      depths.set(name, depth);
+      for (const child of children(name)) queue.push([child, depth + 1]);
+    }
+    const width = textWidths();
+    const widest = this.working.elements.reduce((most, element) => Math.max(most, (depths.get(element.name) ?? 0) * INDENT + width(element.name)), 0);
+    const type = Math.max(...Object.values(TYPES).map(width));
+    const weighted = this.working.elements.some((element) => element.children?.some((child) => (child.weight ?? 1) !== 1));
+    // The row's indent, button, icon, gaps and type, the tree's padding and its scroll bar.
+    return Math.ceil(widest + type + (weighted ? 56 : 0) + 120);
   }
 
   get byName() {
@@ -426,7 +474,23 @@ class DimensionEditor extends Editor {
       this.drawTree();
     };
     const consolidated = () => this.working.elements.filter((element) => element.children?.length).map((element) => element.name);
+    // Drawn again, the tree stays scrolled where it was.
+    const scrolled = this.tree?.isConnected ? this.tree.scrollTop : 0;
     this.tree = h('div', { class: 'element-tree', role: 'tree', 'aria-label': 'Elements' });
+    this.none = h('p', { class: 'muted tree-none', hidden: true });
+    this.list = new Rows(this.tree, (index) => this.drawRow(index));
+    this.tree.append(this.list.element, this.none);
+    this.tree.addEventListener('keydown', (event) => {
+      const row = event.target.closest('.element-row');
+      if (!row) return;
+      treeKey(event, this.rows, Number(row.dataset.index), {
+        go: (name) => this.select(name),
+        open: (names, opened) => this.toggle(names, opened),
+        // Enter goes to the element's name, to edit it.
+        act: () => this.body.querySelector('#element-name')?.focus(),
+        page: this.list.page,
+      });
+    });
     // Copying gives the element chosen and all beneath it as an outline; pasting adds one.
     this.tree.addEventListener('copy', (event) => {
       const { roots } = this.hierarchy();
@@ -440,7 +504,7 @@ class DimensionEditor extends Editor {
       this.addOutline(text);
     });
     const selected = this.byName.get(this.selected);
-    mount(this.body, h('div', { class: 'element-layout' },
+    const layout = h('div', { class: 'element-layout' },
       h('div', { class: 'card element-list' },
         h('div', { class: 'card-head' },
           h('h3', { class: 'grow' }, `${this.working.elements.length.toLocaleString()} elements`),
@@ -455,64 +519,46 @@ class DimensionEditor extends Editor {
             to: (level) => open(this.working.elements.filter((_, index) => levels[index] > level).map((element) => element.name)),
           })),
         this.tree),
-      h('div', { class: 'card element-detail' }, selected ? this.detail(selected) : empty('member', 'Choose an element', 'Its name, type, children and attributes are edited here.'))));
+      h('div', { class: 'card element-detail' }, selected ? this.detail(selected) : empty('member', 'Choose an element', 'Its name, type, children and attributes are edited here.')));
+    mount(this.body, layout);
+    // The list is as wide as its elements need, or as wide as it was dragged to be.
+    splitter(layout, { name: 'element-list', key: 'elements', fit: () => this.listWidth(), min: 400, max: 960 }).fit();
     this.drawTree();
+    this.tree.scrollTop = scrolled;
+    this.list.update();
   }
 
   /** The tree of elements: as browsed, or showing what the search found in its place. */
   drawTree() {
     const { byName, roots, children } = this.hierarchy();
     const matches = this.words ? this.matching() : null;
-    const { rows, cut } = treeRows({ roots, children, open: this.found ?? this.open, matches });
-    const current = rows.find((row) => row.name === this.selected) ?? rows.find((row) => row.match) ?? rows[0];
-    const toggle = (names, opened) => {
-      const into = this.found ?? this.open;
-      for (const name of names) {
-        if (opened) into.add(name);
-        else into.delete(name);
-      }
-      const focused = document.activeElement?.closest?.('.element-row')?.dataset.name;
-      this.drawTree();
-      if (focused) this.tree.querySelector(`.element-row[data-name="${CSS.escape(focused)}"]`)?.focus();
-    };
-    const drawn = rows.map((row) => {
-      const element = byName.get(row.name);
-      const weight = row.parent ? byName.get(row.parent)?.children?.find((child) => child.name === row.name)?.weight ?? 1 : 1;
-      return h('div', {
-        class: `element-row${row.match ? ' match' : ''}${row.context ? ' context' : ''}`,
-        role: 'treeitem',
-        'aria-level': row.depth + 1,
-        'aria-selected': String(this.selected === row.name),
-        'aria-expanded': row.kids ? String(row.open) : null,
-        dataset: { depth: Math.min(row.depth, 8), name: row.name },
-        tabindex: row === current ? '0' : '-1',
-        onclick: () => this.select(row.name),
-        onkeydown: (event) => treeKey(event, {
-          go: (name) => this.select(name),
-          open: toggle,
-          // Enter goes to the element's name, to edit it.
-          act: () => this.body.querySelector('#element-name')?.focus(),
-        }),
-      },
-      row.kids
-        ? h('button', {
-          class: 'twisty',
-          tabindex: '-1',
-          'aria-label': row.open ? `Close ${row.name}` : `Open ${row.name}`,
-          onclick: (event) => {
-            event.stopPropagation();
-            toggle([row.name], !row.open);
-          },
-        }, icon(row.open ? 'down' : 'chevron', 12))
-        : h('span', { class: 'twisty' }),
-      icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
-      h('span', { class: 'grow' }, row.match ? marked(row.name, this.words) : row.name),
-      weight !== 1 ? h('span', { class: 'badge' }, `× ${weight}`) : null,
-      h('span', { class: 'muted' }, TYPES[element.type]));
-    });
-    if (cut) drawn.push(h('p', { class: 'hint' }, `Showing the first ${ROW_LIMIT.toLocaleString()} rows. Search, or close some elements, to see the rest.`));
-    mount(this.tree, drawn.length ? drawn : h('p', { class: 'muted' }, this.words ? 'Nothing matches.' : 'No elements yet.'));
+    this.shown = byName;
+    ({ rows: this.rows } = treeRows({ roots, children, open: this.found ?? this.open, matches }));
+    // The row the keys act on: the element chosen, or else the first found or shown.
+    this.at = this.rows.findIndex((row) => row.name === this.selected);
+    if (this.at < 0) this.at = Math.max(0, this.rows.findIndex((row) => row.match));
+    this.list.show(this.rows.length);
+    this.none.hidden = this.rows.length > 0;
+    this.none.textContent = this.words ? 'Nothing matches.' : 'No elements yet.';
     this.search.found(matches?.size ?? 0, Boolean(matches));
+  }
+
+  /** A row of the tree of elements. */
+  drawRow(index) {
+    const row = this.rows[index];
+    const element = this.shown.get(row.name);
+    const weight = row.parent ? this.shown.get(row.parent)?.children?.find((child) => child.name === row.name)?.weight ?? 1 : 1;
+    return treeRow(row, this.selected === row.name, {
+      class: `element-row${row.match ? ' match' : ''}${row.context ? ' context' : ''}`,
+      tabindex: index === this.at ? '0' : '-1',
+      dataset: { index },
+      onclick: () => this.select(row.name),
+    },
+    twisty(row, (opened) => this.toggle([row.name], opened)),
+    icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
+    h('span', { class: 'grow' }, row.match ? marked(row.name, this.words) : row.name),
+    weight !== 1 ? h('span', { class: 'badge' }, `× ${weight}`) : null,
+    h('span', { class: 'muted' }, TYPES[element.type]));
   }
   detail(element) {
     const byName = this.byName;
@@ -927,31 +973,35 @@ class CubeEditor extends Editor {
         h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, label), h('span', { class: 'muted' }, help)),
         h('div', { class: 'card-body' }, text));
     };
-    const check = h('button', { class: 'button', onclick: () => this.checkFeeders() }, icon('check', 16), 'Check the feeders');
+    const check = h('button', { class: 'button', onclick: (event) => this.checkFeeders(event.currentTarget) }, icon('check', 16), 'Check the feeders');
     mount(this.body, h('div', { class: 'facts' },
       area('rules', 'Rules', 'One a line: [N: | C: | S:] area = expression. The first that covers a cell decides it.'),
       area('feeders', 'Feeders', 'One a line: source => target, … They say which calculated cells may hold a value.'),
       h('div', { class: 'toolbar' }, check, h('span', { class: 'hint' }, 'Looks for calculated cells that hold a value but are not fed. It checks what is saved.'))));
   }
 
-  async checkFeeders() {
+  /** Looks for calculated cells that hold a value but are not fed; `button` shows it at work. */
+  async checkFeeders(button) {
+    let answer;
     try {
-      const answer = await get(`/cubes/${part(this.working.name)}/feeders/check`);
-      if (!answer.unfed.length) {
-        notify('Every calculated cell that holds a value is fed.', 'good');
-        return;
-      }
-      await dialog({
-        title: `${answer.unfed.length} cell${answer.unfed.length === 1 ? ' is' : 's are'} not fed`,
-        confirm: 'Close',
-        cancel: null,
-        body: h('div', { class: 'facts' },
-          h('p', { class: 'muted' }, 'A rule gives these cells a value, but no feeder feeds them, so totals leave them out.'),
-          h('ul', { class: 'plain-list' }, answer.unfed.map((cell) => h('li', { class: 'mono' }, cell.at.join(' · '))))),
-      });
+      answer = await working(button, () => get(`/cubes/${part(this.working.name)}/feeders/check`));
     } catch (problem) {
       notify(problem.message, 'bad');
+      return;
     }
+    if (!answer) return;
+    if (!answer.unfed.length) {
+      notify('Every calculated cell that holds a value is fed.', 'good');
+      return;
+    }
+    await dialog({
+      title: `${answer.unfed.length} cell${answer.unfed.length === 1 ? ' is' : 's are'} not fed`,
+      confirm: 'Close',
+      cancel: null,
+      body: h('div', { class: 'facts' },
+        h('p', { class: 'muted' }, 'A rule gives these cells a value, but no feeder feeds them, so totals leave them out.'),
+        h('ul', { class: 'plain-list' }, answer.unfed.map((cell) => h('li', { class: 'mono' }, cell.at.join(' · '))))),
+    });
   }
 
   drawViews() {
@@ -961,7 +1011,8 @@ class CubeEditor extends Editor {
         const text = h('textarea', { class: 'textarea', spellcheck: 'false', rows: 4, 'aria-label': `Query of ${name}` });
         text.value = view.mdx;
         text.addEventListener('change', () => {
-          this.working.views[name] = { mdx: text.value.trim() };
+          // The query changes; the view's sizes, format and highlights stay with it.
+          this.working.views[name] = { ...view, mdx: text.value.trim() };
           this.changed();
         });
         return h('div', { class: 'card' },

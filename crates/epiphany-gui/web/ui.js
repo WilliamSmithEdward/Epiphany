@@ -154,19 +154,18 @@ export function dialog({ title, body, confirm = 'OK', cancel = 'Cancel', danger 
         submit));
     const element = h('dialog', { 'aria-label': title, class: wide ? 'wide' : null }, form);
     let result = null;
-    form.addEventListener('submit', async (event) => {
+    form.addEventListener('submit', (event) => {
       event.preventDefault();
-      submit.disabled = true;
-      error.hidden = true;
-      try {
-        result = await onsubmit(form);
-        element.close();
-      } catch (problem) {
-        error.textContent = problem.message;
-        error.hidden = false;
-      } finally {
-        submit.disabled = false;
-      }
+      working(submit, async () => {
+        error.hidden = true;
+        try {
+          result = await onsubmit(form);
+          element.close();
+        } catch (problem) {
+          error.textContent = problem.message;
+          error.hidden = false;
+        }
+      });
     });
     element.addEventListener('close', () => {
       element.remove();
@@ -176,6 +175,101 @@ export function dialog({ title, body, confirm = 'OK', cancel = 'Cancel', danger 
     element.showModal();
     element.querySelector('input, select, textarea')?.focus();
   });
+}
+
+/**
+ * Shows a button at work while the task it started runs: after a moment a spinner takes the
+ * place of its label, and it takes no more presses until the task is done. Resolves with
+ * what the task gives; pressed while it is at work, it does nothing.
+ */
+export async function working(button, task) {
+  if (button.getAttribute('aria-busy') === 'true') return undefined;
+  button.setAttribute('aria-busy', 'true');
+  button.setAttribute('aria-disabled', 'true');
+  try {
+    return await task();
+  } finally {
+    button.removeAttribute('aria-busy');
+    button.removeAttribute('aria-disabled');
+  }
+}
+
+/* ---- Sizes ---- */
+
+let canvas;
+
+/** Measures text as `element`'s font draws it: returns how wide, in pixels, a text is. */
+export function textWidths(element = document.body) {
+  const style = getComputedStyle(element);
+  const context = (canvas ??= document.createElement('canvas')).getContext('2d');
+  context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  return (text) => context.measureText(String(text)).width;
+}
+
+/**
+ * A handle on the edge of a pane that sets its width, as `--name` on `container`, which lays
+ * the pane out by it. Dragging it or the arrow keys change the width, kept in this browser
+ * by `key`; a double-click lets go of it, and the pane fits its content again, `fit()` being
+ * that width. `edge` is the side of the pane the handle is on: its end, or its start for a
+ * pane on the right. The container places the handle, by the same `--name`.
+ */
+export function splitter(container, { name, key, fit, min = 200, max = 900, edge = 'end' }) {
+  const stored = `epiphany.width.${key}`;
+  const handle = h('div', {
+    class: `splitter ${edge}`,
+    role: 'separator',
+    tabindex: '0',
+    'aria-orientation': 'vertical',
+    'aria-valuemin': min,
+    'aria-valuemax': max,
+    'aria-label': 'Width of the pane',
+    title: 'Drag to change the width; double-click to fit it to its content',
+  });
+  let width = 0;
+  const set = (next, keep) => {
+    width = Math.round(Math.max(min, Math.min(max, next)));
+    container.style.setProperty(`--${name}`, `${width}px`);
+    handle.setAttribute('aria-valuenow', width);
+    if (keep) localStorage.setItem(stored, String(width));
+  };
+  const direction = edge === 'end' ? 1 : -1;
+  handle.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const origin = { x: event.clientX, width };
+    document.body.classList.add('resizing');
+    const moved = (next) => set(origin.width + (next.clientX - origin.x) * direction);
+    const done = () => {
+      window.removeEventListener('pointermove', moved);
+      window.removeEventListener('pointerup', done);
+      window.removeEventListener('pointercancel', done);
+      document.body.classList.remove('resizing');
+      set(width, true);
+    };
+    window.addEventListener('pointermove', moved);
+    window.addEventListener('pointerup', done);
+    window.addEventListener('pointercancel', done);
+  });
+  handle.addEventListener('keydown', (event) => {
+    const step = { ArrowLeft: -16, ArrowRight: 16 }[event.key];
+    if (!step) return;
+    event.preventDefault();
+    set(width + step * direction, true);
+  });
+  const refit = () => {
+    localStorage.removeItem(stored);
+    set(fit());
+  };
+  handle.addEventListener('dblclick', refit);
+  container.append(handle);
+  return {
+    /** Sets the width as kept, or as the content needs; again when the content changes. */
+    fit() {
+      const kept = Number(localStorage.getItem(stored));
+      set(kept || fit());
+    },
+    refit,
+  };
 }
 
 /* ---- Menus ---- */

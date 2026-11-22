@@ -2,8 +2,8 @@
 // that chooses one member of a dimension from its tree.
 
 import { get, modelVersion, part } from './api.js';
-import { marked, openButtons, reveal, ROW_LIMIT, searchBox, treeKey, treeRows } from './tree.js';
-import { dialog, h, icon, mount } from './ui.js';
+import { marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
+import { dialog, h, icon } from './ui.js';
 
 const loaded = new Map();
 
@@ -36,7 +36,11 @@ export async function chooseMember(dim, { title, current, hint = 'Double-click a
   let open = new Set([...roots, ...reveal({ roots, children, matches: new Set([chosen]) })]);
   let found = null;
   let words = '';
+  let rows = [];
+  // The row the keys act on.
+  let at = 0;
   const tree = h('div', { class: 'picker-tree', role: 'tree', 'aria-label': `Members of ${name}` });
+  const none = h('p', { class: 'muted tree-none', hidden: true }, 'Nothing matches.');
   // Choosing a member and taking it at once: the dialog's form is the tree's.
   const apply = () => tree.closest('form')?.requestSubmit();
   const toggle = (names, opened) => {
@@ -46,71 +50,64 @@ export async function chooseMember(dim, { title, current, hint = 'Double-click a
       else into.delete(each);
     }
   };
+  const choose = (element) => {
+    chosen = element;
+    draw(element);
+  };
+  const list = new Rows(tree, (index) => {
+    const row = rows[index];
+    return treeRow(row, row.name === chosen, {
+      class: `picker-row${row.context ? ' context' : ''}`,
+      tabindex: index === at ? '0' : '-1',
+      dataset: { index },
+      onclick: () => choose(row.name),
+      ondblclick: () => {
+        chosen = row.name;
+        apply();
+      },
+    },
+    twisty(row, (opened) => {
+      toggle([row.name], opened);
+      draw(row.name);
+    }),
+    h('span', { class: 'choice', 'aria-hidden': 'true' }),
+    icon(dim.byName.get(row.name).type === 'consolidated' ? 'sigma' : 'member', 14),
+    h('span', { class: 'grow' }, row.match ? marked(row.name, words) : row.name),
+    row.kids ? h('span', { class: 'muted' }, String(row.kids)) : null);
+  });
+  tree.append(list.element, none);
+  // One member is chosen, so the choice follows the keys.
+  tree.addEventListener('keydown', (event) => {
+    const row = event.target.closest('.picker-row');
+    if (!row) return;
+    const index = Number(row.dataset.index);
+    if (event.key === ' ') {
+      event.preventDefault();
+      choose(rows[index].name);
+      return;
+    }
+    treeKey(event, rows, index, {
+      go: choose,
+      open: (names, opened) => {
+        toggle(names, opened);
+        draw(rows[index].name);
+      },
+      act: (target) => {
+        chosen = target;
+        apply();
+      },
+      page: list.page,
+    });
+  });
   const draw = (focus) => {
     const matches = words ? new Set(dim.elements.filter((element) => element.name.toLowerCase().includes(words)).map((element) => element.name)) : null;
-    const { rows, cut } = treeRows({ roots, children, open: found ?? open, matches });
-    const current = rows.find((row) => row.name === (focus ?? chosen)) ?? rows.find((row) => row.match) ?? rows[0];
-    const choose = (element) => {
-      chosen = element;
-      draw(element);
-    };
-    const drawn = rows.map((row) => {
-      const element = dim.byName.get(row.name);
-      return h('div', {
-        class: `picker-row${row.context ? ' context' : ''}`,
-        role: 'treeitem',
-        'aria-level': row.depth + 1,
-        'aria-selected': String(row.name === chosen),
-        'aria-expanded': row.kids ? String(row.open) : null,
-        tabindex: row === current ? '0' : '-1',
-        dataset: { depth: Math.min(row.depth, 8), name: row.name },
-        onclick: () => choose(row.name),
-        ondblclick: () => {
-          chosen = row.name;
-          apply();
-        },
-        onkeydown: (event) => {
-          if (event.key === ' ') {
-            event.preventDefault();
-            choose(row.name);
-            return;
-          }
-          // One member is chosen, so the choice follows the keys.
-          treeKey(event, {
-            go: (target) => choose(target),
-            open: (names, opened) => {
-              toggle(names, opened);
-              draw(row.name);
-            },
-            act: (target) => {
-              chosen = target;
-              apply();
-            },
-          });
-        },
-      },
-      row.kids
-        ? h('button', {
-          class: 'twisty',
-          type: 'button',
-          tabindex: '-1',
-          'aria-label': row.open ? `Close ${row.name}` : `Open ${row.name}`,
-          onclick: (event) => {
-            event.stopPropagation();
-            toggle([row.name], !row.open);
-            draw(row.name);
-          },
-        }, icon(row.open ? 'down' : 'chevron', 14))
-        : h('span', { class: 'twisty' }),
-      h('span', { class: 'choice', 'aria-hidden': 'true' }),
-      icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
-      h('span', { class: 'grow' }, row.match ? marked(row.name, words) : row.name),
-      row.kids ? h('span', { class: 'muted' }, String(row.kids)) : null);
-    });
-    if (cut) drawn.push(h('p', { class: 'hint' }, `Showing the first ${ROW_LIMIT.toLocaleString()} rows. Search to find the rest.`));
-    mount(tree, drawn.length ? drawn : h('p', { class: 'muted' }, 'Nothing matches.'));
+    ({ rows } = treeRows({ roots, children, open: found ?? open, matches }));
+    at = rows.findIndex((row) => row.name === (focus ?? chosen));
+    if (at < 0) at = Math.max(0, rows.findIndex((row) => row.match));
+    list.show(rows.length);
+    none.hidden = rows.length > 0;
     search.found(matches?.size ?? 0, Boolean(matches));
-    if (focus) tree.querySelector('[tabindex="0"]')?.focus();
+    if (focus) list.reveal(at)?.focus();
   };
   const search = searchBox({
     label: `Find in ${name}`,
@@ -121,8 +118,8 @@ export async function chooseMember(dim, { title, current, hint = 'Double-click a
     },
     // Down goes to the first member found, or, with no search, to the one chosen.
     ondown: () => {
-      const first = words ? tree.querySelector('.picker-row:not(.context)') : null;
-      if (first) chosen = first.dataset.name;
+      const first = words ? rows.find((row) => !row.context) : null;
+      if (first) chosen = first.name;
       draw(chosen);
     },
   });
@@ -139,7 +136,7 @@ export async function chooseMember(dim, { title, current, hint = 'Double-click a
     to: (level) => reopen(dim.elements.filter((element) => element.level > level).map((element) => element.name)),
   });
   draw();
-  return dialog({
+  const asked = dialog({
     title,
     confirm: 'Apply',
     body: h('div', { class: 'picker' },
@@ -148,4 +145,7 @@ export async function chooseMember(dim, { title, current, hint = 'Double-click a
       h('p', { class: 'hint' }, hint)),
     onsubmit: () => chosen,
   });
+  // Open, the tree shows the member chosen.
+  list.reveal(at);
+  return asked;
 }
