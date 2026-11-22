@@ -8,17 +8,34 @@ import { dialog, h, icon, mount, notify, working } from './ui.js';
 
 /** Comments: methods of the explorer. */
 export const comments = {
-  /** Fetches the cube's comments, each cell's kept by its place. */
+  /**
+   * Fetches the cube's comments, each cell's kept by its place; resolves with whether they
+   * came. Until they do, the comments fetched before stay.
+   */
   async loadComments() {
-    this.commented = new Map();
+    const commented = new Map();
     try {
       const found = await get(`/cubes/${part(this.cube.name)}/comments`, { quiet: true });
       for (const comment of found.comments) {
         const key = JSON.stringify(comment.at);
-        this.commented.set(key, [...(this.commented.get(key) ?? []), comment]);
+        commented.set(key, [...(commented.get(key) ?? []), comment]);
       }
     } catch {
       // Without them the grid still shows; no cell is marked.
+      return false;
+    }
+    this.commented = commented;
+    return true;
+  },
+
+  /** Marks the comments on the cells drawn, again, as they now are. */
+  markAllComments() {
+    for (const tr of this.grid?.rows.values() ?? []) {
+      for (const td of tr.querySelectorAll('td[data-r]')) {
+        td.classList.remove('commented');
+        td.querySelector('.comment-mark')?.remove();
+        this.markComments(td, Number(td.dataset.r), Number(td.dataset.c));
+      }
     }
   },
 

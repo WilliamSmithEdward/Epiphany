@@ -52,7 +52,7 @@ class Explorer {
     // of the result that may be written, as "row,column".
     this.tx = null;
     this.edits = new Map();
-    this.writable = new Set();
+    this.forgetWritable();
     // Cells held, which spreads leave as they are: by their place in the cube, so that a hold
     // outlasts sorting, pivoting and saving, until it is released.
     // A hold that no longer fits the cube, after a change to the model, is let go.
@@ -740,10 +740,8 @@ class Explorer {
       this.result = result;
       this.error = null;
       this.took = performance.now() - started;
+      this.forgetWritable();
       if (this.layout.mdx) this.adopt(result);
-      const [found] = await Promise.all([this.findWritable(result), this.loadComments()]);
-      ({ writable: this.writable, why: this.why } = found);
-      if (ticket !== this.ticket) return;
     } catch (problem) {
       if (ticket !== this.ticket) return;
       if (problem.code === 'stopped') {
@@ -759,6 +757,11 @@ class Explorer {
     this.drawToolbar();
     this.draw();
     if (this.commentCell) this.drawComments();
+    // The numbers show at once; the comments mark their cells as they come.
+    if (this.result && (await this.loadComments()) && ticket === this.ticket) {
+      this.markAllComments();
+      if (this.commentCell) this.drawComments();
+    }
   }
 
   /** Says the query is still running, and for how long, with a button to stop waiting. */

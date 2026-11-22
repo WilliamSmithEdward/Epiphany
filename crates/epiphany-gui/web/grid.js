@@ -68,10 +68,9 @@ export const grid = {
     if (!columnTuples.length || (result.axes.length > 1 && !rowTuples.length)) {
       mount(this.output, empty('grid', 'Nothing to show', this.layout.nonEmpty ? 'Every cell is empty. Show empty rows to see them.' : 'The query chose no members.'));
       mount(this.statusLine);
+      this.grid = null;
       return;
     }
-    const limit = 5000;
-    const shownRows = rowTuples.slice(0, limit);
     const total = (tuple) => tuple.some((m) => m.type === 'consolidated');
     // The attributes shown beside each dimension's members, where the layout asks for them.
     const shownAttributes = (place, tuple) => (tuple ?? []).map((m) => this.entryOf(place, m.dimension)?.attributes ?? []);
@@ -121,60 +120,59 @@ export const grid = {
     }
     const body = h('tbody');
     const columnCount = columnTuples.length;
-    // Totals take a value to spread where the user may write and nothing in the slicer is calculated.
-    const spreads = this.mayWrite() && !(result.slicer ?? []).some((m) => m.type === 'calculated');
-    const highlight = highlighter(this.layout.highlights, shownRows, columnTuples, (r, c) => result.cells[r * columnCount + c], total);
-    shownRows.forEach((tuple, r) => {
-      const tr = h('tr', { class: total(tuple) ? 'total-row' : '' });
-      tuple.forEach((m, level) => {
-        // A member repeated from the row above is left blank, so groups read clearly.
-        const shares = (other) => other && other.slice(0, level + 1).every((o, i) => o.unique_name === tuple[i].unique_name);
-        const same = shares(shownRows[r - 1]);
-        // A heading stands for its row and the rows beneath that repeat it.
-        let last = r;
-        while (!same && shares(shownRows[last + 1])) last += 1;
-        const down = { r1: r, r2: last };
-        tr.append(h('th', {
-          scope: 'row',
-          tabindex: '-1',
-          class: `row-head ${m.type === 'consolidated' ? 'total' : ''}`,
-          dataset: same ? down : { ...down, ...this.headingOf('rows', m) },
-        }, same ? '' : this.memberLabel('rows', m)));
-        for (const attribute of rowAttributes[level] ?? []) {
-          tr.append(h('th', { scope: 'row', tabindex: '-1', class: 'row-attribute', title: attribute, dataset: down }, same ? '' : this.attributeValue(m, attribute)));
-        }
-      });
-      for (let c = 0; c < columnCount; c += 1) {
-        const value = result.cells[r * columnCount + c];
-        const totalCell = total(tuple) || total(columnTuples[c]);
-        const number = typeof value === 'number';
-        const editable = this.writable.has(`${r},${c}`);
-        const edited = editable && this.edits.has(this.key(r, c));
-        const spreadable = spreads && totalCell && !editable && ![...tuple, ...columnTuples[c]].some((m) => m.type === 'calculated');
-        const held = this.holds.size > 0 && this.holds.has(this.key(r, c));
-        const td = h('td', {
-          class: `${totalCell ? 'total' : ''} ${number ? 'n' : 's'} ${number && value < 0 ? 'negative' : ''} ${editable ? 'editable' : ''} ${edited ? 'edited' : ''} ${spreadable ? 'spreadable' : ''} ${held ? 'held' : ''}`,
-          tabindex: r === 0 && c === 0 ? '0' : '-1',
-          title: held ? 'Held: spreads leave it as it is' : edited ? 'Changed, not yet saved' : spreadable ? 'Type a value to spread it over the leaves beneath' : undefined,
-          dataset: { r, c },
-        }, formatValue(value, this.layout.format));
-        highlight?.(td, r, c, value);
-        if (this.commented?.size) this.markComments(td, r, c);
-        tr.append(td);
-      }
-      body.append(tr);
-    });
+    const value = (r, c) => result.cells[r * columnCount + c];
+    // Only the rows in view are drawn, between two rows as tall as those above and below them.
+    // Each is made afresh at its height: Chrome holds a table row to the height it was laid
+    // out at when only its cell's height changes.
+    const spacer = (height = 0) => {
+      const cell = h('td', { colspan: rowWidth + columnCount });
+      cell.style.height = `${height}px`;
+      return h('tr', { class: 'spacer', 'aria-hidden': 'true' }, cell);
+    };
+    const grid = {
+      table,
+      body,
+      rowTuples,
+      columnTuples,
+      columnCount,
+      rowWidth,
+      headRows,
+      rowAttributes,
+      total,
+      value,
+      // Totals take a value to spread where the user may write and nothing in the slicer is calculated.
+      spreads: this.mayWrite() && !(result.slicer ?? []).some((m) => m.type === 'calculated'),
+      highlight: highlighter(this.layout.highlights, rowTuples, columnTuples, value, total),
+      spacer,
+      top: spacer(),
+      bottom: spacer(),
+      rows: new Map(),
+      from: 0,
+      to: 0,
+      height: 32,
+      lefts: [],
+    };
+    this.grid = grid;
+    body.append(grid.top, grid.bottom);
     const keys = [
       ...(rowTuples[0] ?? []).flatMap((m, index) => [`row:${m.dimension}`, ...rowAttributes[index].map((attribute) => `row:${m.dimension}:${attribute}`)]),
       ...columnTuples.map((tuple) => `col:${tuple.map((m) => m.unique_name).join('|')}`),
     ];
     table.append(h('colgroup', {}, keys.map((key) => h('col', { dataset: { key } }))), head, body);
     const summary = h('span', { class: 'selection-summary', 'aria-live': 'polite' });
+    const previous = this.selection;
     this.selection = new Selection(table, {
-      rows: shownRows.length,
+      rows: rowTuples.length,
       columns: columnCount,
-      value: (r, c) => result.cells[r * columnCount + c],
+      value,
       changed: (chosen) => mount(summary, ...this.summarize(chosen)),
+      cell: (r, c) => grid.rows.get(r)?.children[rowWidth + c],
+      reveal: (r, c) => {
+        const cell = this.revealRow(r)?.children[rowWidth + c];
+        cell?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return cell;
+      },
+      drawn: () => grid.rows,
     });
     table.addEventListener('contextmenu', (event) => {
       const heading = event.target.closest('th[data-member]');
@@ -210,19 +208,240 @@ export const grid = {
       const cell = event.target.closest('td.editable');
       if (cell) this.edit(cell);
     });
-    const scroller = h('div', { class: 'pivot-scroll' }, table);
+    // Focus on the grid itself, its cell scrolled away and let go, goes back to that cell at a key.
+    const scroller = h('div', { class: 'pivot-scroll', tabindex: '-1' }, table);
+    scroller.addEventListener('keydown', (event) => {
+      if (event.target !== scroller || !['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'PageUp', 'PageDown', 'Home', 'End', 'Enter', 'F2'].includes(event.key)) return;
+      event.preventDefault();
+      const { r, c } = this.selection.current ?? { r: 0, c: 0 };
+      this.selection.activate(r, c);
+    });
+    let queued = false;
+    scroller.addEventListener('scroll', () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(() => {
+        queued = false;
+        this.updateRows();
+      });
+    });
+    new ResizeObserver(() => this.updateRows()).observe(scroller);
+    grid.scroller = scroller;
+    // Drawn again, the grid stays where it was scrolled to.
+    const before = this.output.querySelector(':scope > .pivot-scroll');
+    const scrolled = before ? [before.scrollTop, before.scrollLeft] : [0, 0];
     mount(this.output, scroller);
+    // The first rows are drawn, and, collapsed, the widest of each column's content in any
+    // row, for the columns to fit; then the rows as tall as they are drawn.
+    this.drawRows(0, Math.min(rowTuples.length, 40));
+    const measure = this.measureRow();
+    if (measure) body.append(measure);
     this.size(table);
+    measure?.remove();
     this.pinHeads(table);
+    grid.height = grid.rows.get(0)?.offsetHeight || grid.height;
+    [scroller.scrollTop, scroller.scrollLeft] = scrolled;
+    this.updateRows(true);
+    if (previous?.rows === rowTuples.length && previous.columns === columnCount) this.selection.restore(previous);
     this.focusCell();
     this.refocusHeading(table);
     this.markFound();
-    const cells = rowTuples.length * columnCount;
+    this.drawStatus(summary);
+    this.explainRows(this.drawnRows());
+  },
+
+  /** The places of the rows drawn. */
+  drawnRows() {
+    const { from, to } = this.grid;
+    return Array.from({ length: to - from }, (_, index) => from + index);
+  },
+
+  /**
+   * Draws the rows in view and some beyond, when scrolling has moved past those drawn; with
+   * `again`, whatever is drawn.
+   */
+  updateRows(again = false) {
+    const grid = this.grid;
+    if (!grid?.scroller.isConnected) return;
+    const { scroller, height } = grid;
+    const first = Math.floor(scroller.scrollTop / height);
+    const last = Math.ceil((scroller.scrollTop + scroller.clientHeight - grid.table.tHead.offsetHeight) / height);
+    if (!again && first >= grid.from && last <= grid.to) return;
+    // Beyond what is seen, enough rows that a little scrolling draws nothing new.
+    this.drawRows(Math.max(0, first - 30), Math.min(grid.rowTuples.length, Math.max(last, first + 1) + 30));
+    this.explainSoon();
+  },
+
+  /**
+   * Draws the rows from `from` up to `to`: those already drawn stay as they are, the focus
+   * with them; the others go, the focus on one passing to the grid itself.
+   */
+  drawRows(from, to) {
+    const grid = this.grid;
+    for (const [r, tr] of grid.rows) {
+      if (r >= from && r < to) continue;
+      if (tr.contains(document.activeElement)) grid.scroller.focus({ preventScroll: true });
+      tr.remove();
+      grid.rows.delete(r);
+    }
+    const kept = [...grid.rows.keys()];
+    const low = kept.length ? Math.min(...kept) : to;
+    const high = kept.length ? Math.max(...kept) + 1 : to;
+    for (const [end, height] of [['top', from * grid.height], ['bottom', (grid.rowTuples.length - to) * grid.height]]) {
+      const fresh = grid.spacer(height);
+      grid[end].replaceWith(fresh);
+      grid[end] = fresh;
+    }
+    const add = (start, end, place) => {
+      const rows = document.createDocumentFragment();
+      for (let r = start; r < end; r += 1) {
+        const tr = this.buildRow(r);
+        grid.rows.set(r, tr);
+        rows.append(tr);
+      }
+      place(rows);
+    };
+    add(from, Math.min(low, to), (rows) => grid.top.after(rows));
+    add(Math.max(high, from), to, (rows) => grid.bottom.before(rows));
+    grid.from = from;
+    grid.to = to;
+    // With the cell the keys act on beyond those drawn, Tab still comes into the grid.
+    if (!grid.body.querySelector('td[tabindex="0"]')) grid.rows.get(from)?.children[grid.rowWidth]?.setAttribute('tabindex', '0');
+    this.selection.paint();
+    this.paintFound();
+  },
+
+  /** A row of the grid, scrolled into view below the headings and drawn; null past the ends. */
+  revealRow(r) {
+    const grid = this.grid;
+    if (!grid || r < 0 || r >= grid.rowTuples.length) return null;
+    const { scroller, height } = grid;
+    const top = r * height;
+    const below = scroller.clientHeight - grid.table.tHead.offsetHeight;
+    if (top < scroller.scrollTop) scroller.scrollTop = top;
+    else if (top + height > scroller.scrollTop + below) scroller.scrollTop = top + height - below;
+    this.updateRows();
+    return grid.rows.get(r) ?? null;
+  },
+
+  /**
+   * A row of the grid: its headings, pinned beside the cells and blank where they repeat the
+   * row above, so that groups read clearly; then its cells.
+   */
+  buildRow(r) {
+    const grid = this.grid;
+    const { rowTuples, rowAttributes, total, lefts } = grid;
+    const tuple = rowTuples[r];
+    const tr = h('tr', { class: total(tuple) ? 'total-row' : '', 'aria-rowindex': grid.headRows + r + 1, dataset: { r } });
+    const pin = (th) => {
+      const place = tr.children.length;
+      if (lefts.length) {
+        th.style.left = `${lefts[place] ?? 0}px`;
+        th.classList.add('pinned');
+      }
+      tr.append(th);
+      return th;
+    };
+    tuple.forEach((m, level) => {
+      const shares = (other) => other && other.slice(0, level + 1).every((o, i) => o.unique_name === tuple[i].unique_name);
+      const same = shares(rowTuples[r - 1]);
+      // A heading stands for its row and the rows beneath that repeat it.
+      let last = r;
+      while (!same && shares(rowTuples[last + 1])) last += 1;
+      const down = { r1: r, r2: last };
+      const heading = pin(h('th', {
+        scope: 'row',
+        tabindex: '-1',
+        class: `row-head ${m.type === 'consolidated' ? 'total' : ''}`,
+        dataset: same ? down : { ...down, ...this.headingOf('rows', m), level },
+      }, same ? '' : this.memberLabel('rows', m)));
+      // Beneath each row's first heading, the handle that sets the height of every row.
+      if (level === 0) heading.append(h('span', { class: 'row-resize', role: 'separator', 'aria-orientation': 'horizontal', 'aria-label': 'Drag to change the height of every row', title: 'Drag to change the height of every row' }));
+      for (const attribute of rowAttributes[level] ?? []) {
+        pin(h('th', { scope: 'row', tabindex: '-1', class: 'row-attribute', title: attribute, dataset: down }, same ? '' : this.attributeValue(m, attribute)));
+      }
+    });
+    for (let c = 0; c < grid.columnCount; c += 1) tr.append(this.buildCell(r, c));
+    return tr;
+  },
+
+  /** A cell of the grid: its value as the view formats it, highlighted, and marked for writing and comments. */
+  buildCell(r, c) {
+    const { value, total, rowTuples, columnTuples, highlight } = this.grid;
+    const shown = value(r, c);
+    const number = typeof shown === 'number';
+    const current = this.selection?.current ?? { r: 0, c: 0 };
+    const td = h('td', {
+      class: `${total(rowTuples[r]) || total(columnTuples[c]) ? 'total' : ''} ${number ? 'n' : 's'} ${number && shown < 0 ? 'negative' : ''}`,
+      tabindex: current.r === r && current.c === c ? '0' : '-1',
+      dataset: { r, c },
+    }, formatValue(shown, this.layout.format));
+    this.markWriting(td, r, c);
+    highlight?.(td, r, c, shown);
+    if (this.commented?.size) this.markComments(td, r, c);
+    return td;
+  },
+
+  /**
+   * A row holding, in each column, the widest of what the column shows in any row, for the
+   * columns to fit to though most rows are not drawn: collapsed, it takes no room. None when
+   * every row is drawn.
+   */
+  measureRow() {
+    const { rowTuples, columnTuples, columnCount, rowAttributes, total, value, rows } = this.grid;
+    if (rows.size >= rowTuples.length) return null;
+    const widest = (length) => {
+      let best = 0;
+      let most = -1;
+      rowTuples.forEach((_, r) => {
+        const size = length(r);
+        if (size > most) [best, most] = [r, size];
+      });
+      return best;
+    };
+    const cells = [];
+    (rowTuples[0] ?? []).forEach((first, level) => {
+      const entry = this.entryOf('rows', first.dimension);
+      const dim = this.dims.get(first.dimension);
+      const label = (m) => (entry?.alias ? dim?.byName.get(m.name)?.attributes?.[entry.alias] : null) || m.name;
+      // A name is as wide as its letters and its indent, at about six pixels a letter.
+      const r = widest((row) => String(label(rowTuples[row][level])).length + (entry && dim ? this.depthOf(entry, dim, rowTuples[row][level].name) * 3 : 0));
+      cells.push(h('th', { class: `row-head ${rowTuples[r][level].type === 'consolidated' ? 'total' : ''}` }, this.memberLabel('rows', rowTuples[r][level])));
+      for (const attribute of rowAttributes[level] ?? []) {
+        const longest = widest((row) => String(this.attributeValue(rowTuples[row][level], attribute)).length);
+        cells.push(h('th', { class: 'row-attribute' }, this.attributeValue(rowTuples[longest][level], attribute)));
+      }
+    });
+    for (let c = 0; c < columnCount; c += 1) {
+      // The widest number is the largest, or the most negative; the widest text the longest.
+      let [large, low, long] = [0, 0, 0];
+      let [most, least, longest] = [-1, 0, -1];
+      rowTuples.forEach((_, r) => {
+        const each = value(r, c);
+        if (typeof each === 'number') {
+          if (Math.abs(each) > most) [large, most] = [r, Math.abs(each)];
+          if (each < least) [low, least] = [r, each];
+        } else if (each !== null && each !== undefined && String(each).length > longest) {
+          [long, longest] = [r, String(each).length];
+        }
+      });
+      const [r, text] = [large, low, long]
+        .map((row) => [row, String(formatValue(value(row, c), this.layout.format))])
+        .reduce((a, b) => (b[1].length > a[1].length ? b : a));
+      cells.push(h('td', { class: total(rowTuples[r]) || total(columnTuples[c]) ? 'total' : '' }, text));
+    }
+    return h('tr', { class: 'measure', 'aria-hidden': 'true' }, cells);
+  },
+
+  /** The line beneath the grid: its size, how long the query took, and how it is shown. */
+  drawStatus(summary) {
+    const grid = this.grid;
+    const cells = grid.rowTuples.length * grid.columnCount;
+    grid.legend = h('span', { class: 'legend-input muted', title: 'Tinted cells take a value: type into one, or paste', hidden: !this.writable.size }, 'Can be written');
     mount(this.statusLine,
-      h('span', {}, `${rowTuples.length.toLocaleString()} rows × ${columnCount.toLocaleString()} columns`),
+      h('span', {}, `${grid.rowTuples.length.toLocaleString()} rows × ${grid.columnCount.toLocaleString()} columns`),
       h('span', { class: 'muted' }, `${cells.toLocaleString()} cells in ${Math.round(this.took)} ms`),
-      rowTuples.length > limit ? h('span', { class: 'badge warn' }, `Showing the first ${limit.toLocaleString()} rows`) : null,
-      this.writable.size ? h('span', { class: 'legend-input muted', title: 'Tinted cells take a value: type into one, or paste' }, 'Can be written') : null,
+      grid.legend,
       this.layout.format?.scale ? h('span', { class: 'badge' }, SCALES[this.layout.format.scale][1]) : null,
       this.holds.size ? h('span', { class: 'badge held-badge', title: 'Spreads leave held cells as they are. Release them from a cell\'s menu.' }, `${this.holds.size.toLocaleString()} held`) : null,
       this.layout.sort ? h('span', { class: 'badge accent' }, `Sorted ${this.layout.sort.descending ? 'largest' : 'smallest'} first`) : null,
@@ -303,11 +522,10 @@ export const grid = {
       this.drawToolbar();
     };
     // Follows the pointer wherever it goes until it is let go.
-    const drag = (handle, start, move, end) => handle.addEventListener('pointerdown', (event) => {
-      if (event.button !== 0) return;
+    const follow = (event, value, move, end) => {
       event.preventDefault();
       event.stopPropagation();
-      const origin = { x: event.clientX, y: event.clientY, value: start() };
+      const origin = { x: event.clientX, y: event.clientY, value };
       document.body.classList.add('resizing');
       const moved = (next) => move(origin, next);
       const done = () => {
@@ -320,44 +538,52 @@ export const grid = {
       window.addEventListener('pointermove', moved);
       window.addEventListener('pointerup', done);
       window.addEventListener('pointercancel', done);
-    });
+    };
     // A handle on the right edge of the heading of each column.
     const headRows = [...table.tHead.rows];
     const dataHeads = [...headRows[headRows.length - 1].cells].filter((cell) => !cell.classList.contains('corner'));
     const corners = [...table.tHead.querySelectorAll('th.corner')];
-    const rowHeads = [...(table.tBodies[0]?.rows[0]?.cells ?? [])].filter((cell) => cell.tagName === 'TH');
-    const columnHeads = [...(rowHeads.length ? corners : []), ...dataHeads];
-    if (columnHeads.length !== cols.length) return;
-    columnHeads.forEach((cell, index) => {
-      const handle = h('span', { class: 'col-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Drag to change the width of the column', title: 'Drag to change the width; double-click to fit it' });
-      cell.append(handle);
-      drag(handle, () => widths[index], (origin, event) => {
-        widths[index] = Math.max(40, Math.round(origin.value + event.clientX - origin.x));
-        apply();
-      }, () => keep((geometry) => ({ widths: { ...(geometry.widths ?? {}), [cols[index].dataset.key]: widths[index] } })));
-      handle.addEventListener('dblclick', (event) => {
-        event.stopPropagation();
-        widths[index] = fitted[index];
-        apply();
-        keep((geometry) => {
-          const kept = { ...(geometry.widths ?? {}) };
-          delete kept[cols[index].dataset.key];
-          return { widths: kept };
+    const columnHeads = [...(this.grid.rowWidth ? corners : []), ...dataHeads];
+    if (columnHeads.length === cols.length) {
+      columnHeads.forEach((cell, index) => {
+        const handle = h('span', { class: 'col-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Drag to change the width of the column', title: 'Drag to change the width; double-click to fit it' });
+        cell.append(handle);
+        handle.addEventListener('pointerdown', (event) => {
+          if (event.button !== 0) return;
+          follow(event, widths[index], (origin, next) => {
+            widths[index] = Math.max(40, Math.round(origin.value + next.clientX - origin.x));
+            apply();
+          }, () => {
+            keep((geometry) => ({ widths: { ...(geometry.widths ?? {}), [cols[index].dataset.key]: widths[index] } }));
+            this.pinHeads(table);
+          });
+        });
+        handle.addEventListener('dblclick', (event) => {
+          event.stopPropagation();
+          widths[index] = fitted[index];
+          apply();
+          keep((geometry) => {
+            const kept = { ...(geometry.widths ?? {}) };
+            delete kept[cols[index].dataset.key];
+            return { widths: kept };
+          });
+          this.pinHeads(table);
         });
       });
-    });
-    // One handle beneath the first row's heading sets the height of every row.
-    const first = rowHeads[0] ?? table.tBodies[0]?.rows[0]?.cells[0];
-    if (!first) return;
-    const handle = h('span', { class: 'row-resize', role: 'separator', 'aria-orientation': 'horizontal', 'aria-label': 'Drag to change the height of every row', title: 'Drag to change the height of every row' });
-    first.append(handle);
-    let height = geometry.row_height ?? first.getBoundingClientRect().height;
-    drag(handle, () => height, (origin, event) => {
-      height = Math.max(22, Math.min(120, Math.round(origin.value + event.clientY - origin.y)));
-      table.style.setProperty('--row-height', `${height}px`);
-    }, () => {
-      keep(() => ({ row_height: height }));
-      this.pinHeads(table);
+    }
+    // The handle beneath each row's first heading sets the height of every row.
+    table.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0 || !event.target.closest('.row-resize')) return;
+      let height = this.grid.height;
+      follow(event, height, (origin, next) => {
+        height = Math.max(22, Math.min(120, Math.round(origin.value + next.clientY - origin.y)));
+        table.style.setProperty('--row-height', `${height}px`);
+      }, () => {
+        keep(() => ({ row_height: height }));
+        this.grid.height = this.grid.rows.get(this.grid.from)?.offsetHeight || height;
+        this.pinHeads(table);
+        this.updateRows(true);
+      });
     });
   },
 
@@ -366,6 +592,7 @@ export const grid = {
    * row below the one above it, and each row heading column beside those before it.
    */
   pinHeads(table) {
+    const grid = this.grid;
     let top = 0;
     for (const row of table.tHead.rows) {
       for (const cell of row.cells) {
@@ -373,24 +600,21 @@ export const grid = {
       }
       top += row.offsetHeight;
     }
-    const first = table.tBodies[0]?.rows[0];
-    if (!first) return;
-    const lefts = [];
-    let left = 0;
-    for (const cell of first.cells) {
-      if (cell.tagName !== 'TH') break;
-      lefts.push(left);
-      left += cell.offsetWidth;
-    }
+    // Each column of row headings stands as far from the left as those before it are wide.
+    const widths = [...table.querySelectorAll('col')].slice(0, grid.rowWidth).map((col) => col.getBoundingClientRect().width);
+    grid.lefts = widths.map((_, index) => widths.slice(0, index).reduce((sum, width) => sum + width, 0));
     table.tHead.querySelectorAll('th.corner').forEach((cell, index) => {
-      cell.style.left = `${lefts[index] ?? 0}px`;
+      cell.style.left = `${grid.lefts[index] ?? 0}px`;
     });
-    for (const row of table.tBodies[0].rows) {
-      [...row.cells].slice(0, lefts.length).forEach((cell, index) => {
-        cell.style.left = `${lefts[index]}px`;
+    for (const row of grid.rows.values()) {
+      [...row.cells].slice(0, grid.rowWidth).forEach((cell, index) => {
+        cell.style.left = `${grid.lefts[index]}px`;
         cell.classList.add('pinned');
       });
     }
+    // A cell scrolled to, by the keys or the focus, stays clear of the headings pinned above and beside it.
+    grid.scroller.style.scrollPaddingTop = `${top}px`;
+    grid.scroller.style.scrollPaddingLeft = `${widths.reduce((sum, width) => sum + width, 0)}px`;
   },
 
   depthOf(entry, dim, name) {
@@ -425,9 +649,17 @@ export const grid = {
     const typing = !event.ctrlKey && !event.metaKey && !event.altKey && (event.key.length === 1 || event.key === 'F2');
     if (!takes && typing && event.key !== ' ' && this.result) {
       event.preventDefault();
-      // Once for each cell, not at every key.
-      if (this.toldWhy !== cell) notify(this.whyNot(r, c));
-      this.toldWhy = cell;
+      const { key } = event;
+      // A row not yet asked about is asked about first; the key then does what it would have.
+      this.explainRows([r]).then(() => {
+        if (cell.classList.contains('editable') || cell.classList.contains('spreadable')) {
+          this.edit(cell, key === 'F2' ? undefined : key);
+        } else if (this.toldWhy !== cell) {
+          // Once for each cell, not at every key.
+          notify(this.whyNot(r, c));
+          this.toldWhy = cell;
+        }
+      });
       return;
     }
     if (takes && !event.ctrlKey && !event.metaKey && !event.altKey) {
@@ -448,9 +680,21 @@ export const grid = {
         return;
       }
     }
+    // Page Up and Down move by the rows in view; Home and End to the row's ends, and with
+    // Ctrl to the grid's.
+    const grid = this.grid;
+    const page = Math.max(1, Math.floor((grid.scroller.clientHeight - table.tHead.offsetHeight) / grid.height) - 1);
+    const [lastRow, lastColumn] = [grid.rowTuples.length - 1, grid.columnCount - 1];
+    const command = event.ctrlKey || event.metaKey;
     const move = moves[event.key];
-    if (!move) return;
-    const next = this.selection.cell(r + move[0], c + move[1]);
+    const jump = move ? [r + move[0], c + move[1]] : {
+      PageUp: [Math.max(0, r - page), c],
+      PageDown: [Math.min(lastRow, r + page), c],
+      Home: command ? [0, 0] : [r, 0],
+      End: command ? [lastRow, lastColumn] : [r, lastColumn],
+    }[event.key];
+    if (!jump || event.altKey) return;
+    const next = this.selection.reveal(...jump);
     // Past the first column or row, the keys go on into the headings.
     const heading = next ? null
       : event.key === 'ArrowLeft' ? [...cell.parentElement.cells].filter((other) => other.tagName === 'TH').pop()
@@ -494,7 +738,7 @@ export const grid = {
         const step = event.key === 'ArrowRight' ? 1 : -1;
         const sibling = row.cells[heading.cellIndex + step];
         if (sibling?.tagName === 'TH' && !sibling.classList.contains('corner')) target = sibling;
-        else if (!inHead && step > 0) target = this.selection.cell(Number(row.querySelector('td')?.dataset.r), 0);
+        else if (!inHead && step > 0) target = this.selection.reveal(Number(row.dataset.r), 0);
         break;
       }
       case 'ArrowUp':
@@ -503,10 +747,9 @@ export const grid = {
         if (inHead) {
           const c = Number(heading.dataset.c1);
           const level = row.sectionRowIndex + step;
-          target = level < table.tHead.rows.length ? this.columnHeading(table, level, c) : this.selection.cell(0, c);
+          target = level < table.tHead.rows.length ? this.columnHeading(table, level, c) : this.selection.reveal(0, c);
         } else {
-          const other = table.tBodies[0].rows[row.sectionRowIndex + step];
-          target = other?.cells[heading.cellIndex];
+          target = this.revealRow(Number(row.dataset.r) + step)?.cells[heading.cellIndex];
         }
         break;
       }
@@ -561,6 +804,8 @@ export const grid = {
     const kept = this.headingAfter;
     this.headingAfter = null;
     if (!kept) return;
+    // A row's heading may lie beyond the rows drawn: the first row it heads is brought into view.
+    if (kept.place === 'rows') this.revealRow(this.grid.rowTuples.findIndex((tuple) => tuple.some((m) => m.name === kept.member && m.dimension === kept.dimension)));
     const same = [...table.querySelectorAll('th[data-member]')].find((th) => th.dataset.member === kept.member && th.dataset.dimension === kept.dimension && th.dataset.place === kept.place);
     same?.focus();
   },
@@ -732,29 +977,62 @@ export const grid = {
           this.findWords = '';
           this.markFound();
         } else {
-          this.output.querySelector('td[tabindex="0"]')?.focus();
+          const { r, c } = this.selection?.current ?? { r: 0, c: 0 };
+          this.selection?.activate(r, c);
         }
       }
     });
     return { box: h('div', { class: 'search finder' }, icon('search', 16), input, count), input, count };
   },
 
-  /** Marks the headings that hold the words found, and says how many there are. */
+  /**
+   * Finds the headings that hold the words, and says how many there are: the column headings
+   * as drawn, and the row headings from the rows themselves, drawn or not, each where it
+   * first heads a group of rows.
+   */
   markFound() {
     const words = this.findWords;
-    const headings = [...this.output.querySelectorAll('.pivot th[data-member]')];
+    const grid = this.grid;
     this.found = [];
-    for (const heading of headings) {
-      const hit = Boolean(words) && (heading.textContent.toLowerCase().includes(words) || heading.dataset.member.toLowerCase().includes(words));
-      heading.classList.toggle('found', hit);
-      heading.classList.remove('found-current');
-      if (hit) this.found.push(heading);
+    if (words && grid) {
+      const holds = (text) => String(text).toLowerCase().includes(words);
+      for (const heading of grid.table.tHead.querySelectorAll('th[data-member]')) {
+        if (holds(heading.textContent) || holds(heading.dataset.member)) this.found.push({ heading });
+      }
+      const labels = (grid.rowTuples[0] ?? []).map((first) => {
+        const entry = this.entryOf('rows', first.dimension);
+        const dim = this.dims.get(first.dimension);
+        return (m) => (entry?.alias ? dim?.byName.get(m.name)?.attributes?.[entry.alias] : null) || m.name;
+      });
+      grid.rowTuples.forEach((tuple, r) => tuple.forEach((m, level) => {
+        const above = grid.rowTuples[r - 1];
+        if (above?.slice(0, level + 1).every((o, i) => o.unique_name === tuple[i].unique_name)) return;
+        if (holds(labels[level](m)) || holds(m.name)) this.found.push({ r, level });
+      }));
     }
     this.unseen = words && !this.found.length ? this.hiddenMatch(words) : null;
-    const at = this.found[this.findAt];
-    at?.classList.add('found-current');
+    this.paintFound();
+  },
+
+  /** A row's heading at a level, where the row is drawn and the heading is not blank. */
+  rowHeading(r, level) {
+    return this.grid?.rows.get(r)?.querySelector(`th.row-head[data-level="${level}"]`) ?? null;
+  },
+
+  /** Marks the headings found among those drawn, the current one apart, and says how many. */
+  paintFound() {
+    const grid = this.grid;
+    if (!grid) return;
+    for (const heading of grid.table.querySelectorAll('th.found')) heading.classList.remove('found', 'found-current');
+    (this.found ?? []).forEach((hit, index) => {
+      const heading = hit.heading ?? this.rowHeading(hit.r, hit.level);
+      heading?.classList.add('found');
+      if (index === this.findAt) heading?.classList.add('found-current');
+    });
+    const words = this.findWords;
+    const count = this.found?.length ?? 0;
     this.finder.count.textContent = !words ? ''
-      : this.found.length ? (at ? `${this.findAt + 1} of ${this.found.length}` : `${this.found.length} found`)
+      : count ? (this.findAt >= 0 && this.findAt < count ? `${this.findAt + 1} of ${count}` : `${count} found`)
         : this.unseen ? 'Enter shows it' : 'None found';
   },
 
@@ -777,8 +1055,11 @@ export const grid = {
       return;
     }
     this.findAt = (this.findAt + step + this.found.length) % this.found.length;
-    this.markFound();
-    const heading = this.found[this.findAt];
+    const hit = this.found[this.findAt];
+    if (hit.r !== undefined) this.revealRow(hit.r);
+    this.paintFound();
+    const heading = hit.heading ?? this.rowHeading(hit.r, hit.level);
+    if (!heading) return;
     heading.scrollIntoView({ block: 'nearest', inline: 'nearest' });
     // The row or column found is chosen, so that its cells stand out too.
     this.selection?.choose(this.selection.at(heading));

@@ -112,8 +112,10 @@ Analytics Workspace and TM1, Oracle EPM and Smart View, SAP Analytics Cloud and 
 Office, Excel and Power BI, Anaplan, Pigment, Workday Adaptive Planning, OneStream, Jedox,
 Tableau, Atoti) found these gaps. Already taken up: cell comments in a panel beside the grid, dashboard filters, number formats and
 totals placement, writable cells marked and read-only ones explained, typed spreading with a
-check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, data bars, shades and coloured rules kept with views, earlier versions of the model compared and restored, calculations added from a heading (difference, ratio, % change, share of parent), the largest or smallest N rows by a column, the feeder check offered from Explain, and undo and
-redo of values. Still to do, most valuable first:
+check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, data bars, shades and coloured rules kept with views, earlier versions of the model compared and restored, calculations added from a heading (difference, ratio, % change, share of parent), the largest or smallest N rows by a column, the feeder check offered from Explain, undo and
+redo of values, and only the rows in view drawn, in the grid and in every tree of members, so
+that results and dimensions of any size show whole and scroll smoothly. Still to do, most
+valuable first:
 
 | Gap | Seen in | Shape here |
 | --- | --- | --- |
@@ -121,7 +123,6 @@ redo of values. Still to do, most valuable first:
 | Named sandboxes, compared side by side | PAW, Oracle, Pigment, SAP Analytics Cloud | A kept, named transaction, shown as a column beside the stored values |
 | Picklists and validation | TM1, Oracle smart lists and validation rules | A picklist attribute with a dropdown in the cell; rules that warn or refuse |
 | Supporting detail beneath a cell | Oracle, OneStream, Adaptive Planning | Lines that add up to the cell's value, kept with it |
-| Rows drawn as they scroll, for very large results | Power BI's matrix | Only the visible rows drawn (stage G8) |
 | Seeing the model as another user does | Pigment | A read-only "view as" with a banner, recorded in the audit log |
 
 Anti-patterns the tools are criticised for, to avoid: spreads that empty whole years from one

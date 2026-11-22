@@ -679,6 +679,14 @@ dialog.wide .dialog-body { max-height: none; }
 .row-resize:hover { box-shadow: inset 0 -2px 0 var(--accent); }
 .pivot tbody th.pinned { position: sticky; }
 .resizing { user-select: none; cursor: col-resize; }
+/* Only the rows in view are drawn: rows as tall as the rest stand above and below them. */
+.pivot tr.spacer td { height: 0; padding: 0; border: 0; background: none; }
+.pivot tbody tr.spacer:hover td { background: none; }
+/* The widest content of each column, for the columns to fit to, taking no room. */
+.pivot tr.measure { visibility: collapse; }
+.pivot-scroll:focus { outline: none; }
+/* Where rows come and go as it scrolls, the browser is not to hold the view to one of them. */
+.pivot-scroll, .picker-tree, .element-tree, .set-tree, .set-list { overflow-anchor: none; }
 
 /* ---- Cells chosen ---- */
 

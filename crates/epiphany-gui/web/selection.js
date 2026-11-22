@@ -17,16 +17,18 @@ export class Selection {
    * @param rows, columns how many rows and columns of cells the grid has
    * @param value gives a cell's value by its row and column
    * @param changed is told each time the cells chosen change
+   * @param cell gives a cell's element by its row and column, where its row is drawn
+   * @param reveal scrolls a cell into view, drawing its row, and gives its element
+   * @param drawn gives the rows drawn, by their place
    */
-  constructor(table, { rows, columns, value, changed }) {
-    Object.assign(this, { table, rows, columns, value, changed });
+  constructor(table, { rows, columns, value, changed, cell, reveal, drawn }) {
+    Object.assign(this, { table, rows, columns, value, changed, cellAt: cell, revealAt: reveal, drawn });
     this.ranges = [];
     this.painted = [];
     this.origin = null;
     this.end = null;
-    // Each cell by its place, row by row, to reach it without searching.
-    this.places = [];
-    for (const cell of table.querySelectorAll('td[data-r]')) this.places[Number(cell.dataset.r) * columns + Number(cell.dataset.c)] = cell;
+    // The cell the keys act on, by its row and column.
+    this.current = null;
     table.addEventListener('pointerdown', (event) => this.pointed(event));
     table.addEventListener('keydown', (event) => this.key(event));
     table.addEventListener('copy', (event) => {
@@ -37,11 +39,20 @@ export class Selection {
     // Moving to another cell, by the arrow keys or Tab, chooses it on its own; focus coming
     // back to the active cell, from a menu say, leaves the choice as it is.
     table.addEventListener('focusin', (event) => {
-      const cell = event.target.closest('td[data-r]');
-      if (!cell || this.pointing || cell === this.active) return;
-      this.active = cell;
-      this.choose(this.at(cell));
+      const element = event.target.closest('td[data-r]');
+      if (!element || this.pointing) return;
+      const [r, c] = [Number(element.dataset.r), Number(element.dataset.c)];
+      if (this.current?.r === r && this.current?.c === c) return;
+      this.current = { r, c };
+      this.choose(this.at(element));
     });
+  }
+
+  /** Takes on what another selection of a grid of the same size had chosen, drawn again. */
+  restore(other) {
+    Object.assign(this, { ranges: other.ranges, origin: other.origin, end: other.end, current: other.current });
+    this.paint();
+    this.changed?.(this.summary());
   }
 
   /** The rectangle a cell or heading stands for. */
@@ -69,6 +80,7 @@ export class Selection {
       this.end = { r: range.r2, c: range.c2 };
     }
     this.paint();
+    this.changed?.(this.summary());
   }
 
   has(r, c) {
@@ -77,6 +89,12 @@ export class Selection {
 
   /** Every chosen cell, each once, row by row. */
   cells() {
+    if (this.ranges.length === 1) {
+      const [{ r1, r2, c1, c2 }] = this.ranges;
+      const cells = [];
+      for (let r = r1; r <= r2; r += 1) for (let c = c1; c <= c2; c += 1) cells.push([r, c]);
+      return cells;
+    }
     const seen = new Set();
     const cells = [];
     for (const range of this.ranges) {
@@ -122,18 +140,31 @@ export class Selection {
     window.addEventListener('pointercancel', done);
   }
 
-  /** Makes a cell the one keys act on. */
+  /**
+   * Makes a cell the one keys act on, and gives it the focus: brought into view, unless it
+   * was pointed at, when it is where the pointer is, or nowhere drawn.
+   */
   activate(r, c) {
-    const cell = this.cell(r, c);
+    const cell = this.pointing ? this.cell(r, c) : this.reveal(r, c);
     if (!cell) return;
-    this.active = cell;
+    this.current = { r, c };
     for (const other of this.table.querySelectorAll('td[tabindex="0"]')) other.tabIndex = -1;
     cell.tabIndex = 0;
     cell.focus({ preventScroll: this.pointing });
   }
 
+  /** A cell's element, where its row is drawn. */
   cell(r, c) {
-    return r >= 0 && c >= 0 && c < this.columns ? this.places[r * this.columns + c] : undefined;
+    return this.within(r, c) ? this.cellAt(r, c) : undefined;
+  }
+
+  /** A cell's element, scrolled into view and drawn if it was not; none past the edges. */
+  reveal(r, c) {
+    return this.within(r, c) ? this.revealAt(r, c) : undefined;
+  }
+
+  within(r, c) {
+    return r >= 0 && r < this.rows && c >= 0 && c < this.columns;
   }
 
   key(event) {
@@ -164,7 +195,7 @@ export class Selection {
     event.preventDefault();
     if (how === 'stretch' && !this.origin) this.origin = { r1: r, r2: r, c1: c, c2: c };
     this.choose(range, how);
-    if (how === 'stretch') this.cell(this.end.r, this.end.c)?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (how === 'stretch') this.reveal(this.end.r, this.end.c);
   }
 
   /** The chosen values as tab-separated text, the cells between rectangles left blank. */
@@ -180,7 +211,7 @@ export class Selection {
     return lines.join('\n');
   }
 
-  /** Marks the chosen cells, and the headings of their rows and columns. */
+  /** Marks the chosen cells of the rows drawn, and the headings of their rows and columns. */
   paint() {
     for (const element of this.painted) element.classList.remove('selected', 'in-selection');
     this.painted = [];
@@ -188,12 +219,14 @@ export class Selection {
       element.classList.add(name);
       this.painted.push(element);
     };
-    const many = this.cells().length > 1;
+    const [first] = this.ranges;
+    const many = this.ranges.length > 1 || (first && (first.r1 !== first.r2 || first.c1 !== first.c2));
     if (many) {
-      for (const range of this.ranges) {
-        for (let r = range.r1; r <= range.r2; r += 1) {
+      for (const r of this.drawn().keys()) {
+        for (const range of this.ranges) {
+          if (r < range.r1 || r > range.r2) continue;
           for (let c = range.c1; c <= range.c2; c += 1) {
-            const cell = this.cell(r, c);
+            const cell = this.cellAt(r, c);
             if (cell) mark(cell, 'selected');
           }
         }
@@ -206,7 +239,6 @@ export class Selection {
     for (const head of this.table.querySelectorAll('th[data-c1]')) {
       if (this.ranges.some((range) => meets(Number(head.dataset.c1), Number(head.dataset.c2), range.c1, range.c2))) mark(head, 'in-selection');
     }
-    this.changed?.(this.summary());
   }
 
   /** How many cells are chosen and, of those holding numbers, their sum, mean, least and most. */

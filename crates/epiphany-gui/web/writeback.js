@@ -54,37 +54,97 @@ export const writeback = {
     return JSON.stringify(this.coordinate(r, c));
   },
 
-  /** The cells of a result that may be written, as the server says: "row,column". */
-  async findWritable(result) {
-    const found = new Set();
-    const why = new Map();
-    if (!this.mayWrite()) return { writable: found, why };
-    const [columns, rows] = result.axes;
-    const columnCount = columns?.tuples.length ?? 0;
-    const rowCount = rows ? Math.min(rows.tuples.length, 5000) : 1;
+  /** Forgets which cells may be written, for a new answer to the query. */
+  forgetWritable() {
+    // The cells that may be written, as "row,column"; why others may not; and, by row, the
+    // asking about them, and the rows answered.
+    this.writable = new Set();
+    this.why = new Map();
+    this.explained = new Map();
+    this.known = new Set();
+  },
+
+  /**
+   * Asks the server which cells of the rows given may be written, for those rows not asked
+   * about yet, at most 20,000 cells a call, and marks them where they are drawn when it
+   * answers. Resolves once every row given is answered. Without an answer, nothing in them
+   * is offered for writing; the grid still shows.
+   */
+  explainRows(rows) {
+    const result = this.result;
+    if (!result || !this.mayWrite()) return Promise.resolve();
+    const [columns, rowAxis] = result.axes;
     const leaf = (m) => m.type === 'numeric' || m.type === 'string';
-    if (!(result.slicer ?? []).every(leaf)) return { writable: found, why };
-    const asked = [];
-    const places = [];
-    for (let r = 0; r < rowCount && asked.length < 20000; r += 1) {
-      if (rows && !rows.tuples[r].every(leaf)) continue;
-      for (let c = 0; c < columnCount; c += 1) {
-        if (!columns.tuples[c].every(leaf)) continue;
-        asked.push({ cube: this.cube.name, at: this.coordinate(r, c) });
-        places.push(`${r},${c}`);
+    if (!(result.slicer ?? []).every(leaf)) return Promise.resolve();
+    const leaves = columns.tuples.flatMap((tuple, c) => (tuple.every(leaf) ? [c] : []));
+    const batches = [];
+    let batch = null;
+    for (const r of new Set(rows)) {
+      if (this.explained.has(r)) continue;
+      if (!batch || batch.cells.length + leaves.length > 20000) batches.push((batch = { rows: [], cells: [], places: [] }));
+      batch.rows.push(r);
+      if (rowAxis && !rowAxis.tuples[r].every(leaf)) continue;
+      for (const c of leaves) {
+        batch.cells.push({ cube: this.cube.name, at: this.coordinate(r, c) });
+        batch.places.push(`${r},${c}`);
       }
     }
-    if (!asked.length) return { writable: found, why };
-    try {
-      const answer = await post('/cells/explain', { cells: asked, transaction: this.tx ?? undefined }, { quiet: true });
-      answer.cells.forEach((cell, index) => {
-        if (cell.cell?.writable) found.add(places[index]);
-        else if (cell.cell?.rule) why.set(places[index], `A rule works this cell out: ${cell.cell.rule.text ?? ''}`.trim());
+    for (const each of batches) {
+      const asked = each.cells.length
+        ? post('/cells/explain', { cells: each.cells, transaction: this.tx ?? undefined }, { quiet: true }).catch(() => null)
+        : Promise.resolve(null);
+      const answered = asked.then((answer) => {
+        if (this.result !== result) return;
+        answer?.cells.forEach((cell, index) => {
+          if (cell.cell?.writable) this.writable.add(each.places[index]);
+          else if (cell.cell?.rule) this.why.set(each.places[index], `A rule works this cell out: ${cell.cell.rule.text ?? ''}`.trim());
+        });
+        for (const r of each.rows) this.known.add(r);
+        this.markWritable(each.rows);
       });
-    } catch {
-      // Without an answer nothing is offered for writing; the grid still shows.
+      for (const r of each.rows) this.explained.set(r, answered);
     }
-    return { writable: found, why };
+    return Promise.all([...new Set(rows)].map((r) => this.explained.get(r)));
+  },
+
+  /** Asks about the rows drawn once scrolling pauses, rather than at every step of it. */
+  explainSoon() {
+    clearTimeout(this.explaining);
+    this.explaining = setTimeout(() => {
+      if (this.grid?.scroller.isConnected) this.explainRows(this.drawnRows());
+    }, 150);
+  },
+
+  /** Marks the cells of rows just answered, where they are drawn, as they may be written. */
+  markWritable(rows) {
+    const grid = this.grid;
+    if (!grid?.scroller.isConnected) return;
+    for (const r of rows) {
+      const tr = grid.rows.get(r);
+      if (!tr) continue;
+      for (let c = 0; c < grid.columnCount; c += 1) this.markWriting(tr.children[grid.rowWidth + c], r, c);
+    }
+    if (grid.legend) grid.legend.hidden = !this.writable.size;
+  },
+
+  /**
+   * Marks a cell as it may be written: taking a value, changed and not yet saved, taking a
+   * value to spread over the leaves beneath it, or held as spreads go.
+   */
+  markWriting(td, r, c) {
+    const { total, rowTuples, columnTuples, spreads } = this.grid;
+    const [tuple, column] = [rowTuples[r], columnTuples[c]];
+    const editable = this.writable.has(`${r},${c}`);
+    const edited = editable && this.edits.size > 0 && this.edits.has(this.key(r, c));
+    const spreadable = spreads && (total(tuple) || total(column)) && !editable && ![...tuple, ...column].some((m) => m.type === 'calculated');
+    const held = this.holds.size > 0 && this.holds.has(this.key(r, c));
+    td.classList.toggle('editable', editable);
+    td.classList.toggle('edited', edited);
+    td.classList.toggle('spreadable', spreadable);
+    td.classList.toggle('held', held);
+    const title = held ? 'Held: spreads leave it as it is' : edited ? 'Changed, not yet saved' : spreadable ? 'Type a value to spread it over the leaves beneath' : null;
+    if (title) td.title = title;
+    else td.removeAttribute('title');
   },
 
   /** Why a cell takes no value, said when someone types into it rather than nothing at all. */
@@ -209,6 +269,7 @@ export const writeback = {
 
   /** Empties the cells given that may be written and hold something: numbers to zero, text to nothing. */
   async clear(cells) {
+    await this.explainRows(cells.map(([r]) => r));
     const cleared = cells
       .filter(([r, c]) => this.writable.has(`${r},${c}`))
       .map(([r, c]) => ({ r, c, before: this.valueAt(r, c) }))
@@ -238,6 +299,9 @@ export const writeback = {
     const targets = one && chosen.length > 1
       ? chosen.map(([r, c]) => [r, c, lines[0][0]])
       : lines.flatMap((line, down) => line.map((raw, across) => [top + down, left + across, raw]));
+    // Rows not yet drawn are asked about first: which of their cells may be written.
+    const rowCount = this.result.axes[1]?.tuples.length ?? 1;
+    await this.explainRows(targets.map(([r]) => r).filter((r) => r < rowCount));
     const cells = [];
     let leftOut = 0;
     for (const [r, c, raw] of targets) {
@@ -406,14 +470,11 @@ export const writeback = {
     this.focusCell();
   },
 
+  /** Puts the keys back on the cell they are to go to after a change, brought into view. */
   focusCell() {
     if (!this.focusAfter) return;
     const [r, c] = this.focusAfter;
-    const cell = this.output.querySelector(`td[data-r="${r}"][data-c="${c}"]`);
     this.focusAfter = null;
-    if (!cell) return;
-    for (const other of this.output.querySelectorAll('td[tabindex="0"]')) other.tabIndex = -1;
-    cell.tabIndex = 0;
-    cell.focus();
+    this.selection?.activate(r, c);
   },
 };
