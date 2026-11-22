@@ -194,6 +194,7 @@ class Explorer {
       rows: placed.rows,
       filters,
       sort: null,
+      top: null,
       nonEmpty: /\bNON\s+EMPTY\b/i.test(text),
       mdx: exact ? null : text,
     });
@@ -369,6 +370,7 @@ class Explorer {
       button('Swap axes', 'swap', () => this.change((l) => {
         [l.rows, l.columns] = [l.columns, l.rows];
         l.sort = null;
+        l.top = null;
       })),
       button(layout.nonEmpty ? 'Showing non-empty' : 'Showing empty rows', layout.nonEmpty ? 'eyeOff' : 'eye',
         () => this.change((l) => {
@@ -377,6 +379,9 @@ class Explorer {
       layout.sort ? button('Clear sort', 'close', () => this.change((l) => {
         l.sort = null;
       })) : null,
+      layout.top ? button('Show every row', 'close', () => this.change((l) => {
+        l.top = null;
+      }), { title: `Showing the ${layout.top.count.toLocaleString()} ${layout.top.bottom ? 'smallest' : 'largest'} rows only` }) : null,
       h('div', { class: 'grow' }),
       layout.mdx ? h('span', {
         class: 'badge accent',
@@ -554,6 +559,7 @@ class Explorer {
         layout[to].splice(index ?? layout[to].length, 0, entry);
       }
       layout.sort = null;
+      layout.top = null;
     });
     this.drawFieldList();
   }
@@ -678,6 +684,7 @@ class Explorer {
         target.members = set;
         target.expanded = target.expanded.filter((element) => set.includes(element));
         layout.sort = null;
+        layout.top = null;
       });
       return;
     }
@@ -692,6 +699,7 @@ class Explorer {
     this.change((layout) => {
       layout.filters.find((candidate) => candidate.dimension === name).member = member;
       layout.sort = null;
+      layout.top = null;
     });
   }
 
@@ -837,6 +845,32 @@ class Explorer {
       plotted
         ? chart(data, settings.kind)
         : empty('chart', 'Nothing to chart', 'The result has no numbers. Choose other members, or show empty rows.')));
+  }
+
+  /** Asks how many of the largest or smallest rows by a column to keep, and keeps only them. */
+  async keepTop(columnTuple) {
+    const count = h('input', { class: 'input', id: 'top-count', type: 'number', min: 1, step: 1, value: String(this.layout.top?.count ?? 10), required: true });
+    const which = h('select', { class: 'select', id: 'top-which' },
+      h('option', { value: 'largest', selected: !this.layout.top?.bottom }, 'The largest'),
+      h('option', { value: 'smallest', selected: Boolean(this.layout.top?.bottom) }, 'The smallest'));
+    const asked = await dialog({
+      title: 'Keep only some rows',
+      confirm: 'Keep them',
+      body: h('div', { class: 'facts' },
+        h('div', { class: 'field-pair' },
+          h('div', { class: 'field' }, h('label', { for: 'top-which' }, 'Which'), which),
+          h('div', { class: 'field' }, h('label', { for: 'top-count' }, 'How many'), count)),
+        h('p', { class: 'hint' }, `By ${columnTuple.map((m) => m.name).join(' · ')}. Show every row again from the toolbar.`)),
+      onsubmit: () => {
+        const n = Math.floor(Number(count.value));
+        if (!(n >= 1)) throw new Error('Keep at least one row.');
+        return { count: n, bottom: which.value === 'smallest' };
+      },
+    });
+    if (!asked) return;
+    this.change((layout) => {
+      layout.top = { ...asked, tuple: columnTuple.map((m) => [m.dimension, m.name]) };
+    });
   }
 
   /** Whether a member of a dimension is one of the layout's calculations. */

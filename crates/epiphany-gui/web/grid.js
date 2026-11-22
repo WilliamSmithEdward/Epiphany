@@ -225,6 +225,7 @@ export const grid = {
       this.layout.format?.scale ? h('span', { class: 'badge' }, SCALES[this.layout.format.scale][1]) : null,
       this.holds.size ? h('span', { class: 'badge held-badge', title: 'Spreads leave held cells as they are. Release them from a cell\'s menu.' }, `${this.holds.size.toLocaleString()} held`) : null,
       this.layout.sort ? h('span', { class: 'badge accent' }, `Sorted ${this.layout.sort.descending ? 'largest' : 'smallest'} first`) : null,
+      this.layout.top ? h('span', { class: 'badge accent' }, `The ${this.layout.top.count.toLocaleString()} ${this.layout.top.bottom ? 'smallest' : 'largest'} by ${this.layout.top.tuple.map(([, name]) => name).join(' · ')}`) : null,
       summary);
   },
 
@@ -579,6 +580,7 @@ export const grid = {
         action: () => this.change((layout) => {
           layout[place].find((candidate) => candidate.dimension === dimension).members = [name];
           layout.sort = null;
+          layout.top = null;
         }),
       } : null,
       entry && element ? {
@@ -617,6 +619,7 @@ export const grid = {
       { heading: [...rowTuple, ...columnTuple].map((m) => m.name).join(' · ') },
       { label: 'Sort rows by this column, largest first', icon: 'down', disabled: !this.layout.rows.length, action: () => this.sortBy(columnTuple, true) },
       { label: 'Sort rows by this column, smallest first', icon: 'chevron', disabled: !this.layout.rows.length, action: () => this.sortBy(columnTuple, false) },
+      { label: 'Keep only the largest or smallest rows by it…', icon: 'filter', disabled: !this.layout.rows.length, action: () => this.keepTop(columnTuple) },
       '-',
       ...rowOpen.map((m) => {
         const entry = this.layout.rows.find((candidate) => candidate.dimension === m.dimension);
@@ -668,6 +671,7 @@ export const grid = {
       }
       layout.nonEmpty = true;
       layout.sort = null;
+      layout.top = null;
     });
   },
 

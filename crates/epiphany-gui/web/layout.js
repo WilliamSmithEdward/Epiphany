@@ -10,7 +10,9 @@ export const member = (dimension, name) => `${quote(dimension)}.${quote(name)}`;
 /**
  * A layout is `{ cube, rows, columns, filters, nonEmpty, sort, mdx }`. Each entry of rows
  * and columns is `{ dimension, members, expanded }`, the members chosen in order and those
- * opened to show their children; each filter is `{ dimension, member }`. `calculations` add
+ * opened to show their children; each filter is `{ dimension, member }`. `top`, where set,
+ * keeps only the `count` largest rows, or smallest with `bottom`, by the column `tuple`.
+ * `calculations` add
  * members worked out from others, as `CALCULATIONS` says. `mdx` is set when the query has
  * been written by hand.
  */
@@ -80,6 +82,11 @@ export function mdx(layout, dims) {
     .join(' * ');
   const nonEmpty = layout.nonEmpty ? 'NON EMPTY ' : '';
   let rows = set(layout.rows);
+  // Only the largest or smallest rows by a column, where the layout keeps some.
+  if (layout.top && rows) {
+    const column = layout.top.tuple.map(([dim, name]) => member(dim, name)).join(', ');
+    rows = `${layout.top.bottom ? 'BOTTOMCOUNT' : 'TOPCOUNT'}(${rows}, ${layout.top.count}, (${column}))`;
+  }
   if (layout.sort && rows) {
     const column = layout.sort.tuple.map(([dim, name]) => member(dim, name)).join(', ');
     rows = `ORDER(${rows}, (${column}), ${layout.sort.descending ? 'BDESC' : 'BASC'})`;
