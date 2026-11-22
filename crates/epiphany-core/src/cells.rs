@@ -214,13 +214,17 @@ impl Layout {
     /// apart from the others; those of dimensions the cube does not have come out as none.
     fn unpack(&self, packed: u64) -> At<'static> {
         let mut unpacked = [0; FEW];
-        for ((element, &shift), &mask) in unpacked.iter_mut().zip(&self.shifts).zip(&self.masks) {
-            *element = (packed.wrapping_shr(shift) & mask) as ElementId;
-        }
+        self.unpack_into(packed, &mut unpacked);
         At {
             kept: None,
             dimensions: self.dimensions as u8,
             unpacked,
+        }
+    }
+
+    fn unpack_into(&self, packed: u64, unpacked: &mut [ElementId; FEW]) {
+        for ((element, &shift), &mask) in unpacked.iter_mut().zip(&self.shifts).zip(&self.masks) {
+            *element = (packed.wrapping_shr(shift) & mask) as ElementId;
         }
     }
 }
@@ -339,6 +343,21 @@ impl<V> Table<V> {
         match self {
             Self::Packed { layout, cells } => Iter::Packed(layout, cells.iter()),
             Self::Plain(cells) => Iter::Plain(cells.iter()),
+        }
+    }
+
+    /// Gives every value and where it is to `visit`, each place unpacked into the same few
+    /// elements in turn: a pass over the cells that makes nothing of each but its elements.
+    fn each(&self, mut visit: impl FnMut(&[ElementId], &V)) {
+        match self {
+            Self::Packed { layout, cells } => {
+                let mut at = [0; FEW];
+                for (&packed, value) in cells {
+                    layout.unpack_into(packed, &mut at);
+                    visit(&at[..layout.dimensions], value);
+                }
+            }
+            Self::Plain(cells) => cells.iter().for_each(|(at, value)| visit(at, value)),
         }
     }
 }
@@ -582,10 +601,35 @@ impl Cells {
 
     /// Sums a consolidation by weighing every stored cell.
     fn sum_stored(&self, leaves: &[Leaves]) -> f64 {
-        self.numbers
-            .iter()
-            .filter_map(|(at, value)| Some(weight(leaves, &at)? * value))
-            .sum()
+        let mut total = 0.0;
+        self.numbers.each(|at, value| {
+            if let Some(weight) = weight(leaves, at) {
+                total += weight * value;
+            }
+        });
+        total
+    }
+
+    /// Gives every stored leaf number, as it would be once the pending writes were stored,
+    /// to `visit`: the quicker way through them all of [`Cells::numbers_with`].
+    pub(crate) fn each_number(
+        &self,
+        pending: Option<&Writes>,
+        mut visit: impl FnMut(&[ElementId], f64),
+    ) {
+        let replaced = |at: &[ElementId]| pending.is_some_and(|pending| pending.contains_key(at));
+        self.numbers.each(|at, &number| {
+            if !replaced(at) {
+                visit(at, number);
+            }
+        });
+        for (at, value) in pending.into_iter().flatten() {
+            if let Scalar::Number(number) = *value
+                && number != 0.0
+            {
+                visit(at, number);
+            }
+        }
     }
 
     /// How many numbers are stored.
@@ -621,7 +665,7 @@ impl Cells {
         cells: &[&[ElementId]],
         pending: Option<&Writes>,
     ) -> Option<Vec<f64>> {
-        let stored = self.numbers_with(pending);
+        let stored = |visit: &mut dyn FnMut(&[ElementId], f64)| self.each_number(pending, visit);
         Self::share(model, cube, cells, stored, |_, value| Some(value))
     }
 
@@ -631,11 +675,11 @@ impl Cells {
     /// asked only for a leaf that counts towards one of the cells: where a rule has to work
     /// the number out, the leaves beside the point cost nothing. Nothing if the cells are too
     /// varied to number, or if `value` has none to give.
-    pub(crate) fn share<Leaf: std::ops::Deref<Target = [ElementId]>, Known>(
+    pub(crate) fn share<Known>(
         model: &Model,
         cube: &Cube,
         cells: &[&[ElementId]],
-        leaves: impl Iterator<Item = (Leaf, Known)>,
+        leaves: impl FnOnce(&mut dyn FnMut(&[ElementId], Known)),
         mut value: impl FnMut(&[ElementId], Known) -> Option<f64>,
     ) -> Option<Vec<f64>> {
         // In each dimension the elements asked for are numbered as they are met, and every
@@ -698,7 +742,7 @@ impl Cells {
         // Taken as a pass of its own over the cells, which goes quicker than one cell asked
         // for after another; once a leaf has no value, the rest are passed over.
         let mut failed = false;
-        leaves.for_each(|(at, known)| {
+        leaves(&mut |at, known| {
             if failed {
                 return;
             }
@@ -711,7 +755,7 @@ impl Cells {
             if lists.iter().any(|list| list.is_empty()) {
                 return;
             }
-            let Some(value) = value(&at, known) else {
+            let Some(value) = value(at, known) else {
                 failed = true;
                 return;
             };

@@ -210,14 +210,14 @@ impl<'a> Reader<'a> {
         let leaf_rules = || definition.rules.iter().filter(|rule| rule.decides_leaves());
         let ruled = |leaf: &[ElementId]| leaf_rules().any(|rule| matches(&rule.area, leaf));
         // The stored cells with what they hold, then the fed cells that hold nothing.
-        let held = stored
-            .numbers_with(pending)
-            .map(|(leaf, held)| (leaf, Some(held)));
-        let empty = fed
-            .iter()
-            .map(|leaf| At::kept(leaf))
-            .filter(|leaf| stored.number_with(leaf, pending) == 0.0);
-        let leaves = held.chain(empty.map(|leaf| (leaf, None)));
+        let leaves = |visit: &mut dyn FnMut(&[ElementId], Option<f64>)| {
+            stored.each_number(pending, |leaf, held| visit(leaf, Some(held)));
+            for leaf in fed {
+                if stored.number_with(leaf, pending) == 0.0 {
+                    visit(leaf, None);
+                }
+            }
+        };
         // A leaf a rule covers is what the rule makes it; any other is what it holds. A rule
         // is only asked about a leaf beneath one of the totals, and one that fails is left to
         // fail where its cell is read: nothing is kept then.
@@ -487,20 +487,18 @@ impl<'a> Reader<'a> {
             // Taken as a pass of its own, which goes quicker than one cell asked for after
             // another; once a rule fails, the rest are passed over.
             let mut failed = None;
-            self.cells[cube]
-                .numbers_with(pending)
-                .for_each(|(leaf, stored)| {
-                    let Some(weight) = weight(&leaves, &leaf).filter(|_| failed.is_none()) else {
-                        return;
-                    };
-                    match ruled(&leaf) {
-                        true => match self.number(cube, &leaf) {
-                            Ok(number) => total += weight * number,
-                            Err(error) => failed = Some(error),
-                        },
-                        false => total += weight * stored,
-                    }
-                });
+            self.cells[cube].each_number(pending, |leaf, stored| {
+                let Some(weight) = weight(&leaves, leaf).filter(|_| failed.is_none()) else {
+                    return;
+                };
+                match ruled(leaf) {
+                    true => match self.number(cube, leaf) {
+                        Ok(number) => total += weight * number,
+                        Err(error) => failed = Some(error),
+                    },
+                    false => total += weight * stored,
+                }
+            });
             if let Some(error) = failed {
                 return Err(error);
             }

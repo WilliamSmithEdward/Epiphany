@@ -37,3 +37,6 @@ desktop.ini
 
 # Excel lock files
 ~$*
+
+# Internal
+/internal/
