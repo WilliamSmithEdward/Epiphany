@@ -913,6 +913,9 @@ export const grid = {
       { label: 'Explain this value', icon: 'info', action: () => this.explain(rowTuple, columnTuple) },
       this.coordinate(r, c) ? { label: this.commentsAt(r, c).length ? `Comments (${this.commentsAt(r, c).length})…` : 'Comment on it…', icon: 'edit', action: () => this.openComments(r, c) } : null,
       this.coordinate(r, c) ? { label: 'Who changed it, and when…', icon: 'clock', action: () => this.openHistory(r, c) } : null,
+      this.coordinate(r, c) && typeof this.valueAt(r, c) === 'number' && ![...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
+        ? { label: this.detailed.has(`${r},${c}`) ? `Detail (${this.detailed.get(`${r},${c}`)} lines)…` : 'Break it down into lines…', icon: 'bars', action: () => this.openCell(r, c, 'detail') }
+        : null,
       [...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
         ? { label: 'Show the leaves beneath', icon: 'level', action: () => this.drillToLeaves(rowTuple, columnTuple) }
         : null,

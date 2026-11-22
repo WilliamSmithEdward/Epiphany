@@ -9,7 +9,7 @@ use common::{Rng, Shape, random_model};
 use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
 use epiphany_core::database::{
-    CellRef, CellWrite, Changes, Database, Error, Invalid, Journal, KeptSandbox, LockMode,
+    CellRef, CellWrite, Changes, Database, Error, Invalid, Journal, KeptSandbox, Line, LockMode,
     ModelUpdate, NamedCells, NamedWrites, Spread, SpreadMethod,
 };
 use epiphany_core::model::{MembersDef, ModelDef, ModelError, PicklistDef, SubsetDef};
@@ -1192,7 +1192,7 @@ fn a_sandbox_is_kept_by_the_journal_and_carried_into_a_new_model() {
     // Taken in as the journal kept it, it is the same sandbox, under the same transaction.
     let cells: Vec<CellWrite> = serde_json::from_value(saved()["cells"].clone()).unwrap();
     let mut restored = Database::new(definition).unwrap();
-    assert_eq!(restored.restore_sandbox(id, "ada", "Plan", &cells), 0);
+    assert_eq!(restored.restore_sandbox(id, "ada", "Plan", &cells, &[]), 0);
     assert_eq!(units(&restored, Some(id), "A"), 5.0);
     assert_eq!(restored.sandboxes("ada")[0].transaction, id);
 
@@ -1293,4 +1293,95 @@ fn a_check_refuses_a_value_it_does_not_hold_for_or_warns_of_it() {
         Database::new(broken),
         Err(ModelError::Mdx { within, .. }) if within == "validation 1 of cube 'Sales'"
     ));
+}
+
+/// Lines of supporting detail, each a label and an amount.
+fn lines(each: &[(&str, f64)]) -> Vec<Line> {
+    let line = |&(label, value): &(&str, f64)| Line {
+        label: label.to_owned(),
+        value,
+    };
+    each.iter().map(line).collect()
+}
+
+#[test]
+fn a_detail_is_written_with_its_value_and_goes_when_the_value_is_written_plainly() {
+    let mut database = database();
+    let units_of = |product: &str| cell("Sales", [product, "Units"]);
+    let a = units_of("A");
+    let id = database.begin();
+    // Written in a transaction, the detail and the lines' sum wait there alone.
+    let detail = lines(&[(" Shop ", 3.0), ("Web", 4.5)]);
+    database.write_detail(Some(id), &a, detail).unwrap();
+    assert_eq!(units(&database, Some(id), "A"), 7.5);
+    let kept = lines(&[("Shop", 3.0), ("Web", 4.5)]);
+    assert_eq!(database.detail(Some(id), &a).unwrap(), kept);
+    assert!(database.detail(None, &a).unwrap().is_empty());
+    // A value written plainly takes it away; taken back, the detail comes back with it.
+    let point = database.savepoint(id).unwrap();
+    database
+        .write(Some(id), &[set("Sales", ["A", "Units"], 2.0)])
+        .unwrap();
+    assert!(database.detail(Some(id), &a).unwrap().is_empty());
+    database.undo_to(id, point).unwrap();
+    assert_eq!(database.detail(Some(id), &a).unwrap(), kept);
+    database.commit(id).unwrap();
+    assert_eq!(database.explain(None, &a, false).unwrap().detail, kept);
+
+    // No lines take it away and leave the value as it is.
+    database.write_detail(None, &a, Vec::new()).unwrap();
+    assert!(database.detail(None, &a).unwrap().is_empty());
+    assert_eq!(units(&database, None, "A"), 7.5);
+    // A detail is a leaf number's: a total's or a text cell's is refused, as are lines that
+    // are not numbers.
+    let one = || lines(&[("x", 1.0)]);
+    assert!(
+        database
+            .write_detail(None, &units_of("All"), one())
+            .is_err()
+    );
+    let note = cell("Sales", ["A", "Note"]);
+    assert!(database.write_detail(None, &note, one()).is_err());
+    let infinite = database.write_detail(None, &a, lines(&[("x", f64::INFINITY)]));
+    assert!(
+        matches!(&infinite, Err(Error::Cell(CellError::Detail(_)))),
+        "{infinite:?}"
+    );
+    assert_eq!(infinite.unwrap_err().code(), "invalid_detail");
+}
+
+#[test]
+fn a_detail_goes_where_its_cell_goes_and_is_published_with_a_sandbox() {
+    let mut database = database();
+    let units_of = |product: &str| cell("Sales", [product, "Units"]);
+    let both = lines(&[("x", 1.0), ("y", 2.0)]);
+    database
+        .write_detail(None, &units_of("A"), both.clone())
+        .unwrap();
+    let five = lines(&[("z", 5.0)]);
+    database.write_detail(None, &units_of("B"), five).unwrap();
+
+    // In a model where B is gone and C comes before A, A's detail is where A is now.
+    let mut definition = definition();
+    let product = &mut definition.dimensions[0];
+    product.elements.retain(|element| element.name != "B");
+    product.elements[0]
+        .children
+        .retain(|child| child.name != "B");
+    let c = serde_json::from_value(json!({ "name": "C", "type": "numeric" })).unwrap();
+    product.elements.insert(1, c);
+    database.update_model(1, definition).unwrap();
+    assert_eq!(database.detail(None, &units_of("A")).unwrap(), both);
+    assert!(database.detail(None, &units_of("C")).unwrap().is_empty());
+
+    // Written in a sandbox, a detail waits there, and is published with its value.
+    let id = database.create_sandbox("ada", "Plan").unwrap().transaction;
+    let four = lines(&[("w", 4.0)]);
+    database
+        .write_detail(Some(id), &units_of("C"), four.clone())
+        .unwrap();
+    assert!(database.detail(None, &units_of("C")).unwrap().is_empty());
+    database.commit(id).unwrap();
+    assert_eq!(database.detail(None, &units_of("C")).unwrap(), four);
+    assert_eq!(units(&database, None, "C"), 4.0);
 }

@@ -803,6 +803,17 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .pivot tbody tr:hover td.editable:not(.edited) { background-color: color-mix(in oklab, var(--good) 10%, var(--accent-soft)); }
 .legend-input::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; background: color-mix(in oklab, var(--good) 22%, var(--surface)); border: 1px solid color-mix(in oklab, var(--good) 45%, transparent); }
 
+/* ---- Values with supporting detail, and the detail beside the grid ---- */
+
+.pivot td.detailed { text-decoration: underline dotted var(--text-3); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+.detail { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3) var(--s4); overflow: auto; }
+.detail-lines { display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.detail-lines li { display: grid; grid-template-columns: minmax(0, 1fr) 7.5rem auto; gap: var(--s2); align-items: center; }
+.detail-lines .num, .detail .num { text-align: right; font-variant-numeric: tabular-nums; }
+.detail-read { display: flex; flex-direction: column; gap: var(--s1); margin: 0; padding: 0; list-style: none; }
+.detail-read li { display: flex; gap: var(--s3); }
+.detail-read .grow { flex: 1; }
+
 /* ---- Values that break a check of their cube ---- */
 
 .pivot td.invalid { text-decoration: underline wavy var(--bad); text-decoration-skip-ink: none; text-underline-offset: 4px; }

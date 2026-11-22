@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use common::Home;
 use epiphany_core::Scalar;
-use epiphany_core::database::{Asked, CellRef, CellWrite, Database, Error, Sandbox};
+use epiphany_core::database::{Asked, CellRef, CellWrite, Database, Error, Line, Sandbox};
 use epiphany_server::open;
 use serde_json::{Value as Json, json};
 
@@ -802,6 +802,35 @@ fn the_history_of_a_cell_outlasts_snapshots_and_the_process() {
 }
 
 #[test]
+fn a_cells_detail_outlives_the_process_with_its_value() {
+    let home = Home::new("details-kept");
+    let mut database = home.open();
+    let rent = CellRef {
+        cube: CUBE.to_owned(),
+        at: RENT.map(str::to_owned).to_vec(),
+    };
+    let line = |label: &str, value: f64| Line {
+        label: label.to_owned(),
+        value,
+    };
+    let lines = vec![line("Office", 30.0), line("Store", 12.5)];
+    database.write_detail(None, &rent, lines.clone()).unwrap();
+    drop(database);
+    // Opened again, the commit in the log gives it back; opened once more, the snapshot
+    // that took the log's place does.
+    for _ in 0..2 {
+        let database = home.open();
+        assert_eq!(database.detail(None, &rent).unwrap(), lines);
+        assert_eq!(get(&database, RENT), 42.5);
+    }
+    // A value written plainly takes it away for good.
+    let mut database = home.open();
+    database.write(None, &[set(RENT, 40.0)]).unwrap();
+    drop(database);
+    assert!(home.open().detail(None, &rent).unwrap().is_empty());
+}
+
+#[test]
 fn a_sandbox_outlives_the_process_until_it_is_deleted() {
     let home = Home::new("sandboxes-kept");
     let mut database = home.open();
@@ -809,6 +838,18 @@ fn a_sandbox_outlives_the_process_until_it_is_deleted() {
     let id = database.create_sandbox("ada", "Plan").unwrap().transaction;
     let writes = [set(RENT, stored + 25.0), set(SALARIES, 40.0)];
     database.write(Some(id), &writes).unwrap();
+    // Supporting detail waits in it with the value it adds up to.
+    let salaries = CellRef {
+        cube: CUBE.to_owned(),
+        at: SALARIES.map(str::to_owned).to_vec(),
+    };
+    let detail = vec![Line {
+        label: "Two hires".to_owned(),
+        value: 40.0,
+    }];
+    database
+        .write_detail(Some(id), &salaries, detail.clone())
+        .unwrap();
     drop(database);
 
     // Opened again, it is there under its transaction, holding its values apart.
@@ -826,6 +867,8 @@ fn a_sandbox_outlives_the_process_until_it_is_deleted() {
     let held = database.read(Some(id), &cell).unwrap();
     assert_eq!(held, Scalar::Number(stored + 25.0));
     assert_eq!(get(&database, RENT), stored);
+    assert_eq!(database.detail(Some(id), &salaries).unwrap(), detail);
+    assert!(database.detail(None, &salaries).unwrap().is_empty());
 
     // Emptied, it stays so; deleted, it is gone for good, and so is its file.
     database.rollback(id).unwrap();

@@ -129,6 +129,11 @@ practice that means:
   renamed into it, before the change is acknowledged. It names its cells, so it is placed
   afresh in whatever the model is when the server starts. A file that cannot be read stops
   the server from opening the directory, as a damaged commit does: it is someone's work.
+- Supporting detail is recorded with the commit that writes it, in the same line of the
+  log, so that a value and its lines are stored together or not at all. A commit without
+  any is the list of cells a commit always was; one with some is `{"cells", "details"}`,
+  each detail its cell's lines, or none where a plain write took them away. The snapshot
+  keeps the details of the cells that have them beside the cells.
 - The history of cells, `history.jsonl`, keeps one line for each commit that changed a
   value: when, who began its transaction, and each cell's value before and after. A
   snapshot does not replace it. It is written after the commit is safe in the log, without

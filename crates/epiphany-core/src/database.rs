@@ -16,6 +16,8 @@
 mod batch;
 use batch::Resolver;
 mod comments;
+mod details;
+use details::{Details, has_detail};
 mod error;
 mod history;
 mod load;
@@ -44,6 +46,7 @@ use locks::{Locks, Mode, Resource};
 
 pub use batch::{CellRefs, CellWrites};
 pub use comments::{Comment, CommentChange};
+pub use details::{CellDetail, Line, NamedDetails};
 pub use error::Error;
 pub use history::{Asked, CellChange, Changes, History, HistoryRead};
 pub use locks::LockMode;
@@ -92,6 +95,8 @@ pub struct Explanation {
     pub fed_by: Vec<FedBy>,
     /// The checks of the cube that the cell's value breaks, in the order they are made.
     pub invalid: Vec<Invalid>,
+    /// The lines the cell's value is the sum of, where it was written with supporting detail.
+    pub detail: Vec<Line>,
 }
 
 /// A check of a cube that a cell's value breaks.
@@ -232,11 +237,18 @@ pub struct OpenTransaction {
 pub struct NamedWrites<'a> {
     model: &'a Model,
     writes: &'a [Writes],
+    /// The supporting detail written with the cells, or taken away by them.
+    details: &'a Details<Option<Vec<Line>>>,
 }
 
 impl NamedWrites<'_> {
     fn is_empty(&self) -> bool {
         self.writes.iter().all(Writes::is_empty)
+    }
+
+    /// The supporting detail the writes bring, or take away, to be recorded with them.
+    pub fn details(&self) -> NamedDetails<'_> {
+        NamedDetails::pending(self.model, self.details)
     }
 }
 
@@ -261,9 +273,15 @@ impl serde::Serialize for NamedWrites<'_> {
 pub struct NamedCells<'a> {
     model: &'a Model,
     cells: &'a [Cells],
+    details: &'a Details<Vec<Line>>,
 }
 
 impl<'a> NamedCells<'a> {
+    /// The supporting detail of the cells that have one, to be written out with them.
+    pub fn details(&self) -> NamedDetails<'a> {
+        NamedDetails::kept(self.model, self.details)
+    }
+
     /// How many numbers each cube stores, by its name: written ahead of the cells, it lets
     /// whoever loads them make room for them at once ([`Database::reserve`]). Texts, few
     /// as a rule, are given room as they come.
@@ -357,16 +375,41 @@ fn named(model: &Model, cube: usize, at: &[ElementId], value: Scalar) -> CellWri
 struct Transaction {
     /// Pending writes to each cube, in [`Model::cubes`] order.
     writes: Vec<Writes>,
-    /// What each write did to the pending writes, in order: the cube, the cell, and the value
-    /// it had pending before, if any. Played back, it takes the transaction to an earlier
+    /// Supporting detail written with pending writes, or taken away by them, by cube.
+    details: Details<Option<Vec<Line>>>,
+    /// What each write did, in order. Played back, it takes the transaction to an earlier
     /// point, as [`Database::undo_to`] does.
-    undo: Vec<(usize, Coordinate, Option<Scalar>)>,
+    undo: Vec<Undo>,
     /// When the transaction was last used, in milliseconds since the database started.
     used: AtomicU64,
     /// Who began it, as the history of cells records its commit.
     author: Option<String>,
     /// Its name and owner, for a sandbox.
     kept: Option<Kept>,
+}
+
+/// What a write did to a transaction: the cube, the cell, and the value and the supporting
+/// detail the cell had pending before, if any.
+#[derive(Debug, Clone)]
+struct Undo {
+    cube: usize,
+    at: Coordinate,
+    value: Option<Scalar>,
+    detail: Option<Option<Vec<Line>>>,
+}
+
+impl Transaction {
+    /// An empty transaction over a model's cubes, used now and signed by its author.
+    fn new(cubes: usize, now: u64, author: Option<String>) -> Self {
+        Self {
+            writes: vec![Writes::default(); cubes],
+            details: vec![Default::default(); cubes],
+            undo: Vec::new(),
+            used: AtomicU64::new(now),
+            author,
+            kept: None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -376,6 +419,8 @@ pub struct Database {
     model_version: u64,
     /// The committed cells of each cube, in [`Model::cubes`] order.
     cells: Vec<Cells>,
+    /// The supporting detail of committed cells, by cube.
+    details: Details<Vec<Line>>,
     transactions: HashMap<TransactionId, Transaction>,
     last_transaction: TransactionId,
     /// Where transaction ids come from, if not counted up from one.
@@ -416,6 +461,7 @@ impl Database {
                 .iter()
                 .map(|cube| Cells::for_cube(&model, cube))
                 .collect(),
+            details: vec![Default::default(); model.cubes().len()],
             definition,
             model,
             model_version,
@@ -505,6 +551,7 @@ impl Database {
         NamedCells {
             model: &self.model,
             cells: &self.cells,
+            details: &self.details,
         }
     }
 
@@ -736,6 +783,10 @@ impl Database {
             fed: leaf.then(|| reader.is_fed(cube, &at)).flatten(),
             fed_by: fed_by.collect(),
             invalid,
+            detail: self
+                .detail_at(transaction, cube, &at)?
+                .unwrap_or_default()
+                .to_vec(),
         })
     }
 
@@ -828,12 +879,22 @@ impl Database {
         transaction: Option<TransactionId>,
         batch: &CellWrites,
     ) -> Result<(), Error> {
+        self.within(transaction, |database, id| database.stage(id, batch))
+    }
+
+    /// Makes a change to a transaction's pending cells, or makes it alone and commits it at
+    /// once, all of it or none.
+    fn within(
+        &mut self,
+        transaction: Option<TransactionId>,
+        change: impl FnOnce(&mut Self, TransactionId) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         self.expire();
         if let Some(id) = transaction {
-            return self.changing(id, |database| database.stage(id, batch));
+            return self.changing(id, |database| change(database, id));
         }
         let id = self.begin();
-        let written = self.stage(id, batch).and_then(|()| self.commit(id));
+        let written = change(self, id).and_then(|()| self.commit(id));
         if written.is_err() {
             self.end(id)?;
         }
@@ -850,13 +911,7 @@ impl Database {
                 break id;
             }
         };
-        let transaction = Transaction {
-            writes: vec![Writes::default(); self.cells.len()],
-            undo: Vec::new(),
-            used: AtomicU64::new(self.now()),
-            author: self.author.clone(),
-            kept: None,
-        };
+        let transaction = Transaction::new(self.cells.len(), self.now(), self.author.clone());
         self.transactions.insert(id, transaction);
         id
     }
@@ -869,9 +924,11 @@ impl Database {
         if self.transaction(id)?.kept.is_some() {
             return self.publish(id);
         }
+        let pending = self.transaction(id)?;
         let record = NamedWrites {
             model: &self.model,
-            writes: &self.transaction(id)?.writes,
+            writes: &pending.writes,
+            details: &pending.details,
         };
         if let Some(mut journal) = self.journal()
             && !record.is_empty()
@@ -890,6 +947,14 @@ impl Database {
         for (cells, writes) in self.cells.iter_mut().zip(transaction.writes) {
             for (at, value) in writes {
                 cells.set(&at, value);
+            }
+        }
+        for (details, pending) in self.details.iter_mut().zip(transaction.details) {
+            for (at, lines) in pending {
+                match lines {
+                    Some(lines) => details.insert(at, lines),
+                    None => details.remove(&at),
+                };
             }
         }
         self.changed();
@@ -946,11 +1011,22 @@ impl Database {
         })
     }
 
-    /// Takes back a transaction's writes since a point, the last first.
+    /// Takes back a transaction's writes since a point, the last first: each cell's pending
+    /// value and detail are as they were.
     fn take_back(&mut self, id: TransactionId, point: usize) {
         let transaction = self.transactions.get_mut(&id).expect("a live transaction");
-        for (cube, at, before) in transaction.undo.drain(point..).rev() {
-            match before {
+        for Undo {
+            cube,
+            at,
+            value,
+            detail,
+        } in transaction.undo.drain(point..).rev()
+        {
+            match detail {
+                Some(detail) => transaction.details[cube].insert(at.clone(), detail),
+                None => transaction.details[cube].remove(&at),
+            };
+            match value {
                 Some(value) => transaction.writes[cube].insert(at, value),
                 None => transaction.writes[cube].remove(&at),
             };
@@ -1031,16 +1107,25 @@ impl Database {
         if let Some(mut journal) = self.journal() {
             journal.model(self.model_version + 1, &definition)?;
         }
-        // A sandbox's values go where their names are in the new model, as stored cells do;
-        // a plain transaction's are let go.
-        let sandboxes: Vec<(TransactionId, Vec<CellWrite>)> = match moved {
-            Some(_) => self
-                .transactions
-                .iter()
-                .filter(|(_, transaction)| transaction.kept.is_some())
-                .map(|(&id, transaction)| (id, self.named_writes(&transaction.writes)))
-                .collect(),
-            None => Vec::new(),
+        // Supporting detail and a sandbox's values go where their names are in the new model,
+        // as stored cells do; a plain transaction's are let go.
+        let (details, sandboxes): (Vec<CellDetail>, Vec<sandboxes::Carried>) = match moved {
+            Some(_) => (
+                self.named_cells().details().each().collect(),
+                self.transactions
+                    .iter()
+                    .filter(|(_, transaction)| transaction.kept.is_some())
+                    .map(|(&id, transaction)| {
+                        let pending = NamedDetails::pending(&self.model, &transaction.details);
+                        (
+                            id,
+                            self.named_writes(&transaction.writes),
+                            pending.each().collect(),
+                        )
+                    })
+                    .collect(),
+            ),
+            None => Default::default(),
         };
         self.model = model;
         self.definition = definition;
@@ -1050,10 +1135,13 @@ impl Database {
         if let Some((cells, dropped)) = moved {
             for transaction in self.transactions.values_mut() {
                 transaction.writes = vec![Writes::default(); cells.len()];
+                transaction.details = vec![Default::default(); cells.len()];
                 transaction.undo.clear();
             }
+            self.details = vec![Default::default(); cells.len()];
             self.cells = cells;
             dropped_cells = dropped;
+            self.load_details(&details);
             self.carry(sandboxes);
             // The commits recorded so far name cells of the old model.
             self.snapshot();
@@ -1105,8 +1193,21 @@ impl Database {
         let transaction = self.transactions.get_mut(&id).expect("checked above");
         let point = transaction.undo.len();
         for (index, (cube, at)) in located.iter().enumerate() {
-            let before = transaction.writes[*cube].insert(at.clone(), batch.value(index).clone());
-            transaction.undo.push((*cube, at.clone(), before));
+            let value = transaction.writes[*cube].insert(at.clone(), batch.value(index).clone());
+            // A value written plainly takes the cell's detail away: its lines no longer add
+            // up to it.
+            let detail = transaction.details[*cube].get(at).cloned();
+            if has_detail(&transaction.details[*cube], &self.details[*cube], at) {
+                transaction.details[*cube].insert(at.clone(), None);
+            }
+            let cube = *cube;
+            let at = at.clone();
+            transaction.undo.push(Undo {
+                cube,
+                at,
+                value,
+                detail,
+            });
         }
         // The checks are made with the whole batch in place, for one may read other cells
         // the batch writes; a value one refuses takes the batch back.

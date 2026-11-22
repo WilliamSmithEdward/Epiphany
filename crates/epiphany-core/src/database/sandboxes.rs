@@ -9,13 +9,18 @@
 //! transaction of their own, which takes the locks and makes the checks any commit does,
 //! and leaves the sandbox open and empty; rolling it back empties it.
 
-use std::sync::atomic::AtomicU64;
-
 use serde::Serialize;
 
-use super::{CellWrite, CellWrites, Database, Error, NamedWrites, Transaction, TransactionId};
+use super::{
+    CellDetail, CellWrite, CellWrites, Database, Error, NamedDetails, NamedWrites, Transaction,
+    TransactionId,
+};
+use crate::Scalar;
 use crate::cells::{Coordinate, Writes, check};
 use crate::model::key;
+
+/// A sandbox's values and supporting detail, by name, carried into a new model.
+pub(super) type Carried = (TransactionId, Vec<CellWrite>, Vec<CellDetail>);
 
 /// The longest a sandbox's name may be, in characters.
 const LONGEST: usize = 100;
@@ -38,13 +43,15 @@ pub(super) struct Kept {
     owner: String,
 }
 
-/// A sandbox as the journal keeps it: its name, its owner, and its values, addressed by
-/// name so that they can be placed again in whatever the model has become.
+/// A sandbox as the journal keeps it: its name, its owner, its values and the supporting
+/// detail written with them or taken away, addressed by name so that they can be placed
+/// again in whatever the model has become.
 #[derive(Serialize)]
 pub struct KeptSandbox<'a> {
     pub name: &'a str,
     pub owner: &'a str,
     pub cells: NamedWrites<'a>,
+    pub details: NamedDetails<'a>,
 }
 
 impl Database {
@@ -110,26 +117,24 @@ impl Database {
     }
 
     /// Takes in a sandbox the journal kept, under the transaction id it had, with those of
-    /// its values that still have a place in the model. Says how many have none.
+    /// its values and their supporting detail that still have a place in the model. Says how
+    /// many values have none.
     pub fn restore_sandbox(
         &mut self,
         id: TransactionId,
         owner: &str,
         name: &str,
         cells: &[CellWrite],
+        details: &[CellDetail],
     ) -> usize {
-        let transaction = Transaction {
-            writes: vec![Writes::default(); self.cells.len()],
-            undo: Vec::new(),
-            used: AtomicU64::new(self.now()),
-            author: Some(owner.to_owned()),
-            kept: Some(Kept {
-                name: name.to_owned(),
-                owner: owner.to_owned(),
-            }),
-        };
+        let mut transaction =
+            Transaction::new(self.cells.len(), self.now(), Some(owner.to_owned()));
+        transaction.kept = Some(Kept {
+            name: name.to_owned(),
+            owner: owner.to_owned(),
+        });
         self.transactions.insert(id, transaction);
-        self.place(id, cells)
+        self.place(id, cells, details)
     }
 
     /// The transaction of a user's sandbox, found by its name.
@@ -142,22 +147,31 @@ impl Database {
         })
     }
 
-    /// Puts values into a sandbox wherever they have a place in the model, as stored cells
-    /// are loaded; says how many have none.
-    fn place(&mut self, id: TransactionId, cells: &[CellWrite]) -> usize {
+    /// Puts values, and the supporting detail written with them or taken away, into a
+    /// sandbox wherever they have a place in the model, as stored cells are loaded; says how
+    /// many values have none.
+    fn place(&mut self, id: TransactionId, cells: &[CellWrite], details: &[CellDetail]) -> usize {
         let mut dropped = 0;
-        for cell in cells {
-            let located = self.locate(&cell.cube, &cell.at).and_then(|(cube, at)| {
-                check(&self.model, &self.model.cubes()[cube], &at, &cell.value)?;
-                Ok((cube, at))
+        let put = |database: &mut Self, cube: &str, at: &[String], value: &Scalar| {
+            let located = database.locate(cube, at).and_then(|(cube, at)| {
+                check(&database.model, &database.model.cubes()[cube], &at, value)?;
+                Ok((cube, Coordinate::from(at.as_slice())))
             });
-            match located {
-                Ok((cube, at)) => {
+            located.ok()
+        };
+        for cell in cells {
+            match put(self, &cell.cube, &cell.at, &cell.value) {
+                Some((cube, at)) => {
                     let transaction = self.transactions.get_mut(&id).expect("placed into");
-                    let at = Coordinate::from(at.as_slice());
                     transaction.writes[cube].insert(at, cell.value.clone());
                 }
-                Err(_) => dropped += 1,
+                None => dropped += 1,
+            }
+        }
+        for detail in details {
+            if let Some((cube, at)) = put(self, &detail.cube, &detail.at, &Scalar::Number(0.0)) {
+                let transaction = self.transactions.get_mut(&id).expect("placed into");
+                transaction.details[cube].insert(at, detail.lines.clone());
             }
         }
         dropped
@@ -177,7 +191,9 @@ impl Database {
             cells: NamedWrites {
                 model: &self.model,
                 writes: &transaction.writes,
+                details: &transaction.details,
             },
+            details: NamedDetails::pending(&self.model, &transaction.details),
         };
         Ok(journal.sandbox(id, Some(&sandbox))?)
     }
@@ -190,16 +206,19 @@ impl Database {
         change: impl FnOnce(&mut Self) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let transaction = self.transaction(id)?;
-        let before = transaction
-            .kept
-            .is_some()
-            .then(|| (transaction.writes.clone(), transaction.undo.clone()));
+        let before = transaction.kept.is_some().then(|| {
+            (
+                transaction.writes.clone(),
+                transaction.details.clone(),
+                transaction.undo.clone(),
+            )
+        });
         let done = change(self)?;
-        if let Some((writes, undo)) = before
+        if let Some(before) = before
             && let Err(error) = self.keep(id)
         {
             let transaction = self.transactions.get_mut(&id).expect("changed above");
-            (transaction.writes, transaction.undo) = (writes, undo);
+            (transaction.writes, transaction.details, transaction.undo) = before;
             return Err(error);
         }
         Ok(done)
@@ -212,6 +231,7 @@ impl Database {
         let sandbox = self.transaction(id)?;
         let author = sandbox.author.clone();
         let writes = self.named_writes(&sandbox.writes);
+        let details = sandbox.details.clone();
         if !writes.is_empty() {
             let published = self.begin();
             self.transactions
@@ -219,8 +239,17 @@ impl Database {
                 .expect("just begun")
                 .author = author;
             let batch = CellWrites::from(writes.as_slice());
+            // Staged plainly, the values took any detail away; the sandbox's own, written
+            // with them or taken away, stand in its place.
+            let detailed = |database: &mut Self| {
+                let transaction = database.transactions.get_mut(&published).expect("begun");
+                for (pending, sandboxed) in transaction.details.iter_mut().zip(details) {
+                    pending.extend(sandboxed);
+                }
+            };
             let done = self
                 .stage(published, &batch)
+                .map(|()| detailed(self))
                 .and_then(|()| self.commit(published));
             if let Err(error) = done {
                 // Refused before or by the commit, the transaction is still open.
@@ -244,10 +273,12 @@ impl Database {
         })
     }
 
-    /// Takes every value out of a transaction, and every point it came to.
+    /// Takes every value and detail out of a transaction, and every point it came to.
     pub(super) fn empty(&mut self, id: TransactionId) {
         if let Some(transaction) = self.transactions.get_mut(&id) {
-            transaction.writes = vec![Writes::default(); transaction.writes.len()];
+            let cubes = transaction.writes.len();
+            transaction.writes = vec![Writes::default(); cubes];
+            transaction.details = vec![Default::default(); cubes];
             transaction.undo.clear();
         }
     }
@@ -263,14 +294,14 @@ impl Database {
             .collect()
     }
 
-    /// Carries the sandboxes' values, named under the model they were written in, into the
-    /// model that replaced it, dropping those that have no place in it. The journal then
-    /// keeps each as it is. Should it fail to, what it keeps still names the values, and
-    /// they are placed afresh from it in the model when the process starts again.
-    pub(super) fn carry(&mut self, named: Vec<(TransactionId, Vec<CellWrite>)>) {
-        for (id, cells) in named {
+    /// Carries the sandboxes' values and detail, named under the model they were written in,
+    /// into the model that replaced it, dropping those that have no place in it. The journal
+    /// then keeps each as it is. Should it fail to, what it keeps still names the values,
+    /// and they are placed afresh from it in the model when the process starts again.
+    pub(super) fn carry(&mut self, named: Vec<Carried>) {
+        for (id, cells, details) in named {
             self.empty(id);
-            self.place(id, &cells);
+            self.place(id, &cells, &details);
             let _ = self.keep(id);
         }
     }

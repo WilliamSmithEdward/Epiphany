@@ -20,7 +20,7 @@ use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
     Asked, CellChange, CellRef, CellRefs, CellWrite, CellWrites, Comment, Database, EarlierModel,
-    Error, Explanation, HistoryRead, LockMode, ModelUpdate, Sandbox, Spread, TransactionId,
+    Error, Explanation, HistoryRead, Line, LockMode, ModelUpdate, Sandbox, Spread, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
@@ -162,6 +162,7 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_cube, put_cube, delete_cube))
         .routes(routes!(read_cells))
         .routes(routes!(write_cells))
+        .routes(routes!(write_detail))
         .routes(routes!(explain_cells))
         .routes(routes!(cell_history))
         .routes(routes!(spread_cells))
@@ -1274,6 +1275,51 @@ async fn write_cells(
     }
     let mut database = database.write_by(&user);
     database.write_batch(request.transaction, &request.cells)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct DetailRequest {
+    /// Hold the detail and its value in this transaction, or this sandbox, until it commits.
+    /// Without it they are committed at once.
+    transaction: Option<u64>,
+    cube: String,
+    /// One element name or alias for each dimension of the cube.
+    at: Vec<String>,
+    /// The lines the cell's value is the sum of. None take the detail away and leave the
+    /// value as it is.
+    lines: Vec<Line>,
+}
+
+/// Writes a leaf cell's supporting detail, the lines its value is the sum of, and the sum to
+/// the cell, as one write. A value written to the cell plainly later takes the detail away,
+/// for its lines no longer add up to it; `POST /cells/explain` gives a cell's detail.
+#[utoipa::path(
+    post,
+    path = "/cells/detail",
+    request_body = DetailRequest,
+    responses(
+        (status = NO_CONTENT, description = "Done"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown transaction"),
+        (status = CONFLICT, body = ApiError, description = "Another transaction holds a lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The cell cannot be written, the lines are not a detail it can have, or the request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
+)]
+async fn write_detail(
+    State(database): State<Shared>,
+    Extension(grants): Held,
+    Extension(Signed(user)): Extension<Signed>,
+    Body(request): Body<DetailRequest>,
+) -> Result<StatusCode, ApiError> {
+    allow(&grants, &request.cube, Role::Write)?;
+    let cell = CellRef {
+        cube: request.cube,
+        at: request.at,
+    };
+    let mut database = database.write_by(&user);
+    database.write_detail(request.transaction, &cell, request.lines)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

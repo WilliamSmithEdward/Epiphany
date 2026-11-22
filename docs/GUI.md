@@ -50,6 +50,7 @@ their practices, not their looks.
 | Undo and redo of data entry (PAW added it after years of asking) that costs nothing to keep | One history of layout and values: a change of values goes back to a point of the edit transaction, which the server keeps as a log of what each write replaced; Redo makes it again |
 | Input cells told apart from calculated ones at a glance (PAW's green, Oracle's white on grey) | Writable cells tinted, with a key in the status line |
 | Changes tried out apart, kept for days, before anyone else sees them (PAW and Oracle sandboxes, Pigment scenarios, SAP's private versions) | Named sandboxes, chosen beside Views: each a transaction the server keeps for its owner, the cells it changes tinted and counted, the stored value struck through beside each when compared, published or discarded whole |
+| A number broken down into the lines it is made of, kept with it (Oracle's supporting detail, OneStream's and Adaptive Planning's line items) | A cell's Detail, beside its comments and history: lines of a label and an amount whose total the cell takes, saved, undone and discarded with the other changes; a cell with detail underlined with dots, and asked about before a value typed in replaces it |
 | Values checked as they are entered, the wrong ones refused or flagged (Oracle's validation rules, Anaplan's data validation) | A cube's checks, made in the model's Checks tab: one that refuses turns the value away with its message and leaves the keys on the cell; one that warns keeps it, says so, and underlines it, and every total it puts wrong, in the grid |
 
 What they get wrong is avoided as well: crowded ribbons, low contrast, drag and drop as the
@@ -122,13 +123,12 @@ cubes for administrators, by cube, user and time, each opened in Explore, pickli
 string element's cells offer its values in a list, marked with the list's arrow, and take no
 others, named sandboxes: changes kept apart, on the server, until they are published,
 the cells they change marked in the grid, and the stored value struck through beside each
-when compared, and checks: a cube's rules of what a value may be, which refuse a value as it
-is written or keep it, underlined in the grid with what the check says. Still to do, most
-valuable first:
+when compared, checks: a cube's rules of what a value may be, which refuse a value as it is
+written or keep it, underlined in the grid with what the check says, and supporting detail:
+the lines a cell's value is the sum of, kept with it. Still to do, most valuable first:
 
 | Gap | Seen in | Shape here |
 | --- | --- | --- |
-| Supporting detail beneath a cell | Oracle, OneStream, Adaptive Planning | Lines that add up to the cell's value, kept with it |
 | Seeing the model as another user does | Pigment | A read-only "view as" with a banner, recorded in the audit log |
 
 Anti-patterns the tools are criticised for, to avoid: spreads that empty whole years from one

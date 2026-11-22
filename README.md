@@ -138,6 +138,7 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `GET`, `PUT`, `DELETE /cubes/{name}` | One cube, with its rules, feeders and views |
 | `POST /cells/read` | A batch of cells, each with its value or its own error |
 | `POST /cells/write` | A batch of leaf cells: all of them or none |
+| `POST /cells/detail` | A leaf cell's supporting detail, the lines its value is the sum of, written with the sum |
 | `POST /cells/spread` | A value shared out among the leaves of a consolidation, leaving any cells held as they are |
 | `POST /cells/explain` | How each cell comes by its value: stored, a rule, a total, fed or not |
 | `POST /cells/history` | The changes saved to a cell, the newest first: when, by whom, and from what to what |
@@ -152,6 +153,12 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `GET`, `POST /sandboxes`, `DELETE /sandboxes/{name}` | The signed-in user's sandboxes: transactions kept under a name |
 
 A read, a write or a query can carry a transaction id; without one it stands alone.
+
+A leaf cell may keep supporting detail: lines, each a label and an amount, that its value is
+the sum of, such as a travel budget's flights and hotels. The detail is written with the sum,
+as one write, and waits, commits and rolls back with it. A value written to the cell plainly
+takes the detail away, for its lines no longer add up to it. `POST /cells/explain` gives a
+cell's detail with the rest of what it says of the cell.
 
 A sandbox is a transaction its owner keeps under a name, for values to be tried out in
 before anyone else sees them. It holds no locks, so it holds up nobody, never expires, and

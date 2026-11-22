@@ -1,11 +1,12 @@
-// Comments: notes pinned to cells, as planners explain a number beside it; and the history
-// of a cell's changes, who made each and from what to what. A cell with comments is marked
-// in its corner; both open in a panel beside the grid, which keeps the numbers in view.
-// Methods of the explorer, kept apart to keep each part readable.
+// Comments: notes pinned to cells, as planners explain a number beside it; the history of a
+// cell's changes, who made each and from what to what; and its supporting detail, the lines
+// its value is the sum of. A cell with comments is marked in its corner; all three open in a
+// panel beside the grid, which keeps the numbers in view. Methods of the explorer, kept
+// apart to keep each part readable.
 
 import { del, get, part, post } from './api.js';
 import { loading, state } from './app.js';
-import { dialog, formatValue, h, icon, mount, notify, working } from './ui.js';
+import { dialog, formatValue, h, icon, mount, notify, parseNumber, working } from './ui.js';
 
 /** Comments: methods of the explorer. */
 export const comments = {
@@ -72,11 +73,11 @@ export const comments = {
     this.openCell(r, c, 'history');
   },
 
-  /** Opens the panel beside the grid on a cell: on its comments, or on its history. */
+  /** Opens the panel beside the grid on a cell: on its comments, its history or its detail. */
   openCell(r, c, tab) {
     const at = this.coordinate(r, c);
     if (!at) {
-      notify('A calculated member\'s cells are worked out by the query: they take no comments, and keep no history.');
+      notify('A calculated member\'s cells are worked out by the query: they take no comments, keep no history and have no detail.');
       return;
     }
     this.commentCell = { r, c, at, tab };
@@ -91,9 +92,9 @@ export const comments = {
   },
 
   /**
-   * Draws the panel for the cell it is open on: its comments, or its history, by the tab
-   * chosen. With `focus`, as the panel opens or the tab changes, the keys go to it; drawn
-   * again as the grid is, it leaves them where they are.
+   * Draws the panel for the cell it is open on: its comments, its history or its detail, by
+   * the tab chosen. With `focus`, as the panel opens or the tab changes, the keys go to it;
+   * drawn again as the grid is, it leaves them where they are.
    */
   drawComments(focus = false) {
     const cell = this.commentCell;
@@ -114,11 +115,123 @@ export const comments = {
     mount(this.commentPanel,
       h('div', { class: 'comment-head' },
         h('div', { class: 'grow' },
-          h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'About the cell' }, tab('comments', 'Comments'), tab('history', 'History')),
+          h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'About the cell' }, tab('comments', 'Comments'), tab('history', 'History'), tab('detail', 'Detail')),
           h('p', { class: 'muted' }, cell.at.join(' · '))),
         h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Close the panel', onclick: () => this.closeComments() }, icon('close', 16))),
-      cell.tab === 'history' ? this.drawHistory(cell) : this.drawThread(cell));
-    if (focus) (this.commentPanel.querySelector('textarea:not([disabled])') ?? this.commentPanel.querySelector('[role="tab"][aria-selected="true"]'))?.focus();
+      cell.tab === 'history' ? this.drawHistory(cell) : cell.tab === 'detail' ? this.drawDetail(cell, focus) : this.drawThread(cell));
+    if (focus && cell.tab !== 'detail') (this.commentPanel.querySelector('textarea:not([disabled])') ?? this.commentPanel.querySelector('[role="tab"][aria-selected="true"]'))?.focus();
+  },
+
+  /**
+   * A cell's supporting detail, the lines its value is the sum of, each a label and an
+   * amount, to change and save with the value, or to take away. Asked for each time it is
+   * drawn, as the edit transaction or the sandbox worked in sees it.
+   */
+  drawDetail(cell, focus) {
+    const body = h('div', { class: 'detail', 'aria-busy': 'true' }, loading('lines'));
+    const asked = { cells: [{ cube: this.cube.name, at: cell.at }], transaction: this.tx ?? undefined };
+    post('/cells/explain', asked, { quiet: true }).then((answer) => {
+      const explained = answer.cells[0]?.cell;
+      if (!explained) throw new Error(answer.cells[0]?.error?.message ?? 'The cell cannot be told about.');
+      mount(body, this.detailEditor(cell, explained));
+      if (focus) (body.querySelector('input:not([disabled])') ?? this.commentPanel.querySelector('[role="tab"][aria-selected="true"]'))?.focus();
+    }).catch((problem) => {
+      mount(body, h('p', { class: 'error-text comment-none' }, problem.message));
+    }).finally(() => body.removeAttribute('aria-busy'));
+    return body;
+  },
+
+  /** The lines of a cell's detail as fields, with their total and the ways to save or take them away. */
+  detailEditor(cell, explained) {
+    const kept = explained.detail ?? [];
+    const writable = this.mayWrite() && explained.kind === 'leaf' && explained.writable;
+    const format = (value) => formatValue(value, this.layout.format);
+    if (!writable) {
+      return [
+        kept.length
+          ? h('ol', { class: 'detail-read' }, kept.map((line) => h('li', {}, h('span', { class: 'grow' }, line.label || '—'), h('span', { class: 'num' }, format(line.value)))))
+          : h('p', { class: 'muted comment-none' }, 'No detail.'),
+        h('p', { class: 'hint' }, this.mayWrite()
+          ? 'Only a number that can be written has detail: this cell is a total, text, or worked out by a rule.'
+          : 'Your role reads this cube; it takes a writer to give a cell detail.'),
+      ];
+    }
+    const list = h('ol', { class: 'detail-lines' });
+    const total = h('strong', { class: 'num' });
+    const row = (line = { label: '', value: '' }) => {
+      const label = h('input', { class: 'input', value: line.label, placeholder: 'What it is', 'aria-label': 'What the line is', maxlength: 200 });
+      const amount = h('input', { class: 'input num', value: line.value === '' ? '' : String(line.value), inputmode: 'decimal', placeholder: '0', 'aria-label': 'Its amount' });
+      amount.addEventListener('input', sum);
+      const item = h('li', {}, label, amount,
+        h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Take the line away', onclick: () => { item.remove(); sum(); } }, icon('close', 14)));
+      return item;
+    };
+    // The lines as typed: each a label and a number, blank ones left out; null where an
+    // amount is not a number.
+    const read = () => {
+      const lines = [];
+      for (const item of list.children) {
+        const [label, amount] = item.querySelectorAll('input');
+        if (!label.value.trim() && !amount.value.trim()) continue;
+        const value = amount.value.trim() === '' ? 0 : parseNumber(amount.value);
+        if (value === null) return null;
+        lines.push({ label: label.value.trim(), value });
+      }
+      return lines;
+    };
+    function sum() {
+      const lines = read();
+      total.textContent = lines ? format(lines.reduce((all, line) => all + line.value, 0)) : '—';
+    }
+    list.append(...(kept.length ? kept : [undefined, undefined]).map(row));
+    sum();
+    const save = h('button', {
+      class: 'button small primary',
+      type: 'button',
+      onclick: () => {
+        const lines = read();
+        if (lines?.length === 0) {
+          notify(kept.length ? 'To take the detail away, choose Take it away.' : 'Give the detail a line or more.', 'bad');
+          return;
+        }
+        working(save, () => this.saveDetail(cell, lines));
+      },
+    }, 'Save the detail');
+    const add = () => {
+      const added = row();
+      list.append(added);
+      added.querySelector('input').focus();
+    };
+    return [
+      list,
+      h('div', { class: 'toolbar' },
+        h('button', { class: 'button small', type: 'button', onclick: add }, icon('plus', 14), 'Add a line'),
+        h('span', { class: 'grow' }),
+        h('span', { class: 'muted' }, 'Total'), total),
+      h('div', { class: 'toolbar' },
+        kept.length ? h('button', { class: 'button small', type: 'button', onclick: (event) => working(event.currentTarget, () => this.saveDetail(cell, [])) }, 'Take it away') : null,
+        h('span', { class: 'grow' }),
+        save),
+      h('p', { class: 'hint' }, 'The cell takes the lines\' total. A value typed into the cell instead takes the detail away.'),
+    ];
+  },
+
+  /**
+   * Writes the lines given as the cell's detail, and their total to it, as a change of
+   * values; no lines take the detail away and leave the value.
+   */
+  async saveDetail(cell, lines) {
+    if (lines === null) {
+      notify('Give each line an amount that is a number.', 'bad');
+      return;
+    }
+    const label = lines.length ? `the detail of ${cell.at.join(' · ')}` : `taking away the detail of ${cell.at.join(' · ')}`;
+    await this.changeValues(label, async () => {
+      await post('/cells/detail', { transaction: this.tx, cube: this.cube.name, at: cell.at, lines });
+      this.changes = (this.changes ?? 0) + 1;
+      if (!this.sandbox && lines.length) this.edits.set(JSON.stringify(cell.at), lines.reduce((all, line) => all + line.value, 0));
+      return lines.length ? `The cell is now the total of its ${lines.length} line${lines.length === 1 ? '' : 's'}.` : 'Took the detail away; the value stays.';
+    }, false, [cell.r, cell.c]);
   },
 
   /** A cell's comments, the oldest first, and the box to add one. */

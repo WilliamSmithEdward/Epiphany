@@ -144,6 +144,31 @@ async fn a_check_refuses_a_value_or_marks_it_as_breaking_the_check() {
 }
 
 #[tokio::test]
+async fn a_cells_detail_is_written_with_its_value_and_explained() {
+    let app = example();
+    let rent = ["Rent", "US", "Jan", "Actual"];
+    let lines = json!([{ "label": "Office", "value": 30.0 }, { "label": "Store", "value": 12.5 }]);
+    let detail = json!({ "cube": "General Ledger", "at": rent, "lines": lines });
+    let (status, _) = call(&app, "POST", "/cells/detail", Some(detail)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let explain = json!({ "cells": [cell(rent)] });
+    let (_, body) = call(&app, "POST", "/cells/explain", Some(explain)).await;
+    let explained = &body["cells"][0]["cell"];
+    assert_eq!(
+        (&explained["value"], &explained["detail"]),
+        (&json!(42.5), &lines)
+    );
+
+    // Lines that are not a detail a cell can have are refused, saying why.
+    let bad = json!({ "cube": "General Ledger", "at": rent, "lines": [{ "label": "\u{7}", "value": 1 }] });
+    let (status, body) = call(&app, "POST", "/cells/detail", Some(bad)).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid_detail"))
+    );
+}
+
+#[tokio::test]
 async fn the_model_is_served_as_defined() {
     let (status, body) = call(&example(), "GET", "/model", None).await;
     assert_eq!(status, StatusCode::OK);

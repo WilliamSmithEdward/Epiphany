@@ -557,6 +557,87 @@
         }
       }
     },
+    "/cells/detail": {
+      "post": {
+        "summary": "Writes a leaf cell's supporting detail, the lines its value is the sum of, and the sum to\nthe cell, as one write. A value written to the cell plainly later takes the detail away,\nfor its lines no longer add up to it; `POST /cells/explain` gives a cell's detail.",
+        "operationId": "write_detail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another transaction holds a lock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The cell cannot be written, the lines are not a detail it can have, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cells/explain": {
       "post": {
         "summary": "Says how each cell comes by its value: stored, calculated by a rule or added up, whether\nit can be written, and whether it is fed. A cell that cannot be explained reports its own\nerror.",
@@ -3267,6 +3348,43 @@
         },
         "additionalProperties": false
       },
+      "DetailRequest": {
+        "type": "object",
+        "required": [
+          "cube",
+          "at",
+          "lines"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One element name or alias for each dimension of the cube."
+          },
+          "cube": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Line"
+            },
+            "description": "The lines the cell's value is the sum of. None take the detail away and leave the\nvalue as it is."
+          },
+          "transaction": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Hold the detail and its value in this transaction, or this sandbox, until it commits.\nWithout it they are committed at once.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "DimensionDef": {
         "type": "object",
         "required": [
@@ -3625,9 +3743,17 @@
           "kind",
           "writable",
           "fed_by",
-          "invalid"
+          "invalid",
+          "detail"
         ],
         "properties": {
+          "detail": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Line"
+            },
+            "description": "The lines the cell's value is the sum of, where it was written with supporting detail."
+          },
           "fed": {
             "type": [
               "boolean",
@@ -3846,6 +3972,24 @@
             "description": "Whether the check refuses such a value as it is written. One it breaks all the same\nwas there before the check was."
           }
         }
+      },
+      "Line": {
+        "type": "object",
+        "description": "One line of a cell's supporting detail.",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What the line is, such as `Flights to Lisbon`."
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
       },
       "LockMode": {
         "type": "string",

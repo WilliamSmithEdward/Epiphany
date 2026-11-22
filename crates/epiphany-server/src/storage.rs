@@ -8,8 +8,9 @@
 //!     cubes/*.json
 //!   data/
 //!     lock                 held by the one process serving the directory
-//!     snapshot.json        every stored cell at some moment
-//!     log.jsonl            one line per commit since the snapshot
+//!     snapshot.json        every stored cell at some moment, and their supporting detail
+//!     log.jsonl            one line per commit since the snapshot: its cells, with the
+//!                          supporting detail it wrote or took away where there is any
 //!     history.jsonl        one line per commit that changed a value: when, by whom, and
 //!                          each cell's value before and after, kept through snapshots
 //!     comments.jsonl       one line per comment added or taken away
@@ -30,8 +31,8 @@ use std::time::UNIX_EPOCH;
 
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    Asked, CellChange, CellWrite, Changes, CommentChange, Database, EarlierModel, History, Journal,
-    KeptSandbox, NamedCells, NamedWrites, TransactionId,
+    Asked, CellChange, CellDetail, CellWrite, Changes, CommentChange, Database, EarlierModel,
+    History, Journal, KeptSandbox, NamedCells, NamedDetails, NamedWrites, TransactionId,
 };
 use epiphany_core::model::ModelDef;
 use serde::de::DeserializeOwned;
@@ -52,6 +53,16 @@ struct Snapshot<'a> {
     /// at once as they are loaded.
     stored: BTreeMap<&'a str, usize>,
     cells: &'a NamedCells<'a>,
+    /// The supporting detail of the cells that have one.
+    details: NamedDetails<'a>,
+}
+
+/// A commit as the log holds it: its cells alone, a list as a commit always was, or with the
+/// supporting detail written with them or taken away.
+#[derive(Serialize, Deserialize)]
+struct Detailed<C, D> {
+    cells: C,
+    details: D,
 }
 
 /// The fewest bytes a cell takes in a snapshot, `{"cube":"","at":[],"value":0}`: no more
@@ -116,6 +127,10 @@ impl<'de> serde::de::Visitor<'de> for &mut Loading<'_> {
                     }
                 }
                 "cells" => self.skipped += map.next_value_seed(Cells(&mut *self.database))?,
+                "details" => {
+                    let details: Vec<CellDetail> = map.next_value()?;
+                    self.database.load_details(&details);
+                }
                 _ => drop(map.next_value::<serde::de::IgnoredAny>()?),
             }
         }
@@ -174,8 +189,8 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
     };
     let commits: Vec<&str> = recorded.lines().collect();
     for (number, line) in commits.iter().enumerate() {
-        match serde_json::from_str::<Vec<CellWrite>>(line) {
-            Ok(commit) => skipped += database.load(&commit),
+        match replay(&mut database, line) {
+            Ok(dropped) => skipped += dropped,
             // A commit that was being written when the process died is incomplete and was
             // never acknowledged: the last line may be one, and is left out.
             Err(_) if number + 1 == commits.len() => eprintln!(
@@ -239,7 +254,13 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
     let mut dropped = 0;
     for (id, path) in sandbox_files(&data.join(SANDBOXES))? {
         let kept: KeptFile = read_json(&path)?.expect("listed above");
-        dropped += database.restore_sandbox(id, &kept.owner, &kept.name, &kept.cells);
+        let KeptFile {
+            name,
+            owner,
+            cells,
+            details,
+        } = &kept;
+        dropped += database.restore_sandbox(id, owner, name, cells, details);
     }
     if dropped > 0 {
         eprintln!(
@@ -248,6 +269,18 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
     }
     database.set_journal(Box::new(files));
     Ok(database)
+}
+
+/// Stores a commit as the log recorded it, with any supporting detail it brought or took
+/// away. Says how many of its cells no longer fit the model.
+fn replay(database: &mut Database, line: &str) -> serde_json::Result<usize> {
+    if line.trim_start().starts_with('{') {
+        let commit: Detailed<Vec<CellWrite>, Vec<CellDetail>> = serde_json::from_str(line)?;
+        let dropped = database.load(&commit.cells);
+        database.load_details(&commit.details);
+        return Ok(dropped);
+    }
+    Ok(database.load(&serde_json::from_str::<Vec<CellWrite>>(line)?))
 }
 
 /// Where the comments are kept, in the data folder.
@@ -262,6 +295,10 @@ struct KeptFile {
     name: String,
     owner: String,
     cells: Vec<CellWrite>,
+    /// The supporting detail written with its values, or taken away; none in a file kept
+    /// before there was any.
+    #[serde(default)]
+    details: Vec<CellDetail>,
 }
 
 /// The file of each sandbox kept in a folder, with the transaction it is kept under. None
@@ -488,8 +525,17 @@ struct Files {
 }
 
 impl Journal for Files {
+    /// Appends the commit to the log: a list of its cells, or, where it brings supporting
+    /// detail or takes some away, the cells with the detail, in one line either way.
     fn commit(&mut self, writes: &NamedWrites<'_>) -> io::Result<()> {
-        let mut line = serde_json::to_vec(writes)?;
+        let details = writes.details();
+        let mut line = match details.is_empty() {
+            true => serde_json::to_vec(writes)?,
+            false => serde_json::to_vec(&Detailed {
+                cells: writes,
+                details,
+            })?,
+        };
         line.push(b'\n');
         self.log.write_all(&line)?;
         self.log.sync_data()?;
@@ -642,6 +688,7 @@ impl Journal for Files {
             model_version,
             stored: cells.counts(),
             cells,
+            details: cells.details(),
         };
         let written = write_whole(
             &self.directory.join("data").join("snapshot.json"),

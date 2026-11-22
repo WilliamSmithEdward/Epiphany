@@ -61,6 +61,8 @@ export const writeback = {
     this.writable = new Set();
     this.why = new Map();
     this.invalid = new Map();
+    // The cells whose values are the sum of supporting detail, and how many lines each has.
+    this.detailed = new Map();
     this.explained = new Map();
     this.known = new Set();
   },
@@ -109,6 +111,7 @@ export const writeback = {
           if (cell.cell?.writable && writable) this.writable.add(place);
           else if (cell.cell?.rule) this.why.set(place, `A rule works this cell out: ${cell.cell.rule.text ?? ''}`.trim());
           if (cell.cell?.invalid?.length) this.invalid.set(place, cell.cell.invalid);
+          if (cell.cell?.detail?.length) this.detailed.set(place, cell.cell.detail.length);
         });
         for (const r of each.rows) this.known.add(r);
         this.markWritable(each.rows);
@@ -159,6 +162,7 @@ export const writeback = {
     const held = this.holds.size > 0 && this.holds.has(this.key(r, c));
     const stored = this.storedText(r, c);
     const invalid = this.invalid.get(`${r},${c}`);
+    const detail = this.detailed.get(`${r},${c}`);
     td.classList.toggle('editable', editable);
     td.classList.toggle('picklist', editable && typeof this.valueAt(r, c) !== 'number' && Boolean(this.picklistAt(r, c)));
     td.classList.toggle('edited', edited);
@@ -166,9 +170,11 @@ export const writeback = {
     td.classList.toggle('spreadable', spreadable);
     td.classList.toggle('held', held);
     td.classList.toggle('invalid', Boolean(invalid));
+    td.classList.toggle('detailed', Boolean(detail));
     // Everything there is to say of the cell, the checks it breaks first.
     const title = [
       ...(invalid ?? []).map((check) => check.message),
+      detail ? `The total of its ${detail} line${detail === 1 ? '' : 's'} of detail` : null,
       held ? 'Held: spreads leave it as it is' : null,
       edited ? 'Changed, not yet saved' : null,
       stored !== null ? `Changed in ${this.sandbox.name}. Stored: ${stored || 'nothing'}` : null,
@@ -273,6 +279,11 @@ export const writeback = {
     }
     this.focusAfter = [r + (move?.[0] ?? 0), c + (move?.[1] ?? 0)];
     if (value === before || ((before === null || before === undefined) && (value === 0 || value === ''))) {
+      this.focusCell();
+      return;
+    }
+    if (!(await this.replacingDetail([[r, c]]))) {
+      this.focusAfter = [r, c];
       this.focusCell();
       return;
     }
@@ -397,9 +408,26 @@ export const writeback = {
       notify(leftOut ? 'None of the cells it would go into take it.' : 'There is nothing to paste.', 'bad');
       return;
     }
+    if (!(await this.replacingDetail(cells.map(({ r, c }) => [r, c])))) return;
     this.focusAfter = [top, left];
     const pasted = `Pasted ${cells.length.toLocaleString()} value${cells.length === 1 ? '' : 's'}.`;
     await this.writeCells(cells, leftOut ? `${pasted} ${leftOut.toLocaleString()} left out: cells that cannot be written, or values they do not take.` : pasted);
+  },
+
+  /**
+   * Whether values may go into cells given as [row, column], once the user agrees, where
+   * some have supporting detail that a value written plainly takes away.
+   */
+  async replacingDetail(places) {
+    const detailed = places.filter(([r, c]) => this.detailed.has(`${r},${c}`));
+    if (!detailed.length) return true;
+    const one = detailed.length === 1;
+    return dialog({
+      title: one ? 'Replace the cell\'s detail?' : `Replace the detail of ${detailed.length.toLocaleString()} cells?`,
+      body: h('p', {}, `${one ? 'Its value is' : 'Their values are'} the total of supporting detail. A value written in takes the detail away; change the lines in the cell's Detail instead to keep them.`),
+      confirm: 'Replace it',
+      cancel: 'Keep the detail',
+    });
   },
 
   /** Text as a cell takes it: as given, or as its picklist spells it; null where its picklist does not offer it. */
