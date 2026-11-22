@@ -322,11 +322,11 @@ export function twisty(row, toggle) {
 
 /**
  * Buttons that open every member of a tree and close them all and, where `levels` names
- * more than one, a choice of the level to open it down to. `levels` are `[level, name]`,
- * highest first.
+ * more than one, a choice of the level to open it down to: kept together, so that they wrap
+ * as one. `levels` are `[level, name]`, highest first.
  */
 export function openButtons({ all, none, levels = [], to }) {
-  return [
+  return h('div', { class: 'open-group', role: 'group', 'aria-label': 'Open and close' },
     h('button', { class: 'button small quiet icon', type: 'button', title: 'Open every member', 'aria-label': 'Open every member', onclick: all }, icon('expand', 16)),
     h('button', { class: 'button small quiet icon', type: 'button', title: 'Close every member', 'aria-label': 'Close every member', onclick: none }, icon('collapse', 16)),
     levels.length > 2 ? h('select', {
@@ -336,8 +336,7 @@ export function openButtons({ all, none, levels = [], to }) {
         if (event.target.value !== '') to(Number(event.target.value));
         event.target.value = '';
       },
-    }, h('option', { value: '' }, 'Open to…'), levels.slice(1).map(([level, name]) => h('option', { value: level }, name))) : null,
-  ];
+    }, h('option', { value: '' }, 'Open to…'), levels.slice(1).map(([level, name]) => h('option', { value: level }, name))) : null);
 }
 
 /**

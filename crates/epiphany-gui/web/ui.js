@@ -307,18 +307,24 @@ export function menu(items, at) {
   const outside = (event) => {
     if (!element.contains(event.target)) close();
   };
+  // Over a dialog, the menu goes in it: the rest of the page lies beneath, out of reach.
+  const host = [...document.querySelectorAll('dialog[open]')].pop() ?? document.body;
   element.addEventListener('keydown', (event) => {
     const index = buttons.indexOf(document.activeElement);
     const enabled = buttons.filter((button) => !button.disabled);
-    if (event.key === 'Escape') close();
-    else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    if (event.key === 'Escape') {
+      // Only the menu closes, not a dialog it is open over.
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault();
       const step = event.key === 'ArrowDown' ? 1 : -1;
       const position = enabled.indexOf(buttons[index]);
       enabled[(position + step + enabled.length) % enabled.length]?.focus();
     }
   });
-  document.body.append(element);
+  host.append(element);
   const box = at instanceof Element ? at.getBoundingClientRect() : { left: at.x, bottom: at.y, top: at.y };
   const width = element.offsetWidth;
   const height = element.offsetHeight;

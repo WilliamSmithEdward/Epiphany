@@ -35,17 +35,17 @@ export function defaultLayout(cube, dims) {
 }
 
 /**
- * Which axes of a query leave out what has no values: those its SELECT puts NON EMPTY
- * before. The axes are read at the top level of the clause, outside brackets, braces,
- * parentheses and quotes, so that names and sets may hold commas and words of their own.
+ * A query's clauses as read at its top level, outside brackets, braces, parentheses and
+ * quotes, so that names and sets may hold commas and words of their own: the axes its
+ * SELECT lists, and what its FROM names, as written, up to any WHERE.
  */
-export function emptiness(text) {
-  const found = { rows: false, columns: false };
+function clauses(text) {
   const source = String(text ?? '');
   const letters = /[A-Za-z]+/y;
   let depth = 0;
   let quote = null;
   let start = -1;
+  let from = -1;
   const axes = [];
   for (let at = 0; at < source.length; at += 1) {
     const char = source[at];
@@ -63,17 +63,33 @@ export function emptiness(text) {
       const word = letters.exec(source)?.[0]?.toUpperCase();
       const boundary = !/[A-Za-z0-9_]/.test(source[at - 1] ?? '');
       if (boundary && word === 'SELECT' && start < 0) start = at + word.length;
-      else if (boundary && word === 'FROM' && start >= 0) {
+      else if (boundary && word === 'FROM' && start >= 0 && from < 0) {
         axes.push(source.slice(start, at));
-        break;
-      } else if (char === ',' && start >= 0) {
+        from = at + word.length;
+      } else if (boundary && word === 'WHERE' && from >= 0) {
+        return { axes, from: source.slice(from, at) };
+      } else if (char === ',' && start >= 0 && from < 0) {
         axes.push(source.slice(start, at));
         start = at + 1;
       }
       if (word && boundary) at += word.length - 1;
     }
   }
-  for (const axis of axes) {
+  return { axes, from: from >= 0 ? source.slice(from) : '' };
+}
+
+/** The cube a query asks of, as its FROM names it; null where it names none plainly. */
+export function cubeOf(text) {
+  const from = clauses(text).from.trim();
+  const bracketed = /^\[((?:[^\]]|\]\])*)\]\s*$/.exec(from);
+  if (bracketed) return bracketed[1].replaceAll(']]', ']');
+  return /^[A-Za-z_]\w*$/.exec(from)?.[0] ?? null;
+}
+
+/** Which axes of a query leave out what has no values: those its SELECT puts NON EMPTY before. */
+export function emptiness(text) {
+  const found = { rows: false, columns: false };
+  for (const axis of clauses(text).axes) {
     const place = /\bON\s+(COLUMNS|ROWS|0|1|AXIS\s*\(\s*([01])\s*\))\s*$/i.exec(axis);
     if (!place) continue;
     const name = place[1].toUpperCase();

@@ -1,7 +1,7 @@
 // The set editor: a dimension's members on one side, the set being built on the other.
 
 import { beneath, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { dialog, h, icon, mount, notify } from './ui.js';
+import { copyText, dialog, h, icon, menu, mount, notify } from './ui.js';
 
 /**
  * Edits the set of members a dimension shows on an axis. `dim` is the dimension as the
@@ -259,9 +259,240 @@ class SetEditor {
     this.draw();
   }
 
-  add(names) {
-    const fresh = names.filter((name) => !this.set.includes(name));
-    if (fresh.length) this.change(() => this.set.push(...fresh));
+  /** Puts members into the set at a place, at its end unless told, those in it already left where they are. */
+  add(names, place = this.set.length) {
+    const present = new Set(this.set);
+    const fresh = [...new Set(names)].filter((name) => !present.has(name));
+    if (fresh.length) this.change(() => this.set.splice(place, 0, ...fresh));
+  }
+
+  /** Moves members of the set to a place in it, keeping their order among themselves. */
+  moveTo(names, place) {
+    const moving = new Set(names);
+    const stay = (name) => !moving.has(name);
+    this.change(() => {
+      this.set = [...this.set.slice(0, place).filter(stay), ...this.set.filter((name) => moving.has(name)), ...this.set.slice(place).filter(stay)];
+    });
+  }
+
+  /** Takes members out of the set. */
+  remove(names) {
+    const going = new Set(names);
+    for (const name of going) this.marked.delete(name);
+    this.change(() => {
+      this.set = this.set.filter((name) => !going.has(name));
+    });
+  }
+
+  /** The members marked in the set, in its order. */
+  markedInOrder() {
+    return this.set.filter((name) => this.marked.has(name));
+  }
+
+  /** Shows which members are picked, or marked, on the rows drawn, without drawing them again. */
+  paintChoices() {
+    for (const row of this.left.querySelectorAll('.set-row')) row.setAttribute('aria-selected', String(this.picked.has(row.dataset.name)));
+    for (const item of this.right.querySelectorAll('.set-item')) item.setAttribute('aria-selected', String(this.marked.has(this.set[Number(item.dataset.index)])));
+  }
+
+  /* ---- Dragging ---- */
+
+  /**
+   * Starts dragging members, from the tree or from the set, their names going along as text
+   * for dropping elsewhere. Several say how many, rather than showing the one row.
+   */
+  dragStart(event, from, names) {
+    this.dragging = { from, names };
+    event.dataTransfer.effectAllowed = from === 'tree' ? 'copy' : 'copyMove';
+    event.dataTransfer.setData('text/plain', names.join('\n'));
+    if (names.length > 1) {
+      const label = h('div', { class: 'drag-count' }, `${names.length.toLocaleString()} members`);
+      this.dialogBody.append(label);
+      event.dataTransfer.setDragImage(label, 14, 14);
+      setTimeout(() => label.remove());
+    }
+  }
+
+  /** Ends a drag, dropped or not. */
+  dragged() {
+    this.dragging = null;
+    this.clearDrop();
+  }
+
+  /** Where in the set a drop at the pointer puts what is dropped: before the member under it, or after it, in its lower half. */
+  dropPlace(event) {
+    const item = event.target.closest('.set-item');
+    if (!item) return this.set.length;
+    const index = Number(item.dataset.index);
+    const box = item.getBoundingClientRect();
+    return event.clientY > box.top + box.height / 2 ? index + 1 : index;
+  }
+
+  /** Shows where a drop would go: a line before a member, or after the last, or the whole list when it is empty. */
+  markDrop(place) {
+    this.clearDrop();
+    const next = this.rightRows.at(place);
+    const last = this.rightRows.at(place - 1);
+    if (next) next.classList.add('drop-before');
+    else if (last) last.classList.add('drop-after');
+    else this.right.classList.add('drop-target');
+  }
+
+  clearDrop() {
+    for (const element of this.dialogBody.querySelectorAll('.drop-before, .drop-after, .drop-target')) element.classList.remove('drop-before', 'drop-after', 'drop-target');
+  }
+
+  /** Lets members dragged from the tree, or from the set, be dropped on an element, which acts on them. */
+  dropTarget(element, from, act) {
+    element.addEventListener('dragover', (event) => {
+      if (this.dragging?.from !== from) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = from === 'tree' ? 'copy' : 'move';
+      element.classList.add('drop-target');
+    });
+    element.addEventListener('dragleave', (event) => {
+      if (!element.contains(event.relatedTarget)) element.classList.remove('drop-target');
+    });
+    element.addEventListener('drop', (event) => {
+      if (this.dragging?.from !== from) return;
+      event.preventDefault();
+      const { names } = this.dragging;
+      this.dragged();
+      act(names);
+    });
+    return element;
+  }
+
+  /* ---- Menus ---- */
+
+  /**
+   * The menu of a member of the tree, and of those picked with it: ways to add them to the
+   * set, to make the set of them, to open it, and to copy their names. A member not among
+   * those picked is picked alone first, as a click would.
+   */
+  leftMenu(name, at) {
+    if (!this.picked.has(name)) {
+      this.picked = new Set([name]);
+      this.anchor = name;
+      this.paintChoices();
+    }
+    const names = this.pickedInOrder();
+    const they = (one, more) => (names.length > 1 ? more : one);
+    const row = this.shown.find((each) => each.name === name);
+    const beneath = this.descendants(name);
+    menu([
+      { heading: they(name, `${names.length.toLocaleString()} members`) },
+      { label: 'Add to the set', icon: 'chevron', action: () => this.add(names) },
+      { label: they('Add its children', 'Add their children'), icon: 'plus', disabled: !names.some((each) => this.children(each).length), action: () => this.add(names.flatMap((each) => this.children(each))) },
+      { label: they('Add it and all beneath it', 'Add them and all beneath them'), icon: 'level', action: () => this.add(names.flatMap((each) => [each, ...this.descendants(each)])) },
+      { label: they('Add its leaves', 'Add their leaves'), icon: 'member', action: () => this.add(names.flatMap((each) => this.leaves(each))) },
+      { label: they('Make the set of it alone', 'Make the set of these'), icon: 'swap', action: () => this.change(() => { this.set = [...names]; }) },
+      row?.kids ? '-' : null,
+      row?.kids ? { label: row.open ? 'Close it' : 'Open it', icon: row.open ? 'collapse' : 'expand', action: () => this.openRows([name], !row.open) } : null,
+      row?.kids ? { label: 'Open all beneath it', icon: 'expand', action: () => this.openRows([name, ...beneath].filter((each) => this.children(each).length), true) } : null,
+      row?.kids ? {
+        label: 'Pick all beneath it',
+        icon: 'check',
+        action: () => {
+          for (const each of [name, ...beneath]) if (this.children(each).length) (this.found ?? this.open).add(each);
+          this.picked = new Set([...this.picked, ...beneath]);
+          this.drawLeft(name);
+        },
+      } : null,
+      '-',
+      { label: they('Copy its name', 'Copy their names'), icon: 'copy', action: () => copyText(names.join('\n')) },
+    ], at);
+  }
+
+  /**
+   * The menu of a member of the set, and of those marked with it: moving them, opening one
+   * into its children or leaves, keeping or removing them, finding one among the available
+   * members, and copying their names. A member not marked is marked alone first.
+   */
+  rightMenu(index, at) {
+    const name = this.set[index];
+    if (!this.marked.has(name)) {
+      this.marked = new Set([name]);
+      this.paintChoices();
+    }
+    const names = this.markedInOrder();
+    const one = names.length === 1;
+    const they = (single, more) => (one ? single : more);
+    const kids = this.children(name);
+    // Members put after the member, or in its place; those in the set already stay where they are.
+    const into = (members, replace) => this.change(() => {
+      const present = new Set(this.set);
+      const fresh = [...new Set(members)].filter((each) => !present.has(each));
+      const place = this.set.indexOf(name);
+      this.set.splice(replace ? place : place + 1, replace ? 1 : 0, ...fresh);
+    });
+    menu([
+      { heading: they(name, `${names.length.toLocaleString()} members`) },
+      { label: they('Move it to the top', 'Move them to the top'), icon: 'up', action: () => this.moveTo(names, 0) },
+      { label: they('Move it to the bottom', 'Move them to the bottom'), icon: 'down', action: () => this.moveTo(names, this.set.length) },
+      one && kids.length ? '-' : null,
+      one && kids.length ? { label: 'Put its children after it', icon: 'plus', action: () => into(kids, false) } : null,
+      one && kids.length ? { label: 'Put its children in its place', icon: 'swap', action: () => into(kids, true) } : null,
+      one && kids.length ? { label: 'Put its leaves in its place', icon: 'member', action: () => into(this.leaves(name), true) } : null,
+      '-',
+      { label: they('Keep only it', 'Keep only these'), icon: 'filter', disabled: names.length === this.set.length, action: () => this.change(() => { this.set = names; }) },
+      { label: they('Remove it', 'Remove them'), icon: 'close', action: () => this.removeMarked() },
+      '-',
+      one ? { label: 'Find it among the available members', icon: 'search', action: () => this.showInTree(name) } : null,
+      { label: they('Copy its name', 'Copy their names'), icon: 'copy', action: () => copyText(names.join('\n')) },
+    ], at);
+  }
+
+  /** The ways to sort the set: each a step of its own, which Undo takes back. */
+  sortMenu(at) {
+    const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+    const element = (name) => this.dim.byName.get(name);
+    const level = (name) => element(name)?.level ?? 0;
+    const sort = (label, iconName, compare) => ({ label, icon: iconName, action: () => this.change(() => this.set.sort(compare)) });
+    // An attribute's values in order, numbers as numbers and text as the reader sorts it;
+    // members without one go last either way.
+    const byAttribute = (attribute, descending) => {
+      const numeric = this.dim.attributes?.[attribute] === 'numeric';
+      const missing = (value) => value === undefined || value === null || value === '';
+      return (a, b) => {
+        const [x, y] = [element(a)?.attributes?.[attribute], element(b)?.attributes?.[attribute]];
+        if (missing(x) || missing(y)) return missing(x) - missing(y);
+        const order = numeric ? Number(x) - Number(y) : collator.compare(String(x), String(y));
+        return descending ? -order : order;
+      };
+    };
+    menu([
+      { heading: 'Sort the set' },
+      { label: 'As the dimension has them', icon: 'rows', action: () => this.change(() => this.sortHierarchy(false)) },
+      { label: 'As the dimension has them, totals last', icon: 'rows', action: () => this.change(() => this.sortHierarchy(true)) },
+      sort('By name, A to Z', 'down', (a, b) => collator.compare(a, b)),
+      sort('By name, Z to A', 'up', (a, b) => collator.compare(b, a)),
+      sort('By level, the top first', 'level', (a, b) => level(b) - level(a)),
+      sort('By level, leaves first', 'level', (a, b) => level(a) - level(b)),
+      ...this.attributes.flatMap((attribute) => {
+        const numeric = this.dim.attributes?.[attribute] === 'numeric';
+        return [
+          sort(`By ${attribute}, ${numeric ? 'smallest first' : 'A to Z'}`, 'down', byAttribute(attribute, false)),
+          sort(`By ${attribute}, ${numeric ? 'largest first' : 'Z to A'}`, 'up', byAttribute(attribute, true)),
+        ];
+      }),
+      '-',
+      { label: 'Reverse the order', icon: 'swap', action: () => this.change(() => this.set.reverse()) },
+    ], at);
+  }
+
+  /** Shows a member among the available ones: found, the tree opened down to it, and picked. */
+  showInTree(name) {
+    if (this.words || this.filtering) {
+      this.words = '';
+      this.search.input.value = '';
+      this.filtering = false;
+      this.drawFilter();
+    }
+    for (const each of reveal({ roots: this.dim.roots, children: (member) => this.children(member), matches: new Set([name]) })) this.open.add(each);
+    this.picked = new Set([name]);
+    this.anchor = name;
+    this.drawLeft(name);
   }
 
   /* ---- What a member reaches ---- */
@@ -302,9 +533,44 @@ class SetEditor {
     this.left.addEventListener('keydown', (event) => this.leftKey(event));
     this.right = h('div', { class: 'set-list', role: 'listbox', 'aria-label': 'Current set', 'aria-multiselectable': 'true', tabindex: '-1' });
     this.rightRows = new Rows(this.right, (index) => this.drawItem(index));
-    this.rightEmpty = h('p', { class: 'set-empty', hidden: true }, icon('plus', 18), 'Add members from the left: double-click one, or pick some and choose Add.');
+    this.rightEmpty = h('p', { class: 'set-empty', hidden: true }, icon('plus', 18), 'Drag members here from the left, double-click one, or pick some and choose Add.');
     this.right.append(this.rightRows.element, this.rightEmpty);
     this.right.addEventListener('keydown', (event) => this.rightKey(event));
+    // Members dragged from the tree, or within the set, or names dropped from elsewhere, go
+    // into the set where they are dropped; members of the set dragged back to the tree leave it.
+    this.right.addEventListener('dragover', (event) => {
+      const from = this.dragging?.from;
+      if (!from && !event.dataTransfer.types.includes('text/plain')) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = from === 'set' ? 'move' : 'copy';
+      this.markDrop(this.dropPlace(event));
+    });
+    this.right.addEventListener('dragleave', (event) => {
+      if (!this.right.contains(event.relatedTarget)) this.clearDrop();
+    });
+    this.right.addEventListener('drop', (event) => {
+      event.preventDefault();
+      const place = this.dropPlace(event);
+      const dragging = this.dragging;
+      this.dragged();
+      if (dragging?.from === 'tree') this.add(dragging.names, place);
+      else if (dragging?.from === 'set') this.moveTo(dragging.names, place);
+      else this.addNamed(event.dataTransfer.getData('text/plain'), place);
+    });
+    this.dropTarget(this.left, 'set', (names) => this.remove(names));
+    // A member's menu, at the pointer or, by the menu key or Shift F10, at its row.
+    this.left.addEventListener('contextmenu', (event) => {
+      const row = event.target.closest('.set-row');
+      if (!row) return;
+      event.preventDefault();
+      this.leftMenu(row.dataset.name, { x: event.clientX, y: event.clientY });
+    });
+    this.right.addEventListener('contextmenu', (event) => {
+      const item = event.target.closest('.set-item');
+      if (!item) return;
+      event.preventDefault();
+      this.rightMenu(Number(item.dataset.index), { x: event.clientX, y: event.clientY });
+    });
     this.count = h('span', { class: 'muted' });
     this.undoButton = h('button', { class: 'button small quiet icon', type: 'button', 'aria-label': 'Undo', title: 'Undo', onclick: () => this.undo() }, icon('undo', 16));
     this.redoButton = h('button', { class: 'button small quiet icon', type: 'button', 'aria-label': 'Redo', title: 'Redo', onclick: () => this.redo() }, icon('redo', 16));
@@ -392,37 +658,44 @@ class SetEditor {
         this.drawLeft();
       },
     }, icon('filter', 14), 'Filter', h('span', { class: 'badge accent filter-count' }));
-    const move = (label, iconName, action, title) => h('button', { class: 'button small', type: 'button', title, onclick: action }, icon(iconName, 14), h('span', {}, label));
+    // Each way of adding takes the members picked when pressed, or those dropped on it.
+    const way = (label, iconName, reach, title) => this.dropTarget(
+      h('button', { class: 'button small', type: 'button', title, onclick: () => this.add(reach(this.pickedInOrder())) }, icon(iconName, 14), h('span', {}, label)),
+      'tree',
+      (names) => this.add(reach(names)),
+    );
     const body = h('div', { class: 'set-editor' },
       h('section', { class: 'set-pane', 'aria-label': 'Available members' },
         h('div', { class: 'set-pane-head' }, h('h3', {}, 'Available members'), h('span', { class: 'muted' }, `${this.dim.elements.length.toLocaleString()} in ${this.dim.name}`)),
-        this.search.box,
+        h('div', { class: 'tree-tools' }, this.search.box, opening),
         h('div', { class: 'toolbar' },
           this.filterButton,
           toggle('With descendants', 'withDescendants', 'level', 'Open each member found to show everything beneath it'),
-          this.attributes.length ? toggle('Attributes', 'showAttributes', 'eye', 'Show attributes beside the members, and search them too') : null,
-          h('div', { class: 'grow' }),
-          opening),
+          this.attributes.length ? toggle('Attributes', 'showAttributes', 'eye', 'Show attributes beside the members, and search them too') : null),
         this.filterPanel,
         this.left),
       h('div', { class: 'set-moves', role: 'group', 'aria-label': 'Add to the set' },
-        move('Add', 'chevron', () => this.add(this.pickedInOrder()), 'Add the members picked'),
-        move('Children', 'plus', () => this.add(this.pickedInOrder().flatMap((name) => this.children(name))), 'Add the children of the members picked'),
-        move('Descendants', 'level', () => this.add(this.pickedInOrder().flatMap((name) => [name, ...this.descendants(name)])), 'Add the members picked and everything beneath them'),
-        move('Leaves', 'member', () => this.add(this.pickedInOrder().flatMap((name) => this.leaves(name))), 'Add the leaves beneath the members picked'),
+        way('Add', 'chevron', (names) => names, 'Add the members picked, or dropped here'),
+        way('Children', 'plus', (names) => names.flatMap((name) => this.children(name)), 'Add the children of the members picked, or dropped here'),
+        way('Descendants', 'level', (names) => names.flatMap((name) => [name, ...this.descendants(name)]), 'Add the members picked, or dropped here, and everything beneath them'),
+        way('Leaves', 'member', (names) => names.flatMap((name) => this.leaves(name)), 'Add the leaves beneath the members picked, or dropped here'),
         h('hr'),
-        move('Remove', 'close', () => this.removeMarked(), 'Remove the members marked in the set')),
+        this.dropTarget(
+          h('button', { class: 'button small', type: 'button', title: 'Remove the members marked in the set, or dropped here', onclick: () => this.removeMarked() }, icon('close', 14), h('span', {}, 'Remove')),
+          'set',
+          (names) => this.remove(names),
+        )),
       h('section', { class: 'set-pane', 'aria-label': 'Current set' },
         h('div', { class: 'set-pane-head' }, h('h3', {}, 'Current set'), this.count, h('div', { class: 'grow' }), this.undoButton, this.redoButton),
         h('div', { class: 'toolbar' },
           quick,
           h('div', { class: 'grow' }),
-          h('button', { class: 'button small quiet', type: 'button', title: 'Put the set in the dimension\'s order', onclick: () => this.change(() => this.sortHierarchy()) }, icon('rows', 14), 'Hierarchy'),
-          h('button', { class: 'button small quiet', type: 'button', title: 'Sort the set by name', onclick: () => this.change(() => this.set.sort((a, b) => a.localeCompare(b))) }, icon('swap', 14), 'A–Z'),
+          h('button', { class: 'button small quiet', type: 'button', 'aria-haspopup': 'menu', title: 'Sort the set', onclick: (event) => this.sortMenu(event.currentTarget) }, icon('bars', 14), 'Sort', icon('down', 12)),
           h('button', { class: 'button small quiet', type: 'button', title: 'Add members by name or alias, from a list', onclick: () => this.pasteList() }, icon('paste', 14), 'Paste'),
           h('button', { class: 'button small quiet', type: 'button', onclick: () => this.change(() => { this.set = []; }) }, 'Clear')),
         this.right,
-        h('p', { class: 'hint' }, 'Drag to reorder, or Alt with the arrow keys. Delete removes the members marked. Ctrl C copies their names; Ctrl V adds the members a list names.')));
+        h('p', { class: 'hint' }, 'Drag members in from the left, or within the set to reorder; drag them back to take them out. Right-click a member for more. Alt with the arrow keys moves those marked, Delete removes them, and Ctrl C and Ctrl V copy and paste names.')));
+    this.dialogBody = body;
     this.draw();
     const asked = dialog({
       title: `Members of ${this.dim.name}`,
@@ -460,10 +733,11 @@ class SetEditor {
   }
 
   /**
-   * Adds the members a list names, one to a line or a cell, by name or by alias, after the
-   * last member marked or at the end, and says what it could not find.
+   * Adds the members a list names, one to a line or a cell, by name or by alias, at `place`
+   * where one is given, as where it was dropped, or else after the last member marked or at
+   * the end; and says what it could not find.
    */
-  addNamed(text) {
+  addNamed(text, place) {
     const words = text.split(/[\r\n\t]+/).map((word) => word.trim()).filter(Boolean);
     const known = this.lookup();
     const found = [];
@@ -476,7 +750,7 @@ class SetEditor {
     const fresh = [...new Set(found)].filter((name) => !this.set.includes(name));
     if (fresh.length) {
       const after = this.set.reduce((last, name, index) => (this.marked.has(name) ? index : last), -1);
-      this.change(() => this.set.splice(after >= 0 ? after + 1 : this.set.length, 0, ...fresh));
+      this.change(() => this.set.splice(place ?? (after >= 0 ? after + 1 : this.set.length), 0, ...fresh));
     }
     const added = fresh.length ? `Added ${fresh.length.toLocaleString()} member${fresh.length === 1 ? '' : 's'}.` : 'Nothing new to add.';
     const shown = missing.slice(0, 5).join(', ') + (missing.length > 5 ? ` and ${(missing.length - 5).toLocaleString()} more` : '');
@@ -497,32 +771,29 @@ class SetEditor {
     return known;
   }
 
-  sortHierarchy() {
-    const order = new Map(this.hierarchyOrder().map((name, index) => [name, index]));
+  /** Puts the set in the dimension's order, each total before its members, or after them with `totalsLast`. */
+  sortHierarchy(totalsLast = false) {
+    const order = new Map(this.hierarchyOrder(totalsLast).map((name, index) => [name, index]));
     this.set.sort((a, b) => (order.get(a) ?? 0) - (order.get(b) ?? 0));
   }
 
-  /** Every member, each parent before its children, as the tree lists them. */
-  hierarchyOrder() {
+  /** Every member as the tree lists them: each parent before its children, or after them with `totalsLast`. */
+  hierarchyOrder(totalsLast = false) {
     const out = [];
     const seen = new Set();
     const visit = (name) => {
       if (seen.has(name)) return;
       seen.add(name);
-      out.push(name);
+      if (!totalsLast) out.push(name);
       for (const child of this.children(name)) visit(child);
+      if (totalsLast) out.push(name);
     };
     for (const root of this.dim.roots) visit(root);
     return out;
   }
 
   removeMarked() {
-    if (!this.marked.size) return;
-    this.change(() => {
-      this.set = this.set.filter((name) => !this.marked.has(name));
-    });
-    this.marked.clear();
-    this.draw();
+    if (this.marked.size) this.remove([...this.marked]);
   }
 
   draw() {
@@ -575,8 +846,19 @@ class SetEditor {
       class: `set-row${row.match ? ' match' : ''}${row.context ? ' context' : ''}`,
       tabindex: index === this.at ? '0' : '-1',
       dataset: { index },
+      draggable: 'true',
       onclick: (event) => this.pick(name, event),
       ondblclick: () => this.add([name]),
+      // Dragged, a member goes with those picked, or alone if it was not among them.
+      ondragstart: (event) => {
+        if (!this.picked.has(name)) {
+          this.picked = new Set([name]);
+          this.anchor = name;
+          this.paintChoices();
+        }
+        this.dragStart(event, 'tree', this.pickedInOrder());
+      },
+      ondragend: () => this.dragged(),
     },
     twisty(row, (opened) => this.openRows([name], opened)),
     icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
@@ -617,6 +899,11 @@ class SetEditor {
   leftKey(event) {
     const row = event.target.closest('.set-row');
     if (!row) return;
+    if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+      event.preventDefault();
+      this.leftMenu(row.dataset.name, row);
+      return;
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
       event.preventDefault();
       this.picked = new Set(this.shown.map((each) => each.name));
@@ -665,31 +952,15 @@ class SetEditor {
         }
         this.drawRight(index);
       },
+      // Dragged, a member goes with those marked, or alone if it was not among them.
       ondragstart: (event) => {
-        this.dragged = index;
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', name);
+        if (!this.marked.has(name)) {
+          this.marked = new Set([name]);
+          this.paintChoices();
+        }
+        this.dragStart(event, 'set', this.markedInOrder());
       },
-      ondragover: (event) => {
-        if (this.dragged === null || this.dragged === undefined) return;
-        event.preventDefault();
-        item.classList.add('drop-before');
-      },
-      ondragleave: () => item.classList.remove('drop-before'),
-      ondragend: () => {
-        this.dragged = null;
-      },
-      ondrop: (event) => {
-        event.preventDefault();
-        item.classList.remove('drop-before');
-        const from = this.dragged;
-        this.dragged = null;
-        if (from === null || from === undefined || from === index) return;
-        this.change(() => {
-          const [moved] = this.set.splice(from, 1);
-          this.set.splice(from < index ? index - 1 : index, 0, moved);
-        });
-      },
+      ondragend: () => this.dragged(),
     },
     h('span', { class: 'drag' }, icon('drag', 14)),
     h('span', { class: 'set-index muted' }, String(index + 1)),
@@ -721,14 +992,21 @@ class SetEditor {
     const index = Number(item.dataset.index);
     const page = this.rightRows.page;
     const moves = { ArrowUp: index - 1, ArrowDown: index + 1, PageUp: index - page, PageDown: index + page, Home: 0, End: this.set.length - 1 };
-    if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+    if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
       event.preventDefault();
-      const to = moves[event.key];
-      if (to < 0 || to >= this.set.length) return;
+      this.rightMenu(index, item);
+    } else if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      event.preventDefault();
+      // The members marked move a step together, or the one with the keys if it is not marked.
+      const step = event.key === 'ArrowUp' ? -1 : 1;
+      const names = this.marked.has(this.set[index]) ? this.markedInOrder() : [this.set[index]];
+      const places = names.map((name) => this.set.indexOf(name)).sort((a, b) => (a - b) * step).reverse();
+      if (places.some((place) => place + step < 0 || place + step >= this.set.length)) return;
       this.change(() => {
-        [this.set[index], this.set[to]] = [this.set[to], this.set[index]];
+        // The nearest the edge moves first, so that those beside it follow into its place.
+        for (const place of places) [this.set[place], this.set[place + step]] = [this.set[place + step], this.set[place]];
       });
-      this.drawRight(to);
+      this.drawRight(index + step);
     } else if (event.key in moves && !event.ctrlKey && !event.metaKey) {
       event.preventDefault();
       const to = Math.max(0, Math.min(this.set.length - 1, moves[event.key]));

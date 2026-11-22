@@ -4,7 +4,7 @@
 import { ApiError, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { chart, shape } from './chart.js';
-import { CALCULATIONS, defaultLayout, emptiness, mdx, saved, shown } from './layout.js';
+import { CALCULATIONS, cubeOf, defaultLayout, emptiness, mdx, saved, shown } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
@@ -32,8 +32,17 @@ export async function render(target, { params }) {
     return;
   }
   const dims = new Map(await Promise.all(cube.dimensions.map(async (dim) => [dim, await dimension(dim)])));
-  return new Explorer(target, definition, cube, dims, cube.views?.[params.get('view')]);
+  // A query written on another cube's page, for this cube, comes along to be run here: just
+  // now, for one left when leaving that page was called off is no longer wanted.
+  const handed = JSON.parse(sessionStorage.getItem(HANDED) ?? 'null');
+  sessionStorage.removeItem(HANDED);
+  const fresh = handed?.cube === cube.name && Date.now() - handed.at < 10000;
+  const view = fresh ? { mdx: handed.mdx } : cube.views?.[params.get('view')];
+  return new Explorer(target, definition, cube, dims, view);
 }
+
+/** Where a query written for another cube waits for that cube's page to open. */
+const HANDED = 'epiphany.explore.handed';
 
 class Explorer {
   /** `view`, where one is given, is a saved view to open in place of the last layout. */
@@ -733,6 +742,7 @@ class Explorer {
     this.stale = false;
     this.output.classList.remove('stale');
     const text = mdx(this.layout, this.dims);
+    if (this.layout.mdx && this.elsewhere(text)) return;
     this.text = text;
     if (!this.layout.mdx && (!this.layout.rows.length || !this.layout.columns.length)) {
       this.result = null;
@@ -773,6 +783,24 @@ class Explorer {
       this.markAllComments();
       if (this.commentCell) this.drawComments();
     }
+  }
+
+  /**
+   * Opens the page of the cube a written query asks of, where that is another cube of the
+   * model, and runs the query there; says whether it did. This page goes back to its own
+   * layout's query, so that it keeps to its cube. A cube the model lacks is left to the
+   * server to say so.
+   */
+  elsewhere(text) {
+    const asked = cubeOf(text)?.toLowerCase();
+    const cube = this.definition.cubes.find((each) => each.name.toLowerCase() === asked);
+    if (!cube || cube.name === this.cube.name) return false;
+    this.layout.mdx = null;
+    localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
+    sessionStorage.setItem(HANDED, JSON.stringify({ cube: cube.name, mdx: text, at: Date.now() }));
+    notify(`The query asks of ${cube.name}, so it runs there.`);
+    go(`/explore?cube=${encodeURIComponent(cube.name)}`);
+    return true;
   }
 
   /** Says the query is still running, and for how long, with a button to stop waiting. */
