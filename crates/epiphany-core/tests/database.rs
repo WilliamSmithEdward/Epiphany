@@ -1,5 +1,6 @@
 mod common;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -7,7 +8,9 @@ use std::time::Duration;
 use common::{Rng, Shape, random_model};
 use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
-use epiphany_core::database::{CellRef, CellWrite, Database, Error, LockMode, ModelUpdate};
+use epiphany_core::database::{
+    CellRef, CellWrite, Database, Error, Journal, LockMode, ModelUpdate, NamedCells,
+};
 use epiphany_core::model::ModelDef;
 use serde_json::json;
 
@@ -722,14 +725,13 @@ fn an_open_transaction_survives_a_model_update_that_adds_a_cube() {
 #[derive(Debug, Default)]
 struct Counted {
     full_after: usize,
-    commits: std::sync::atomic::AtomicUsize,
-    snapshots: Arc<std::sync::atomic::AtomicUsize>,
+    commits: AtomicUsize,
+    snapshots: Arc<AtomicUsize>,
 }
 
-impl epiphany_core::database::Journal for Counted {
+impl Journal for Counted {
     fn commit(&mut self, _: &[CellWrite]) -> std::io::Result<()> {
-        self.commits
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.commits.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
@@ -738,30 +740,23 @@ impl epiphany_core::database::Journal for Counted {
     }
 
     fn is_full(&self) -> bool {
-        self.commits.load(std::sync::atomic::Ordering::SeqCst) >= self.full_after
+        self.commits.load(Ordering::SeqCst) >= self.full_after
     }
 
-    fn snapshot(
-        &mut self,
-        _: u64,
-        cells: &epiphany_core::database::NamedCells<'_>,
-    ) -> std::io::Result<()> {
+    fn snapshot(&mut self, _: u64, cells: &NamedCells<'_>) -> std::io::Result<()> {
         // The cells are written out as a snapshot would write them.
         drop(serde_json::to_string(cells).unwrap());
-        self.snapshots
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.commits.store(0, std::sync::atomic::Ordering::SeqCst);
+        self.snapshots.fetch_add(1, Ordering::SeqCst);
+        self.commits.store(0, Ordering::SeqCst);
         Ok(())
     }
 }
 
 #[test]
 fn a_snapshot_is_taken_in_the_commit_or_left_for_later() {
-    let taken = |snapshots: &Arc<std::sync::atomic::AtomicUsize>| {
-        snapshots.load(std::sync::atomic::Ordering::SeqCst)
-    };
+    let taken = |snapshots: &Arc<AtomicUsize>| snapshots.load(Ordering::SeqCst);
     for deferred in [false, true] {
-        let snapshots = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let snapshots = Arc::new(AtomicUsize::new(0));
         let mut database = database();
         database.set_journal(Box::new(Counted {
             full_after: 2,

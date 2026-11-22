@@ -3,7 +3,8 @@ use std::path::Path;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use epiphany_core::database::Database;
+use epiphany_core::database::{CellWrite, Database, Journal, NamedCells};
+use epiphany_core::model::ModelDef;
 use epiphany_server::{app, load_model, openapi};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -762,4 +763,88 @@ async fn a_request_that_only_asks_is_given_less_room_than_one_that_writes() {
         .collect();
     let (status, _) = call(&app, "POST", "/cells/read", Some(json!({ "cells": cells }))).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+/// A journal full after every commit, whose snapshot says when it has begun and then waits
+/// to be let finish.
+#[derive(Debug)]
+struct Held {
+    begun: std::sync::mpsc::Sender<()>,
+    finish: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl Journal for Held {
+    fn commit(&mut self, _: &[CellWrite]) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        true
+    }
+
+    fn snapshot(&mut self, _: u64, _: &NamedCells<'_>) -> std::io::Result<()> {
+        self.begun.send(()).unwrap();
+        self.finish.lock().unwrap().recv().unwrap();
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_snapshot_is_written_while_reads_go_on_and_writes_wait() {
+    let (begun, begins) = std::sync::mpsc::channel();
+    let (finish, finishes) = std::sync::mpsc::channel();
+    let model = Path::new(ROOT).join("../epiphany-core/tests/fixtures/model");
+    let mut database = Database::new(load_model(&model).unwrap()).unwrap();
+    let finish_held = std::sync::Mutex::new(finishes);
+    database.set_journal(Box::new(Held {
+        begun,
+        finish: finish_held,
+    }));
+    let app = app(database);
+    let rent = ["Rent", "US", "Jan", "Actual"];
+
+    // The write that fills the log is answered without waiting for the snapshot.
+    let filling = json!({ "cells": [write(rent, json!(25))] });
+    let (status, _) = call(&app, "POST", "/cells/write", Some(filling)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let timeout = std::time::Duration::from_secs(10);
+    begins.recv_timeout(timeout).expect("the snapshot begins");
+
+    // While it is written, reads are answered, and a write waits.
+    let reads = json!({ "cells": [cell(rent)] });
+    let (status, body) = call(&app, "POST", "/cells/read", Some(reads.clone())).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::OK, json!({ "cells": [{ "value": 25.0 }] }))
+    );
+    let next = json!({ "cells": [write(rent, json!(30))] });
+    let waiting = tokio::spawn({
+        let app = app.clone();
+        async move { call(&app, "POST", "/cells/write", Some(next)).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!waiting.is_finished(), "a write waits for the snapshot");
+    // Nor does a read wait behind that write.
+    let read = call(&app, "POST", "/cells/read", Some(reads.clone()));
+    let (status, body) = tokio::time::timeout(timeout, read)
+        .await
+        .expect("a read is not held up by a waiting write");
+    assert_eq!(
+        (status, body),
+        (StatusCode::OK, json!({ "cells": [{ "value": 25.0 }] }))
+    );
+
+    // Once it is written, the write goes ahead, and fills the log again.
+    finish.send(()).unwrap();
+    assert_eq!(waiting.await.unwrap().0, StatusCode::NO_CONTENT);
+    begins
+        .recv_timeout(timeout)
+        .expect("the next snapshot begins");
+    finish.send(()).unwrap();
+    let (_, body) = call(&app, "POST", "/cells/read", Some(reads)).await;
+    assert_eq!(body, json!({ "cells": [{ "value": 30.0 }] }));
 }
