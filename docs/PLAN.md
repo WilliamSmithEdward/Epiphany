@@ -370,10 +370,16 @@ practice that means:
   updated exactly as dimensions and cubes are.
 - A dimension has named subsets: either a list of elements, or an MDX set over the
   dimension. A cube has named views: each an MDX query against that cube.
-- A subset is worked out once, when the model is compiled, and a mistake in one makes the
-  model invalid. **Decision:** an MDX subset is evaluated over its dimension alone, so it
-  can use the hierarchy, levels, names and other subsets, but not cell values. Subsets are
-  worked out in name order, and one may refer to those before it.
+- A subset is worked out when the model is compiled, and a mistake in one makes the model
+  invalid. An MDX subset is evaluated over its dimension alone, so it can use the
+  hierarchy, levels, names and other subsets; subsets are worked out in name order, and one
+  may refer to those before it. **Decision:** a subset may read cells, of any cube, through
+  `LookupCube`, as in `TopCount([Customer].Members, 10, LookupCube("Sales", [Measure].[Revenue]))`.
+  Worked out at compile time with every cell empty, it is found to read them, and is then
+  worked out again whenever it is used, as the cells then stand: in a query, as the query
+  reads them, a transaction's pending values included; by `GET /dimensions/{name}`, as they
+  are stored, the route naming it in `subsets_reading_cells`. One built on it reads cells
+  too. A picklist, worked out once, cannot offer one.
 - A view is checked when the model is compiled, by running it against an empty cube.
 - `TM1SubsetToSet([Dimension], "name")` uses a subset in any query.
 - `GET /dimensions/{name}` lists each subset's elements; `GET /cubes/{cube}/views/{view}`
@@ -391,7 +397,7 @@ practice that means:
   set editor to choose from: queries name only the model's subsets. A user's views, and
   their subsets, take at most 4 MiB each, so that a reader cannot fill the disk. A view as
   the user sees none of them and changes none.
-- Not done: subsets that depend on cell values, and a user's own subsets in queries.
+- Not done: a user's own subsets in queries.
 
 ## 3. API
 

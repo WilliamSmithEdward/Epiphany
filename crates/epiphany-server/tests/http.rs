@@ -249,6 +249,33 @@ async fn a_dimension_is_served_with_its_hierarchy() {
 }
 
 #[tokio::test]
+async fn a_subset_that_reads_cells_is_listed_as_they_stand() {
+    let app = example();
+    let (_, model) = call(&app, "GET", "/model", None).await;
+    let mut entity = model["model"]["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|dimension| dimension["name"] == "Entity")
+        .unwrap()
+        .clone();
+    entity["subsets"] = json!({ "Leader": { "mdx": "TopCount([Entity].[Total Entity].Children, 1, LookupCube('General Ledger', [Account].[Rent], [Version].[Actual]))" } });
+    let put = json!({ "based_on": model["version"], "dimension": entity });
+    let (status, _) = call(&app, "PUT", "/dimensions/Entity", Some(put)).await;
+    assert_eq!(status, StatusCode::OK);
+    let rent = |entity: &str, month: &str, value: f64| json!({ "cube": "General Ledger", "at": ["Rent", entity, month, "Actual"], "value": value });
+    let write = json!({ "cells": [rent("US", "Jan", 100.0), rent("UK", "Jan", 200.0)] });
+    call(&app, "POST", "/cells/write", Some(write)).await;
+    let (_, entity) = call(&app, "GET", "/dimensions/Entity", None).await;
+    assert_eq!(entity["subsets"]["Leader"], json!(["UK"]));
+    assert_eq!(entity["subsets_reading_cells"], json!(["Leader"]));
+    let more = json!({ "cells": [rent("US", "Feb", 500.0)] });
+    call(&app, "POST", "/cells/write", Some(more)).await;
+    let (_, entity) = call(&app, "GET", "/dimensions/Entity", None).await;
+    assert_eq!(entity["subsets"]["Leader"], json!(["US"]));
+}
+
+#[tokio::test]
 async fn an_unknown_dimension_is_not_found() {
     let (status, body) = call(&example(), "GET", "/dimensions/Colour", None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);

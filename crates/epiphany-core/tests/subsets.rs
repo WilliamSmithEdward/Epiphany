@@ -213,6 +213,92 @@ fn changing_only_subsets_and_views_keeps_every_cell() {
     assert_eq!(database.query(None, query).unwrap().axes[0].tuples.len(), 2);
 }
 
+/// The model with subsets on `Region` as well as on `Period`.
+fn with_regions(subsets: Json, views: Json) -> Json {
+    let mut definition = definition(json!({}), views);
+    definition["dimensions"][1]["subsets"] = subsets;
+    definition
+}
+
+#[test]
+fn a_subset_that_reads_cells_selects_what_they_say_when_it_is_used() {
+    let subsets = json!({
+        // The region that sold the most over the year, read from the cube.
+        "Leader": { "mdx": "TopCount([Region].[World].Children, 1, LookupCube('Sales', [Period].[Year]))" },
+        // Built on it, this one reads cells as well.
+        "Others": { "mdx": "Except([Region].[World].Children, TM1SubsetToSet([Region], 'Leader'))" },
+        "Both": { "mdx": "[Region].[World].Children" }
+    });
+    let views = json!({ "Leading": { "mdx": "SELECT TM1SubsetToSet([Region], 'Leader') ON COLUMNS FROM [Sales]" } });
+    let mut database = Database::new(parse(with_regions(subsets, views))).unwrap();
+    let region = database.model().dimension("Region").unwrap();
+    let reading = |name: &str| region.subset(name).unwrap().reads_cells();
+    assert_eq!(
+        (reading("Leader"), reading("Others"), reading("Both")),
+        (true, true, false)
+    );
+
+    let ask = |database: &Database, transaction, subset: &str| -> Vec<String> {
+        let query = format!("SELECT TM1SubsetToSet([Region], '{subset}') ON COLUMNS FROM [Sales]");
+        let result = database.query(transaction, &query).unwrap();
+        result.axes[0]
+            .tuples
+            .iter()
+            .map(|tuple| tuple[0].name.clone())
+            .collect()
+    };
+    let write = |at: [&str; 2], value: f64| CellWrite {
+        cube: "Sales".to_owned(),
+        at: at.map(str::to_owned).to_vec(),
+        value: Scalar::Number(value),
+    };
+    database
+        .write(
+            None,
+            &[write(["Jan", "North"], 5.0), write(["Feb", "South"], 7.0)],
+        )
+        .unwrap();
+    assert_eq!(ask(&database, None, "Leader"), ["South"]);
+    assert_eq!(ask(&database, None, "Others"), ["North"]);
+    let view = database.view(None, "Sales", "Leading").unwrap();
+    assert_eq!(view.axes[0].tuples[0][0].name, "South");
+    let named = |database: &Database| -> Vec<String> {
+        let region = database.model().dimension("Region").unwrap();
+        let elements = database.subset_elements("region", "LEADER").unwrap();
+        elements
+            .iter()
+            .map(|&id| region.elements[id as usize].name.clone())
+            .collect()
+    };
+    assert_eq!(named(&database), ["South"]);
+
+    // As the cells change, so does what it selects; within a transaction, as it sees them.
+    database
+        .write(None, &[write(["Apr", "North"], 10.0)])
+        .unwrap();
+    assert_eq!(ask(&database, None, "Leader"), ["North"]);
+    assert_eq!(named(&database), ["North"]);
+    let transaction = database.begin();
+    database
+        .write(Some(transaction), &[write(["May", "South"], 20.0)])
+        .unwrap();
+    assert_eq!(ask(&database, Some(transaction), "Leader"), ["South"]);
+    assert_eq!(ask(&database, None, "Leader"), ["North"]);
+}
+
+#[test]
+fn a_picklist_cannot_offer_a_subset_that_reads_cells() {
+    let leader = json!({ "Leader": { "mdx": "TopCount([Region].[World].Children, 1, LookupCube('Sales', [Period].[Year]))" } });
+    let mut definition = with_regions(leader, json!({}));
+    let owner = json!({ "name": "Owner", "type": "string", "picklist": { "dimension": "Region", "subset": "Leader" } });
+    let note = json!({ "name": "Note", "elements": [owner] });
+    definition["dimensions"].as_array_mut().unwrap().push(note);
+    assert_eq!(
+        Model::compile(&parse(definition)).unwrap_err().to_string(),
+        "the picklist of element 'Owner' in dimension 'Note' offers subset 'Leader', which reads cells, so that what it offers would change with them"
+    );
+}
+
 #[test]
 fn subsets_and_views_survive_a_round_trip_through_json() {
     let subsets = json!({ "Spring": { "elements": ["Apr", "May"] }, "Months": { "mdx": "[Period].Members" } });

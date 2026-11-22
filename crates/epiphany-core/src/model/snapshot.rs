@@ -11,7 +11,7 @@ use super::definition::{
 };
 use super::error::ModelError;
 use crate::Scalar;
-use crate::mdx::{self, Feeder, Rule};
+use crate::mdx::{self, Expr, Feeder, Rule};
 
 /// Position of a dimension in [`Model::dimensions`].
 pub type DimensionId = u32;
@@ -53,12 +53,12 @@ impl Model {
             )?;
             for (name, subset) in &dimension.subsets {
                 let within = format!("subset '{name}' of {within}");
-                let elements =
+                let (elements, reading) =
                     match subset {
                         SubsetDef::Elements(names) => {
                             let ids = &model.dimensions[id].element_ids;
                             let element = |name: &String| resolve(ids, "element", &within, name);
-                            names.iter().map(element).collect::<Result<_, _>>()?
+                            (names.iter().map(element).collect::<Result<_, _>>()?, None)
                         }
                         SubsetDef::Mdx(text) => mdx::subset(&model, id as DimensionId, text)
                             .map_err(|error| ModelError::Mdx {
@@ -69,6 +69,7 @@ impl Model {
                 model.dimensions[id].subsets.push(Subset {
                     name: name.clone(),
                     elements,
+                    reading,
                 });
             }
         }
@@ -184,8 +185,13 @@ impl Model {
     }
 
     pub fn dimension(&self, name: &str) -> Option<&Dimension> {
-        let id = *self.dimension_ids.get(&key(name))?;
-        Some(&self.dimensions[id as usize])
+        self.dimension_id(name)
+            .map(|id| &self.dimensions[id as usize])
+    }
+
+    /// The position of a dimension in [`Model::dimensions`].
+    pub fn dimension_id(&self, name: &str) -> Option<DimensionId> {
+        self.dimension_ids.get(&key(name)).copied()
     }
 
     /// The values a picklist offers: those it gives, or the names of a dimension's elements,
@@ -217,6 +223,14 @@ impl Model {
                 let chosen = source
                     .subset(subset)
                     .ok_or_else(|| unknown("subset", subset))?;
+                // Worked out once, here, a picklist cannot follow the cells.
+                if chosen.reads_cells() {
+                    return Err(ModelError::PicklistReadsCells {
+                        dimension: dimension.to_owned(),
+                        element: element.to_owned(),
+                        subset: chosen.name.clone(),
+                    });
+                }
                 chosen.elements.iter().map(name).collect()
             }
             None => source
@@ -272,7 +286,23 @@ pub struct View {
 #[derive(Debug)]
 pub struct Subset {
     pub name: String,
+    /// The elements it selects; for one that reads cells, as worked out with every cell
+    /// empty, which [`Database::subset_elements`](crate::database::Database::subset_elements)
+    /// works out as the cells stand.
     pub elements: Vec<ElementId>,
+    /// The set, for a subset whose MDX reads cells, to be worked out whenever it is used.
+    reading: Option<Expr>,
+}
+
+impl Subset {
+    /// Whether it reads cells, and so selects what the cells say when it is used.
+    pub fn reads_cells(&self) -> bool {
+        self.reading.is_some()
+    }
+
+    pub(crate) fn reading(&self) -> Option<&Expr> {
+        self.reading.as_ref()
+    }
 }
 
 impl Cube {

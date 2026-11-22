@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use super::parser::{Axis, Expr, Query};
 use super::{AxisResult, MdxError, MemberResult, MemberType, QueryResult};
 use crate::Scalar;
-use crate::model::{Cube, Dimension, DimensionType, Element, ElementId, ElementType, Model, key};
+use crate::model::{
+    Cube, Dimension, DimensionId, DimensionType, Element, ElementId, ElementType, Model, key,
+};
 
 mod sparse;
 
@@ -141,9 +143,32 @@ pub(super) fn no_cells(_: usize, _: &[ElementId]) -> Evaluated<Scalar> {
     Ok(Scalar::Number(0.0))
 }
 
-/// The elements a set over a one-dimension cube selects, reading every cell as empty.
-pub(super) fn elements(model: &Model, cube: &Cube, set: &Expr) -> Evaluated<Vec<ElementId>> {
-    let evaluator = Evaluator::new(model, usize::MAX, cube, &no_cells);
+/// Where a cube of one dimension alone stands: in no place among the model's cubes.
+const ALONE: usize = usize::MAX;
+
+/// The elements a set over one dimension selects, worked out in a cube of that dimension
+/// alone. Its own cells are empty; those of the model's cubes, which `LookupCube` reads, are
+/// read through `read`.
+pub(super) fn elements(
+    model: &Model,
+    dimension: DimensionId,
+    set: &Expr,
+    read: Read,
+) -> Evaluated<Vec<ElementId>> {
+    let alone = Cube {
+        name: String::new(),
+        dimensions: vec![dimension],
+        views: Vec::new(),
+        rules: Vec::new(),
+        feeders: Vec::new(),
+        validations: Vec::new(),
+        sparse: false,
+    };
+    let read = |cube: usize, at: &[ElementId]| match cube {
+        ALONE => Ok(Scalar::Number(0.0)),
+        _ => read(cube, at),
+    };
+    let evaluator = Evaluator::new(model, ALONE, &alone, &read);
     let top = evaluator
         .dimension(0)
         .elements
@@ -1120,13 +1145,20 @@ impl<'a> Evaluator<'a> {
                     let dimension = &dimension.name;
                     MdxError::new(format!("dimension '{dimension}' has no subset '{name}'"))
                 })?;
-                let member = |&id: &ElementId| {
+                // A subset that reads cells is worked out afresh, reading them as this does.
+                let now = match subset.reading() {
+                    Some(set) => {
+                        elements(self.model, self.cube.dimensions[position], set, self.read)?
+                    }
+                    None => subset.elements.clone(),
+                };
+                let member = |id: ElementId| {
                     vec![Member {
                         position,
                         id: Id::Element(id),
                     }]
                 };
-                Ok(Datum::Set(subset.elements.iter().map(member).collect()))
+                Ok(Datum::Set(now.into_iter().map(member).collect()))
             }
             "TM1SUBSETALL" => {
                 count(1..=1)?;

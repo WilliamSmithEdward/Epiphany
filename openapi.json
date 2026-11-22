@@ -4181,7 +4181,7 @@
           },
           "subsets": {
             "type": "object",
-            "description": "The element names each subset selects, in the subset's order.",
+            "description": "The element names each subset selects, in the subset's order; for a subset that reads\ncells, as the stored cells stand now.",
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -4191,6 +4191,13 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "subsets_reading_cells": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The subsets that read cells, which select what the cells say when they are used."
           },
           "type": {
             "$ref": "#/components/schemas/DimensionType"

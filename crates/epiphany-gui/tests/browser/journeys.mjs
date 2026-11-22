@@ -493,6 +493,36 @@ async function exploring() {
     await page.click('dialog[open] button', 'Cancel');
     await page.waitFor(`!document.querySelector('dialog[open]')`, 'the set editor, closed');
   });
+  await step('A subset that reads cells gives the members they say now', async () => {
+    // The cost largest in the US's budget for the year, worked out from the cube.
+    const { data } = await page.api('GET', '/model');
+    const account = data.model.dimensions.find((dimension) => dimension.name === 'Account');
+    account.subsets = { 'Biggest cost': { mdx: 'TopCount([Account].[Operating Expenses].Children, 1, LookupCube(\'General Ledger\', [Entity].[US], [Version].[Budget]))' } };
+    const put = await page.api('PUT', '/dimensions/Account', { based_on: data.version, dimension: account });
+    expect(put.status === 200, `The subset was not added: ${quoted(put.data)}`);
+    await page.goto('/explore?cube=General%20Ledger');
+    await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
+    const choose = async () => {
+      await page.click('.chip-main', 'Account2 members');
+      await page.waitFor(`document.querySelector('dialog[open]')?.getAttribute('aria-label') === 'Members of Account'`, 'the set editor');
+      await page.evaluate(`(() => {
+        const replace = document.querySelector('dialog[open] select[aria-label="Replace the set"]');
+        replace.value = 'subset:Biggest cost';
+        replace.dispatchEvent(new Event('change'));
+      })()`);
+    };
+    const set = `[...document.querySelectorAll('dialog[open] .set-item .set-name')].map((name) => name.textContent).join()`;
+    await choose();
+    await page.waitFor(`${set} === 'Salaries'`, 'the largest cost, Salaries');
+    await page.click('dialog[open] button', 'Cancel');
+    // Rent made the larger, the subset says so as it is chosen again.
+    const written = await page.api('POST', '/cells/write', { cells: [{ cube: 'General Ledger', at: at('Rent', 'Mar'), value: 5000 }] });
+    expect(written.status < 300, 'Rent was not written.');
+    await choose();
+    await page.waitFor(`${set} === 'Rent'`, 'the largest cost, now Rent');
+    await page.click('dialog[open] button', 'Cancel');
+    await page.waitFor(`!document.querySelector('dialog[open]')`, 'the set editor, closed');
+  });
   await step('A cell\'s comments, history and detail open beside the grid', async () => {
     await page.click('td[data-r="1"][data-c="1"]');
     await page.press('F2', SHIFT);

@@ -77,6 +77,12 @@ pub enum ModelError {
         dimension: String,
         element: String,
     },
+    /// A picklist offers a subset that reads cells, whose elements change with them.
+    PicklistReadsCells {
+        dimension: String,
+        element: String,
+        subset: String,
+    },
 }
 
 impl fmt::Display for ModelError {
@@ -131,6 +137,14 @@ impl fmt::Display for ModelError {
             Self::Picklist { dimension, element } => write!(
                 f,
                 "element '{element}' in dimension '{dimension}' has a picklist; only a string element takes one"
+            ),
+            Self::PicklistReadsCells {
+                dimension,
+                element,
+                subset,
+            } => write!(
+                f,
+                "the picklist of element '{element}' in dimension '{dimension}' offers subset '{subset}', which reads cells, so that what it offers would change with them"
             ),
         }
     }

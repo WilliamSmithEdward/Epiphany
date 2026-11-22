@@ -8,15 +8,17 @@ import { choices, copyText, dialog, h, icon, menu, mount, notify } from './ui.js
 /**
  * Edits the set of members a dimension shows on an axis. `dim` is the dimension as the
  * explorer holds it (elements, byName, roots, levels, subsets, attributes); `chosen` the
- * members in their order. Resolves with the new set, or null if it is dismissed.
+ * members in their order; `now(subset)`, where given, the members a subset that reads cells
+ * selects as they stand. Resolves with the new set, or null if it is dismissed.
  */
-export function editSet(dim, chosen) {
-  return new SetEditor(dim, chosen).show();
+export function editSet(dim, chosen, now) {
+  return new SetEditor(dim, chosen, now).show();
 }
 
 class SetEditor {
-  constructor(dim, chosen) {
+  constructor(dim, chosen, now) {
     this.dim = dim;
+    this.now = now;
     this.set = [...chosen];
     this.past = [];
     this.future = [];
@@ -631,16 +633,26 @@ class SetEditor {
     const quick = h('select', {
       class: 'select small-select',
       'aria-label': 'Replace the set',
-      onchange: (event) => {
+      onchange: async (event) => {
         const chosen = event.target.value;
         event.target.value = '';
         const [kind, ...rest] = chosen.split(':');
         const value = rest.join(':');
         if (!kind) return;
-        const names = kind === 'top' ? this.dim.roots
+        let names = kind === 'top' ? this.dim.roots
           : kind === 'level' ? this.dim.elements.filter((element) => element.level === Number(value)).map((element) => element.name)
             : kind === 'own' ? this.own[value] ?? []
               : this.dim.subsets[value] ?? [];
+        // A subset that reads cells is asked for as they stand, not as they stood when the
+        // dimension was fetched.
+        if (kind === 'subset' && this.now && this.dim.subsets_reading_cells?.includes(value)) {
+          try {
+            names = await this.now(value);
+          } catch (problem) {
+            notify(problem.message, 'bad');
+            return;
+          }
+        }
         this.change(() => {
           this.set = names.filter((name) => this.dim.byName.has(name));
         });

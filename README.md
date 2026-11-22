@@ -104,6 +104,17 @@ from the leaves up, and say that it is the cube's calendar:
 A query can then say `[Period].Levels('Quarter').Members`, and `Sum(Ytd(), ...)` for a figure
 to date.
 
+A subset in MDX may read cells, of any cube, through `LookupCube`: the region with the year's
+largest sales, say.
+
+```json
+"subsets": { "Leader": { "mdx": "TopCount([Region].[World].Children, 1, LookupCube('Sales', [Period].[Year]))" } }
+```
+
+Such a subset is worked out whenever it is used, as the cells then stand: in a query as the
+query reads them, a transaction's pending values included, and by `GET /dimensions/{name}`
+as they are stored. A picklist cannot offer one.
+
 A string element may give its cells a picklist: values listed, or the elements of a dimension
 or of one of its subsets, in order.
 

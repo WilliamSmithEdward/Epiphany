@@ -4,7 +4,7 @@
 import { ApiError, del, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { chart, shape } from './chart.js';
-import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, mdx, saved, shown, takeOver } from './layout.js';
+import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, mdx, quote, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
@@ -712,13 +712,24 @@ class Explorer {
   }
 
   /* ---- Choosing members ---- */
+
+  /**
+   * The members a dimension's subset selects now: for one that reads cells, as this
+   * exploration sees them, its transaction's or sandbox's values with the rest.
+   */
+  async subsetNow(dimension, subset) {
+    const query = `SELECT TM1SubsetToSet(${quote(dimension)}, '${subset.replaceAll('\'', '\'\'')}') ON COLUMNS FROM ${quote(this.cube.name)}`;
+    const answer = await post('/mdx', { mdx: query, transaction: this.tx ?? undefined }, { quiet: true });
+    return answer.axes[0].tuples.map((tuple) => tuple[0].name);
+  }
+
   async pick(name) {
     const dim = this.dims.get(name);
     const place = this.placeOf(name);
     if (place !== 'filters') {
       // A dimension on an axis gets the set editor, and keeps the order built there.
       const entry = this.layout[place].find((candidate) => candidate.dimension === name);
-      const set = await editSet({ ...dim, name }, entry.members);
+      const set = await editSet({ ...dim, name }, entry.members, (subset) => this.subsetNow(name, subset));
       if (!set) return;
       this.change((layout) => {
         const target = layout[place].find((candidate) => candidate.dimension === name);

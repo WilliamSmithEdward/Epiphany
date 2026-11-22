@@ -5,15 +5,17 @@ mod lexer;
 mod parser;
 mod rules;
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::Serialize;
 
 use crate::Scalar;
-use crate::model::{Cube, DimensionId, ElementId, Model, key};
+use crate::model::{DimensionId, ElementId, Model, key};
 
-pub(crate) use parser::Query;
+pub(crate) use eval::Read;
+pub(crate) use parser::{Expr, Query};
 pub use rules::{Feeder, Rule};
 pub(crate) use rules::{
     Outcome, compile_feeder, compile_rule, evaluate_rule, feeder_targets, holds, matches,
@@ -24,24 +26,32 @@ pub(crate) fn parse(text: &str) -> Result<Query, MdxError> {
     parser::Parser::new(lexer::lex(text)?).query()
 }
 
-/// The elements an MDX set over one dimension selects. The set is worked out from the
-/// dimension alone: every cell it might read is empty.
+/// The elements an MDX set over one dimension selects, worked out from the dimension alone
+/// with every cell read as empty; and the set itself where it reads any cube's cells, through
+/// `LookupCube`, to be worked out again, as the cells then stand, whenever it is used.
 pub(crate) fn subset(
     model: &Model,
     dimension: DimensionId,
     text: &str,
-) -> Result<Vec<ElementId>, MdxError> {
+) -> Result<(Vec<ElementId>, Option<Expr>), MdxError> {
     let set = parser::Parser::new(lexer::lex(text)?).set()?;
-    let alone = Cube {
-        name: String::new(),
-        dimensions: vec![dimension],
-        views: Vec::new(),
-        rules: Vec::new(),
-        feeders: Vec::new(),
-        validations: Vec::new(),
-        sparse: false,
+    let read = Cell::new(false);
+    let noting = |_: usize, _: &[ElementId]| {
+        read.set(true);
+        Ok(Scalar::Number(0.0))
     };
-    eval::elements(model, &alone, &set)
+    let elements = eval::elements(model, dimension, &set, &noting)?;
+    Ok((elements, read.get().then_some(set)))
+}
+
+/// The elements a set over one dimension selects now, reading cells through `read`.
+pub(crate) fn subset_now(
+    model: &Model,
+    dimension: DimensionId,
+    set: &Expr,
+    read: Read,
+) -> Result<Vec<ElementId>, MdxError> {
+    eval::elements(model, dimension, set, read)
 }
 
 /// Checks that a view's query can be answered by its cube, by running it with every cell

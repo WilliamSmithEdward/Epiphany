@@ -863,6 +863,25 @@ impl Database {
         Ok(query.evaluate(&self.model, cube, &read, &expect, &occupied, standing)?)
     }
 
+    /// The elements a subset of a dimension selects now: as the model worked them out, or,
+    /// for a subset that reads cells, as the stored cells stand.
+    pub fn subset_elements(&self, dimension: &str, subset: &str) -> Result<Vec<ElementId>, Error> {
+        let missing = |what: &str| Error::NotFound(format!("unknown {what}"));
+        let id = self
+            .model
+            .dimension_id(dimension)
+            .ok_or_else(|| missing(&format!("dimension '{dimension}'")))?;
+        let found = self.model.dimensions()[id as usize]
+            .subset(subset)
+            .ok_or_else(|| missing(&format!("subset '{subset}' of dimension '{dimension}'")))?;
+        let Some(set) = found.reading() else {
+            return Ok(found.elements.clone());
+        };
+        let reader = self.reader(None)?;
+        let read = |cube: usize, at: &[ElementId]| reader.read(cube, at);
+        Ok(mdx::subset_now(&self.model, id, set, &read)?)
+    }
+
     /// Writes every cell, or none of them if any write is refused. Within a transaction the
     /// writes stay pending until it commits; otherwise they are committed at once.
     pub fn write(

@@ -672,8 +672,12 @@ struct DimensionView {
     attributes: BTreeMap<String, AttributeType>,
     /// Elements in declaration order.
     elements: Vec<ElementView>,
-    /// The element names each subset selects, in the subset's order.
+    /// The element names each subset selects, in the subset's order; for a subset that reads
+    /// cells, as the stored cells stand now.
     subsets: BTreeMap<String, Vec<String>>,
+    /// The subsets that read cells, which select what the cells say when they are used.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    subsets_reading_cells: Vec<String>,
 }
 
 /// An element and its place in the hierarchy. Its parents, children and attributes are left
@@ -735,6 +739,12 @@ impl From<&Dimension> for DimensionView {
                     let names = subset.elements.iter().map(|&id| name(id));
                     (subset.name.clone(), names.collect())
                 })
+                .collect(),
+            subsets_reading_cells: dimension
+                .subsets
+                .iter()
+                .filter(|subset| subset.reads_cells())
+                .map(|subset| subset.name.clone())
                 .collect(),
         }
     }
@@ -965,7 +975,20 @@ async fn get_dimension(
         ApiError::new(StatusCode::NOT_FOUND, "unknown_dimension", message)
     };
     let dimension = database.model().dimension(&name).ok_or_else(unknown)?;
-    Ok(Json(dimension.into()))
+    let mut view = DimensionView::from(dimension);
+    // A subset that reads cells selects what the stored cells say now.
+    for subset in dimension
+        .subsets
+        .iter()
+        .filter(|subset| subset.reads_cells())
+    {
+        let elements = database.subset_elements(&name, &subset.name)?;
+        let names = elements
+            .iter()
+            .map(|&id| dimension.elements[id as usize].name.clone());
+        view.subsets.insert(subset.name.clone(), names.collect());
+    }
+    Ok(Json(view))
 }
 
 #[derive(Deserialize, ToSchema)]
