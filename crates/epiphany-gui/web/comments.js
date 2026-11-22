@@ -6,7 +6,7 @@
 
 import { del, get, part, post } from './api.js';
 import { loading, state } from './app.js';
-import { choices, dialog, formatValue, h, icon, mount, notify, parseNumber, when, working } from './ui.js';
+import { choices, dialog, formatValue, h, icon, MOD, mount, notify, parseNumber, when, working } from './ui.js';
 
 /** Comments: methods of the explorer. */
 export const comments = {
@@ -289,7 +289,7 @@ export const comments = {
           h('p', {}, comment.text)))
         : h('li', { class: 'muted comment-none' }, 'No comments yet.')),
       h('div', { class: 'comment-new' }, text,
-        h('div', { class: 'toolbar' }, h('span', { class: 'hint grow' }, mayWrite ? 'Ctrl Enter adds it.' : 'Your role reads this cube; it takes a writer to comment.'), add)),
+        h('div', { class: 'toolbar' }, h('span', { class: 'hint grow' }, mayWrite ? `${MOD} Enter adds it.` : 'Your role reads this cube; it takes a writer to comment.'), add)),
     ];
   },
 

@@ -8,7 +8,7 @@ import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, l
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
-import { choices, copyText, dialog, download, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
+import { choices, copyText, dialog, download, formatValue, h, icon, menu, MOD, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid } from './grid.js';
 import { sandboxes } from './sandboxes.js';
@@ -421,8 +421,8 @@ class Explorer {
     const layout = this.layout;
     const button = (label, iconName, action, props = {}) => h('button', { class: 'button small quiet', onclick: action, ...props }, icon(iconName, 16), h('span', {}, label));
     mount(this.toolbar,
-      button('Undo', 'undo', () => this.undo(), { disabled: !this.past.length, title: `Undo ${said(this.past.at(-1))} (Ctrl Z)` }),
-      button('Redo', 'redo', () => this.redo(), { disabled: !this.future.length, title: `Redo ${said(this.future.at(-1))} (Ctrl Y)` }),
+      button('Undo', 'undo', () => this.undo(), { disabled: !this.past.length, title: `Undo ${said(this.past.at(-1))} (${MOD} Z)` }),
+      button('Redo', 'redo', () => this.redo(), { disabled: !this.future.length, title: `Redo ${said(this.future.at(-1))} (${MOD} Y)` }),
       h('span', { class: 'divider' }),
       button('Swap axes', 'swap', () => this.change((l) => {
         [l.rows, l.columns] = [l.columns, l.rows];
@@ -1308,7 +1308,7 @@ class Explorer {
       editor,
       h('div', { class: 'toolbar' },
         h('button', { class: 'button primary', onclick: run }, icon('play', 16), 'Run'),
-        h('span', { class: 'hint' }, 'Ctrl Enter runs it'),
+        h('span', { class: 'hint' }, `${MOD} Enter runs it`),
         h('div', { class: 'grow' }),
         h('button', {
           class: 'button',

@@ -538,7 +538,7 @@ export function download(name, text, type = 'text/plain') {
 export function copyText(text) {
   navigator.clipboard?.writeText(text).then(
     () => notify('Copied.', 'good'),
-    () => notify('The browser kept the page from the clipboard. Press Ctrl C instead.', 'bad'),
+    () => notify(`The browser kept the page from the clipboard. Press ${MOD} C instead.`, 'bad'),
   );
 }
 

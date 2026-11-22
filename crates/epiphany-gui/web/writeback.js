@@ -3,7 +3,7 @@
 // each part readable.
 
 import { get, post } from './api.js';
-import { dialog, h, notify, parseNumber } from './ui.js';
+import { dialog, h, MOD, notify, parseNumber } from './ui.js';
 
 /** A spread typed into a total asks first when it reaches more leaf cells than this. */
 const SPREAD_ASKS = 1000;
@@ -496,7 +496,7 @@ export const writeback = {
     try {
       text = await navigator.clipboard.readText();
     } catch {
-      notify('The browser keeps the clipboard from the page. Press Ctrl V to paste instead.');
+      notify(`The browser keeps the clipboard from the page. Press ${MOD} V to paste instead.`);
       return;
     }
     await this.paste(text);

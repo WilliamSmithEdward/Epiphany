@@ -3,7 +3,7 @@
 import { del, get, part, put } from './api.js';
 import { state } from './app.js';
 import { beneath, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, copyText, dialog, h, icon, menu, mount, notify } from './ui.js';
+import { choices, copyText, dialog, h, icon, menu, MOD, mount, notify } from './ui.js';
 
 /**
  * Edits the set of members a dimension shows on an axis. `dim` is the dimension as the
@@ -728,7 +728,7 @@ class SetEditor {
           h('button', { class: 'button small quiet', type: 'button', title: 'Add members by name or alias, from a list', onclick: () => this.pasteList() }, icon('paste', 14), 'Paste'),
           h('button', { class: 'button small quiet', type: 'button', onclick: () => this.change(() => { this.set = []; }) }, 'Clear')),
         this.right,
-        h('p', { class: 'hint' }, 'Drag members in from the left, or within the set to reorder; drag them back to take them out. Right-click a member for more. Alt with the arrow keys moves those marked, Delete removes them, and Ctrl C and Ctrl V copy and paste names.')));
+        h('p', { class: 'hint' }, `Drag members in from the left, or within the set to reorder; drag them back to take them out. Right-click a member for more. Alt with the arrow keys moves those marked, Delete removes them, and ${MOD} C and ${MOD} V copy and paste names.`)));
     this.dialogBody = body;
     this.draw();
     const asked = dialog({
