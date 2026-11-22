@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Scalar;
 use crate::cells::CellError;
-use crate::cells::{Cells, Writes, check, coordinate};
+use crate::cells::{At, Cells, Writes, check, coordinate};
 use crate::mdx::{self, MdxError, QueryResult};
 use crate::model::{Cube, ElementId, Model, ModelDef, ModelError};
 use crate::reader::{Fed, Reader, Totals, feed};
@@ -156,7 +156,7 @@ impl<'a> NamedCells<'a> {
         let cubes = self.cells.iter().enumerate();
         cubes.flat_map(move |(cube, cells)| {
             let entries = cells.entries();
-            entries.map(move |(at, value)| named(self.model, cube, at, value))
+            entries.map(move |(at, value)| named(self.model, cube, &at, value))
         })
     }
 }
@@ -181,7 +181,7 @@ impl serde::Serialize for NamedCells<'_> {
 struct Named<'a> {
     model: &'a Model,
     cube: &'a Cube,
-    at: &'a [ElementId],
+    at: At<'a>,
     value: Scalar,
 }
 
@@ -204,7 +204,7 @@ impl serde::Serialize for Names<'_> {
         let Named {
             model, cube, at, ..
         } = self.0;
-        let dimensions = cube.dimensions.iter().zip(*at);
+        let dimensions = cube.dimensions.iter().zip(&**at);
         serializer.collect_seq(dimensions.map(|(&dimension, &element)| {
             &model.dimensions()[dimension as usize].elements[element as usize].name
         }))
@@ -372,7 +372,7 @@ impl Database {
     ) -> Result<(usize, Vec<CellWrite>), Error> {
         let id = self.cube_id(cube)?;
         let cells = &self.cells[id];
-        let mut stored: Vec<&[ElementId]> = cells.stored_at().collect();
+        let mut stored: Vec<At> = cells.stored_at().collect();
         let total = stored.len();
         // Only the cells of the page need be in order. Those that come after it are set
         // apart, then those that come before it, each in one pass that does not order them;
@@ -389,7 +389,7 @@ impl Database {
         }
         let page = &mut stored[start..];
         page.sort_unstable();
-        let named = page.iter().map(|&at| self.named(id, at, cells.value(at)));
+        let named = page.iter().map(|at| self.named(id, at, cells.value(at)));
         Ok((total, named.collect()))
     }
 

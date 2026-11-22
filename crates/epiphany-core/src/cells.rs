@@ -73,6 +73,296 @@ impl std::fmt::Debug for Coordinate {
         (**self).fmt(f)
     }
 }
+/// Where a stored cell is, as it is given out: unpacked from the number it is kept as, or
+/// the elements it is kept with. It is compared, hashed and ordered as its elements are.
+///
+/// One plain value with a single choice in reaching its elements: given out for every cell
+/// of a pass, a choice between two kinds of coordinate cost a pass over the cells half as
+/// long again.
+#[derive(Clone, Copy)]
+pub(crate) struct At<'a> {
+    kept: Option<&'a [ElementId]>,
+    dimensions: u8,
+    unpacked: [ElementId; FEW],
+}
+
+impl<'a> At<'a> {
+    pub(crate) fn kept(at: &'a [ElementId]) -> Self {
+        Self {
+            kept: Some(at),
+            dimensions: 0,
+            unpacked: [0; FEW],
+        }
+    }
+}
+
+impl std::ops::Deref for At<'_> {
+    type Target = [ElementId];
+
+    fn deref(&self) -> &[ElementId] {
+        match self.kept {
+            Some(at) => at,
+            None => &self.unpacked[..usize::from(self.dimensions)],
+        }
+    }
+}
+
+impl PartialEq for At<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for At<'_> {}
+
+impl PartialOrd for At<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for At<'_> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (**self).cmp(&**other)
+    }
+}
+
+impl std::hash::Hash for At<'_> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (**self).hash(state);
+    }
+}
+
+impl std::fmt::Debug for At<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        (**self).fmt(f)
+    }
+}
+
+/// Values by coordinate.
+///
+/// Where every element of every coordinate fits, a coordinate is kept packed into one
+/// number, each dimension given as many bits as the largest element stored in it needs: a
+/// stored number then takes 16 bytes rather than 48. An element too large for its bits
+/// packs every coordinate again, with more; one of more than eight dimensions, or needing
+/// more than 64 bits in all, keeps every coordinate as its elements from then on.
+#[derive(Debug, Clone)]
+enum Table<V> {
+    Packed {
+        layout: Layout,
+        cells: FxHashMap<u64, V>,
+    },
+    Plain(FxHashMap<Coordinate, V>),
+}
+
+impl<V> Default for Table<V> {
+    fn default() -> Self {
+        Self::Packed {
+            layout: Layout::default(),
+            cells: FxHashMap::default(),
+        }
+    }
+}
+
+/// Where each dimension's element is kept in a packed coordinate: its bits, from the
+/// lowest. No dimensions before the first value is stored.
+#[derive(Debug, Clone, Copy, Default)]
+struct Layout {
+    dimensions: usize,
+    shifts: [u32; FEW],
+    masks: [u64; FEW],
+}
+
+impl Layout {
+    fn new(widths: &[u32]) -> Self {
+        let mut layout = Self {
+            dimensions: widths.len(),
+            ..Self::default()
+        };
+        let mut shift = 0;
+        for (dimension, &width) in widths.iter().enumerate() {
+            layout.shifts[dimension] = shift;
+            layout.masks[dimension] = (1u64 << width) - 1;
+            shift += width;
+        }
+        layout
+    }
+
+    fn widths(&self) -> Vec<u32> {
+        let masks = &self.masks[..self.dimensions];
+        masks.iter().map(|mask| mask.count_ones()).collect()
+    }
+
+    /// A coordinate as one number, if each element fits its dimension's bits.
+    fn pack(&self, at: &[ElementId]) -> Option<u64> {
+        if self.dimensions != at.len() {
+            return None;
+        }
+        let mut packed = 0;
+        for ((&element, &shift), &mask) in at.iter().zip(&self.shifts).zip(&self.masks) {
+            let element = u64::from(element);
+            if element & !mask != 0 {
+                return None;
+            }
+            packed |= element.wrapping_shl(shift);
+        }
+        Some(packed)
+    }
+
+    /// The coordinate a number was packed from. Every element is taken out at once, each
+    /// apart from the others; those of dimensions the cube does not have come out as none.
+    fn unpack(&self, packed: u64) -> At<'static> {
+        let mut unpacked = [0; FEW];
+        for ((element, &shift), &mask) in unpacked.iter_mut().zip(&self.shifts).zip(&self.masks) {
+            *element = (packed.wrapping_shr(shift) & mask) as ElementId;
+        }
+        At {
+            kept: None,
+            dimensions: self.dimensions as u8,
+            unpacked,
+        }
+    }
+}
+
+/// The bits an element needs.
+fn bits(element: ElementId) -> u32 {
+    ElementId::BITS - element.leading_zeros()
+}
+
+impl<V> Table<V> {
+    fn get(&self, at: &[ElementId]) -> Option<&V> {
+        match self {
+            Self::Packed { layout, cells } => cells.get(&layout.pack(at)?),
+            Self::Plain(cells) => cells.get(at),
+        }
+    }
+
+    fn remove(&mut self, at: &[ElementId]) {
+        match self {
+            Self::Packed { layout, cells } => {
+                if let Some(packed) = layout.pack(at) {
+                    cells.remove(&packed);
+                }
+            }
+            Self::Plain(cells) => drop(cells.remove(at)),
+        }
+    }
+
+    fn insert(&mut self, at: &[ElementId], value: V) {
+        if let Self::Packed { layout, cells } = self {
+            if let Some(packed) = layout.pack(at) {
+                cells.insert(packed, value);
+                return;
+            }
+            self.widen(at);
+        }
+        match self {
+            Self::Packed { layout, cells } => {
+                let packed = layout.pack(at).expect("widened to fit");
+                cells.insert(packed, value);
+            }
+            Self::Plain(cells) => drop(cells.insert(at.into(), value)),
+        }
+    }
+
+    /// Gives each dimension the bits an element of `at` needs, if more than it has, and
+    /// packs every coordinate again; or keeps them all as their elements, if they cannot
+    /// all be packed.
+    fn widen(&mut self, at: &[ElementId]) {
+        let Self::Packed { layout, cells } = self else {
+            return;
+        };
+        let mut wider: Vec<u32> = match layout.dimensions {
+            0 => vec![0; at.len()],
+            _ => layout.widths(),
+        };
+        let fits = wider.len() == at.len() && at.len() <= FEW;
+        if fits {
+            for (width, &element) in wider.iter_mut().zip(at) {
+                *width = (*width).max(bits(element));
+            }
+        }
+        let cells = std::mem::take(cells);
+        let old = *layout;
+        // The room made for cells about to be stored is kept.
+        let room = cells.capacity();
+        let unpacked = cells
+            .into_iter()
+            .map(|(packed, value)| (old.unpack(packed), value));
+        *self = match fits && wider.iter().sum::<u32>() <= u64::BITS {
+            true => {
+                let layout = Layout::new(&wider);
+                let mut repacked = FxHashMap::with_capacity_and_hasher(room, Default::default());
+                repacked
+                    .extend(unpacked.map(|(at, value)| (layout.pack(&at).expect("fits"), value)));
+                Self::Packed {
+                    cells: repacked,
+                    layout,
+                }
+            }
+            false => {
+                let mut kept = FxHashMap::with_capacity_and_hasher(room, Default::default());
+                kept.extend(unpacked.map(|(at, value)| (Coordinate::from(&*at), value)));
+                Self::Plain(kept)
+            }
+        };
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Packed { cells, .. } => cells.len(),
+            Self::Plain(cells) => cells.len(),
+        }
+    }
+
+    fn reserve(&mut self, more: usize) {
+        match self {
+            Self::Packed { cells, .. } => cells.reserve(more),
+            Self::Plain(cells) => cells.reserve(more),
+        }
+    }
+
+    fn iter(&self) -> Iter<'_, V> {
+        match self {
+            Self::Packed { layout, cells } => Iter::Packed(layout, cells.iter()),
+            Self::Plain(cells) => Iter::Plain(cells.iter()),
+        }
+    }
+}
+
+/// The values of a table and where each is.
+enum Iter<'a, V> {
+    Packed(&'a Layout, std::collections::hash_map::Iter<'a, u64, V>),
+    Plain(std::collections::hash_map::Iter<'a, Coordinate, V>),
+}
+
+impl<'a, V> Iterator for Iter<'a, V> {
+    type Item = (At<'a>, &'a V);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Packed(layout, cells) => {
+                let (&packed, value) = cells.next()?;
+                Some((layout.unpack(packed), value))
+            }
+            Self::Plain(cells) => cells.next().map(|(at, value)| (At::kept(at), value)),
+        }
+    }
+
+    // A pass over all the cells goes through here, the place of each made where it is used
+    // rather than handed back from one call to the next.
+    fn fold<B, F: FnMut(B, Self::Item) -> B>(self, init: B, mut f: F) -> B {
+        match self {
+            Self::Packed(layout, cells) => cells.fold(init, |acc, (&packed, value)| {
+                f(acc, (layout.unpack(packed), value))
+            }),
+            Self::Plain(cells) => {
+                cells.fold(init, |acc, (at, value)| f(acc, (At::kept(at), value)))
+            }
+        }
+    }
+}
+
 /// Values not yet stored, by the coordinate they will be written to.
 pub(crate) type Writes = FxHashMap<Coordinate, Scalar>;
 /// The leaves of one element and the weight of each, ordered by id.
@@ -84,8 +374,8 @@ pub(crate) type Leaves<'a> = &'a [(ElementId, f64)];
 /// numeric cell otherwise. Coordinates must come from [`coordinate`] on the same model.
 #[derive(Debug, Clone, Default)]
 pub struct Cells {
-    numbers: FxHashMap<Coordinate, f64>,
-    texts: FxHashMap<Coordinate, String>,
+    numbers: Table<f64>,
+    texts: Table<String>,
 }
 
 impl Cells {
@@ -137,9 +427,9 @@ impl Cells {
     }
 
     /// Where every stored cell is.
-    pub(crate) fn stored_at(&self) -> impl Iterator<Item = &[ElementId]> {
-        let numbers = self.numbers.keys().map(|at| &**at);
-        numbers.chain(self.texts.keys().map(|at| &**at))
+    pub(crate) fn stored_at(&self) -> impl Iterator<Item = At<'_>> {
+        let numbers = self.numbers.iter().map(|(at, _)| at);
+        numbers.chain(self.texts.iter().map(|(at, _)| at))
     }
 
     /// What is stored at a leaf cell: its text, or its number, zero if it holds none.
@@ -151,7 +441,7 @@ impl Cells {
     }
 
     /// Every stored cell and its value.
-    pub(crate) fn entries(&self) -> impl Iterator<Item = (&Coordinate, Scalar)> {
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (At<'_>, Scalar)> {
         let numbers = self
             .numbers
             .iter()
@@ -179,8 +469,10 @@ impl Cells {
     /// Stores a value that has passed [`check`].
     pub(crate) fn set(&mut self, at: &[ElementId], value: Scalar) {
         match value {
-            Scalar::Number(number) => store(&mut self.numbers, at, number, |n| *n == 0.0),
-            Scalar::Text(text) => store(&mut self.texts, at, text, String::is_empty),
+            Scalar::Number(0.0) => self.numbers.remove(at),
+            Scalar::Number(number) => self.numbers.insert(at, number),
+            Scalar::Text(text) if text.is_empty() => self.texts.remove(at),
+            Scalar::Text(text) => self.texts.insert(at, text),
         }
     }
 
@@ -190,7 +482,7 @@ impl Cells {
         let mut at: Vec<ElementId> = leaves.iter().map(|l| l[0].0).collect();
         let mut total = 0.0;
         loop {
-            if let Some(value) = self.numbers.get(at.as_slice()) {
+            if let Some(value) = self.numbers.get(&at) {
                 let weights = positions.iter().zip(leaves).map(|(&p, l)| l[p].1);
                 total += weights.product::<f64>() * value;
             }
@@ -204,18 +496,18 @@ impl Cells {
     pub(crate) fn numbers_with<'a>(
         &'a self,
         pending: Option<&'a Writes>,
-    ) -> impl Iterator<Item = (&'a [ElementId], f64)> {
+    ) -> impl Iterator<Item = (At<'a>, f64)> {
         let replaced =
-            move |at: &Coordinate| pending.is_some_and(|pending| pending.contains_key(at));
+            move |at: &[ElementId]| pending.is_some_and(|pending| pending.contains_key(at));
         let stored = self.numbers.iter().filter(move |(at, _)| !replaced(at));
         let written = pending
             .into_iter()
             .flatten()
             .filter_map(|(at, value)| match value {
-                Scalar::Number(number) if *number != 0.0 => Some((&**at, *number)),
+                Scalar::Number(number) if *number != 0.0 => Some((At::kept(at), *number)),
                 _ => None,
             });
-        stored.map(|(at, &number)| (&**at, number)).chain(written)
+        stored.map(|(at, &number)| (at, number)).chain(written)
     }
 
     /// One leaf number as it would be once the pending writes were stored.
@@ -231,7 +523,7 @@ impl Cells {
     fn sum_stored(&self, leaves: &[Leaves]) -> f64 {
         self.numbers
             .iter()
-            .filter_map(|(at, value)| Some(weight(leaves, at)? * value))
+            .filter_map(|(at, value)| Some(weight(leaves, &at)? * value))
             .sum()
     }
 
@@ -278,11 +570,11 @@ impl Cells {
     /// asked only for a leaf that counts towards one of the cells: where a rule has to work
     /// the number out, the leaves beside the point cost nothing. Nothing if the cells are too
     /// varied to number, or if `value` has none to give.
-    pub(crate) fn share<'a, Known>(
+    pub(crate) fn share<Leaf: std::ops::Deref<Target = [ElementId]>, Known>(
         model: &Model,
         cube: &Cube,
         cells: &[&[ElementId]],
-        leaves: impl Iterator<Item = (&'a [ElementId], Known)>,
+        leaves: impl Iterator<Item = (Leaf, Known)>,
         mut value: impl FnMut(&[ElementId], Known) -> Option<f64>,
     ) -> Option<Vec<f64>> {
         // In each dimension the elements asked for are numbered as they are met, and every
@@ -342,7 +634,13 @@ impl Cells {
 
         let mut lists: Vec<&[(u64, f64)]> = Vec::with_capacity(dimensions.len());
         let mut positions = vec![0; dimensions.len()];
-        for (at, known) in leaves {
+        // Taken as a pass of its own over the cells, which goes quicker than one cell asked
+        // for after another; once a leaf has no value, the rest are passed over.
+        let mut failed = false;
+        leaves.for_each(|(at, known)| {
+            if failed {
+                return;
+            }
             lists.clear();
             lists.extend(
                 at.iter()
@@ -350,9 +648,12 @@ impl Cells {
                     .map(|(&leaf, t)| t[leaf as usize].as_slice()),
             );
             if lists.iter().any(|list| list.is_empty()) {
-                continue;
+                return;
             }
-            let value = value(at, known)?;
+            let Some(value) = value(&at, known) else {
+                failed = true;
+                return;
+            };
             positions.fill(0);
             // Every combination of one element asked for per dimension that the cell counts
             // towards; most are a cell asked for.
@@ -379,6 +680,9 @@ impl Cells {
                 }
                 break;
             }
+        });
+        if failed {
+            return None;
         }
         let total = |at: &&[ElementId]| match row.get(number(at) as usize) {
             Some(&total) => total,
@@ -482,19 +786,6 @@ fn is_consolidated(element: &Element) -> bool {
     element.kind == ElementType::Consolidated
 }
 
-fn store<V>(
-    cells: &mut FxHashMap<Coordinate, V>,
-    at: &[ElementId],
-    value: V,
-    is_empty: impl Fn(&V) -> bool,
-) {
-    if is_empty(&value) {
-        cells.remove(at);
-    } else {
-        cells.insert(at.into(), value);
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CellError {
     /// The number of names differs from the number of dimensions.
@@ -557,3 +848,73 @@ impl fmt::Display for CellError {
 }
 
 impl std::error::Error for CellError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Stores each coordinate with a value of its own, in order, then checks that every one
+    /// is found, nothing else is, and the table gives each back once; and whether it kept
+    /// them packed.
+    fn holds(coordinates: &[Vec<ElementId>]) -> bool {
+        let mut table = Table::default();
+        for (value, at) in coordinates.iter().enumerate() {
+            table.insert(at, value);
+        }
+        for (value, at) in coordinates.iter().enumerate() {
+            assert_eq!(table.get(at), Some(&value), "{at:?}");
+        }
+        let mut absent = coordinates[0].clone();
+        absent[0] = ElementId::MAX;
+        assert_eq!(table.get(&absent), None);
+        let mut given: Vec<(Vec<ElementId>, usize)> = table
+            .iter()
+            .map(|(at, &value)| (at.to_vec(), value))
+            .collect();
+        given.sort_by_key(|&(_, value)| value);
+        let expected: Vec<(Vec<ElementId>, usize)> = coordinates.iter().cloned().zip(0..).collect();
+        assert_eq!(given, expected);
+        matches!(table, Table::Packed { .. })
+    }
+
+    #[test]
+    fn coordinates_are_packed_while_they_fit_and_kept_whole_once_they_do_not() {
+        // Elements growing one dimension at a time, each time packed again with more bits.
+        let growing: Vec<Vec<ElementId>> = (0..300)
+            .map(|i| vec![i % 7, i, (i * 31) % 1000, 0])
+            .collect();
+        assert!(holds(&growing));
+        // Elements needing all 32 bits in two dimensions fill 64 exactly.
+        assert!(holds(&[
+            vec![0, 0],
+            vec![u32::MAX - 1, 5],
+            vec![1, u32::MAX - 1]
+        ]));
+        // A third such dimension does not fit, nor does a ninth dimension.
+        assert!(!holds(&[
+            vec![1, 2, 3],
+            vec![u32::MAX - 1, u32::MAX - 1, 1]
+        ]));
+        assert!(!holds(&[(0..9).collect()]));
+        // Until an element needs more bits, nothing is packed again.
+        assert!(holds(&[vec![0, 0, 0], vec![1, 1, 1], vec![0, 1, 0]]));
+    }
+
+    #[test]
+    fn a_cell_removed_is_gone_however_its_coordinate_is_kept() {
+        for wide in [false, true] {
+            let mut table = Table::default();
+            let far = if wide { u32::MAX - 1 } else { 9 };
+            let (near, at) = (vec![1, 2, 3], vec![far, far, far]);
+            table.insert(&near, 1.0);
+            table.insert(&at, 2.0);
+            table.remove(&at);
+            table.remove(&[ElementId::MAX, 0, 0]);
+            assert_eq!(
+                (table.get(&near), table.get(&at), table.len()),
+                (Some(&1.0), None, 1)
+            );
+            assert_eq!(matches!(table, Table::Packed { .. }), !wide);
+        }
+    }
+}

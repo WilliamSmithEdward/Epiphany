@@ -13,7 +13,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::Scalar;
-use crate::cells::{Cells, Coordinate, Leaves, Writes, advance, weight};
+use crate::cells::{At, Cells, Coordinate, Leaves, Writes, advance, weight};
 use crate::mdx::{MdxError, Outcome, evaluate_rule, feeder_targets, matches};
 use crate::model::{Cube, Element, ElementId, ElementType, Model};
 
@@ -155,7 +155,7 @@ impl<'a> Reader<'a> {
         if count + fed.map_or(0, |fed| fed.len()) > most {
             return false;
         }
-        stored.stored_at().for_each(&mut *show);
+        stored.stored_at().for_each(|at| show(&at));
         written.into_iter().flatten().for_each(|(at, _)| show(at));
         fed.into_iter().flatten().for_each(|at| show(at));
         true
@@ -215,7 +215,7 @@ impl<'a> Reader<'a> {
             .map(|(leaf, held)| (leaf, Some(held)));
         let empty = fed
             .iter()
-            .map(|leaf| &**leaf)
+            .map(|leaf| At::kept(leaf))
             .filter(|leaf| stored.number_with(leaf, pending) == 0.0);
         let leaves = held.chain(empty.map(|leaf| (leaf, None)));
         // A leaf a rule covers is what the rule makes it; any other is what it holds. A rule
@@ -442,14 +442,14 @@ impl<'a> Reader<'a> {
             }
             // Feeders fire from stored cells and from cells that are themselves fed.
             let stored = self.cells[id].numbers_with(self.pending.map(|pending| &pending[id]));
-            let fed = self.fed[id].iter().flatten().map(|at| &**at);
-            let sources: FxHashSet<&[ElementId]> = stored.map(|(at, _)| at).chain(fed).collect();
+            let fed = self.fed[id].iter().flatten().map(|at| At::kept(at));
+            let sources: FxHashSet<At> = stored.map(|(at, _)| at).chain(fed).collect();
             for source in sources {
                 for (number, feeder) in source_cube.feeders.iter().enumerate() {
-                    if !within(self.model, source_cube, &feeder.source, source) {
+                    if !within(self.model, source_cube, &feeder.source, &source) {
                         continue;
                     }
-                    for (target_id, target) in feeder_targets(self.model, id, feeder, source)? {
+                    for (target_id, target) in feeder_targets(self.model, id, feeder, &source)? {
                         let target: Vec<Option<ElementId>> = target.into_iter().map(Some).collect();
                         if target_id == cube
                             && within(self.model, &self.model.cubes()[cube], &target, at)
@@ -484,14 +484,25 @@ impl<'a> Reader<'a> {
         if let Some(fed) = &self.fed[cube] {
             // A stored cell counts as it is unless a rule covers it; a fed cell counts if a
             // rule covers it. A cell that is both is counted once, as stored.
-            for (leaf, stored) in self.cells[cube].numbers_with(pending) {
-                if let Some(weight) = weight(&leaves, leaf) {
-                    total += weight
-                        * match ruled(leaf) {
-                            true => self.number(cube, leaf)?,
-                            false => stored,
-                        };
-                }
+            // Taken as a pass of its own, which goes quicker than one cell asked for after
+            // another; once a rule fails, the rest are passed over.
+            let mut failed = None;
+            self.cells[cube]
+                .numbers_with(pending)
+                .for_each(|(leaf, stored)| {
+                    let Some(weight) = weight(&leaves, &leaf).filter(|_| failed.is_none()) else {
+                        return;
+                    };
+                    match ruled(&leaf) {
+                        true => match self.number(cube, &leaf) {
+                            Ok(number) => total += weight * number,
+                            Err(error) => failed = Some(error),
+                        },
+                        false => total += weight * stored,
+                    }
+                });
+            if let Some(error) = failed {
+                return Err(error);
             }
             for leaf in fed {
                 let stored = self.cells[cube].number_with(leaf, pending) != 0.0;
@@ -591,7 +602,7 @@ pub(crate) fn feed(model: &Model, cells: &[Cells], pending: Option<&[Writes]>) -
     for (id, cube) in cubes.iter().enumerate() {
         if !cube.feeders.is_empty() {
             let stored = cells[id].numbers_with(pending.map(|pending| &pending[id]));
-            active.extend(stored.map(|(at, _)| (id, Coordinate::from(at))));
+            active.extend(stored.map(|(at, _)| (id, Coordinate::from(&*at))));
         }
     }
     let leaves = |cube: &Cube, position: usize, element: ElementId| -> Leaves {

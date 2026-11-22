@@ -79,7 +79,7 @@ impl Database {
         let held: Vec<(Vec<ElementId>, f64, f64)> = self.cells[id]
             .numbers_with(pending)
             .filter(|(leaf, _)| writable(leaf))
-            .filter_map(|(leaf, value)| Some((leaf.to_vec(), weight(&leaves, leaf)?, value)))
+            .filter_map(|(leaf, value)| Some((leaf.to_vec(), weight(&leaves, &leaf)?, value)))
             .collect();
         let total: f64 = held.iter().map(|(_, weight, value)| weight * value).sum();
 

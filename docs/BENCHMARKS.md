@@ -74,6 +74,32 @@ three dimensions from 7.0 ms to 5.9 ms, and the long `NON EMPTY` query from 48 m
 ms. Writing 200,000 cells is unchanged at 198 ms: its time is not in storing them
 (2026-11-21).
 
+Where a cube's element ids fit 64 bits together, a stored cell's coordinate is now packed
+into one number, each dimension given the bits its largest stored element needs: a number
+and its place take 16 bytes rather than 48. Looking a cell up is quicker, there being less
+to hash and compare; a pass over the cells unpacks each, which costs it a little. Compared
+on the same machine, one after the other (2026-11-22):
+
+| | Coordinates kept whole | Packed |
+| --- | --- | --- |
+| Write leaf | 115 ns | 51 ns |
+| Read leaf | 60 ns | 32 ns |
+| Read consolidation by combinations | 80 µs | 38 µs |
+| Read consolidation by stored cells | 4.0 ms | 4.3 ms |
+| 400 cells, each totalling two dimensions | 1.9 ms | 2.2 ms |
+| 113 cells, each totalling three dimensions | 5.2 ms | 6.5 ms |
+| The 10 largest of 100 totals | 2.9 ms | 4.0 ms |
+| Non-empty rows of 1,442,897, found from the cells | 42.8 ms | 43.7 ms |
+| 113 totals over feeders, one at a time | 27.5 ms | 33.3 ms |
+| 113 totals over feeders, read together | 8.7 ms | 8.8 ms |
+
+Handing out each cell's place as one of two kinds of coordinate had made a pass half as
+long again; it is now one plain value, and a pass over the cells is taken as a pass of its
+own rather than one cell asked for after another. Ten million cells take 282 to 375 MB
+rather than 882 MB, and 1.2 GB at the most while they are written rather than 1.5 GB;
+started again, the server holds 279 MB rather than 792 MB, with 464 MB at the most on the
+way, and starts in the same 5.5 s.
+
 Reading a cell made a list of where the cell is, and reading the cell of one member made
 a tuple to hold that member; both are now done without. The grid of 10,000 leaf cells
 goes from 2.4 ms to 2.2 ms, that of a calculated member from 2.7 ms to 2.4 ms, and the
