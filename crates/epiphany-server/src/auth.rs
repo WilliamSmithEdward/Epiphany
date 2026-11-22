@@ -11,9 +11,9 @@
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant};
 
 use argon2::Argon2;
@@ -142,6 +142,27 @@ struct User {
     cubes: BTreeMap<String, Role>,
 }
 
+/// A user as the server holds them while it runs.
+#[derive(Debug, Clone)]
+struct Account {
+    /// The name as it was given.
+    name: String,
+    hash: String,
+    grants: Arc<Grants>,
+}
+
+/// A user as an administrator sees them: never the password.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct UserView {
+    pub name: String,
+    /// What the user may do.
+    pub role: Role,
+    /// The cubes on which the user has another role in place of that one.
+    pub cubes: BTreeMap<String, Role>,
+    /// How many sessions the user has open.
+    pub sessions: usize,
+}
+
 /// Why a sign-in was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
@@ -153,14 +174,18 @@ pub enum Refusal {
 
 #[derive(Debug)]
 struct Session {
+    /// The user's name in lower case.
+    user: String,
     grants: Arc<Grants>,
     used: Instant,
 }
 
 #[derive(Debug)]
 pub struct Auth {
-    /// Password hash and grants by user name in lower case.
-    users: HashMap<String, (String, Arc<Grants>)>,
+    /// Where `users.json` is kept, so that a change made while the server runs outlasts it.
+    directory: PathBuf,
+    /// The users, by name in lower case.
+    users: RwLock<HashMap<String, Account>>,
     sessions: Mutex<HashMap<String, Session>>,
     /// Wrong passwords running and when the last was given, by name in lower case.
     failures: Mutex<HashMap<String, (u32, Instant)>>,
@@ -177,15 +202,21 @@ impl Auth {
     /// for no sign-in.
     pub fn load(directory: &Path) -> Result<Option<Self>, Box<dyn Error>> {
         let users: Vec<User> = read_json(&directory.join(FILE))?.unwrap_or_default();
-        let users: HashMap<String, (String, Arc<Grants>)> = users
+        let users: HashMap<String, Account> = users
             .into_iter()
             .map(|user| {
                 let grants = Arc::new(Grants::new(user.role, user.cubes));
-                (user.name.to_lowercase(), (user.password, grants))
+                let account = Account {
+                    hash: user.password,
+                    grants,
+                    name: user.name,
+                };
+                (account.name.to_lowercase(), account)
             })
             .collect();
         Ok((!users.is_empty()).then(|| Self {
-            users,
+            directory: directory.to_owned(),
+            users: RwLock::new(users),
             sessions: Mutex::default(),
             failures: Mutex::default(),
             idle: IDLE,
@@ -214,6 +245,14 @@ impl Auth {
         self.pause = pause;
     }
 
+    fn users(&self) -> RwLockReadGuard<'_, HashMap<String, Account>> {
+        self.users.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn sessions(&self) -> MutexGuard<'_, HashMap<String, Session>> {
+        self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Starts a session for a user who gives the right password, and returns its token and
     /// what the user may do.
     pub fn sign_in(&self, name: &str, password: &str) -> Result<(String, Arc<Grants>), Refusal> {
@@ -232,8 +271,11 @@ impl Auth {
         // An unknown name is checked against a hash too, so that it takes as long to refuse
         // as a wrong password and the two cannot be told apart by timing.
         static NOBODY: OnceLock<String> = OnceLock::new();
-        let known = self.users.get(&name);
-        let hash = match known {
+        let known = self
+            .users()
+            .get(&name)
+            .map(|account| (account.hash.clone(), Arc::clone(&account.grants)));
+        let hash = match &known {
             Some((hash, _)) => hash,
             None => NOBODY.get_or_init(|| hash("nobody").expect("hashing works")),
         };
@@ -243,7 +285,7 @@ impl Auth {
                 .is_ok()
         });
         let grants = match known {
-            Some((_, grants)) if right => Arc::clone(grants),
+            Some((_, grants)) if right => grants,
             _ => {
                 let mut failures = self.failures.lock().unwrap();
                 let (count, last) = failures.entry(name).or_insert((0, now));
@@ -255,9 +297,10 @@ impl Auth {
         let mut random = [0u8; 32];
         getrandom::fill(&mut random).expect("the operating system provides randomness");
         let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions();
         sessions.retain(|_, session| now.duration_since(session.used) <= self.idle);
         let session = Session {
+            user: name,
             grants: Arc::clone(&grants),
             used: now,
         };
@@ -268,7 +311,7 @@ impl Auth {
     /// What the user of a live session may do; the session then counts as used just now.
     /// Nothing if the token belongs to no live session.
     pub fn admits(&self, token: &str) -> Option<Arc<Grants>> {
-        let mut sessions = self.sessions.lock().unwrap();
+        let mut sessions = self.sessions();
         let now = Instant::now();
         match sessions.get_mut(token) {
             Some(session) if now.duration_since(session.used) <= self.idle => {
@@ -283,8 +326,144 @@ impl Auth {
     }
 
     pub fn sign_out(&self, token: &str) {
-        self.sessions.lock().unwrap().remove(token);
+        self.sessions().remove(token);
     }
+
+    /// Every user, by name, with how many sessions each has open.
+    pub fn list(&self) -> Vec<UserView> {
+        let now = Instant::now();
+        let mut open: HashMap<String, usize> = HashMap::new();
+        for session in self.sessions().values() {
+            if now.duration_since(session.used) <= self.idle {
+                *open.entry(session.user.clone()).or_default() += 1;
+            }
+        }
+        let mut users: Vec<UserView> = self
+            .users()
+            .iter()
+            .map(|(key, account)| UserView {
+                name: account.name.clone(),
+                role: account.grants.role(),
+                cubes: account.grants.cubes().clone(),
+                sessions: open.get(key).copied().unwrap_or(0),
+            })
+            .collect();
+        users.sort_by_key(|user| user.name.to_lowercase());
+        users
+    }
+
+    /// How many sessions are open.
+    pub fn open_sessions(&self) -> usize {
+        let now = Instant::now();
+        let sessions = self.sessions();
+        sessions
+            .values()
+            .filter(|session| now.duration_since(session.used) <= self.idle)
+            .count()
+    }
+
+    /// Adds a user, or changes one: their grants, and their password if one is given. A new
+    /// user needs a password. It is saved at once, and the user's open sessions hold the new
+    /// grants from their next request.
+    pub fn set(&self, name: &str, password: Option<&str>, grants: Grants) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a user needs a name".to_owned());
+        }
+        if password.is_some_and(str::is_empty) {
+            return Err("a password cannot be empty".to_owned());
+        }
+        let hashed = password
+            .map(hash)
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let key = name.to_lowercase();
+        let grants = Arc::new(grants);
+        let mut users = self.users.write().unwrap_or_else(PoisonError::into_inner);
+        let hash = match (hashed, users.get(&key)) {
+            (Some(hash), _) => hash,
+            (None, Some(account)) => account.hash.clone(),
+            (None, None) => return Err(format!("the new user {name} needs a password")),
+        };
+        let mut changed = users.clone();
+        changed.insert(
+            key.clone(),
+            Account {
+                name: name.to_owned(),
+                hash,
+                grants: Arc::clone(&grants),
+            },
+        );
+        keeps_an_admin(&changed)?;
+        save(&self.directory, &changed).map_err(|error| error.to_string())?;
+        *users = changed;
+        drop(users);
+        for session in self.sessions().values_mut() {
+            if session.user == key {
+                session.grants = Arc::clone(&grants);
+            }
+        }
+        Ok(())
+    }
+
+    /// Removes a user and ends their sessions. The last administrator cannot be removed.
+    pub fn remove(&self, name: &str) -> Result<(), String> {
+        let key = name.trim().to_lowercase();
+        let mut users = self.users.write().unwrap_or_else(PoisonError::into_inner);
+        if !users.contains_key(&key) {
+            return Err(format!("there is no user called {name}"));
+        }
+        let mut changed = users.clone();
+        changed.remove(&key);
+        keeps_an_admin(&changed)?;
+        save(&self.directory, &changed).map_err(|error| error.to_string())?;
+        *users = changed;
+        drop(users);
+        self.end_sessions(&key);
+        Ok(())
+    }
+
+    /// Ends every session of a user; says how many there were.
+    pub fn end_sessions(&self, name: &str) -> usize {
+        let key = name.trim().to_lowercase();
+        let mut sessions = self.sessions();
+        let before = sessions.len();
+        sessions.retain(|_, session| session.user != key);
+        before - sessions.len()
+    }
+
+    /// Whether there is a user of that name.
+    pub fn has(&self, name: &str) -> bool {
+        self.users().contains_key(&name.trim().to_lowercase())
+    }
+}
+
+/// Refuses a set of users with no administrator, who could change no user again.
+fn keeps_an_admin(users: &HashMap<String, Account>) -> Result<(), String> {
+    match users
+        .values()
+        .any(|account| account.grants.role() == Role::Admin)
+    {
+        true => Ok(()),
+        false => {
+            Err("that would leave no administrator, and nobody could manage users again".to_owned())
+        }
+    }
+}
+
+/// Writes the users to a directory's `users.json`.
+fn save(directory: &Path, users: &HashMap<String, Account>) -> Result<(), Box<dyn Error>> {
+    let mut stored: Vec<User> = users
+        .values()
+        .map(|account| User {
+            name: account.name.clone(),
+            password: account.hash.clone(),
+            role: account.grants.role(),
+            cubes: account.grants.cubes().clone(),
+        })
+        .collect();
+    stored.sort_by_key(|user| user.name.to_lowercase());
+    Ok(write_json(&directory.join(FILE), &stored)?)
 }
 
 fn hash(password: &str) -> Result<String, Box<dyn Error>> {

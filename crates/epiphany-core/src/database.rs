@@ -135,6 +135,22 @@ pub trait Journal: Send + Sync + fmt::Debug {
 
     /// Records every stored cell, replacing the commits recorded so far.
     fn snapshot(&mut self, model_version: u64, cells: &NamedCells<'_>) -> io::Result<()>;
+
+    /// How many bytes the journal keeps: its recorded commits, then its snapshot. Nothing
+    /// if it keeps none it can count.
+    fn bytes(&self) -> Option<(u64, u64)> {
+        None
+    }
+}
+
+/// An open transaction, as an administrator sees it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenTransaction {
+    pub id: TransactionId,
+    /// How long since it was last used.
+    pub idle: Duration,
+    /// How many writes it holds, waiting to be committed.
+    pub pending: usize,
 }
 
 /// The writes of one commit, addressed by name, written out as a list of [`CellWrite`]s
@@ -435,6 +451,37 @@ impl Database {
 
     pub fn model_version(&self) -> u64 {
         self.model_version
+    }
+
+    /// How many cells each cube stores, by its name, in the model's order.
+    pub fn cell_counts(&self) -> Vec<(String, usize)> {
+        let cubes = self.model.cubes().iter().zip(&self.cells);
+        cubes
+            .map(|(cube, cells)| (cube.name.clone(), cells.len()))
+            .collect()
+    }
+
+    /// The transactions that are open, the longest idle first.
+    pub fn open_transactions(&self) -> Vec<OpenTransaction> {
+        let now = self.now();
+        let mut open: Vec<OpenTransaction> = self
+            .transactions
+            .iter()
+            .map(|(&id, transaction)| OpenTransaction {
+                id,
+                idle: Duration::from_millis(
+                    now.saturating_sub(transaction.used.load(Ordering::Relaxed)),
+                ),
+                pending: transaction.writes.iter().map(Writes::len).sum(),
+            })
+            .collect();
+        open.sort_by_key(|transaction| std::cmp::Reverse(transaction.idle));
+        open
+    }
+
+    /// How many bytes the journal keeps on disk: its log, then its snapshot.
+    pub fn journal_bytes(&self) -> Option<(u64, u64)> {
+        self.journal()?.bytes()
     }
 
     /// Reads a cell: its committed value, or within a transaction its value as that

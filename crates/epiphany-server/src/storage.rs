@@ -370,6 +370,11 @@ impl Journal for Files {
         self.log_bytes > LOG_LIMIT
     }
 
+    fn bytes(&self) -> Option<(u64, u64)> {
+        let snapshot = fs::metadata(self.directory.join("data").join("snapshot.json"));
+        Some((self.log_bytes, snapshot.map_or(0, |file| file.len())))
+    }
+
     fn snapshot(&mut self, model_version: u64, cells: &NamedCells<'_>) -> io::Result<()> {
         let snapshot = Snapshot {
             model_version,

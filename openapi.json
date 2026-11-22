@@ -9,6 +9,334 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/admin/status": {
+      "get": {
+        "summary": "The state of the server: the cells each cube stores, what it keeps on disk, its open\nsessions and transactions, and how long it has run. For administrators.",
+        "operationId": "server_status",
+        "responses": {
+          "200": {
+            "description": "The state of the server",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/transactions": {
+      "get": {
+        "summary": "The open transactions, the longest idle first. One is ended with\n`POST /transactions/{id}/rollback`. For administrators.",
+        "operationId": "list_transactions",
+        "responses": {
+          "200": {
+            "description": "The open transactions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TransactionInfo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users": {
+      "get": {
+        "summary": "The users, with their roles and how many sessions each has open. For administrators.",
+        "operationId": "list_users",
+        "responses": {
+          "200": {
+            "description": "The users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{name}": {
+      "put": {
+        "summary": "Adds a user, or changes one's role, cube roles or password. It takes effect at once:\nthe user's open sessions hold the new roles from their next request. For administrators.",
+        "operationId": "put_user",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The user, ignoring case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The user was saved"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users, so none can be added while it runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A new user has no password, the change would leave no administrator, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Removes a user and ends their sessions. The last administrator cannot be removed. For\nadministrators.",
+        "operationId": "delete_user",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The user, ignoring case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The user was removed"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no such user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "It would leave no administrator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{name}/sessions": {
+      "delete": {
+        "summary": "Ends every session of a user, who must sign in again. For administrators.",
+        "operationId": "end_sessions",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The user, ignoring case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sessions were ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ended"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no such user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cells/explain": {
       "post": {
         "summary": "Says how each cell comes by its value: stored, calculated by a rule or added up, whether\nit can be written, and whether it is fed. A cell that cannot be explained reports its own\nerror.",
@@ -1724,6 +2052,23 @@
         },
         "additionalProperties": false
       },
+      "CubeStatus": {
+        "type": "object",
+        "required": [
+          "name",
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "integer",
+            "description": "How many leaf cells it stores.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "DimensionDef": {
         "type": "object",
         "required": [
@@ -1939,6 +2284,19 @@
           },
           "type": {
             "$ref": "#/components/schemas/ElementType"
+          }
+        }
+      },
+      "Ended": {
+        "type": "object",
+        "required": [
+          "ended"
+        ],
+        "properties": {
+          "ended": {
+            "type": "integer",
+            "description": "How many sessions were ended.",
+            "minimum": 0
           }
         }
       },
@@ -2378,6 +2736,81 @@
           }
         ]
       },
+      "ServerStatus": {
+        "type": "object",
+        "description": "The state of the server.",
+        "required": [
+          "server",
+          "model_version",
+          "uptime_seconds",
+          "cubes",
+          "transactions"
+        ],
+        "properties": {
+          "cubes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CubeStatus"
+            },
+            "description": "The cells each cube stores."
+          },
+          "log_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bytes of recorded commits since the last snapshot.",
+            "minimum": 0
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The memory the server holds, where the operating system says.",
+            "minimum": 0
+          },
+          "model_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "server": {
+            "type": "string",
+            "description": "The version of the server program."
+          },
+          "sessions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many sessions are open; none on a server that asks no one to sign in.",
+            "minimum": 0
+          },
+          "snapshot_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bytes of the last snapshot.",
+            "minimum": 0
+          },
+          "transactions": {
+            "type": "integer",
+            "description": "How many transactions are open.",
+            "minimum": 0
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long the server has been running, in seconds.",
+            "minimum": 0
+          }
+        }
+      },
       "Session": {
         "type": "object",
         "required": [
@@ -2573,6 +3006,33 @@
         ],
         "description": "A selection of a dimension's elements."
       },
+      "TransactionInfo": {
+        "type": "object",
+        "description": "An open transaction.",
+        "required": [
+          "transaction",
+          "idle_seconds",
+          "pending"
+        ],
+        "properties": {
+          "idle_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long since it was last used, in seconds.",
+            "minimum": 0
+          },
+          "pending": {
+            "type": "integer",
+            "description": "How many writes it holds, waiting to be committed.",
+            "minimum": 0
+          },
+          "transaction": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "TransactionView": {
         "type": "object",
         "required": [
@@ -2582,6 +3042,90 @@
           "transaction": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "UserList": {
+        "type": "object",
+        "description": "The users of the server.",
+        "required": [
+          "signing_in",
+          "users"
+        ],
+        "properties": {
+          "signing_in": {
+            "type": "boolean",
+            "description": "Whether the server asks users to sign in. Without users it does not, and none can be\nadded while it runs."
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserView"
+            }
+          }
+        }
+      },
+      "UserPut": {
+        "type": "object",
+        "description": "A user to add or change.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "cubes": {
+            "type": "object",
+            "description": "Cubes on which the user has another role in place of that one.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A new password. A new user needs one; without it a user's password is kept."
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UserView": {
+        "type": "object",
+        "description": "A user as an administrator sees them: never the password.",
+        "required": [
+          "name",
+          "role",
+          "cubes",
+          "sessions"
+        ],
+        "properties": {
+          "cubes": {
+            "type": "object",
+            "description": "The cubes on which the user has another role in place of that one.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "What the user may do."
+          },
+          "sessions": {
+            "type": "integer",
+            "description": "How many sessions the user has open.",
             "minimum": 0
           }
         }

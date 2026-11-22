@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{
     Arc, LockResult, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
+use std::time::Instant;
 
 use axum::Extension;
 use axum::extract::rejection::JsonRejection;
@@ -28,7 +29,7 @@ use epiphany_core::model::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{Auth, Grants, Refusal, Role};
+use crate::auth::{Auth, Grants, Refusal, Role, UserView};
 use utoipa::openapi::RefOr;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
 use utoipa::{IntoParams, OpenApi, ToSchema};
@@ -106,6 +107,8 @@ struct AppState {
     /// The model's version, kept beside the database so that it can be read without waiting
     /// for whoever is writing.
     version: Arc<AtomicU64>,
+    /// When the server started.
+    started: Instant,
 }
 
 impl FromRef<AppState> for Shared {
@@ -154,6 +157,11 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(commit_transaction))
         .routes(routes!(rollback_transaction))
         .routes(routes!(lock))
+        .routes(routes!(server_status))
+        .routes(routes!(list_users))
+        .routes(routes!(put_user, delete_user))
+        .routes(routes!(end_sessions))
+        .routes(routes!(list_transactions))
 }
 
 /// The OpenAPI document describing every route.
@@ -221,6 +229,7 @@ pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
         version: Arc::new(AtomicU64::new(database.model_version())),
         database: Guarded::new(database),
         auth: auth.map(Arc::new),
+        started: Instant::now(),
     };
     let (router, contract) = router().split_for_parts();
     let contract = secured(contract);
@@ -335,6 +344,9 @@ async fn stamp(State(state): State<AppState>, request: Request, next: Next) -> R
 
 /// What a user must be allowed to do to call a route.
 fn needed(method: &Method, path: &str) -> Role {
+    if path.starts_with("/admin/") {
+        return Role::Admin;
+    }
     let reads = ["/cells/read", "/cells/explain", "/mdx"];
     if method == Method::GET || path == "/sessions" || reads.contains(&path) {
         Role::Read
@@ -1301,6 +1313,233 @@ async fn lock(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/* ---- Administration: the server's state, its users, sessions and transactions ---- */
+
+/// The state of the server.
+#[derive(Serialize, ToSchema)]
+struct ServerStatus {
+    /// The version of the server program.
+    server: String,
+    model_version: u64,
+    /// How long the server has been running, in seconds.
+    uptime_seconds: u64,
+    /// The cells each cube stores.
+    cubes: Vec<CubeStatus>,
+    /// How many transactions are open.
+    transactions: usize,
+    /// How many sessions are open; none on a server that asks no one to sign in.
+    sessions: Option<usize>,
+    /// The bytes of recorded commits since the last snapshot.
+    log_bytes: Option<u64>,
+    /// The bytes of the last snapshot.
+    snapshot_bytes: Option<u64>,
+    /// The memory the server holds, where the operating system says.
+    memory_bytes: Option<u64>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct CubeStatus {
+    name: String,
+    /// How many leaf cells it stores.
+    cells: usize,
+}
+
+/// The users of the server.
+#[derive(Serialize, ToSchema)]
+struct UserList {
+    /// Whether the server asks users to sign in. Without users it does not, and none can be
+    /// added while it runs.
+    signing_in: bool,
+    users: Vec<UserView>,
+}
+
+/// A user to add or change.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct UserPut {
+    /// A new password. A new user needs one; without it a user's password is kept.
+    password: Option<String>,
+    role: Role,
+    /// Cubes on which the user has another role in place of that one.
+    #[serde(default)]
+    cubes: BTreeMap<String, Role>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct Ended {
+    /// How many sessions were ended.
+    ended: usize,
+}
+
+/// An open transaction.
+#[derive(Serialize, ToSchema)]
+struct TransactionInfo {
+    transaction: u64,
+    /// How long since it was last used, in seconds.
+    idle_seconds: u64,
+    /// How many writes it holds, waiting to be committed.
+    pending: usize,
+}
+
+/// The memory the process holds, where the operating system says: on Linux, its resident
+/// set.
+fn memory() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("VmRSS:"))?;
+    let kilobytes: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kilobytes * 1024)
+}
+
+/// The users, or a refusal on a server that has none.
+fn users_of(state: &AppState) -> Result<&Arc<Auth>, ApiError> {
+    state.auth.as_ref().ok_or_else(|| {
+        let message = "this server asks no one to sign in; add its first user with \
+                       'epiphany-server user', then restart it";
+        ApiError::new(StatusCode::CONFLICT, "no_users", message.to_owned())
+    })
+}
+
+/// The state of the server: the cells each cube stores, what it keeps on disk, its open
+/// sessions and transactions, and how long it has run. For administrators.
+#[utoipa::path(
+    get,
+    path = "/admin/status",
+    responses((status = OK, body = ServerStatus, description = "The state of the server"))
+)]
+async fn server_status(State(state): State<AppState>) -> Json<ServerStatus> {
+    let database = state.database.read().unwrap();
+    let journal = database.journal_bytes();
+    let cubes = database.cell_counts().into_iter();
+    Json(ServerStatus {
+        server: env!("CARGO_PKG_VERSION").to_owned(),
+        model_version: database.model_version(),
+        uptime_seconds: state.started.elapsed().as_secs(),
+        cubes: cubes
+            .map(|(name, cells)| CubeStatus { name, cells })
+            .collect(),
+        transactions: database.open_transactions().len(),
+        sessions: state.auth.as_ref().map(|auth| auth.open_sessions()),
+        log_bytes: journal.map(|(log, _)| log),
+        snapshot_bytes: journal.map(|(_, snapshot)| snapshot),
+        memory_bytes: memory(),
+    })
+}
+
+/// The users, with their roles and how many sessions each has open. For administrators.
+#[utoipa::path(
+    get,
+    path = "/admin/users",
+    responses((status = OK, body = UserList, description = "The users"))
+)]
+async fn list_users(State(state): State<AppState>) -> Json<UserList> {
+    Json(UserList {
+        signing_in: state.auth.is_some(),
+        users: state
+            .auth
+            .as_ref()
+            .map(|auth| auth.list())
+            .unwrap_or_default(),
+    })
+}
+
+/// Adds a user, or changes one's role, cube roles or password. It takes effect at once:
+/// the user's open sessions hold the new roles from their next request. For administrators.
+#[utoipa::path(
+    put,
+    path = "/admin/users/{name}",
+    params(("name" = String, Path, description = "The user, ignoring case")),
+    request_body = UserPut,
+    responses(
+        (status = NO_CONTENT, description = "The user was saved"),
+        (status = CONFLICT, body = ApiError, description = "The server has no users, so none can be added while it runs"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "A new user has no password, the change would leave no administrator, or the request body is malformed")
+    )
+)]
+async fn put_user(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Body(user): Body<UserPut>,
+) -> Result<StatusCode, ApiError> {
+    let grants = Grants::new(user.role, user.cubes);
+    let saved = users_of(&state)?.set(&name, user.password.as_deref(), grants);
+    saved.map_err(|message| {
+        ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_user", message)
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Removes a user and ends their sessions. The last administrator cannot be removed. For
+/// administrators.
+#[utoipa::path(
+    delete,
+    path = "/admin/users/{name}",
+    params(("name" = String, Path, description = "The user, ignoring case")),
+    responses(
+        (status = NO_CONTENT, description = "The user was removed"),
+        (status = NOT_FOUND, body = ApiError, description = "There is no such user"),
+        (status = CONFLICT, body = ApiError, description = "The server has no users"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "It would leave no administrator")
+    )
+)]
+async fn delete_user(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let auth = users_of(&state)?;
+    if !auth.has(&name) {
+        return Err(unknown("user", &name));
+    }
+    let removed = auth.remove(&name);
+    removed.map_err(|message| {
+        ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_user", message)
+    })?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Ends every session of a user, who must sign in again. For administrators.
+#[utoipa::path(
+    delete,
+    path = "/admin/users/{name}/sessions",
+    params(("name" = String, Path, description = "The user, ignoring case")),
+    responses(
+        (status = OK, body = Ended, description = "The sessions were ended"),
+        (status = NOT_FOUND, body = ApiError, description = "There is no such user"),
+        (status = CONFLICT, body = ApiError, description = "The server has no users")
+    )
+)]
+async fn end_sessions(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<Json<Ended>, ApiError> {
+    let auth = users_of(&state)?;
+    if !auth.has(&name) {
+        return Err(unknown("user", &name));
+    }
+    Ok(Json(Ended {
+        ended: auth.end_sessions(&name),
+    }))
+}
+
+/// The open transactions, the longest idle first. One is ended with
+/// `POST /transactions/{id}/rollback`. For administrators.
+#[utoipa::path(
+    get,
+    path = "/admin/transactions",
+    responses((status = OK, body = Vec<TransactionInfo>, description = "The open transactions"))
+)]
+async fn list_transactions(State(state): State<AppState>) -> Json<Vec<TransactionInfo>> {
+    let database = state.database.read().unwrap();
+    let open = database.open_transactions().into_iter();
+    Json(
+        open.map(|transaction| TransactionInfo {
+            transaction: transaction.id,
+            idle_seconds: transaction.idle.as_secs(),
+            pending: transaction.pending,
+        })
+        .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -1316,6 +1555,7 @@ mod tests {
             version: Arc::new(AtomicU64::new(database.model_version())),
             database: Guarded::new(database),
             auth: None,
+            started: Instant::now(),
         };
         let fail = get(async || -> &'static str { panic!("as nobody foresaw") });
         let application = Router::new()

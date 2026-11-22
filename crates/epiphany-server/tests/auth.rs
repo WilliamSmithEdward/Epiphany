@@ -574,3 +574,154 @@ async fn a_crowd_signing_in_at_once_is_checked_a_few_at_a_time() {
     // And when the crowd has gone, the door is open again.
     assert_eq!(sign_in(&app, NAME, PASSWORD).await.0, StatusCode::CREATED);
 }
+
+#[tokio::test]
+async fn an_admin_manages_users_while_the_server_runs() {
+    let (home, app) = secured("admin-users", None);
+    let admin = token(&app).await;
+
+    // A new user, with a role on one cube; it can sign in at once, and is kept on disk.
+    let reader = json!({ "password": "reader-only-5e1d", "role": "read", "cubes": { "General Ledger": "write" } });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        "/admin/users/Grace",
+        Some(&admin),
+        Some(reader),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = sign_in(&app, "grace", "reader-only-5e1d").await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        fs::read_to_string(home.path("users.json"))
+            .unwrap()
+            .contains("Grace")
+    );
+    let (_, _, list) = send(&app, "GET", "/admin/users", Some(&admin), None).await;
+    assert_eq!(list["signing_in"], true);
+    let grace = list["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|user| user["name"] == "Grace")
+        .unwrap();
+    assert_eq!(
+        (grace["role"].clone(), grace["sessions"].clone()),
+        (json!("read"), json!(1))
+    );
+    assert_eq!(grace["cubes"]["General Ledger"], "write");
+
+    // A reader may not manage users, and the admin routes are refused to her.
+    let (_, grace_token) = sign_in(&app, "grace", "reader-only-5e1d").await;
+    let grace_token = grace_token["token"].as_str().unwrap().to_owned();
+    let (status, _, _) = send(&app, "GET", "/admin/users", Some(&grace_token), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Raised to admin, her open session holds the new role at once; the password is kept.
+    let raised = json!({ "role": "admin" });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        "/admin/users/grace",
+        Some(&admin),
+        Some(raised),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(&app, "GET", "/admin/status", Some(&grace_token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = sign_in(&app, "Grace", "reader-only-5e1d").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Her sessions can be ended, and she can be removed.
+    let (_, _, ended) = send(
+        &app,
+        "DELETE",
+        "/admin/users/grace/sessions",
+        Some(&admin),
+        None,
+    )
+    .await;
+    // One session from each of her three sign-ins.
+    assert_eq!(ended["ended"], 3);
+    let (status, _, _) = send(&app, "GET", "/model", Some(&grace_token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(&app, "DELETE", "/admin/users/grace", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = sign_in(&app, "grace", "reader-only-5e1d").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(&app, "DELETE", "/admin/users/grace", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_last_administrator_stays_and_a_new_user_needs_a_password() {
+    let (_home, app) = secured("admin-last", None);
+    let admin = token(&app).await;
+    for (method, uri, body) in [
+        (
+            "PUT",
+            format!("/admin/users/{NAME}"),
+            Some(json!({ "role": "write" })),
+        ),
+        ("DELETE", format!("/admin/users/{NAME}"), None),
+        (
+            "PUT",
+            "/admin/users/newcomer".to_owned(),
+            Some(json!({ "role": "read" })),
+        ),
+        (
+            "PUT",
+            "/admin/users/newcomer".to_owned(),
+            Some(json!({ "role": "read", "password": "" })),
+        ),
+    ] {
+        let (status, _, refusal) = send(&app, method, &uri, Some(&admin), body).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{method} {uri}: {refusal}"
+        );
+        assert_eq!(refusal["code"], "invalid_user");
+    }
+    let (status, _, _) = send(&app, "GET", "/model", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "still an administrator");
+}
+
+#[tokio::test]
+async fn the_status_counts_cells_sessions_and_transactions() {
+    let (_home, app) = secured("admin-status", None);
+    let admin = token(&app).await;
+    let write = json!({ "cells": [{ "cube": "General Ledger", "at": ["Rent", "US", "Jan", "Actual"], "value": 5 }] });
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&admin), Some(write)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, begun) = send(&app, "POST", "/transactions", Some(&admin), None).await;
+    let (_, _, status) = send(&app, "GET", "/admin/status", Some(&admin), None).await;
+    assert_eq!(
+        status["cubes"][0],
+        json!({ "name": "General Ledger", "cells": 1 })
+    );
+    assert_eq!(
+        (status["sessions"].clone(), status["transactions"].clone()),
+        (json!(1), json!(1))
+    );
+    assert!(status["log_bytes"].as_u64().unwrap() > 0);
+    let (_, _, open) = send(&app, "GET", "/admin/transactions", Some(&admin), None).await;
+    assert_eq!(open[0]["transaction"], begun["transaction"]);
+    assert_eq!(open[0]["pending"], 0);
+}
+
+#[tokio::test]
+async fn a_server_without_users_lists_none_and_adds_none() {
+    let home = Home::new("admin-open");
+    let app = app(home.open());
+    let (_, _, list) = send(&app, "GET", "/admin/users", None, None).await;
+    assert_eq!(list, json!({ "signing_in": false, "users": [] }));
+    let user = json!({ "password": "x-1", "role": "admin" });
+    let (status, _, refusal) = send(&app, "PUT", "/admin/users/first", None, Some(user)).await;
+    assert_eq!(
+        (status, refusal["code"].clone()),
+        (StatusCode::CONFLICT, json!("no_users"))
+    );
+}
