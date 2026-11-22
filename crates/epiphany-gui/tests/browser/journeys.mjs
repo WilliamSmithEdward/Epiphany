@@ -707,6 +707,26 @@ async function exploring() {
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('This link is damaged'))`, 'the damaged link, said');
     await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid, as it was last');
   });
+  await step('At a phone\'s width no page is wider than the screen, and the grid shows on the first', async () => {
+    // A phone widens the page to what it holds and draws it smaller: the screen is the measure.
+    const phone = { width: 390, height: 844 };
+    await page.call('Emulation.setDeviceMetricsOverride', { ...phone, deviceScaleFactor: 1, mobile: true });
+    try {
+      for (const [path, ready] of [['/', '.tile'], ['/explore?cube=General%20Ledger', 'td[data-r]'], ['/admin', 'table'], ['/model?dimension=Account', '.tree-row']]) {
+        await page.goto(path);
+        await page.waitFor(`document.querySelector(${quoted(ready)})`, path);
+        await page.settled();
+        const wider = await page.evaluate('document.documentElement.scrollWidth') - phone.width;
+        expect(wider <= 0, `${path} is ${wider} pixels wider than a phone's screen.`);
+        if (path.startsWith('/explore')) {
+          const below = await page.evaluate(`document.querySelector('td[data-r]').getBoundingClientRect().bottom`) - phone.height;
+          expect(below < 0, `The grid's first cell is ${below} pixels below a phone's screen.`);
+        }
+      }
+    } finally {
+      await page.call('Emulation.clearDeviceMetricsOverride');
+    }
+  });
 }
 
 async function changingTheModel() {

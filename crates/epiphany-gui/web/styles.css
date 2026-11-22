@@ -1018,6 +1018,23 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
 .shortcuts dd { margin: 0; color: var(--text-2); text-wrap: pretty; }
 .keys { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; color: var(--text-3); }
 
+/* ---- A phone's width ---- */
+
+/* The bar keeps its marks, the words beside them heard but not shown; a heading and its
+   buttons stack; and the explorer's buttons go along one row that scrolls sideways, for the
+   grid to stay in view. */
+@media (max-width: 600px) {
+  .bar { gap: var(--s2); padding: 0 var(--s2); }
+  .bar .brand span, .bar .button .label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .bar .status { gap: 0; font-size: 0; }
+  .page-head, .editor-head, .card-head { flex-wrap: wrap; }
+  .editor-head, .work-head { padding: var(--s3); }
+  .work-head > .toolbar + .toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+  .tree-tools { flex-wrap: wrap; }
+  .tree-tools .search { flex-basis: 100%; }
+  .status-line { flex-wrap: wrap; gap: var(--s1) var(--s4); padding: var(--s1) var(--s3); }
+}
+
 /* ---- Printing ---- */
 
 /* On paper the light palette, whatever the screen's, as paper is white. The page alone,

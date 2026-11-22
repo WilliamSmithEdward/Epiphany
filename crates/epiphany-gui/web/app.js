@@ -63,7 +63,7 @@ function unreachable(problem) {
 }
 
 function brand() {
-  return h('a', { class: 'brand', href: '/', 'data-link': '' }, h('img', { src: '/icon.svg', alt: '' }), 'Epiphany');
+  return h('a', { class: 'brand', href: '/', 'data-link': '' }, h('img', { src: '/icon.svg', alt: '' }), h('span', {}, 'Epiphany'));
 }
 
 /** The browser's title for what is shown: its names, from the most particular, then the application's. */
