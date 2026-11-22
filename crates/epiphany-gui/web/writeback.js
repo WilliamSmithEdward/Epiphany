@@ -45,6 +45,43 @@ function spreadCode(text, before) {
   return { method, value: action === '+' ? before + amount : action === '~' ? before - amount : amount };
 }
 
+/** The way a code that runs along the grid goes from its cell, a row and a column at a step. */
+const ALONG = { '>': [0, 1], '<': [0, -1], '^': [-1, 0], '|': [1, 0], _: [1, 0] };
+
+/**
+ * What a spreading code that runs along the grid asks for, `R>100` say, or null when the
+ * text is not one: the step it goes by, and `values(befores)`, which makes the values of the
+ * cells it reaches from what they hold. R repeats a value into each, or adds it with + or
+ * takes it away with ~; S shares a value out equally and P in proportion to what they hold;
+ * GR grows from a first value by a percentage a cell; SL runs in a straight line from a first
+ * value to a last; C clears them. Two values stand apart by a colon, a semicolon or a space.
+ * It runs with > to the end of the row, < to its start, ^ to the top of the column, and
+ * | or _ to its foot.
+ */
+function alongCode(text) {
+  const typed = /^\s*(GR|SL|R|S|P|C)\s*([<>^|_])\s*([+~])?\s*(.*?)\s*$/i.exec(String(text));
+  if (!typed) return null;
+  const [, letters, direction, action, rest] = typed;
+  const kind = letters.toUpperCase();
+  const numbers = rest === '' ? [] : rest.split(/\s*[:;]\s*|\s+/).map(parseNumber);
+  const wanted = { R: 1, S: 1, P: 1, GR: 2, SL: 2, C: 0 }[kind];
+  if (numbers.length !== wanted || numbers.includes(null) || (action && kind !== 'R')) return null;
+  const [first, second] = numbers;
+  const values = (befores) => {
+    const count = befores.length;
+    const sum = befores.reduce((all, before) => all + before, 0);
+    return befores.map((before, index) => {
+      if (kind === 'R') return action === '+' ? before + first : action === '~' ? before - first : first;
+      if (kind === 'S') return first / count;
+      if (kind === 'P') return sum ? (first * before) / sum : first / count;
+      if (kind === 'GR') return first * (1 + second / 100) ** index;
+      if (kind === 'SL') return count === 1 ? first : first + ((second - first) * index) / (count - 1);
+      return 0;
+    });
+  };
+  return { step: ALONG[direction], values };
+}
+
 /** Writing back: typed values, pastes, spreads and holds, within an edit transaction that is saved, discarded, or taken back step by step. */
 export const writeback = {
   /** A grid cell's place in the cube, by element name; none where a member is calculated. */
@@ -162,11 +199,9 @@ export const writeback = {
    * leaves beneath it, or held as spreads go.
    */
   markWriting(td, r, c) {
-    const { total, rowTuples, columnTuples, spreads } = this.grid;
-    const [tuple, column] = [rowTuples[r], columnTuples[c]];
     const editable = this.writable.has(`${r},${c}`);
     const edited = editable && this.edits.size > 0 && this.edits.has(this.key(r, c));
-    const spreadable = spreads && (total(tuple) || total(column)) && !editable && ![...tuple, ...column].some((m) => m.type === 'calculated');
+    const spreadable = this.spreadable(r, c);
     const held = this.holds.size > 0 && this.holds.has(this.key(r, c));
     const stored = this.storedText(r, c);
     const invalid = this.invalid.get(`${r},${c}`);
@@ -190,6 +225,13 @@ export const writeback = {
     ].filter(Boolean).join('\n');
     if (title) td.title = title;
     else td.removeAttribute('title');
+  },
+
+  /** Whether a cell is a total that takes a value to spread over the leaves beneath it. */
+  spreadable(r, c) {
+    const { total, rowTuples, columnTuples, spreads } = this.grid;
+    const [tuple, column] = [rowTuples[r], columnTuples[c]];
+    return spreads && (total(tuple) || total(column)) && !this.writable.has(`${r},${c}`) && ![...tuple, ...column].some((m) => m.type === 'calculated');
   },
 
   /** Why a cell takes no value, said when someone types into it rather than nothing at all. */
@@ -224,7 +266,7 @@ export const writeback = {
       : h('input', {
         class: 'cell-editor',
         'aria-label': spreading ? 'A value to spread over the leaves beneath' : 'New value',
-        title: spreading ? 'A number spreads in proportion. Or P, S or R and a number: in proportion, equally, or the whole into each; + or ~ after the letter adds or takes away; P% and a number changes it by that percentage; C clears.' : null,
+        title: spreading ? 'A number spreads in proportion. Or P, S or R and a number: in proportion, equally, or the whole into each; + or ~ after the letter adds or takes away; P% and a number changes it by that percentage; C clears. With > < ^ or | after the letter, R, S, P, GR and SL run along the row or the column.' : null,
         inputmode: typeof before === 'string' ? 'text' : spreading ? 'text' : 'decimal',
       });
     input.value = picklist && typed !== undefined
@@ -248,7 +290,9 @@ export const writeback = {
       if (done) return;
       done = true;
       cell.replaceChildren(...shown);
-      if (save && spreading) this.spreadTyped(r, c, before, input.value, move);
+      const along = save && !picklist ? alongCode(input.value) : null;
+      if (along) this.spreadAlong(r, c, along, move);
+      else if (save && spreading) this.spreadTyped(r, c, before, input.value, move);
       else if (save) this.write(r, c, before, input.value, move);
       else cell.focus();
     };
@@ -533,6 +577,80 @@ export const writeback = {
   },
 
   /** Shares a value out among the leaves beneath a total, within the edit transaction. */
+  /**
+   * Gives the values a code that runs along the grid makes to its cell and every cell beyond
+   * it to the end of its row or column that takes one, as TM1 does: a leaf is written, and a
+   * total is spread over the leaves beneath it in proportion, before the leaves are written,
+   * so that leaves it reaches as well keep the values given them. Held cells, text and cells
+   * that take no value are passed over, and the notice says how many.
+   */
+  async spreadAlong(r, c, code, move) {
+    this.focusAfter = [r + (move?.[0] ?? 0), c + (move?.[1] ?? 0)];
+    if (!this.mayWrite()) {
+      notify(this.whyNot(r, c), 'bad');
+      this.focusCell();
+      return;
+    }
+    const rows = this.result.axes[1]?.tuples.length ?? 1;
+    const columns = this.result.axes[0].tuples.length;
+    const [down, across] = code.step;
+    const reached = [];
+    for (let [row, column] = [r, c]; row >= 0 && row < rows && column >= 0 && column < columns; row += down, column += across) {
+      reached.push([row, column]);
+    }
+    await this.explainRows(reached.map(([row]) => row));
+    const takes = ([row, column]) => typeof this.valueAt(row, column) !== 'string'
+      && !(this.holds.size && this.holds.has(this.key(row, column)))
+      && (this.writable.has(`${row},${column}`) || this.spreadable(row, column));
+    const targets = reached.filter(takes);
+    const passed = reached.length - targets.length;
+    if (!targets.length) {
+      notify(passed === 1 ? this.whyNot(r, c) : 'None of the cells it reaches takes a value.', 'bad');
+      this.focusCell();
+      return;
+    }
+    const values = code.values(targets.map(([row, column]) => {
+      const before = this.valueAt(row, column);
+      return typeof before === 'number' ? before : 0;
+    }));
+    const given = targets.map(([row, column], index) => ({ r: row, c: column, value: values[index] }));
+    const totals = given.filter(({ r: row, c: column }) => this.spreadable(row, column));
+    const leaves = given.filter(({ r: row, c: column }) => !this.spreadable(row, column));
+    const count = leaves.length + totals.reduce((all, { r: row, c: column }) => all + this.leavesBeneath(row, column), 0);
+    const emptying = given.every(({ value }) => value === 0);
+    if (count > SPREAD_ASKS || (emptying && count > 1)) {
+      const agreed = await dialog({
+        title: emptying ? `Empty ${count.toLocaleString()} cells?` : `Change ${count.toLocaleString()} cells?`,
+        body: h('p', {}, `From ${this.coordinate(r, c).join(' · ')} on, ${given.length.toLocaleString()} cells of the grid ${emptying ? 'become empty' : 'take new values'}. Nothing is stored until you save your changes, and Discard takes it back.`),
+        confirm: emptying ? 'Empty them' : 'Change them',
+        danger: emptying,
+      });
+      if (!agreed) {
+        this.focusCell();
+        return;
+      }
+    }
+    if (!(await this.replacingDetail(leaves.map(({ r: row, c: column }) => [row, column])))) {
+      this.focusCell();
+      return;
+    }
+    const holds = [...this.holds].map((key) => JSON.parse(key));
+    await this.changeValues(`the values from ${this.coordinate(r, c).join(' · ')} on`, async () => {
+      for (const { r: row, c: column, value } of totals) {
+        await post('/cells/spread', { transaction: this.tx, spread: { cube: this.cube.name, at: this.coordinate(row, column), value, method: 'proportional', holds } });
+      }
+      const written = leaves.map(({ r: row, c: column, value }) => ({ at: this.coordinate(row, column), value }));
+      if (written.length) {
+        await post('/cells/write', { transaction: this.tx, cells: written.map(({ at, value }) => ({ cube: this.cube.name, at, value })) });
+        if (!this.sandbox) for (const { at, value } of written) this.edits.set(JSON.stringify(at), value);
+        await this.warnOfChecks(written.map(({ at }) => at));
+      }
+      this.changes = (this.changes ?? 0) + given.length;
+      const left = passed ? ` ${passed.toLocaleString()} cell${passed === 1 ? '' : 's'} took no value.` : '';
+      return `Gave ${given.length.toLocaleString()} cell${given.length === 1 ? '' : 's'} new values.${left}`;
+    }, false, [r, c]);
+  },
+
   async spreadValue(r, c, value, method) {
     const at = this.coordinate(r, c);
     const holds = [...this.holds].map((key) => JSON.parse(key));

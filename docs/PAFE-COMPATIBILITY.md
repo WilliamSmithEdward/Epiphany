@@ -157,6 +157,7 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 
 - `DBS` to a consolidated cell as a spread. A value is spread by typing it with its letter
   over a `DBRW`, not by a worksheet function.
-- TM1's other spreading shortcuts: directions, straight lines, growth, holds. The add-in
-  takes the codes the GUI's grid takes, `P%` for a percentage change among them, no more.
+- TM1's spreading shortcuts that run along a range of cells, `R>`, `GR>` and `SL>` among
+  them, which the GUI's grid takes, and holds. The add-in takes the codes typed over one
+  cell, `P%` for a percentage change among them, no more.
 - `VIEW`, `TM1RPTROW` and the other functions of PAfE's reports.

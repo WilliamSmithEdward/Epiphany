@@ -575,6 +575,26 @@ async function exploring() {
     const [salaries, rent] = (await page.api('POST', '/cells/read', { cells })).data.cells.map((cell) => cell.value);
     expect(Math.abs(salaries - 1100) < 1e-6 && Math.abs(rent + 220) < 1e-6, `The API reads salaries of ${quoted(salaries)} and rent of ${quoted(rent)} where a tenth more, 1,100 and -220, was spread.`);
   });
+  await step('A growth typed into a cell runs along its row', async () => {
+    const mdx = 'SELECT {[Period].[Jan], [Period].[Feb], [Period].[Mar]} ON COLUMNS, {[Account].[Salaries]} ON ROWS FROM [General Ledger] WHERE ([Entity].[US], [Version].[Budget])';
+    await page.click('[role="tab"]', 'MDX');
+    await page.fill('textarea.mdx-editor', mdx);
+    await page.click('button', 'Run');
+    await page.waitFor(`document.querySelectorAll('th.col-head[data-c1]').length === 3 && [...document.querySelectorAll('th.row-head[data-r1]')].map((th) => th.textContent.trim()).join() === 'Salaries'`, 'the months the query asks for');
+    await page.click('td[data-r="0"][data-c="0"]');
+    await page.waitFor(`document.querySelector('td[data-r="0"][data-c="0"]').classList.contains('editable')`, 'the cell to be writable');
+    await page.type('G');
+    await page.waitFor(`document.querySelector('.cell-editor')`, 'the cell\'s editor');
+    await page.type('R>100:10');
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('.pending:not([hidden])')?.textContent.includes('unsaved change')`, 'the growth, waiting');
+    await page.click('.pending button', 'Save changes');
+    await page.waitFor(`document.querySelector('.pending')?.hidden`, 'the growth, saved');
+    const cells = ['Jan', 'Feb', 'Mar'].map((period) => ({ cube: 'General Ledger', at: at('Salaries', period) }));
+    const months = (await page.api('POST', '/cells/read', { cells })).data.cells.map((cell) => cell.value);
+    const grown = [100, 110, 121].every((expected, index) => Math.abs(months[index] - expected) < 1e-6);
+    expect(grown, `The API reads ${quoted(months)} where 100 grown by a tenth a month, 100, 110 and 121, was typed.`);
+  });
 }
 
 async function changingTheModel() {
