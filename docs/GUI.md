@@ -71,7 +71,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
   control, told apart from the control beside it, and, moving from page to page within the
   application, the page moved to, as on loading one, while the focus stays where it was.
 - **Numbers read well.** Tabular figures, right-aligned, with formats that follow the
-  browser's locale, and negatives and missing values clearly told apart.
+  browser's locale, and negatives and missing values clearly told apart. Moments, as when a
+  comment or a change was made, read as long ago as they were, "5 minutes ago", within the
+  week, kept up to date as time passes; the moment itself is shown on hover and on paper.
 - **Fast with large results.** Only the rows and columns in view are drawn, so a grid of
   100,000 cells scrolls as smoothly as one of a hundred. Pages ask for the model in outline,
   without its elements; a dimension is fetched whole the first time a page shows it. On a

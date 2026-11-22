@@ -574,6 +574,12 @@ async function exploring() {
     await page.click('[role="tab"]', 'History');
     await page.waitFor(`document.querySelector('.comment-panel')?.textContent.includes('250')`, 'the change in the history');
     await page.settled();
+    // The change, saved moments ago, is said to be from now, the moment itself kept beside.
+    const moment = await page.evaluate(`(() => {
+      const time = document.querySelector('.comment-panel time');
+      return { said: time?.querySelector('.ago')?.textContent, since: (Date.now() - new Date(time?.dateTime)) / 1000 };
+    })()`);
+    expect(/^(now|\d+ minutes? ago)$/.test(moment.said) && moment.since >= 0 && moment.since < 600, `The change is said to be from ${quoted(moment)}.`);
     await page.audit('A cell\'s history');
     await page.click('[role="tab"]', 'Detail');
     await page.waitFor(`document.querySelector('.comment-panel .detail-lines')`, 'the detail');

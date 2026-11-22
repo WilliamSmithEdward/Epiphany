@@ -5,7 +5,7 @@
 import { del, get, part, put } from './api.js';
 import { empty, failure, go } from './app.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, dialog, h, icon, menu, mount, notify, parseNumber, splitter, textWidths, working } from './ui.js';
+import { choices, dialog, h, icon, menu, mount, notify, parseNumber, splitter, textWidths, when, working } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 
@@ -171,11 +171,10 @@ class ModelPage {
       return;
     }
     if (!earlier) return;
-    const when = (seconds) => (seconds ? new Date(seconds * 1000).toLocaleString() : '');
     const list = h('ul', { class: 'history-list' }, earlier.length
       ? earlier.map((kept) => h('li', {},
         h('span', { class: 'grow' }, h('strong', {}, `Version ${kept.version}`), kept.name !== String(kept.version) ? h('span', { class: 'muted' }, ` (${kept.name})`) : null),
-        h('span', { class: 'muted' }, when(kept.saved)),
+        h('span', { class: 'muted' }, kept.saved ? when(kept.saved) : null),
         h('button', {
           class: 'button small',
           type: 'button',

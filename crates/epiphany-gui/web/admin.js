@@ -4,7 +4,7 @@ import { del, get, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { cellQuery, handOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, h, icon, mount, notify, working } from './ui.js';
+import { dialog, h, icon, mount, notify, when, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
 /** The roles an element takes: hidden, it is not there for the user at all. */
@@ -190,7 +190,7 @@ class AdminPage {
         ? h('table', { class: 'table' },
           h('thead', {}, h('tr', {}, h('th', {}, 'When'), h('th', {}, 'Who'), h('th', {}, 'What'))),
           h('tbody', {}, entries.map((entry) => h('tr', {},
-            h('td', { class: 'muted' }, new Date(entry.time * 1000).toLocaleString()),
+            h('td', { class: 'muted' }, when(entry.time)),
             h('td', {}, h('strong', {}, entry.user)),
             h('td', {}, said(entry))))))
         : h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'Nothing yet.')));
@@ -387,7 +387,7 @@ class AdminPage {
       h('table', { class: 'table' },
         h('thead', {}, h('tr', {}, h('th', {}, 'When'), h('th', {}, 'Who'), h('th', {}, 'Cube'), h('th', {}, 'Cell'), h('th', { class: 'num-col' }, 'From'), h('th', { class: 'num-col' }, 'To'), h('th', { class: 'actions' }, ''))),
         h('tbody', {}, changes.map((change) => h('tr', {},
-          h('td', { class: 'muted nowrap' }, new Date(change.time * 1000).toLocaleString()),
+          h('td', { class: 'muted nowrap' }, when(change.time)),
           h('td', {}, change.author ?? h('span', { class: 'muted' }, 'Not known')),
           h('td', {}, change.cube),
           h('td', {}, change.at.join(' · ')),

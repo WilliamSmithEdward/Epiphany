@@ -462,6 +462,35 @@ export function parseNumber(text) {
   return Number.isFinite(value) ? (negative ? -value : value) : null;
 }
 
+const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+
+/** The spans a moment within the week is said in, each in seconds, the largest first. */
+const SPANS = [['day', 86_400], ['hour', 3_600], ['minute', 60]];
+
+/** How long ago `date` was, as "5 minutes ago" or "yesterday", within the week; past it, its date and time. */
+function ago(date) {
+  const seconds = (Date.now() - date) / 1000;
+  if (Math.abs(seconds) < 60) return RELATIVE.format(0, 'second');
+  const span = seconds > 0 && seconds < 7 * 86_400 && SPANS.find(([, size]) => seconds >= size);
+  return span ? RELATIVE.format(-Math.floor(seconds / span[1]), span[0]) : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+/**
+ * A moment, from seconds since 1970, said as long ago as it was, and again as time passes; the
+ * moment itself on hover, on paper and to a machine.
+ */
+export function when(seconds) {
+  const date = new Date(seconds * 1000);
+  const exact = date.toLocaleString();
+  return h('time', { datetime: date.toISOString(), title: exact }, h('span', { class: 'ago' }, ago(date)), h('span', { class: 'exact' }, exact));
+}
+
+// What was said as now grows older while the page is seen.
+setInterval(() => {
+  if (document.hidden) return;
+  for (const said of document.querySelectorAll('time > .ago')) said.textContent = ago(new Date(said.parentElement.dateTime));
+}, 30_000);
+
 /** Text as a file the browser saves. */
 export function download(name, text, type = 'text/plain') {
   const url = URL.createObjectURL(new Blob([text], { type }));

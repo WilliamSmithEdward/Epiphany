@@ -98,6 +98,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--radius-s); }
 ::selection { background: var(--accent-soft); }
 .visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* A moment is said as long ago as it was on screen, and as the moment itself on paper. */
+time > .exact { display: none; }
 .muted { color: var(--text-3); }
 .mono { font-family: var(--mono); font-size: var(--text-s); }
 .num { font-variant-numeric: tabular-nums; }
@@ -1062,8 +1064,9 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
      leave backgrounds out; charts drawn wider than the paper fit it. */
   .pivot, .chart { print-color-adjust: exact; }
   .chart svg { max-width: 100%; height: auto; }
-  /* What is chosen or found is for the screen. */
-  .pivot td.selected::before, .pivot th:is(.found, .found-current)::before { display: none; }
+  /* What is chosen or found is for the screen; how long ago a moment was is for now. */
+  .pivot td.selected::before, .pivot th:is(.found, .found-current)::before, time > .ago { display: none; }
+  time > .exact { display: inline; }
   [data-part]::before {
     content: "Only the rows in view are printed, of " attr(data-rows) ".";
     display: block; margin-bottom: var(--s3); color: var(--text-2);

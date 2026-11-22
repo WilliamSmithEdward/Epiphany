@@ -6,7 +6,7 @@
 
 import { del, get, part, post } from './api.js';
 import { loading, state } from './app.js';
-import { choices, dialog, formatValue, h, icon, mount, notify, parseNumber, working } from './ui.js';
+import { choices, dialog, formatValue, h, icon, mount, notify, parseNumber, when, working } from './ui.js';
 
 /** Comments: methods of the explorer. */
 export const comments = {
@@ -277,7 +277,7 @@ export const comments = {
         ? thread.map((comment) => h('li', { class: 'comment' },
           h('div', { class: 'comment-by' },
             h('strong', {}, comment.author),
-            h('span', { class: 'muted' }, new Date(comment.written * 1000).toLocaleString()),
+            h('span', { class: 'muted' }, when(comment.written)),
             comment.author.toLowerCase() === me.toLowerCase() || admin
               ? h('button', {
                 class: 'button quiet small icon',
@@ -310,7 +310,7 @@ export const comments = {
         ? answer.changes.map((change) => h('li', { class: 'comment' },
           h('div', { class: 'comment-by' },
             h('strong', {}, change.author ?? 'Not known'),
-            h('span', { class: 'muted' }, new Date(change.time * 1000).toLocaleString())),
+            h('span', { class: 'muted' }, when(change.time))),
           h('p', { class: 'history-change' }, shown(change.before), ' → ', h('strong', {}, shown(change.after)))))
         : h('li', { class: 'muted comment-none' }, 'No change has been saved to this cell.'));
     }, (problem) => {
