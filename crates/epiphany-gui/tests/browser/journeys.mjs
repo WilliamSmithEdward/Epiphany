@@ -385,6 +385,16 @@ async function signingIn({ admin }) {
     await page.press('Escape');
     await page.waitFor(`!document.querySelector('dialog[open]')`, 'the keys, closed');
   });
+  await step('The bar says at once when the connection goes, and when it comes back', async () => {
+    const network = (offline) => page.call('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+    await page.call('Network.enable');
+    await network(true);
+    await page.waitFor(`document.querySelector('.status')?.textContent === 'Unreachable'`, 'the status, unreachable');
+    await page.audit('No connection');
+    await network(false);
+    await page.waitFor(`document.querySelector('.status')?.textContent === 'Connected' && [...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('answers again'))`, 'the status, connected again');
+    await page.call('Network.disable');
+  });
   await step('A session that ends is signed into again over the page, which stays', async () => {
     await page.click('.nav a', 'Administration');
     await page.waitFor(`document.querySelector('h1')?.textContent === 'Administration'`, 'Administration');

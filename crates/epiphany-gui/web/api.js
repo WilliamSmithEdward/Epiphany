@@ -70,10 +70,13 @@ export async function api(method, path, body, { quiet = false, signal } = {}) {
     text = response.status === 204 ? '' : await response.text();
   } catch {
     if (signal?.aborted) throw new ApiError(0, 'stopped', 'Stopped.');
+    reached(false);
     throw new ApiError(0, 'offline', 'The Epiphany GUI server cannot be reached. Check the connection and try again.');
   } finally {
     if (!quiet) wait(-1);
   }
+  // The GUI server answers 502 or 504 for an Epiphany server it cannot reach.
+  reached(response.status !== 502 && response.status !== 504);
   const version = response.headers.get('epiphany-model-version');
   if (version !== null) {
     const changed = modelVersion !== null && version !== modelVersion;
@@ -98,6 +101,11 @@ export async function api(method, path, body, { quiet = false, signal } = {}) {
     throw new ApiError(response.status, data?.code ?? 'error', sentence(message), data?.index);
   }
   return data;
+}
+
+/** Says whether a call reached the Epiphany server, for what shows the connection. */
+function reached(up) {
+  events.dispatchEvent(new CustomEvent('reached', { detail: up }));
 }
 
 /** A server message as a sentence: capitalised and ending in a stop. */

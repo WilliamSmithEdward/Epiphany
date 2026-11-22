@@ -199,7 +199,7 @@ const visible = () => PAGES.filter((entry) => !entry.admin || isAdmin());
 
 function shell() {
   const narrow = localStorage.getItem('epiphany.nav') === 'narrow';
-  statusElement = h('span', { class: 'status', title: 'The Epiphany server is answering' }, 'Connected');
+  statusElement = h('span', { class: 'status', role: 'status', title: 'The Epiphany server is answering' }, 'Connected');
   const nav = h('nav', { class: 'nav', 'aria-label': 'Pages' });
   let section;
   for (const entry of visible()) {
@@ -437,26 +437,54 @@ export async function model() {
 /* ---- Server status ---- */
 
 let watching;
+let watched = false;
+/** Whether the Epiphany server answered when last asked; null before it is first asked. */
+let reachable = null;
 
+/**
+ * Keeps the connection's status in the bar. The server is asked every half minute while the
+ * page is in view, every five seconds while it does not answer, and at once when the page
+ * comes back into view or the network comes back; and every call the application makes says
+ * as it goes whether it reached it.
+ */
 function watch() {
-  clearInterval(watching);
-  const check = async () => {
-    try {
-      const session = await api('GET', '/gui/session', undefined, { quiet: true });
-      setStatus(true);
-      if (!session.signed_in && !session.open && state.user && !state.open) {
-        events.dispatchEvent(new Event('signed-out'));
-      }
-    } catch {
-      setStatus(false);
+  if (!watched) {
+    watched = true;
+    document.addEventListener('visibilitychange', () => (document.hidden ? clearTimeout(watching) : check()));
+    addEventListener('online', check);
+    addEventListener('offline', () => setStatus(false));
+    events.addEventListener('reached', (event) => setStatus(event.detail));
+  }
+  setStatus(reachable ?? true);
+  schedule();
+}
+
+function schedule() {
+  clearTimeout(watching);
+  if (!document.hidden) watching = setTimeout(check, reachable === false ? 5000 : 30000);
+}
+
+async function check() {
+  try {
+    const session = await api('GET', '/gui/session', undefined, { quiet: true });
+    if (!session.signed_in && !session.open && state.user && !state.open) {
+      events.dispatchEvent(new Event('signed-out'));
     }
-  };
-  watching = setInterval(check, 30000);
+  } catch {
+    // The call has said whether the server was reached.
+  }
+  schedule();
 }
 
 function setStatus(up) {
-  if (!statusElement) return;
-  statusElement.dataset.state = up ? 'up' : 'down';
+  const was = reachable;
+  reachable = up;
+  if (was === false && up) notify('The Epiphany server answers again.', 'good');
+  if (was !== up) schedule();
+  // Changed only when it changes, so that a reader is told once, not at every call.
+  const now = up ? 'up' : 'down';
+  if (!statusElement || statusElement.dataset.state === now) return;
+  statusElement.dataset.state = now;
   statusElement.textContent = up ? 'Connected' : 'Unreachable';
   statusElement.title = up ? 'The Epiphany server is answering' : 'The Epiphany server is not answering';
 }
