@@ -406,6 +406,8 @@ async function signingIn({ admin }) {
   await step('A session that ends is signed into again over the page, which stays', async () => {
     await page.click('.nav a', 'Administration');
     await page.waitFor(`document.querySelector('h1')?.textContent === 'Administration'`, 'Administration');
+    // The move is said, to a screen reader, as loading the page would say its title.
+    await page.waitFor(`document.querySelector('p.visually-hidden[aria-live]')?.textContent === 'Administration'`, 'the move, said');
     await page.settled();
     expect((await page.api('DELETE', '/sessions')).status === 204, 'The session would not end.');
     await page.click('button', 'Refresh');

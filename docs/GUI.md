@@ -68,7 +68,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
   use, ARIA grid semantics for the pivot, rows of tabs and of choices that are one stop for
   Tab and gone along by the arrow keys, and, where the system asks for less motion, nothing
   that moves or fades. A screen reader hears a heading on every page and a name for every
-  control, told apart from the control beside it.
+  control, told apart from the control beside it, and, moving from page to page within the
+  application, the page moved to, as on loading one, while the focus stays where it was.
 - **Numbers read well.** Tabular figures, right-aligned, with formats that follow the
   browser's locale, and negatives and missing values clearly told apart.
 - **Fast with large results.** Only the rows and columns in view are drawn, so a grid of

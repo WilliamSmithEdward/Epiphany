@@ -84,7 +84,7 @@ function signIn(reason) {
         try {
           const session = await api('POST', '/gui/session', { name: name.value.trim(), password: password.value });
           state.user = session.user;
-          shell();
+          shell(true);
         } catch (problem) {
           error.textContent = problem.status === 401
             ? 'That name and password do not match.'
@@ -181,12 +181,12 @@ async function reauthenticate() {
   if (session.user.name.toLowerCase() !== before.name.toLowerCase() || session.user.role !== before.role) {
     // Another user, or another role: the page is drawn again for them.
     active = null;
-    shell();
+    shell(true);
     return;
   }
   notify('Signed in again. Carry on where you were.', 'good');
   // A page that could not be drawn for want of a session is drawn now.
-  if (!active) route();
+  if (!active) move();
 }
 
 events.addEventListener('model-changed', () => {
@@ -198,12 +198,15 @@ events.addEventListener('model-changed', () => {
 let page;
 let shellElement;
 let statusElement;
+let announcer;
 
 const isAdmin = () => state.user?.role === 'admin';
 const visible = () => PAGES.filter((entry) => !entry.admin || isAdmin());
 
-function shell() {
+/** The application around the page; `signedIn` as the user has just signed in, to be told where they are. */
+function shell(signedIn = false) {
   const narrow = localStorage.getItem('epiphany.nav') === 'narrow';
+  announcer = h('p', { class: 'visually-hidden', 'aria-live': 'polite', 'aria-atomic': 'true' });
   statusElement = h('span', { class: 'status', role: 'status', title: 'The Epiphany server is answering' }, 'Connected');
   const nav = h('nav', { class: 'nav', 'aria-label': 'Pages' });
   let section;
@@ -278,9 +281,11 @@ function shell() {
       themeButton,
       userButton),
     nav,
-    page);
+    page,
+    announcer);
   mount(root, shellElement);
-  route();
+  if (signedIn) move();
+  else route();
   watch();
 }
 
@@ -305,11 +310,12 @@ addEventListener('beforeunload', (event) => {
   if (active?.unsaved?.()) event.preventDefault();
 });
 
+/** Shows the page the address names; whether it moved to it, rather than staying where it was. */
 async function route() {
-  if (!state.user) return;
+  if (!state.user) return false;
   if (active?.leave && !(await active.leave())) {
     history.pushState(null, '', shownPath);
-    return;
+    return false;
   }
   shownPath = location.pathname + location.search;
   const path = location.pathname.replace(/\/+$/, '') || '/';
@@ -317,7 +323,7 @@ async function route() {
   // what stays the same is not drawn again, and nothing comes in between.
   if (active?.update && path === activePath) {
     active.update(new URLSearchParams(location.search));
-    return;
+    return true;
   }
   active = null;
   activePath = path;
@@ -331,7 +337,7 @@ async function route() {
   if (!entry) {
     setTitle('Not found');
     mount(page, h('div', { class: 'page' }, empty('search', 'There is no such page', 'Check the address, or choose a page from the navigation.')));
-    return;
+    return true;
   }
   // The page names what it shows before its own name, for tabs and history to tell apart,
   // marked while it holds changes not saved, for as long as it is the page shown.
@@ -340,14 +346,29 @@ async function route() {
   awaitNext(entry.shape);
   try {
     const module = await entry.load();
-    if (ticket !== rendering) return;
+    if (ticket !== rendering) return false;
     const shown = await module.render(page, { state, params: new URLSearchParams(location.search), path, title: entry.title, titled });
     // A page another move has passed by is not the one shown, to be asked before leaving.
     if (ticket === rendering) active = shown;
   } catch (problem) {
-    if (ticket !== rendering) return;
+    if (ticket !== rendering) return false;
     mount(page, h('div', { class: 'page' }, failure(problem, route)));
   }
+  return ticket === rendering;
+}
+
+/**
+ * Moves to the page the address names and says so, to a screen reader, as the browser says the
+ * title of a page it loads: the focus stays where it was, the link or the button followed.
+ */
+async function move() {
+  if (!(await route())) return;
+  const where = document.title.split(' · ').slice(0, -1).join(', ');
+  announcer.textContent = '';
+  // Said again, the same words are said again.
+  setTimeout(() => {
+    announcer.textContent = where;
+  }, 100);
 }
 
 /** The wait for the next page to be drawn, which the next move between pages ends. */
@@ -393,10 +414,10 @@ function awaitNext(shape) {
 export function go(path) {
   if (path === location.pathname + location.search) return;
   history.pushState(null, '', path);
-  route();
+  move();
 }
 
-addEventListener('popstate', route);
+addEventListener('popstate', move);
 document.addEventListener('click', (event) => {
   const link = event.target.closest?.('a[data-link]');
   if (!link || event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
