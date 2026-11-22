@@ -198,9 +198,18 @@ function roleName(role) {
 /* ---- Moving between pages ---- */
 
 let rendering = 0;
+/** The page shown, which may ask to stay when it is left. */
+let active = null;
+let shownPath = location.pathname + location.search;
 
 async function route() {
   if (!state.user) return;
+  if (active?.leave && !(await active.leave())) {
+    history.pushState(null, '', shownPath);
+    return;
+  }
+  active = null;
+  shownPath = location.pathname + location.search;
   const path = location.pathname.replace(/\/+$/, '') || '/';
   const entry = visible().find((candidate) => candidate.path === path)
     ?? visible().find((candidate) => candidate.path !== '/' && path.startsWith(`${candidate.path}/`));
@@ -219,7 +228,7 @@ async function route() {
   try {
     const module = await entry.load();
     if (ticket !== rendering) return;
-    await module.render(page, { state, params: new URLSearchParams(location.search), path, title: entry.title });
+    active = await module.render(page, { state, params: new URLSearchParams(location.search), path, title: entry.title });
   } catch (problem) {
     if (ticket !== rendering) return;
     mount(page, h('div', { class: 'page' }, failure(problem, route)));

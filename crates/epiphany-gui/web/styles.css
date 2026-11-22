@@ -278,7 +278,7 @@ main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: co
 
 /* ---- Feedback ---- */
 
-.notices { position: fixed; right: var(--s5); bottom: var(--s5); display: flex; flex-direction: column; gap: var(--s2); z-index: 50; }
+.notices { position: fixed; right: var(--s5); top: calc(var(--bar) + var(--s3)); display: flex; flex-direction: column; gap: var(--s2); z-index: 50; }
 .notice {
   display: flex; align-items: flex-start; gap: var(--s3);
   min-width: 300px; max-width: 440px;
@@ -293,7 +293,7 @@ main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: co
 .notice.good { border-left-color: var(--good); }
 .notice.bad { border-left-color: var(--bad); }
 .notice p { flex: 1; }
-@keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+@keyframes rise { from { transform: translateY(-8px); opacity: 0; } }
 
 .empty { display: grid; place-items: center; gap: var(--s3); padding: var(--s8); text-align: center; color: var(--text-2); }
 .empty svg { color: var(--text-3); }
@@ -474,3 +474,15 @@ span.twisty { border-color: transparent; background: none; }
   .fields { display: none; }
   .layout-bar { grid-template-columns: 1fr; }
 }
+
+/* ---- Writing back ---- */
+
+.pivot td.editable { cursor: cell; }
+.pivot td.editable:hover { box-shadow: inset 0 -2px 0 var(--accent); }
+.pivot td.edited, .pivot tbody tr:hover td.edited { background: var(--warn-soft); color: var(--text); font-weight: 600; }
+.pivot td.edited::after { content: ""; float: right; width: 6px; height: 6px; margin: -6px -10px 0 4px; border-radius: 50%; background: var(--warn); }
+.pivot td:has(.cell-editor) { padding: 0; }
+.cell-editor { width: 100%; min-width: 104px; height: 31px; padding: 0 var(--s3); border: 2px solid var(--accent); background: var(--surface); text-align: right; font: inherit; font-variant-numeric: tabular-nums; outline: none; }
+.pending { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s5); border-top: 1px solid var(--line); background: var(--warn-soft); color: var(--warn); font-weight: 600; font-size: var(--text-s); }
+.pending[hidden] { display: none; }
+.pending .grow { flex: 1; }

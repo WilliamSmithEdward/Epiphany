@@ -2,7 +2,7 @@
 // of the query that layout makes.
 
 import { ApiError, get, part, post } from './api.js';
-import { empty, failure, go, loading, model } from './app.js';
+import { empty, failure, go, model, state } from './app.js';
 import { dialog, download, formatNumber, h, icon, menu, mount, notify } from './ui.js';
 
 /* ---- Names in MDX ---- */
@@ -102,7 +102,7 @@ export async function render(target, { params }) {
   }
   dimensions.clear();
   const dims = new Map(await Promise.all(cube.dimensions.map(async (dim) => [dim, await dimension(dim)])));
-  new Explorer(target, definition, cube, dims);
+  return new Explorer(target, definition, cube, dims);
 }
 
 class Explorer {
@@ -116,8 +116,44 @@ class Explorer {
     this.view = 'grid';
     this.result = null;
     this.ticket = 0;
+    // Writing back: the transaction the edits are held in, the edits by cell, and the cells
+    // of the result that may be written, as "row,column".
+    this.tx = null;
+    this.edits = new Map();
+    this.writable = new Set();
+    addEventListener('beforeunload', (event) => {
+      if (this.tx && this.page.isConnected) event.preventDefault();
+    });
+    // A page closed with changes unsaved lets them go at once, rather than leaving them to
+    // hold their cells until the server gives up on them.
+    addEventListener('pagehide', () => {
+      if (this.tx) {
+        fetch(`/api/transactions/${this.tx}/rollback`, { method: 'POST', keepalive: true, headers: { 'x-requested-by': 'epiphany-gui' } });
+      }
+    });
     this.build(target);
     this.run();
+  }
+
+  /** Asked before the page is left: unsaved changes are discarded only if the user agrees. */
+  async leave() {
+    if (!this.tx) return true;
+    const agreed = await dialog({
+      title: 'Discard your changes?',
+      body: h('p', {}, `You have ${this.changes || 0} unsaved change${this.changes === 1 ? '' : 's'} to ${this.cube.name}. Leaving discards them.`),
+      confirm: 'Discard and leave',
+      cancel: 'Stay',
+      danger: true,
+    });
+    if (!agreed) return false;
+    await this.discard();
+    return true;
+  }
+
+  /** Whether the user may write to this cube at all. */
+  mayWrite() {
+    const role = state.user?.cubes?.[this.cube.name] ?? state.user?.role;
+    return role === 'write' || role === 'admin';
   }
 
   restore() {
@@ -180,6 +216,7 @@ class Explorer {
     this.layoutBar = h('div', { class: 'layout-bar' });
     this.output = h('div', { class: 'output' });
     this.statusLine = h('div', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
+    this.pendingBar = h('div', { class: 'pending', role: 'status', 'aria-live': 'polite', hidden: true });
     const cubes = h('select', {
       class: 'select',
       'aria-label': 'Cube',
@@ -208,6 +245,7 @@ class Explorer {
           this.toolbar,
           this.layoutBar),
         this.output,
+        this.pendingBar,
         this.statusLine));
     mount(target, this.page);
     this.drawFields();
@@ -227,6 +265,18 @@ class Explorer {
     });
   }
 
+  /** The strip that says what is not yet saved, with the ways to save or discard it. */
+  drawPending() {
+    this.pendingBar.hidden = !this.tx;
+    if (!this.tx) return;
+    const count = this.changes || 0;
+    mount(this.pendingBar,
+      icon('edit', 16),
+      h('span', { class: 'grow' }, `${count} unsaved change${count === 1 ? '' : 's'}. Totals already include them; nothing is stored until you save.`),
+      h('button', { class: 'button small', onclick: () => this.discard() }, 'Discard'),
+      h('button', { class: 'button small primary', onclick: () => this.save() }, icon('save', 14), 'Save changes'));
+  }
+
   drawTabs() {
     const tab = (id, label, iconName) => h('button', {
       role: 'tab',
@@ -241,6 +291,7 @@ class Explorer {
   }
 
   drawToolbar() {
+    this.drawPending();
     const layout = this.layout;
     const written = Boolean(layout.mdx);
     const button = (label, iconName, action, props = {}) => h('button', { class: 'button small quiet', onclick: action, ...props }, icon(iconName, 16), h('span', {}, label));
@@ -577,11 +628,13 @@ class Explorer {
     this.output.classList.add('busy');
     const started = performance.now();
     try {
-      const result = await post('/mdx', { mdx: text });
+      const result = await post('/mdx', { mdx: text, transaction: this.tx ?? undefined });
       if (ticket !== this.ticket) return;
       this.result = result;
       this.error = null;
       this.took = performance.now() - started;
+      this.writable = await this.findWritable(result);
+      if (ticket !== this.ticket) return;
     } catch (problem) {
       if (ticket !== this.ticket) return;
       this.result = null;
@@ -659,9 +712,12 @@ class Explorer {
         const value = result.cells[r * columnCount + c];
         const totalCell = total(tuple) || total(columnTuples[c]);
         const number = typeof value === 'number';
+        const editable = this.writable.has(`${r},${c}`);
+        const edited = editable && this.edits.has(this.key(r, c));
         tr.append(h('td', {
-          class: `${totalCell ? 'total' : ''} ${number ? 'n' : 's'} ${number && value < 0 ? 'negative' : ''}`,
+          class: `${totalCell ? 'total' : ''} ${number ? 'n' : 's'} ${number && value < 0 ? 'negative' : ''} ${editable ? 'editable' : ''} ${edited ? 'edited' : ''}`,
           tabindex: r === 0 && c === 0 ? '0' : '-1',
+          title: edited ? 'Changed, not yet saved' : undefined,
           dataset: { r, c },
         }, value === null || value === undefined ? '' : number ? formatNumber(value) : value));
       }
@@ -675,8 +731,13 @@ class Explorer {
       this.cellMenu(Number(cell.dataset.r), Number(cell.dataset.c), { x: event.clientX, y: event.clientY });
     });
     table.addEventListener('keydown', (event) => this.moveFocus(event, table));
+    table.addEventListener('dblclick', (event) => {
+      const cell = event.target.closest('td.editable');
+      if (cell) this.edit(cell);
+    });
     const scroller = h('div', { class: 'pivot-scroll' }, table);
     mount(this.output, scroller);
+    this.focusCell();
     const cells = rowTuples.length * columnCount;
     mount(this.statusLine,
       h('span', {}, `${rowTuples.length.toLocaleString()} rows × ${columnCount.toLocaleString()} columns`),
@@ -739,6 +800,23 @@ class Explorer {
       this.cellMenu(r, c, cell);
       return;
     }
+    if (cell.classList.contains('editable') && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      if (event.key === 'Enter' || event.key === 'F2') {
+        event.preventDefault();
+        this.edit(cell);
+        return;
+      }
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault();
+        this.write(r, c, this.result.cells[r * this.result.axes[0].tuples.length + c], '');
+        return;
+      }
+      if (event.key.length === 1) {
+        event.preventDefault();
+        this.edit(cell, event.key);
+        return;
+      }
+    }
     const move = moves[event.key];
     if (!move) return;
     const next = table.querySelector(`td[data-r="${r + move[0]}"][data-c="${c + move[1]}"]`);
@@ -766,9 +844,227 @@ class Explorer {
         const opened = entry?.expanded.includes(m.name);
         return { label: `${opened ? 'Close' : 'Open'} ${m.name}`, icon: opened ? 'minus' : 'plus', action: () => this.toggle('rows', m.dimension, m.name) };
       }),
+      this.writable.has(`${r},${c}`)
+        ? { label: 'Change the value', icon: 'edit', action: () => this.edit(this.output.querySelector(`td[data-r="${r}"][data-c="${c}"]`)) }
+        : null,
+      this.mayWrite() && this.coordinate(r, c) && [...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
+        ? { label: 'Spread a value over its leaves…', icon: 'sigma', action: () => this.spread(r, c) }
+        : null,
       { label: 'Explain this value', icon: 'info', action: () => this.explain(rowTuple, columnTuple) },
       { label: 'Copy the value', icon: 'save', action: () => navigator.clipboard?.writeText(String(this.result.cells[r * columns.tuples.length + c] ?? '')) },
     ], at);
+  }
+
+  /* ---- Writing back ---- */
+
+  /** A grid cell's place in the cube, by element name; none where a member is calculated. */
+  coordinate(r, c) {
+    const [columns, rows] = this.result.axes;
+    const members = [...(rows?.tuples[r] ?? []), ...(columns?.tuples[c] ?? []), ...(this.result.slicer ?? [])];
+    if (members.some((m) => m.type === 'calculated')) return null;
+    const at = new Map();
+    // A dimension neither on an axis nor in the slicer stands at its first top element.
+    for (const m of members) if (!at.has(m.dimension)) at.set(m.dimension, m.name);
+    return this.cube.dimensions.map((dim) => at.get(dim) ?? this.dims.get(dim).roots[0]);
+  }
+
+  key(r, c) {
+    return JSON.stringify(this.coordinate(r, c));
+  }
+
+  /** The cells of a result that may be written, as the server says: "row,column". */
+  async findWritable(result) {
+    const found = new Set();
+    if (!this.mayWrite()) return found;
+    const [columns, rows] = result.axes;
+    const columnCount = columns?.tuples.length ?? 0;
+    const rowCount = rows ? Math.min(rows.tuples.length, 5000) : 1;
+    const leaf = (m) => m.type === 'numeric' || m.type === 'string';
+    if (!(result.slicer ?? []).every(leaf)) return found;
+    const asked = [];
+    const places = [];
+    for (let r = 0; r < rowCount && asked.length < 20000; r += 1) {
+      if (rows && !rows.tuples[r].every(leaf)) continue;
+      for (let c = 0; c < columnCount; c += 1) {
+        if (!columns.tuples[c].every(leaf)) continue;
+        asked.push({ cube: this.cube.name, at: this.coordinate(r, c) });
+        places.push(`${r},${c}`);
+      }
+    }
+    if (!asked.length) return found;
+    try {
+      const answer = await post('/cells/explain', { cells: asked, transaction: this.tx ?? undefined });
+      answer.cells.forEach((cell, index) => {
+        if (cell.cell?.writable) found.add(places[index]);
+      });
+    } catch {
+      // Without an answer nothing is offered for writing; the grid still shows.
+    }
+    return found;
+  }
+
+  /** Opens the editor in a cell, with what was typed into it or its current value. */
+  edit(cell, typed) {
+    if (!cell || cell.querySelector('input')) return;
+    const r = Number(cell.dataset.r);
+    const c = Number(cell.dataset.c);
+    const before = this.result.cells[r * this.result.axes[0].tuples.length + c];
+    const input = h('input', {
+      class: 'cell-editor',
+      'aria-label': 'New value',
+      inputmode: typeof before === 'string' ? 'text' : 'decimal',
+    });
+    input.value = typed ?? (before ?? '');
+    const shown = [...cell.childNodes];
+    cell.replaceChildren(input);
+    input.focus();
+    if (typed === undefined) input.select();
+    let done = false;
+    const finish = (save, move) => {
+      if (done) return;
+      done = true;
+      cell.replaceChildren(...shown);
+      if (save) this.write(r, c, before, input.value, move);
+      else cell.focus();
+    };
+    input.addEventListener('keydown', (event) => {
+      event.stopPropagation();
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        finish(true, [event.shiftKey ? -1 : 1, 0]);
+      } else if (event.key === 'Tab') {
+        event.preventDefault();
+        finish(true, [0, event.shiftKey ? -1 : 1]);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        finish(false);
+      }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  /** Writes a value typed into a cell, within the transaction the edits are held in. */
+  async write(r, c, before, text, move) {
+    const at = this.coordinate(r, c);
+    let value;
+    if (typeof before === 'string') {
+      value = text;
+    } else {
+      const cleaned = String(text).trim().replace(/[\s,]/g, '');
+      value = cleaned === '' ? 0 : Number(cleaned);
+      if (!Number.isFinite(value)) {
+        notify(`“${text}” is not a number.`, 'bad');
+        return;
+      }
+    }
+    this.focusAfter = [r + (move?.[0] ?? 0), c + (move?.[1] ?? 0)];
+    if (value === before || ((before === null || before === undefined) && (value === 0 || value === ''))) {
+      this.focusCell();
+      return;
+    }
+    try {
+      await this.ensureTransaction();
+      await post('/cells/write', { transaction: this.tx, cells: [{ cube: this.cube.name, at, value }] });
+    } catch (problem) {
+      this.refused(problem);
+      return;
+    }
+    this.edits.set(JSON.stringify(at), value);
+    this.changes = (this.changes ?? 0) + 1;
+    await this.run();
+  }
+
+  /** Shares a value out among the leaves beneath a total. */
+  async spread(r, c) {
+    const at = this.coordinate(r, c);
+    const before = this.result.cells[r * this.result.axes[0].tuples.length + c];
+    const amount = h('input', { class: 'input', id: 'spread-value', inputmode: 'decimal', required: true });
+    amount.value = typeof before === 'number' ? String(before) : '';
+    const method = h('select', { class: 'select', id: 'spread-method' },
+      h('option', { value: 'proportional' }, 'In proportion to what each holds now'),
+      h('option', { value: 'equal' }, 'Equally among them'),
+      h('option', { value: 'repeat' }, 'The whole value in each'));
+    const written = await dialog({
+      title: 'Spread a value',
+      confirm: 'Spread',
+      body: h('div', { class: 'facts' },
+        h('p', { class: 'muted' }, `Over the leaves of ${at.join(' · ')}.`),
+        h('div', { class: 'field' }, h('label', { for: 'spread-value' }, 'Value'), amount),
+        h('div', { class: 'field' }, h('label', { for: 'spread-method' }, 'How'), method),
+        h('p', { class: 'hint' }, 'Nothing is saved until you save your changes.')),
+      onsubmit: async () => {
+        const value = Number(amount.value.trim().replace(/[\s,]/g, ''));
+        if (!Number.isFinite(value)) throw new Error('Enter a number.');
+        await this.ensureTransaction();
+        const answer = await post('/cells/spread', {
+          transaction: this.tx,
+          spread: { cube: this.cube.name, at, value, method: method.value },
+        });
+        return answer.written;
+      },
+    });
+    if (written === null) return;
+    notify(`Spread over ${written.toLocaleString()} cell${written === 1 ? '' : 's'}.`, 'good');
+    this.changes = (this.changes ?? 0) + 1;
+    await this.run();
+  }
+
+  async ensureTransaction() {
+    if (this.tx) return;
+    const answer = await post('/transactions');
+    this.tx = answer.transaction;
+  }
+
+  /** Stores every change made since the last save, in one step. */
+  async save() {
+    try {
+      await post(`/transactions/${this.tx}/commit`);
+    } catch (problem) {
+      this.refused(problem);
+      return;
+    }
+    notify(`Saved ${this.changes} change${this.changes === 1 ? '' : 's'}.`, 'good');
+    this.forget();
+    await this.run();
+  }
+
+  async discard() {
+    try {
+      await post(`/transactions/${this.tx}/rollback`);
+    } catch {
+      // Gone already: discarded either way.
+    }
+    this.forget();
+    await this.run();
+  }
+
+  forget() {
+    this.tx = null;
+    this.edits.clear();
+    this.changes = 0;
+  }
+
+  /** Reports a write the server refused; a transaction it no longer has is let go. */
+  refused(problem) {
+    if (problem.status === 404 && this.tx) {
+      notify('Your unsaved changes were dropped after a long pause. Make them again to carry on.', 'bad');
+      this.forget();
+      this.run();
+      return;
+    }
+    notify(problem.message, 'bad');
+    this.focusCell();
+  }
+
+  focusCell() {
+    if (!this.focusAfter) return;
+    const [r, c] = this.focusAfter;
+    const cell = this.output.querySelector(`td[data-r="${r}"][data-c="${c}"]`);
+    this.focusAfter = null;
+    if (!cell) return;
+    for (const other of this.output.querySelectorAll('td[tabindex="0"]')) other.tabIndex = -1;
+    cell.tabIndex = 0;
+    cell.focus();
   }
 
   sortBy(columnTuple, descending) {

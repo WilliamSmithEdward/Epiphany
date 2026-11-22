@@ -180,7 +180,7 @@ let openMenu;
 export function menu(items, at) {
   openMenu?.close();
   const buttons = [];
-  const element = h('div', { class: 'menu', role: 'menu' }, items.map((item) => {
+  const element = h('div', { class: 'menu', role: 'menu' }, items.filter(Boolean).map((item) => {
     if (item === '-') return h('hr');
     if (item.heading) return h('div', { class: 'menu-label' }, item.heading);
     const button = h('button', {
