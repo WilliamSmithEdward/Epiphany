@@ -107,6 +107,13 @@ dimension in their highest bits, so that as numbers they are in the order of the
 elements, and the page is now set in order from the numbers, 8 bytes a cell: the same
 ten million cells peak at 742 MB (2026-11-22).
 
+A write of 500,000 cells to a server that held none took it from 24 MB to 362 MB on the
+way. Part of that was a second copy of every cell by name, made at the commit for the log
+only to be written out as one line. The log is now written from names borrowed from the
+model, to the same text, and the same write reaches 255 MB and takes 0.75 s rather than
+0.91 s (2026-11-22). Most of what is left is the request itself, read whole into cells by
+name before any is stored.
+
 Reading a cell made a list of where the cell is, and reading the cell of one member made
 a tuple to hold that member; both are now done without. The grid of 10,000 leaf cells
 goes from 2.4 ms to 2.2 ms, that of a calculated member from 2.7 ms to 2.4 ms, and the

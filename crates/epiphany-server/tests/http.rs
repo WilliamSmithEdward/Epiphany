@@ -3,7 +3,7 @@ use std::path::Path;
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use epiphany_core::database::{CellWrite, Database, Journal, NamedCells};
+use epiphany_core::database::{Database, Journal, NamedCells, NamedWrites};
 use epiphany_core::model::ModelDef;
 use epiphany_server::{app, load_model, openapi};
 use serde_json::{Value, json};
@@ -774,7 +774,7 @@ struct Held {
 }
 
 impl Journal for Held {
-    fn commit(&mut self, _: &[CellWrite]) -> std::io::Result<()> {
+    fn commit(&mut self, _: &NamedWrites<'_>) -> std::io::Result<()> {
         Ok(())
     }
 

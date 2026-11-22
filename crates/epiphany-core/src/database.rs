@@ -122,7 +122,7 @@ pub struct ModelUpdate {
 /// before it.
 pub trait Journal: Send + Sync + fmt::Debug {
     /// Records the writes of one commit.
-    fn commit(&mut self, writes: &[CellWrite]) -> io::Result<()>;
+    fn commit(&mut self, writes: &NamedWrites<'_>) -> io::Result<()>;
 
     /// Records a new model version.
     fn model(&mut self, version: u64, definition: &ModelDef) -> io::Result<()>;
@@ -132,6 +132,35 @@ pub trait Journal: Send + Sync + fmt::Debug {
 
     /// Records every stored cell, replacing the commits recorded so far.
     fn snapshot(&mut self, model_version: u64, cells: &NamedCells<'_>) -> io::Result<()>;
+}
+
+/// The writes of one commit, addressed by name, written out as a list of [`CellWrite`]s
+/// is, from names borrowed from the model: copied, they took as much again as the
+/// request that brought them.
+pub struct NamedWrites<'a> {
+    model: &'a Model,
+    writes: &'a [Writes],
+}
+
+impl NamedWrites<'_> {
+    fn is_empty(&self) -> bool {
+        self.writes.iter().all(Writes::is_empty)
+    }
+}
+
+impl serde::Serialize for NamedWrites<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let model = self.model;
+        let cubes = model.cubes().iter().zip(self.writes);
+        serializer.collect_seq(cubes.flat_map(|(cube, writes)| {
+            writes.iter().map(move |(at, value)| Named {
+                model,
+                cube,
+                at: At::kept(at),
+                value: value.clone(),
+            })
+        }))
+    }
 }
 
 /// Every stored cell of a database, addressed by name. It is named a cell at a time as it is
@@ -632,17 +661,10 @@ impl Database {
     /// journal, nothing is stored and the transaction stays open.
     pub fn commit(&mut self, id: TransactionId) -> Result<(), Error> {
         self.expire();
-        // The writes by name, for the journal; without one there is nobody to name them for.
-        let mut record = Vec::new();
-        if self.journal.is_some() {
-            for (cube, writes) in self.transaction(id)?.writes.iter().enumerate() {
-                for (at, value) in writes {
-                    record.push(self.named(cube, at, value.clone()));
-                }
-            }
-        } else {
-            self.transaction(id)?;
-        }
+        let record = NamedWrites {
+            model: &self.model,
+            writes: &self.transaction(id)?.writes,
+        };
         if let Some(mut journal) = self.journal()
             && !record.is_empty()
         {

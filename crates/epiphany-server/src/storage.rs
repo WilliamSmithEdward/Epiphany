@@ -22,7 +22,7 @@ use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
-use epiphany_core::database::{CellWrite, Database, Journal, NamedCells};
+use epiphany_core::database::{CellWrite, Database, Journal, NamedCells, NamedWrites};
 use epiphany_core::model::ModelDef;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -328,7 +328,7 @@ struct Files {
 }
 
 impl Journal for Files {
-    fn commit(&mut self, writes: &[CellWrite]) -> io::Result<()> {
+    fn commit(&mut self, writes: &NamedWrites<'_>) -> io::Result<()> {
         let mut line = serde_json::to_vec(writes)?;
         line.push(b'\n');
         self.log.write_all(&line)?;

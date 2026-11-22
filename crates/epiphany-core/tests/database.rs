@@ -9,7 +9,7 @@ use common::{Rng, Shape, random_model};
 use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
 use epiphany_core::database::{
-    CellRef, CellWrite, Database, Error, Journal, LockMode, ModelUpdate, NamedCells,
+    CellRef, CellWrite, Database, Error, Journal, LockMode, ModelUpdate, NamedCells, NamedWrites,
 };
 use epiphany_core::model::ModelDef;
 use serde_json::json;
@@ -730,7 +730,7 @@ struct Counted {
 }
 
 impl Journal for Counted {
-    fn commit(&mut self, _: &[CellWrite]) -> std::io::Result<()> {
+    fn commit(&mut self, _: &NamedWrites<'_>) -> std::io::Result<()> {
         self.commits.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -807,4 +807,51 @@ fn every_cell_is_written_out_as_a_cell_write_is() {
     let written = serde_json::to_string(&database.named_cells()).unwrap();
     assert_eq!(written, serde_json::to_string(&database.cells()).unwrap());
     assert_eq!(database.cells().len(), 3);
+}
+
+/// A journal that keeps each commit as it would be written out.
+#[derive(Debug, Default)]
+struct Written(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl Journal for Written {
+    fn commit(&mut self, writes: &NamedWrites<'_>) -> std::io::Result<()> {
+        self.0.lock().unwrap().push(serde_json::to_string(writes)?);
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        false
+    }
+
+    fn snapshot(&mut self, _: u64, _: &NamedCells<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn a_commit_is_recorded_as_the_cell_writes_it_holds() {
+    let written = Written::default();
+    let lines = Arc::clone(&written.0);
+    let mut database = database();
+    database.set_journal(Box::new(written));
+    let note = CellWrite {
+        value: Scalar::Text("a \"quoted\"\nline".to_owned()),
+        ..set("Sales", ["A", "Note"], 0.0)
+    };
+    let mut writes = vec![
+        set("Sales", ["A", "Units"], 1.5),
+        set("Sales", ["B", "Units"], 0.0),
+        note,
+    ];
+    database.write(None, &writes).unwrap();
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len(), 1);
+    let mut recorded: Vec<CellWrite> = serde_json::from_str(&lines[0]).unwrap();
+    recorded.sort_by(|a, b| a.at.cmp(&b.at));
+    writes.sort_by(|a, b| a.at.cmp(&b.at));
+    assert_eq!(recorded, writes);
 }
