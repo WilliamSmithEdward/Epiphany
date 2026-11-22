@@ -1004,6 +1004,16 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
 .drag-count { position: fixed; top: -100px; left: -100px; padding: 4px 10px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: var(--text-s); font-weight: 600; white-space: nowrap; }
 @media (max-width: 1100px) { .explorer > .splitter { display: none; } }
 
+/* ---- Keyboard shortcuts ---- */
+
+/* Side by side where the dialog is wide enough, each section a list of keys and what they do. */
+.shortcuts-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: var(--s5) var(--s6); }
+.shortcuts-section h3 { margin: 0 0 var(--s3); font-size: 13px; }
+.shortcuts { display: grid; grid-template-columns: minmax(auto, 190px) 1fr; gap: var(--s2) var(--s4); margin: 0; align-items: baseline; }
+.shortcuts dt { display: flex; flex-wrap: wrap; gap: 4px var(--s2); }
+.shortcuts dd { margin: 0; color: var(--text-2); text-wrap: pretty; }
+.keys { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; color: var(--text-3); }
+
 /* ---- High contrast ---- */
 
 /* In Windows' high contrast the system gives every colour, and backgrounds and shadows go.

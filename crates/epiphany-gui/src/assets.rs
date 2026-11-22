@@ -38,6 +38,7 @@ const FILES: &[(&str, &[u8])] = files![
     "tree.js",
     "picker.js",
     "later.js",
+    "shortcuts.js",
 ];
 
 /// What a file is, by its extension.

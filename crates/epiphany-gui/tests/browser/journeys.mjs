@@ -376,6 +376,15 @@ async function signingIn({ admin }) {
     await page.press('Enter');
     await page.waitFor(`document.activeElement?.id === 'main' && location.hash === ''`, 'the page, with the keys');
   });
+  await step('? lists the keys the application takes', async () => {
+    await page.type('?');
+    await page.waitFor(`document.querySelector('dialog[open]')?.getAttribute('aria-label') === 'Keyboard shortcuts'`, 'the keys');
+    await page.audit('The keyboard shortcuts');
+    const listed = await page.evaluate(`[...document.querySelectorAll('dialog[open] dd')].map((what) => what.textContent)`);
+    expect(listed.includes('Search cubes, pages and commands') && listed.includes('Run the query'), `The keys listed are ${quoted(listed)}.`);
+    await page.press('Escape');
+    await page.waitFor(`!document.querySelector('dialog[open]')`, 'the keys, closed');
+  });
   await step('A session that ends is signed into again over the page, which stays', async () => {
     await page.click('.nav a', 'Administration');
     await page.waitFor(`document.querySelector('h1')?.textContent === 'Administration'`, 'Administration');

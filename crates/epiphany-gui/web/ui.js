@@ -103,11 +103,15 @@ const ICONS = {
   expand: 'M7 15l5 5 5-5 M7 9l5-5 5 5',
   collapse: 'M7 20l5-5 5 5 M7 4l5 5 5-5',
   clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2',
+  keyboard: 'M2 5h20v14H2z M6 9h.01 M10 9h.01 M14 9h.01 M18 9h.01 M8 13h.01 M12 13h.01 M16 13h.01 M7 16h10',
   sandbox: 'M12 3l9 4.5-9 4.5-9-4.5z M3 12l9 4.5 9-4.5 M3 16.5l9 4.5 9-4.5',
   publish: 'M12 20V8 M7 13l5-5 5 5 M4 4h16',
 };
 
 /** An icon by name, `size` pixels square. */
+/** The key held with another for a command: Cmd on a Mac, Ctrl elsewhere. */
+export const MOD = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? '') ? '⌘' : 'Ctrl';
+
 export function icon(name, size = 18) {
   return h('svg', {
     width: size,

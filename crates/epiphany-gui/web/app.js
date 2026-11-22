@@ -1,7 +1,7 @@
 // The application: signing in, the shell around every page, and moving between pages.
 
 import { ApiError, api, events, get } from './api.js';
-import { dialog, h, icon, menu, mount, notify, working } from './ui.js';
+import { dialog, h, icon, menu, MOD, mount, notify, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
@@ -237,6 +237,7 @@ function shell() {
       { heading: `${user.name} · ${roleName(user.role)}` },
       user.viewer ? { heading: `Viewed by ${user.viewer}, reading only` } : null,
       user.viewer ? { label: 'Stop viewing', icon: 'eyeOff', action: stopViewing } : null,
+      { label: 'Keyboard shortcuts', icon: 'keyboard', action: shortcuts },
       ...(state.open ? [] : [{ label: 'Sign out', icon: 'out', action: signOut }]),
     ], event.currentTarget),
   }, icon('user', 18), h('span', { class: 'label' }, user.name));
@@ -265,7 +266,7 @@ function shell() {
       toggle,
       brand(),
       h('button', { class: 'search-button', onclick: palette, 'aria-label': 'Search and commands' },
-        icon('search', 16), h('span', {}, 'Search cubes, pages and commands'), h('kbd', {}, 'Ctrl K')),
+        icon('search', 16), h('span', {}, 'Search cubes, pages and commands'), h('kbd', {}, `${MOD} K`)),
       h('div', { class: 'spacer' }),
       viewing,
       statusElement,
@@ -469,6 +470,7 @@ async function palette() {
     { label: 'Use the light theme', kind: 'Theme', icon: 'sun', run: () => chooseTheme('light') },
     { label: 'Use the dark theme', kind: 'Theme', icon: 'moon', run: () => chooseTheme('dark') },
     { label: 'Follow the system theme', kind: 'Theme', icon: 'monitor', run: () => chooseTheme('system') },
+    { label: 'Show the keyboard shortcuts', kind: 'Help', icon: 'keyboard', run: shortcuts },
     ...(state.open ? [] : [{ label: 'Sign out', kind: 'Session', icon: 'out', run: signOut }]),
   ];
   // The pages are there at once; the cubes and dashboards join them as the model comes.
@@ -555,8 +557,16 @@ addEventListener('keydown', (event) => {
   if ((event.key === 'k' && (event.ctrlKey || event.metaKey)) || (event.key === '/' && !typing)) {
     event.preventDefault();
     palette();
+  } else if (event.key === '?' && !typing && !document.querySelector('dialog[open]')) {
+    event.preventDefault();
+    shortcuts();
   }
 });
+
+/** Lists the keys the application takes; the list is fetched the first time it is asked for. */
+function shortcuts() {
+  import('./shortcuts.js').then((module) => module.showShortcuts());
+}
 
 /* ---- Overview ---- */
 
