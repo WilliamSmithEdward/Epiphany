@@ -125,6 +125,59 @@ pub struct ViewDef {
     /// How the view shows its numbers; as the reader's locale writes them unless given.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<NumberFormat>,
+    /// How the view draws the eye to some numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlights: Option<Highlights>,
+}
+
+/// How a view draws the eye to numbers: bars, shades, and colours by rule. Totals take no
+/// bar or shade, being out of scale with what they add up.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Highlights {
+    /// A bar beneath each number, as long as its share of the largest in its column.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bars: bool,
+    /// Each number shaded from the lowest in its column to the highest.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub shades: bool,
+    /// Colours for the numbers that meet a test; the first rule a number meets decides.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<HighlightRule>,
+}
+
+/// A colour for the numbers that meet a test against a value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct HighlightRule {
+    pub test: Comparison,
+    pub value: f64,
+    pub tone: Tone,
+}
+
+/// How a number is compared with a rule's value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Comparison {
+    Above,
+    AtLeast,
+    Below,
+    AtMost,
+    Equals,
+}
+
+/// What a highlight says of a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum Tone {
+    Good,
+    Bad,
+    Warn,
+    Accent,
 }
 
 /// How numbers are shown. Only the showing changes: values are read, written and copied in

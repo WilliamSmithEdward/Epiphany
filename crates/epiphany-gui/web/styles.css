@@ -780,3 +780,13 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 /* ---- A query paused while its layout is built ---- */
 
 .output.stale { opacity: .55; filter: grayscale(.4); transition: opacity .15s; }
+
+/* ---- Highlights: bars, shades and tones ---- */
+
+.pivot td.data-bar:not(.edited) { background-image: linear-gradient(to right, color-mix(in oklab, var(--accent) 28%, transparent) var(--bar), transparent var(--bar)); background-repeat: no-repeat; }
+.pivot td.data-bar.negative:not(.edited) { background-image: linear-gradient(to right, color-mix(in oklab, var(--bad) 28%, transparent) var(--bar), transparent var(--bar)); }
+.pivot td.shade:not(.edited) { background-color: color-mix(in oklab, var(--accent) calc(var(--shade) * 38%), var(--surface)); }
+.pivot td.tone-good:not(.edited) { background-color: color-mix(in oklab, var(--good) 20%, var(--surface)); color: var(--good); font-weight: 600; }
+.pivot td.tone-bad:not(.edited) { background-color: color-mix(in oklab, var(--bad) 18%, var(--surface)); color: var(--bad); font-weight: 600; }
+.pivot td.tone-warn:not(.edited) { background-color: color-mix(in oklab, var(--warn) 22%, var(--surface)); font-weight: 600; }
+.pivot td.tone-accent:not(.edited) { background-color: var(--accent-soft); color: var(--accent-text); font-weight: 600; }

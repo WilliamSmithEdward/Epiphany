@@ -2300,6 +2300,17 @@
         },
         "additionalProperties": false
       },
+      "Comparison": {
+        "type": "string",
+        "description": "How a number is compared with a rule's value.",
+        "enum": [
+          "above",
+          "at_least",
+          "below",
+          "at_most",
+          "equals"
+        ]
+      },
       "ContextMember": {
         "type": "object",
         "description": "A member to stand at, by its dimension and its name or alias.",
@@ -2859,6 +2870,50 @@
             "propertyNames": {
               "type": "string"
             }
+          }
+        },
+        "additionalProperties": false
+      },
+      "HighlightRule": {
+        "type": "object",
+        "description": "A colour for the numbers that meet a test against a value.",
+        "required": [
+          "test",
+          "value",
+          "tone"
+        ],
+        "properties": {
+          "test": {
+            "$ref": "#/components/schemas/Comparison"
+          },
+          "tone": {
+            "$ref": "#/components/schemas/Tone"
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Highlights": {
+        "type": "object",
+        "description": "How a view draws the eye to numbers: bars, shades, and colours by rule. Totals take no\nbar or shade, being out of scale with what they add up.",
+        "properties": {
+          "bars": {
+            "type": "boolean",
+            "description": "A bar beneath each number, as long as its share of the largest in its column."
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HighlightRule"
+            },
+            "description": "Colours for the numbers that meet a test; the first rule a number meets decides."
+          },
+          "shades": {
+            "type": "boolean",
+            "description": "Each number shaded from the lowest in its column to the highest."
           }
         },
         "additionalProperties": false
@@ -3521,6 +3576,16 @@
           "grid"
         ]
       },
+      "Tone": {
+        "type": "string",
+        "description": "What a highlight says of a number.",
+        "enum": [
+          "good",
+          "bad",
+          "warn",
+          "accent"
+        ]
+      },
       "TransactionInfo": {
         "type": "object",
         "description": "An open transaction.",
@@ -3696,6 +3761,17 @@
               {
                 "$ref": "#/components/schemas/Geometry",
                 "description": "The sizes the grid of the view was given, kept with it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "highlights": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Highlights",
+                "description": "How the view draws the eye to some numbers."
               },
               {
                 "type": "null"

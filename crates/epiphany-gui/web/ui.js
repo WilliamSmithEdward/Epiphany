@@ -97,6 +97,7 @@ const ICONS = {
   dashboard: 'M3 3h8v10H3z M13 3h8v6h-8z M13 11h8v10h-8z M3 15h8v6H3z',
   hash: 'M4 9h16 M4 15h16 M10 3L8 21 M16 3l-2 18',
   pause: 'M8 5v14 M16 5v14',
+  bars: 'M4 6h10 M4 12h16 M4 18h7',
   copy: 'M9 9h11v11H9z M5 15H4V4h11v1',
   paste: 'M9 3h6v4H9z M8 5H5v16h14V5h-3',
   expand: 'M7 15l5 5 5-5 M7 9l5-5 5 5',

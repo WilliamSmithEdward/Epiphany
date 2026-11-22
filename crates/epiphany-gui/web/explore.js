@@ -88,6 +88,48 @@ const saved = (cube) => `epiphany.explore.${cube}`;
  * proportion; P, S or LS, and R or LR before it say in proportion, equally, or the whole
  * into each; + or ~ after P or S adds to the total `before` or takes from it; C clears.
  */
+/**
+ * What a view's highlights do to a cell of its grid, or null when it has none: a bar as
+ * long as the number's share of the largest in its column, a shade from the column's lowest
+ * to its highest, and the colour of the first rule the number meets. Totals take no bar or
+ * shade, being out of scale with what they add up.
+ */
+function highlighter(highlights, rows, columns, value, total) {
+  if (!highlights || (!highlights.bars && !highlights.shades && !highlights.rules?.length)) return null;
+  // The range of each column's numbers, totals left out.
+  const ranges = columns.map((columnTuple, c) => {
+    let low = Infinity;
+    let high = -Infinity;
+    let widest = 0;
+    if (!total(columnTuple)) {
+      rows.forEach((rowTuple, r) => {
+        const number = value(r, c);
+        if (typeof number !== 'number' || total(rowTuple)) return;
+        low = Math.min(low, number);
+        high = Math.max(high, number);
+        widest = Math.max(widest, Math.abs(number));
+      });
+    }
+    return { low, high, widest };
+  });
+  const tests = { above: (a, b) => a > b, at_least: (a, b) => a >= b, below: (a, b) => a < b, at_most: (a, b) => a <= b, equals: (a, b) => a === b };
+  return (td, r, c, number) => {
+    if (typeof number !== 'number') return;
+    const { low, high, widest } = ranges[c];
+    const measured = Number.isFinite(low) && !total(rows[r]) && !total(columns[c]);
+    if (highlights.bars && measured && widest > 0) {
+      td.classList.add('data-bar');
+      td.style.setProperty('--bar', `${((Math.abs(number) / widest) * 100).toFixed(1)}%`);
+    }
+    if (highlights.shades && measured && high > low) {
+      td.classList.add('shade');
+      td.style.setProperty('--shade', ((number - low) / (high - low)).toFixed(3));
+    }
+    const rule = highlights.rules?.find((each) => tests[each.test]?.(number, each.value));
+    if (rule) td.classList.add(`tone-${rule.tone}`);
+  };
+}
+
 /** A spread typed into a total asks first when it reaches more leaf cells than this. */
 const SPREAD_ASKS = 1000;
 
@@ -157,7 +199,7 @@ class Explorer {
     this.cube = cube;
     this.dims = dims;
     this.layout = this.restore() ?? defaultLayout(cube, dims);
-    if (view) Object.assign(this.layout, { mdx: view.mdx, geometry: view.geometry ?? null, format: view.format ?? null });
+    if (view) Object.assign(this.layout, { mdx: view.mdx, geometry: view.geometry ?? null, format: view.format ?? null, highlights: view.highlights ?? null });
     this.past = [];
     this.future = [];
     this.view = 'grid';
@@ -428,6 +470,7 @@ class Explorer {
               layout.mdx = this.cube.views[name].mdx;
               layout.geometry = this.cube.views[name].geometry ?? null;
               layout.format = this.cube.views[name].format ?? null;
+              layout.highlights = this.cube.views[name].highlights ?? null;
             }, true),
           })),
           admin ? '-' : null,
@@ -603,6 +646,7 @@ class Explorer {
       }),
       button(this.stale ? 'Run' : 'Refresh', this.stale ? 'play' : 'refresh', () => this.run(), this.stale ? { class: 'button small primary' } : {}),
       button('Format', 'hash', () => this.chooseFormat(), { 'aria-pressed': String(Boolean(layout.format)), title: 'Decimals, units, negatives and zeros' }),
+      button('Highlight', 'bars', () => this.chooseHighlights(), { 'aria-pressed': String(Boolean(layout.highlights)), title: 'Data bars, shades and coloured rules' }),
       button('Export CSV', 'download', () => this.exportCsv(), { disabled: !this.result }),
       button('Reset', 'down', (event) => menu([
         {
@@ -1030,6 +1074,7 @@ class Explorer {
     const columnCount = columnTuples.length;
     // Totals take a value to spread where the user may write and nothing in the slicer is calculated.
     const spreads = this.mayWrite() && !(result.slicer ?? []).some((m) => m.type === 'calculated');
+    const highlight = highlighter(this.layout.highlights, shownRows, columnTuples, (r, c) => result.cells[r * columnCount + c], total);
     shownRows.forEach((tuple, r) => {
       const tr = h('tr', { class: total(tuple) ? 'total-row' : '' });
       tuple.forEach((m, level) => {
@@ -1058,12 +1103,14 @@ class Explorer {
         const edited = editable && this.edits.has(this.key(r, c));
         const spreadable = spreads && totalCell && !editable && ![...tuple, ...columnTuples[c]].some((m) => m.type === 'calculated');
         const held = this.holds.size > 0 && this.holds.has(this.key(r, c));
-        tr.append(h('td', {
+        const td = h('td', {
           class: `${totalCell ? 'total' : ''} ${number ? 'n' : 's'} ${number && value < 0 ? 'negative' : ''} ${editable ? 'editable' : ''} ${edited ? 'edited' : ''} ${spreadable ? 'spreadable' : ''} ${held ? 'held' : ''}`,
           tabindex: r === 0 && c === 0 ? '0' : '-1',
           title: held ? 'Held: spreads leave it as it is' : edited ? 'Changed, not yet saved' : spreadable ? 'Type a value to spread it over the leaves beneath' : undefined,
           dataset: { r, c },
-        }, formatValue(value, this.layout.format)));
+        }, formatValue(value, this.layout.format));
+        highlight?.(td, r, c, value);
+        tr.append(td);
       }
       body.append(tr);
     });
@@ -2151,6 +2198,48 @@ class Explorer {
     this.draw();
   }
 
+  /** Asks how the grid draws the eye: bars, shades, and colours by rule. */
+  async chooseHighlights() {
+    const now = this.layout.highlights ?? {};
+    const bars = h('input', { type: 'checkbox', checked: Boolean(now.bars) });
+    const shades = h('input', { type: 'checkbox', checked: Boolean(now.shades) });
+    const rules = (now.rules ?? []).map((rule) => ({ ...rule }));
+    const list = h('div', { class: 'rules' });
+    const TESTS = [['above', 'is above'], ['at_least', 'is at least'], ['below', 'is below'], ['at_most', 'is at most'], ['equals', 'equals']];
+    const TONES = [['good', 'Good, in green'], ['bad', 'Bad, in red'], ['warn', 'Watch, in amber'], ['accent', 'Note, in the accent colour']];
+    const draw = () => mount(list, rules.length ? rules.map((rule, index) => h('div', { class: 'rule' },
+      h('span', { class: 'rule-join muted' }, index === 0 ? 'A number that' : 'or else'),
+      h('select', { class: 'select', 'aria-label': 'Test', onchange: (event) => { rule.test = event.target.value; } },
+        TESTS.map(([value, label]) => h('option', { value, selected: rule.test === value }, label))),
+      h('input', { class: 'input', 'aria-label': 'Value', inputmode: 'decimal', value: String(rule.value), onchange: (event) => { rule.value = parseNumber(event.target.value); } }),
+      h('select', { class: 'select', 'aria-label': 'Colour', onchange: (event) => { rule.tone = event.target.value; } },
+        TONES.map(([value, label]) => h('option', { value, selected: rule.tone === value }, label))),
+      h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this rule', onclick: () => { rules.splice(index, 1); draw(); } }, icon('close', 14))))
+      : h('p', { class: 'hint' }, 'No rules: add one to colour the numbers that meet it.'));
+    draw();
+    const chosen = await dialog({
+      title: 'Highlights',
+      confirm: 'Apply',
+      wide: false,
+      body: h('div', { class: 'facts' },
+        h('label', { class: 'check' }, bars, 'Data bars: each number\'s share of the largest in its column'),
+        h('label', { class: 'check' }, shades, 'Shades: from the lowest number in each column to the highest'),
+        h('fieldset', { class: 'field' }, h('legend', {}, 'Colours by rule, the first a number meets deciding'), list,
+          h('div', { class: 'toolbar' }, h('button', { class: 'button small', type: 'button', onclick: () => { rules.push({ test: 'below', value: 0, tone: 'bad' }); draw(); } }, icon('plus', 14), 'Add a rule'))),
+        h('p', { class: 'hint' }, 'Totals take no bar or shade, being out of scale with what they add up. A view saved keeps its highlights.')),
+      onsubmit: () => {
+        if (rules.some((rule) => rule.value === null || !Number.isFinite(rule.value))) throw new Error('Give every rule a number.');
+        const next = { ...(bars.checked ? { bars: true } : {}), ...(shades.checked ? { shades: true } : {}), ...(rules.length ? { rules } : {}) };
+        return { highlights: Object.keys(next).length ? next : null };
+      },
+    });
+    if (!chosen) return;
+    this.layout.highlights = chosen.highlights;
+    localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
+    this.drawToolbar();
+    this.draw();
+  }
+
   /* ---- Saving a view ---- */
 
   async saveView() {
@@ -2172,7 +2261,8 @@ class Explorer {
           ? { geometry: { ...(geometry.row_height ? { row_height: geometry.row_height } : {}), widths: geometry.widths ?? {} } }
           : {};
         const format = this.layout.format ? { format: this.layout.format } : {};
-        const views = { ...(cube.views ?? {}), [view]: { mdx: this.text, ...kept, ...format } };
+        const highlights = this.layout.highlights ? { highlights: this.layout.highlights } : {};
+        const views = { ...(cube.views ?? {}), [view]: { mdx: this.text, ...kept, ...format, ...highlights } };
         await put(`/cubes/${part(this.cube.name)}`, { based_on: Number(modelVersion), cube: { ...cube, views } });
         this.cube.views = views;
         return view;

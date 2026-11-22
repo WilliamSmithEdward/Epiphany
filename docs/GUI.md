@@ -112,7 +112,7 @@ Analytics Workspace and TM1, Oracle EPM and Smart View, SAP Analytics Cloud and 
 Office, Excel and Power BI, Anaplan, Pigment, Workday Adaptive Planning, OneStream, Jedox,
 Tableau, Atoti) found these gaps. Already taken up: dashboard filters, number formats and
 totals placement, writable cells marked and read-only ones explained, typed spreading with a
-check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, the feeder check offered from Explain, and undo and
+check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, data bars, shades and coloured rules kept with views, the feeder check offered from Explain, and undo and
 redo of values. Still to do, most valuable first:
 
 | Gap | Seen in | Shape here |
@@ -121,7 +121,6 @@ redo of values. Still to do, most valuable first:
 | Cell history: who changed a cell, when, from what | Anaplan, Oracle, Pigment, PAW | A History tab beside Explain, from the journal; an admin view by user and time ([Anaplan](https://help.anaplan.com/afe9dd2f-a532-4aba-b7da-4971d13ca76f)) |
 | Named sandboxes, compared side by side | PAW, Oracle, Pigment, SAP Analytics Cloud | A kept, named transaction, shown as a column beside the stored values |
 | One-click calculations and top or bottom N | Excel's Show Values As, PAW member calculations, Tableau quick calculations | A heading menu item that writes a calculated member into the query |
-| Conditional formatting and data bars, kept with views | Power BI, PAW | Rules of thresholds or comparisons with another member, first match wins |
 | Picklists and validation | TM1, Oracle smart lists and validation rules | A picklist attribute with a dropdown in the cell; rules that warn or refuse |
 | Supporting detail beneath a cell | Oracle, OneStream, Adaptive Planning | Lines that add up to the cell's value, kept with it |
 | Rows drawn as they scroll, for very large results | Power BI's matrix | Only the visible rows drawn (stage G8) |

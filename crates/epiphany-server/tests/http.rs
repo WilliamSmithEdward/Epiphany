@@ -470,7 +470,15 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
     let (_, mut cube) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
     let shown = json!({
         "geometry": { "row_height": 40, "widths": { "col:[Period].[Jan]": 120 } },
-        "format": { "decimals": 1, "scale": "thousands", "parentheses": true, "dash_zeros": true }
+        "format": { "decimals": 1, "scale": "thousands", "parentheses": true, "dash_zeros": true },
+        "highlights": {
+            "bars": true,
+            "shades": true,
+            "rules": [
+                { "test": "at_least", "value": 100.0, "tone": "good" },
+                { "test": "below", "value": 0.0, "tone": "bad" }
+            ]
+        }
     });
     let mut view = shown.clone();
     view["mdx"] = cube["views"]["Winter rent"]["mdx"].clone();
@@ -487,6 +495,10 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
     assert_eq!(
         served["views"]["Winter rent"]["geometry"],
         shown["geometry"]
+    );
+    assert_eq!(
+        served["views"]["Winter rent"]["highlights"],
+        shown["highlights"]
     );
     cube["views"]["Winter rent"]["format"]["scale"] = json!("dozens");
     let put = json!({ "based_on": 3, "cube": cube });
