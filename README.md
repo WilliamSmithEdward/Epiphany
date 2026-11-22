@@ -155,14 +155,14 @@ Measured on one Windows machine with a build for release, a cube of four dimensi
 | | |
 | --- | --- |
 | Memory a stored cell takes | 29 to 39 bytes at ten million cells, where the cube's element ids fit 64 bits together; 70 to 105 bytes where they do not |
-| Memory at its height | starting, about 1.7 times what the cells take; writing millions of cells in large requests, up to four times, the requests and the snapshot taking room of their own |
+| Memory at its height | starting, about 1.7 times what the cells take; writing millions of cells in large requests, about twice, the requests taking room of their own |
 | Snapshot on disk | about 58 bytes a cell |
 | Start, 1.5 million cells | 2 seconds |
 | Write by name, through the server | 50,000 cells in about 60 ms |
 | Read by name, through the server | 5,000 cells in about 5 ms |
 | Memory a dimension element takes | about 500 bytes |
 | Start, a dimension of a million elements | 3 seconds |
-| Ten million cells | about 300 MB held, 1.2 GB at the most; a 586 MB snapshot; a start of 6 seconds |
+| Ten million cells | about 360 MB held, 740 MB at the most; a 586 MB snapshot; a start of 6 seconds |
 
 Every 64 MiB of log, about a million cells written, the log is replaced by a snapshot,
 written while reads carry on; writes wait for it, at ten million cells some 3.5 seconds.

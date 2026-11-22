@@ -96,9 +96,16 @@ on the same machine, one after the other (2026-11-22):
 Handing out each cell's place as one of two kinds of coordinate had made a pass half as
 long again; it is now one plain value, and a pass over the cells is taken as a pass of its
 own rather than one cell asked for after another. Ten million cells take 282 to 375 MB
-rather than 882 MB, and 1.2 GB at the most while they are written rather than 1.5 GB;
-started again, the server holds 279 MB rather than 792 MB, with 464 MB at the most on the
-way, and starts in the same 5.5 s.
+rather than 882 MB; started again, the server holds 279 MB rather than 792 MB, with 464
+MB at the most on the way, and starts in the same 5.5 s.
+
+Their height while written seemed to be 1.2 GB, against 1.5 GB before; followed batch by
+batch, it was 740 MB until the end, and the rest was one page of the cube's cells asked
+for afterwards. Listing them gathered the place of every cell to set the page in order,
+56 bytes a cell once coordinates were packed. Packed coordinates keep the first
+dimension in their highest bits, so that as numbers they are in the order of their
+elements, and the page is now set in order from the numbers, 8 bytes a cell: the same
+ten million cells peak at 742 MB (2026-11-22).
 
 Reading a cell made a list of where the cell is, and reading the cell of one member made
 a tuple to hold that member; both are now done without. The grid of 10,000 leaf cells
