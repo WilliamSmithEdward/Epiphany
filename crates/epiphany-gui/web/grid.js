@@ -66,7 +66,8 @@ export const grid = {
     const columnDepth = columnTuples[0]?.length ?? 0;
     const rowDepth = rowTuples[0]?.length ?? 0;
     if (!columnTuples.length || (result.axes.length > 1 && !rowTuples.length)) {
-      mount(this.output, empty('grid', 'Nothing to show', this.layout.nonEmpty ? 'Every cell is empty. Show empty rows to see them.' : 'The query chose no members.'));
+      const hidden = ['rows', 'columns'].filter((axis) => this.layout.nonEmpty?.[axis]);
+      mount(this.output, empty('grid', 'Nothing to show', hidden.length ? `Every cell is empty. Show the empty ${hidden.join(' and ')} to see them.` : 'The query chose no members.'));
       mount(this.statusLine);
       this.grid = null;
       return;
@@ -921,7 +922,7 @@ export const grid = {
           entry.expanded = [];
         }
       }
-      layout.nonEmpty = true;
+      layout.nonEmpty = { rows: true, columns: true };
       layout.sort = null;
       layout.top = null;
     });

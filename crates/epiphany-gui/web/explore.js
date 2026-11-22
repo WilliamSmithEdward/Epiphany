@@ -4,7 +4,7 @@
 import { ApiError, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { chart, shape } from './chart.js';
-import { CALCULATIONS, defaultLayout, mdx, saved, shown } from './layout.js';
+import { CALCULATIONS, defaultLayout, emptiness, mdx, saved, shown } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
@@ -108,6 +108,10 @@ class Explorer {
       const known = (name) => this.dims.has(name);
       const placed = [...layout.rows, ...layout.columns].map((entry) => entry.dimension).concat(layout.filters.map((filter) => filter.dimension));
       if (layout.cube !== this.cube.name || !placed.every(known) || new Set(placed).size !== placed.length) return null;
+      // A layout kept when rows and columns were not told apart left out empty ones of both, or neither.
+      if (typeof layout.nonEmpty !== 'object' || layout.nonEmpty === null) {
+        layout.nonEmpty = { rows: Boolean(layout.nonEmpty), columns: Boolean(layout.nonEmpty) };
+      }
       // Members that no longer exist are let go.
       for (const entry of [...layout.rows, ...layout.columns]) {
         const dim = this.dims.get(entry.dimension);
@@ -196,7 +200,7 @@ class Explorer {
       filters,
       sort: null,
       top: null,
-      nonEmpty: /\bNON\s+EMPTY\b/i.test(text),
+      nonEmpty: emptiness(text),
       mdx: exact ? null : text,
     });
     localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
@@ -381,10 +385,17 @@ class Explorer {
         l.sort = null;
         l.top = null;
       })),
-      button(layout.nonEmpty ? 'Showing non-empty' : 'Showing empty rows', layout.nonEmpty ? 'eyeOff' : 'eye',
-        () => this.change((l) => {
-          l.nonEmpty = !l.nonEmpty;
-        }), { 'aria-pressed': String(layout.nonEmpty), title: 'Leave out rows and columns with no values' }),
+      // Rows with no values, and columns, are left out each on their own.
+      h('div', { class: 'toggle-group', role: 'group', 'aria-label': 'Hide empty rows and columns' },
+        h('span', { class: 'toggle-label', 'aria-hidden': 'true' }, 'Hide empty'),
+        ['rows', 'columns'].map((axis) => button(axis === 'rows' ? 'Rows' : 'Columns', layout.nonEmpty?.[axis] ? 'eyeOff' : 'eye',
+          () => this.change((l) => {
+            l.nonEmpty = { ...l.nonEmpty, [axis]: !l.nonEmpty?.[axis] };
+          }), {
+            'aria-pressed': String(Boolean(layout.nonEmpty?.[axis])),
+            'aria-label': `Hide empty ${axis}`,
+            title: layout.nonEmpty?.[axis] ? `Show the ${axis} with no values again` : `Leave out the ${axis} with no values`,
+          }))),
       layout.sort ? button('Clear sort', 'close', () => this.change((l) => {
         l.sort = null;
       })) : null,
