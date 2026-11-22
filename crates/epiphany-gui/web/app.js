@@ -10,7 +10,7 @@ export const state = { user: null, open: false, model: null, version: null };
 const PAGES = [
   { path: '/', title: 'Overview', icon: 'home', load: async () => ({ render: overview }) },
   { path: '/explore', title: 'Explore', icon: 'explore', load: () => import('./explore.js') },
-  { path: '/model', title: 'Model', icon: 'model', load: () => import('./later.js'), section: 'Manage', admin: true },
+  { path: '/model', title: 'Model', icon: 'model', load: () => import('./model.js'), section: 'Manage', admin: true },
   { path: '/admin', title: 'Administration', icon: 'admin', load: () => import('./later.js'), admin: true },
 ];
 

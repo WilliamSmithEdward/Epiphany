@@ -64,6 +64,7 @@ const ICONS = {
   minus: 'M5 12h14',
   chevron: 'M9 6l6 6-6 6',
   down: 'M6 9l6 6 6-6',
+  up: 'M6 15l6-6 6 6',
   play: 'M6 4l14 8-14 8z',
   swap: 'M7 4v16 M3 8l4-4 4 4 M17 20V4 M13 16l4 4 4-4',
   filter: 'M3 4h18l-7 8v6l-4 2v-8z',
