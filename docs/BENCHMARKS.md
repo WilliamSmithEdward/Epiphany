@@ -114,6 +114,13 @@ model, to the same text, and the same write reaches 255 MB and takes 0.75 s rath
 0.91 s (2026-11-22). Most of what is left is the request itself, read whole into cells by
 name before any is stored.
 
+Read into cell writes, half a million cells took 266 bytes a cell, two and a half million
+small texts, each element's name looked up again for every cell it was in. A request's
+cells are now read into a batch that keeps each name once and each cell as the numbers of
+its names and its value, and each name is looked up once. The write of 500,000 cells
+reaches 157 MB and takes 0.48 s; 50,000 cells take 32.9 ms through the server rather
+than 55.7 ms (2026-11-22).
+
 Reading a cell made a list of where the cell is, and reading the cell of one member made
 a tuple to hold that member; both are now done without. The grid of 10,000 leaf cells
 goes from 2.4 ms to 2.2 ms, that of a calculated member from 2.7 ms to 2.4 ms, and the

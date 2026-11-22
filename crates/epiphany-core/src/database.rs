@@ -10,6 +10,7 @@
 //! that writes a value computed from what it read must first lock the cube, or another
 //! transaction may commit a change between its read and its write.
 
+mod batch;
 mod error;
 mod load;
 mod locks;
@@ -23,16 +24,18 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 use std::{fmt, io};
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::Scalar;
 use crate::cells::CellError;
-use crate::cells::{At, Cells, Writes, check, coordinate};
+use crate::cells::{At, Cells, Coordinate, Writes, check, coordinate};
 use crate::mdx::{self, MdxError, QueryResult};
 use crate::model::{Cube, ElementId, Model, ModelDef, ModelError};
 use crate::reader::{Fed, Reader, Totals, feed};
 use locks::{Locks, Mode, Resource};
 
+pub use batch::Batch;
 pub use error::Error;
 pub use locks::LockMode;
 pub use spread::{Spread, SpreadMethod};
@@ -627,12 +630,21 @@ impl Database {
         transaction: Option<TransactionId>,
         writes: &[CellWrite],
     ) -> Result<(), Error> {
+        self.write_batch(transaction, &Batch::from(writes))
+    }
+
+    /// Writes every cell of a batch, as [`Database::write`] does.
+    pub fn write_batch(
+        &mut self,
+        transaction: Option<TransactionId>,
+        batch: &Batch,
+    ) -> Result<(), Error> {
         self.expire();
         if let Some(id) = transaction {
-            return self.stage(id, writes);
+            return self.stage(id, batch);
         }
         let id = self.begin();
-        let written = self.stage(id, writes).and_then(|()| self.commit(id));
+        let written = self.stage(id, batch).and_then(|()| self.commit(id));
         if written.is_err() {
             self.end(id)?;
         }
@@ -786,25 +798,50 @@ impl Database {
     }
 
     /// Checks a batch of writes and adds it to a transaction's pending writes.
-    fn stage(&mut self, id: TransactionId, writes: &[CellWrite]) -> Result<(), Error> {
+    fn stage(&mut self, id: TransactionId, batch: &Batch) -> Result<(), Error> {
         self.transaction(id)?;
-        let locate = |(index, write): (usize, &CellWrite)| {
-            let located = self.locate(&write.cube, &write.at).and_then(|(cube, at)| {
+        // Each name is looked up once: as a cube, and as an element of each dimension it
+        // is met in.
+        let mut cubes: Vec<Option<Option<usize>>> = vec![None; batch.names()];
+        let mut elements: FxHashMap<(u32, u32), Option<ElementId>> = FxHashMap::default();
+        let mut at = Vec::new();
+        let mut located: Vec<(usize, Coordinate)> = Vec::with_capacity(batch.len());
+        for index in 0..batch.len() {
+            let mut locate = || {
+                let name = batch.cube_name(index);
+                let cube = *cubes[name as usize]
+                    .get_or_insert_with(|| self.model.cube_id(batch.name(name)));
+                let cube = cube.ok_or_else(|| CellError::UnknownCube {
+                    cube: batch.name(name).to_owned(),
+                })?;
                 let definition = &self.model.cubes()[cube];
-                check(&self.model, definition, &at, &write.value)?;
-                let text = matches!(write.value, Scalar::Text(_));
+                let names = batch.element_names(index);
+                if names.len() != definition.dimensions.len() {
+                    return Err(CellError::Arity {
+                        expected: definition.dimensions.len(),
+                        found: names.len(),
+                    });
+                }
+                at.clear();
+                for (&dimension, &name) in definition.dimensions.iter().zip(names) {
+                    let found = elements.entry((dimension, name)).or_insert_with(|| {
+                        self.model.dimensions()[dimension as usize].element_id(batch.name(name))
+                    });
+                    at.push(found.ok_or_else(|| CellError::UnknownElement {
+                        dimension: self.model.dimensions()[dimension as usize].name.clone(),
+                        element: batch.name(name).to_owned(),
+                    })?);
+                }
+                let value = batch.value(index);
+                check(&self.model, definition, &at, value)?;
+                let text = matches!(value, Scalar::Text(_));
                 match definition.rule_for_leaf(&at, text) {
                     Some(_) => Err(CellError::Calculated),
-                    None => Ok((cube, at)),
+                    None => Ok((cube, Coordinate::from(at.as_slice()))),
                 }
-            });
-            located.map_err(|error| Error::Write { index, error })
-        };
-        let located: Vec<(usize, Vec<ElementId>)> = writes
-            .iter()
-            .enumerate()
-            .map(locate)
-            .collect::<Result<_, _>>()?;
+            };
+            located.push(locate().map_err(|error| Error::Write { index, error })?);
+        }
 
         // The locks are asked for once for the batch and once for each cube in it, not
         // again for every cell.
@@ -817,12 +854,21 @@ impl Database {
         for cube in cubes {
             self.acquire(id, Resource::Cube(cube), Mode::IntentExclusive)?;
         }
-        for ((cube, at), write) in located.iter().zip(writes) {
+        for (index, (cube, at)) in located.iter().enumerate() {
             let pending_elsewhere = |(&other, transaction): (&TransactionId, &Transaction)| {
-                other != id && transaction.writes[*cube].contains_key(at.as_slice())
+                other != id && transaction.writes[*cube].contains_key(&**at)
             };
             if self.transactions.iter().any(pending_elsewhere) {
-                let cell = format!("cell ({}) of cube '{}'", write.at.join(", "), write.cube);
+                let names: Vec<&str> = batch
+                    .element_names(index)
+                    .iter()
+                    .map(|&name| batch.name(name))
+                    .collect();
+                let cell = format!(
+                    "cell ({}) of cube '{}'",
+                    names.join(", "),
+                    batch.cube(index)
+                );
                 return Err(Error::Locked(cell));
             }
         }
@@ -832,8 +878,8 @@ impl Database {
             .get_mut(&id)
             .expect("checked above")
             .writes;
-        for ((cube, at), write) in located.into_iter().zip(writes) {
-            pending[cube].insert(at.as_slice().into(), write.value.clone());
+        for (index, (cube, at)) in located.into_iter().enumerate() {
+            pending[cube].insert(at, batch.value(index).clone());
         }
         Ok(())
     }

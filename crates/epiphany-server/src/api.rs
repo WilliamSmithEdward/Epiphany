@@ -18,7 +18,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    CellRef, CellWrite, Database, Error, Explanation, LockMode, ModelUpdate, Spread, TransactionId,
+    Batch, CellRef, CellWrite, Database, Error, Explanation, LockMode, ModelUpdate, Spread,
+    TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
@@ -663,7 +664,8 @@ struct WriteRequest {
     /// Hold the writes in this transaction until it commits. Without it they are committed
     /// at once.
     transaction: Option<u64>,
-    cells: Vec<CellWrite>,
+    #[schema(value_type = Vec<CellWrite>)]
+    cells: Batch,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1071,14 +1073,14 @@ async fn write_cells(
     Extension(grants): Held,
     Body(request): Body<WriteRequest>,
 ) -> Result<StatusCode, ApiError> {
-    for (index, cell) in request.cells.iter().enumerate() {
-        allow(&grants, &cell.cube, Role::Write).map_err(|refusal| ApiError {
+    for index in 0..request.cells.len() {
+        allow(&grants, request.cells.cube(index), Role::Write).map_err(|refusal| ApiError {
             index: Some(index),
             ..refusal
         })?;
     }
     let mut database = database.write();
-    database.write(request.transaction, &request.cells)?;
+    database.write_batch(request.transaction, &request.cells)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

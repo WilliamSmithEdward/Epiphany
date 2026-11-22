@@ -158,7 +158,7 @@ Measured on one Windows machine with a build for release, a cube of four dimensi
 | Memory at its height | starting, about 1.7 times what the cells take; writing millions of cells in large requests, about twice, the requests taking room of their own |
 | Snapshot on disk | about 58 bytes a cell |
 | Start, 1.5 million cells | 2 seconds |
-| Write by name, through the server | 50,000 cells in about 60 ms |
+| Write by name, through the server | 50,000 cells in about 35 ms |
 | Read by name, through the server | 5,000 cells in about 5 ms |
 | Memory a dimension element takes | about 500 bytes |
 | Start, a dimension of a million elements | 3 seconds |
