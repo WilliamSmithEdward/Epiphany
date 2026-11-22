@@ -1,7 +1,8 @@
 // Exploring a cube: a field list, a layout of rows, columns and filters, and the pivot grid
 // of the query that layout makes.
 
-import { ApiError, get, part, post } from './api.js';
+import { ApiError, get, modelVersion, part, post, put } from './api.js';
+import { chart, shape } from './chart.js';
 import { empty, failure, go, model, state } from './app.js';
 import { dialog, download, formatNumber, h, icon, menu, mount, notify } from './ui.js';
 
@@ -222,20 +223,26 @@ class Explorer {
       'aria-label': 'Cube',
       onchange: (event) => go(`/explore?cube=${encodeURIComponent(event.target.value)}`),
     }, this.definition.cubes.map((cube) => h('option', { value: cube.name, selected: cube.name === this.cube.name }, cube.name)));
-    const views = Object.keys(this.cube.views ?? {});
-    const viewButton = views.length
-      ? h('button', {
-        class: 'button',
-        'aria-haspopup': 'menu',
-        onclick: (event) => menu([{ heading: 'Saved views' }, ...views.map((name) => ({
-          label: name,
-          icon: 'grid',
-          action: () => this.change((layout) => {
-            layout.mdx = this.cube.views[name].mdx;
-          }),
-        }))], event.currentTarget),
-      }, icon('grid', 16), 'Views', icon('down', 14))
-      : null;
+    const viewButton = h('button', {
+      class: 'button',
+      'aria-haspopup': 'menu',
+      onclick: (event) => {
+        const views = Object.keys(this.cube.views ?? {});
+        const admin = state.user?.role === 'admin';
+        menu([
+          { heading: views.length ? 'Saved views' : 'No saved views yet' },
+          ...views.map((name) => ({
+            label: name,
+            icon: 'grid',
+            action: () => this.change((layout) => {
+              layout.mdx = this.cube.views[name].mdx;
+            }),
+          })),
+          admin ? '-' : null,
+          admin ? { label: 'Save this query as a view…', icon: 'save', disabled: !this.text, action: () => this.saveView() } : null,
+        ], event.currentTarget);
+      },
+    }, icon('grid', 16), 'Views', icon('down', 14));
     this.tabs = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Show as' });
     this.page = h('div', { class: 'explorer' },
       this.fields,
@@ -287,7 +294,7 @@ class Explorer {
         this.draw();
       },
     }, label);
-    mount(this.tabs, tab('grid', 'Grid'), tab('mdx', 'MDX'));
+    mount(this.tabs, tab('grid', 'Grid'), tab('chart', 'Chart'), tab('mdx', 'MDX'));
   }
 
   drawToolbar() {
@@ -648,6 +655,7 @@ class Explorer {
 
   draw() {
     if (this.view === 'mdx') return this.drawMdx();
+    if (this.view === 'chart' && this.result && !this.error) return this.drawChart();
     if (this.error) {
       mount(this.output, failure(this.error, () => this.run()));
       mount(this.statusLine);
@@ -1118,6 +1126,61 @@ class Explorer {
         facts.fed === null || facts.fed === undefined ? null : row('Fed', facts.fed ? 'Yes' : 'No: consolidations leave it out')),
     });
   }
+  /* ---- Chart ---- */
+
+  drawChart() {
+    const settings = this.layout.chart ?? { kind: 'bars', byColumns: false };
+    const set = (change) => {
+      this.layout.chart = { ...settings, ...change };
+      localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
+      this.drawChart();
+    };
+    const choice = (value, label, current, pick) => h('button', {
+      role: 'tab',
+      'aria-selected': String(current === value),
+      onclick: () => pick(value),
+    }, label);
+    const data = shape(this.result, settings.byColumns);
+    const plotted = data.series.some((entry) => entry.values.some((value) => value !== null));
+    mount(this.output, h('div', { class: 'chart-pane' },
+      h('div', { class: 'toolbar' },
+        h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Kind of chart' },
+          choice('bars', 'Bars', settings.kind, (kind) => set({ kind })),
+          choice('stacked', 'Stacked', settings.kind, (kind) => set({ kind })),
+          choice('lines', 'Lines', settings.kind, (kind) => set({ kind }))),
+        h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Series from' },
+          choice(false, 'A series for each row', settings.byColumns, (byColumns) => set({ byColumns })),
+          choice(true, 'A series for each column', settings.byColumns, (byColumns) => set({ byColumns })))),
+      plotted
+        ? chart(data, settings.kind)
+        : empty('chart', 'Nothing to chart', 'The result has no numbers. Choose other members, or show empty rows.')));
+  }
+
+  /* ---- Saving a view ---- */
+
+  async saveView() {
+    const name = h('input', { class: 'input', id: 'view-name', required: true, maxlength: 120 });
+    const saved = await dialog({
+      title: 'Save as a view',
+      confirm: 'Save',
+      body: h('div', { class: 'facts' },
+        h('div', { class: 'field' }, h('label', { for: 'view-name' }, 'Name'), name),
+        h('p', { class: 'hint' }, `Saved with ${this.cube.name}, where everyone who may read the cube can open it. A view of the same name is replaced.`)),
+      onsubmit: async () => {
+        const view = name.value.trim();
+        if (!view) throw new Error('Give the view a name.');
+        // The cube as it is now, saved against the version it was read at, so that a change
+        // someone else made meanwhile is not overwritten.
+        const cube = await get(`/cubes/${part(this.cube.name)}`);
+        const views = { ...(cube.views ?? {}), [view]: { mdx: this.text } };
+        await put(`/cubes/${part(this.cube.name)}`, { based_on: Number(modelVersion), cube: { ...cube, views } });
+        this.cube.views = views;
+        return view;
+      },
+    });
+    if (saved) notify(`Saved the view “${saved}”.`, 'good');
+  }
+
   /* ---- MDX ---- */
 
   drawMdx() {

@@ -24,6 +24,7 @@ const FILES: &[(&str, &[u8])] = files![
     "api.js",
     "ui.js",
     "explore.js",
+    "chart.js",
     "later.js",
 ];
 
