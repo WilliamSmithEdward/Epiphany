@@ -11,7 +11,7 @@ const PAGES = [
   { path: '/', title: 'Overview', icon: 'home', load: async () => ({ render: overview }) },
   { path: '/explore', title: 'Explore', icon: 'explore', load: () => import('./explore.js') },
   { path: '/model', title: 'Model', icon: 'model', load: () => import('./model.js'), section: 'Manage', admin: true },
-  { path: '/admin', title: 'Administration', icon: 'admin', load: () => import('./later.js'), admin: true },
+  { path: '/admin', title: 'Administration', icon: 'admin', load: () => import('./admin.js'), admin: true },
 ];
 
 const root = document.getElementById('app');

@@ -133,7 +133,7 @@ export function notify(message, kind = 'plain') {
  * Shows a modal dialog and resolves with what `onsubmit` returns, or null if it is
  * dismissed. `body` is the content; `actions` the label of the confirming button.
  */
-export function dialog({ title, body, confirm = 'OK', cancel = 'Cancel', danger = false, onsubmit = () => true }) {
+export function dialog({ title, body, confirm = 'OK', cancel = 'Cancel', danger = false, wide = false, onsubmit = () => true }) {
   return new Promise((resolve) => {
     const error = h('p', { class: 'error-text', role: 'alert', hidden: true });
     const submit = h('button', { class: `button ${danger ? 'danger' : 'primary'}`, type: 'submit' }, confirm);
@@ -144,7 +144,7 @@ export function dialog({ title, body, confirm = 'OK', cancel = 'Cancel', danger 
       h('div', { class: 'dialog-foot' },
         cancel ? h('button', { class: 'button', type: 'button', onclick: () => element.close() }, cancel) : null,
         submit));
-    const element = h('dialog', { 'aria-label': title }, form);
+    const element = h('dialog', { 'aria-label': title, class: wide ? 'wide' : null }, form);
     let result = null;
     form.addEventListener('submit', async (event) => {
       event.preventDefault();

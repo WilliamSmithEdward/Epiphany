@@ -3,6 +3,7 @@
 
 import { ApiError, get, modelVersion, part, post, put } from './api.js';
 import { chart, shape } from './chart.js';
+import { editSet } from './sets.js';
 import { empty, failure, go, model, state } from './app.js';
 import { dialog, download, formatNumber, h, icon, menu, mount, notify } from './ui.js';
 
@@ -360,7 +361,7 @@ class Explorer {
           h('span', { class: 'drag' }, icon('drag', 14)),
           icon(dim.type === 'time' ? 'chart' : dim.type === 'measure' ? 'measure' : 'dimension', 16),
           h('span', { class: 'field-name' }, name),
-          h('span', { class: `badge ${place === 'filters' ? '' : 'accent'}` }, { rows: 'Rows', columns: 'Columns', filters: 'Filter' }[place]),
+          h('span', { class: `badge ${place === 'rows' || place === 'columns' ? 'accent' : place === 'unused' ? 'unused' : ''}` }, { rows: 'Rows', columns: 'Columns', filters: 'Filter', unused: 'Not used' }[place]),
           h('button', { class: 'button quiet small icon', 'aria-label': `Place ${name}`, onclick: (event) => this.placeMenu(name, event.currentTarget) }, icon('more', 16))),
           matches.length ? h('ul', { class: 'matches' }, matches.map((element) => h('li', {},
             h('button', {
@@ -370,11 +371,26 @@ class Explorer {
       }));
     };
     search.addEventListener('input', draw);
+    // A chip dropped back on the field list leaves the query.
+    this.fields.ondragover = (event) => {
+      if (!event.dataTransfer.types.includes('text/x-epiphany-dimension')) return;
+      event.preventDefault();
+      this.fields.classList.add('over');
+    };
+    this.fields.ondragleave = (event) => {
+      if (!this.fields.contains(event.relatedTarget)) this.fields.classList.remove('over');
+    };
+    this.fields.ondrop = (event) => {
+      event.preventDefault();
+      this.fields.classList.remove('over');
+      const name = event.dataTransfer.getData('text/x-epiphany-dimension');
+      if (name && this.placeOf(name) !== 'unused') this.move(name, 'unused');
+    };
     mount(this.fields,
       h('div', { class: 'fields-head' }, h('h3', {}, 'Fields'), h('span', { class: 'muted' }, `${this.cube.dimensions.length} dimensions`)),
       h('div', { class: 'search' }, icon('search', 16), search),
       list,
-      h('p', { class: 'hint fields-hint' }, 'Drag a dimension to Rows, Columns or Filters, or press Enter on it to choose where it goes.'));
+      h('p', { class: 'hint fields-hint' }, 'Drag a dimension to Rows, Columns or Filters, or press Enter on it to choose where it goes. Drag one back here to leave it out of the query: it then stands at its first top element.'));
     this.drawFieldList = draw;
     draw();
   }
@@ -382,7 +398,8 @@ class Explorer {
   placeOf(name) {
     if (this.layout.rows.some((entry) => entry.dimension === name)) return 'rows';
     if (this.layout.columns.some((entry) => entry.dimension === name)) return 'columns';
-    return 'filters';
+    if (this.layout.filters.some((filter) => filter.dimension === name)) return 'filters';
+    return 'unused';
   }
 
   placeMenu(name, at) {
@@ -392,8 +409,9 @@ class Explorer {
       { label: 'Put on rows', icon: 'rows', disabled: place === 'rows' || Boolean(this.layout.mdx), action: () => this.move(name, 'rows') },
       { label: 'Put on columns', icon: 'columns', disabled: place === 'columns' || Boolean(this.layout.mdx), action: () => this.move(name, 'columns') },
       { label: 'Use as a filter', icon: 'filter', disabled: place === 'filters' || Boolean(this.layout.mdx), action: () => this.move(name, 'filters') },
+      { label: 'Leave out of the query', icon: 'eyeOff', disabled: place === 'unused' || Boolean(this.layout.mdx), action: () => this.move(name, 'unused') },
       '-',
-      { label: 'Choose members…', icon: 'check', disabled: Boolean(this.layout.mdx), action: () => this.pick(name) },
+      { label: 'Choose members…', icon: 'check', disabled: place === 'unused' || Boolean(this.layout.mdx), action: () => this.pick(name) },
     ], at);
   }
 
@@ -406,7 +424,9 @@ class Explorer {
       layout.rows = layout.rows.filter((candidate) => candidate.dimension !== name);
       layout.columns = layout.columns.filter((candidate) => candidate.dimension !== name);
       layout.filters = layout.filters.filter((candidate) => candidate.dimension !== name);
-      if (to === 'filters') {
+      if (to === 'unused') {
+        // Out of the query: the server takes the dimension at its first top element.
+      } else if (to === 'filters') {
         const chosen = filter?.member ?? entry?.members[0] ?? dim.roots[0];
         layout.filters.splice(index ?? layout.filters.length, 0, { dimension: name, member: chosen });
       } else {
@@ -425,6 +445,10 @@ class Explorer {
     this.change((layout) => {
       if (place === 'filters') {
         layout.filters.find((filter) => filter.dimension === dimName).member = name;
+        return;
+      }
+      if (place === 'unused') {
+        layout.filters.push({ dimension: dimName, member: name });
         return;
       }
       const entry = layout[place].find((candidate) => candidate.dimension === dimName);
@@ -517,6 +541,18 @@ class Explorer {
     const place = this.placeOf(name);
     const single = place === 'filters';
     const entry = single ? null : this.layout[place].find((candidate) => candidate.dimension === name);
+    if (!single) {
+      // A dimension on an axis gets the set editor, and keeps the order built there.
+      const set = await editSet({ ...dim, name }, entry.members);
+      if (!set) return;
+      this.change((layout) => {
+        const target = layout[place].find((candidate) => candidate.dimension === name);
+        target.members = set;
+        target.expanded = target.expanded.filter((element) => set.includes(element));
+        layout.sort = null;
+      });
+      return;
+    }
     const chosen = new Set(single ? [this.layout.filters.find((filter) => filter.dimension === name).member] : entry.members);
     const open = new Set(dim.roots);
     const search = h('input', { class: 'input', type: 'search', placeholder: `Find in ${name}`, 'aria-label': `Find in ${name}` });
