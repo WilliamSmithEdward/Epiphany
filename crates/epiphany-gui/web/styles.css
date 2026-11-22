@@ -776,3 +776,7 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .pivot td.held { box-shadow: inset 3px 0 0 var(--text-3); }
 .pivot td.held.selected { box-shadow: inset 3px 0 0 var(--text-3); }
 .badge.held-badge { background: var(--surface-3); }
+
+/* ---- A query paused while its layout is built ---- */
+
+.output.stale { opacity: .55; filter: grayscale(.4); transition: opacity .15s; }

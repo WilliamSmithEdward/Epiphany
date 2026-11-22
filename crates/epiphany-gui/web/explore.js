@@ -318,8 +318,22 @@ class Explorer {
   after() {
     localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
     this.drawLayout();
+    // While paused, the layout is built step by step and the query runs once, when asked.
+    if (this.paused) {
+      this.stale = true;
+      this.output.classList.add('stale');
+      this.drawToolbar();
+      return;
+    }
     this.drawToolbar();
     this.run();
+  }
+
+  /** Pauses running the query as the layout changes, or resumes, running it if it changed. */
+  pause(paused) {
+    this.paused = paused;
+    if (!paused && this.stale) this.run();
+    else this.drawToolbar();
   }
 
   /**
@@ -583,7 +597,11 @@ class Explorer {
         class: 'badge accent',
         title: 'The query is as written in the MDX tab. The layout shows its parts; changing the layout replaces it with the layout\'s own query.',
       }, icon('code', 12), 'Written in MDX') : null,
-      button('Refresh', 'refresh', () => this.run()),
+      button(this.paused ? 'Resume' : 'Pause', this.paused ? 'play' : 'pause', () => this.pause(!this.paused), {
+        'aria-pressed': String(Boolean(this.paused)),
+        title: this.paused ? 'Run the query as the layout changes again' : 'Build the layout without running the query at each step',
+      }),
+      button(this.stale ? 'Run' : 'Refresh', this.stale ? 'play' : 'refresh', () => this.run(), this.stale ? { class: 'button small primary' } : {}),
       button('Format', 'hash', () => this.chooseFormat(), { 'aria-pressed': String(Boolean(layout.format)), title: 'Decimals, units, negatives and zeros' }),
       button('Export CSV', 'download', () => this.exportCsv(), { disabled: !this.result }),
       button('Reset', 'down', (event) => menu([
@@ -897,6 +915,8 @@ class Explorer {
 
   async run() {
     const ticket = ++this.ticket;
+    this.stale = false;
+    this.output.classList.remove('stale');
     const text = mdx(this.layout, this.dims);
     this.text = text;
     if (!this.layout.mdx && (!this.layout.rows.length || !this.layout.columns.length)) {
@@ -2032,7 +2052,31 @@ class Explorer {
         facts.rule ? row('Rule', h('code', { class: 'mono' }, facts.rule.text ?? JSON.stringify(facts.rule))) : null,
         facts.stored !== null && facts.stored !== undefined && facts.rule ? row('Stored beneath it', String(facts.stored)) : null,
         row('Can be written', facts.writable ? 'Yes' : 'No'),
-        facts.fed === null || facts.fed === undefined ? null : row('Fed', facts.fed ? 'Yes' : 'No: consolidations leave it out')),
+        facts.fed === null || facts.fed === undefined ? null : row('Fed', facts.fed ? 'Yes' : h('span', {}, 'No: consolidations leave it out. ',
+          h('button', { class: 'button small', type: 'button', onclick: () => this.checkFeeders() }, 'Check the feeders')))),
+    });
+  }
+
+  /** Looks for cells of the cube that rules calculate and hold a value, but that no feeder feeds. */
+  async checkFeeders() {
+    let found;
+    try {
+      found = await get(`/cubes/${part(this.cube.name)}/feeders/check`);
+    } catch (problem) {
+      notify(problem.message, 'bad');
+      return;
+    }
+    const unfed = found.unfed ?? [];
+    await dialog({
+      title: unfed.length ? `${unfed.length.toLocaleString()}${unfed.length >= 100 ? ' or more' : ''} cells not fed` : 'Every calculated cell is fed',
+      confirm: 'Close',
+      cancel: null,
+      body: unfed.length
+        ? h('div', { class: 'facts' },
+          h('p', { class: 'muted' }, 'These cells hold a value a rule works out, but no feeder feeds them, so the totals above them leave them out. A feeder that names them, or something beneath them, brings them in.'),
+          h('ul', { class: 'plain-list mono' }, unfed.slice(0, 50).map((cell) => h('li', {}, cell.at.join(' · ')))),
+          unfed.length > 50 ? h('p', { class: 'hint' }, `And ${(unfed.length - 50).toLocaleString()} more.`) : null)
+        : h('p', {}, `No cell of ${this.cube.name} that a rule calculates holds a value its totals leave out.`),
     });
   }
   /* ---- Chart ---- */
