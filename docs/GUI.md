@@ -72,7 +72,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
 - **Fast with large results.** Only the rows and columns in view are drawn, so a grid of
   100,000 cells scrolls as smoothly as one of a hundred.
 - **Every state designed.** Loading, empty, error with a retry, and refused for want of
-  rights.
+  rights. Moving to another page leaves the one shown, still, until the next is drawn: a
+  quick load shows no gap, and a slow one the outline of what is coming. Choosing another
+  dimension, cube or dashboard within a page changes only what it shows.
 - **One command palette** (Ctrl+K) reaching every screen and action.
 - **Nothing lost to a session ending.** When the session ends, a sign-in dialog opens over
   the page, and the page, its unsaved changes with it, stays as it was. Signing out asks

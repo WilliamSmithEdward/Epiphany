@@ -312,15 +312,56 @@ async function route() {
     return;
   }
   document.title = `${entry.title} · Epiphany`;
-  mount(page, h('div', { class: 'page' }, loading(entry.shape)));
+  awaitNext(entry.shape);
   try {
     const module = await entry.load();
     if (ticket !== rendering) return;
-    active = await module.render(page, { state, params: new URLSearchParams(location.search), path, title: entry.title });
+    const shown = await module.render(page, { state, params: new URLSearchParams(location.search), path, title: entry.title });
+    // A page another move has passed by is not the one shown, to be asked before leaving.
+    if (ticket === rendering) active = shown;
   } catch (problem) {
     if (ticket !== rendering) return;
     mount(page, h('div', { class: 'page' }, failure(problem, route)));
   }
+}
+
+/** The wait for the next page to be drawn, which the next move between pages ends. */
+let waiting = null;
+
+/**
+ * Keeps the page shown, still and out of reach, until the next one draws anything in its
+ * place: a quick load then shows no gap at all, and a slow one, after a moment, the outline
+ * of what is coming. The first page has nothing to keep, so its outline is drawn at once,
+ * showing itself after the same moment.
+ */
+function awaitNext(shape) {
+  waiting?.();
+  const leaving = page.firstElementChild;
+  const outline = () => h('div', { class: 'page' }, loading(shape));
+  if (!leaving) {
+    mount(page, outline());
+    return;
+  }
+  page.inert = true;
+  page.setAttribute('aria-busy', 'true');
+  const timer = setTimeout(() => {
+    if (page.firstElementChild !== leaving) return;
+    const shown = outline();
+    // The moment has passed already, waiting here.
+    shown.firstElementChild.style.animationDelay = '0s';
+    mount(page, shown);
+  }, 150);
+  const watcher = new MutationObserver(() => {
+    if (page.firstElementChild !== leaving) waiting();
+  });
+  waiting = () => {
+    clearTimeout(timer);
+    watcher.disconnect();
+    page.inert = false;
+    page.removeAttribute('aria-busy');
+    waiting = null;
+  };
+  watcher.observe(page, { childList: true });
 }
 
 /** Goes to a page within the application. */
