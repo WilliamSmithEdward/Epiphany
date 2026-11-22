@@ -720,7 +720,10 @@ fn comments_outlast_the_process_and_so_do_those_taken_away() {
     drop(database);
 
     let mut reopened = home.open();
-    assert_eq!(reopened.comments(CUBE).unwrap(), std::slice::from_ref(&second));
+    assert_eq!(
+        reopened.comments(CUBE).unwrap(),
+        std::slice::from_ref(&second)
+    );
     // Ids go on from the last one given, never again.
     let third = reopened.comment(CUBE, &at, "Ada", 30, "Fixed.").unwrap();
     assert!(third.id > second.id);
