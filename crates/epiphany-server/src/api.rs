@@ -642,6 +642,9 @@ struct ElementView {
     parents: Vec<String>,
     children: Vec<ChildDef>,
     attributes: BTreeMap<String, Scalar>,
+    /// For a string element with a picklist, the values its text cells may be given.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    picklist: Option<Vec<String>>,
 }
 
 impl From<&Dimension> for DimensionView {
@@ -662,6 +665,7 @@ impl From<&Dimension> for DimensionView {
                 attributes: values
                     .filter_map(|(attribute, value)| Some((attribute.name.clone(), value.clone()?)))
                     .collect(),
+                picklist: element.picklist.clone(),
             }
         });
         Self {

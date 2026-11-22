@@ -253,6 +253,31 @@ pub struct ElementDef {
     /// Attribute values, keyed by attribute name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub attributes: BTreeMap<String, Scalar>,
+    /// For a string element of a cube's last dimension, the values its text cells may take:
+    /// offered as a list where they are written, and any other refused. Text stored before
+    /// is kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picklist: Option<PicklistDef>,
+}
+
+/// The values a text cell may take: given one by one, or the elements of a dimension, or of
+/// one of its subsets, in order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(untagged)]
+pub enum PicklistDef {
+    Values(Vec<String>),
+    Members(MembersDef),
+}
+
+/// The elements of a dimension, or of one of its subsets, as a picklist offers them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct MembersDef {
+    pub dimension: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subset: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -12,7 +12,7 @@ use epiphany_core::database::{
     CellRef, CellWrite, Changes, Database, Error, Journal, LockMode, ModelUpdate, NamedCells,
     NamedWrites,
 };
-use epiphany_core::model::ModelDef;
+use epiphany_core::model::{MembersDef, ModelDef, ModelError, PicklistDef, SubsetDef};
 use serde_json::json;
 
 /// A cube `Sales` over `Product` (All = A + B) and `Measure` (Units, Note as text), and a cube
@@ -903,6 +903,69 @@ impl Journal for Changed {
             .unwrap()
             .push(serde_json::to_value(changes).unwrap());
     }
+}
+
+#[test]
+fn a_text_cell_with_a_picklist_takes_only_what_it_offers() {
+    let note = |value: &str| CellWrite {
+        value: Scalar::Text(value.to_owned()),
+        ..set("Sales", ["A", "Note"], 0.0)
+    };
+    let mut database = database();
+    // Written before the picklist, a text stays when one is given.
+    database.write(None, &[note("Odd")]).unwrap();
+    let mut definition = definition();
+    let offered = ["Low", "High"].map(str::to_owned).to_vec();
+    definition.dimensions[1].elements[1].picklist = Some(PicklistDef::Values(offered));
+    database.update_model(1, definition.clone()).unwrap();
+    let read = |database: &Database| database.read(None, &cell("Sales", ["A", "Note"]));
+    assert_eq!(read(&database), Ok(Scalar::Text("Odd".to_owned())));
+
+    // A value offered is taken; another is refused, saying what is offered; emptying is allowed.
+    database.write(None, &[note("High")]).unwrap();
+    let refused = database.write(None, &[note("Medium")]).unwrap_err();
+    assert!(
+        matches!(&refused, Error::Write { index: 0, error: CellError::NotOffered { offered } } if offered == &["Low", "High"]),
+        "{refused:?}"
+    );
+    assert!(refused.to_string().contains("Low, High"), "{refused}");
+    assert_eq!(read(&database), Ok(Scalar::Text("High".to_owned())));
+    database.write(None, &[note("")]).unwrap();
+
+    // A picklist may offer a dimension's elements, or a subset's.
+    let members = |subset: Option<&str>| {
+        PicklistDef::Members(MembersDef {
+            dimension: "product".to_owned(),
+            subset: subset.map(str::to_owned),
+        })
+    };
+    definition.dimensions[1].elements[1].picklist = Some(members(None));
+    database.update_model(2, definition.clone()).unwrap();
+    database.write(None, &[note("B")]).unwrap();
+    let last = SubsetDef::Elements(vec!["B".to_owned()]);
+    definition.dimensions[0]
+        .subsets
+        .insert("Last".to_owned(), last);
+    definition.dimensions[1].elements[1].picklist = Some(members(Some("last")));
+    database.update_model(3, definition.clone()).unwrap();
+    let refused = database.write(None, &[note("A")]).unwrap_err();
+    assert!(
+        matches!(&refused, Error::Write { error: CellError::NotOffered { offered }, .. } if offered == &["B"]),
+        "{refused:?}"
+    );
+
+    // A source that is not there is refused, and only a string element takes a picklist.
+    definition.dimensions[1].elements[1].picklist = Some(members(Some("Nowhere")));
+    assert!(matches!(
+        Database::new(definition.clone()),
+        Err(ModelError::Unknown { .. })
+    ));
+    definition.dimensions[1].elements[1].picklist = None;
+    definition.dimensions[1].elements[0].picklist = Some(members(None));
+    assert!(matches!(
+        Database::new(definition),
+        Err(ModelError::Picklist { .. })
+    ));
 }
 
 #[test]

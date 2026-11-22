@@ -195,7 +195,7 @@ export const grid = {
     });
     table.addEventListener('paste', (event) => {
       const text = event.clipboardData?.getData('text/plain');
-      if (!text || event.target.closest('input, textarea')) return;
+      if (!text || event.target.closest('input, textarea, select')) return;
       event.preventDefault();
       this.paste(text);
     });

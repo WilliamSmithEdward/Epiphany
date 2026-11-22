@@ -72,6 +72,11 @@ pub enum ModelError {
         dashboard: String,
         width: u8,
     },
+    /// An element that is not a string element has a picklist.
+    Picklist {
+        dimension: String,
+        element: String,
+    },
 }
 
 impl fmt::Display for ModelError {
@@ -122,6 +127,10 @@ impl fmt::Display for ModelError {
             Self::TileWidth { dashboard, width } => write!(
                 f,
                 "a tile of dashboard '{dashboard}' is {width} columns wide; a tile is one or two"
+            ),
+            Self::Picklist { dimension, element } => write!(
+                f,
+                "element '{element}' in dimension '{dimension}' has a picklist; only a string element takes one"
             ),
         }
     }

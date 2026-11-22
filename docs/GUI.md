@@ -105,7 +105,7 @@ Each is added to the OpenAPI contract, with the existing route tests.
 | G7 | Admin: users, roles, sessions, transactions, server status, with the server routes above | An admin can do every listed task; a non-admin sees none of it |
 | G8 | Polish: accessibility audit, large-result performance, browser tests of the main journeys | The journeys pass in the browser, and 100,000 cells scroll smoothly |
 
-## Backlog from the survey of OLAP tools (2026-11-22)
+## Backlog from the survey of OLAP tools (2026-11-21)
 
 A survey of the main planning and OLAP tools' screens and documentation (IBM Planning
 Analytics Workspace and TM1, Oracle EPM and Smart View, SAP Analytics Cloud and Analysis for
@@ -115,14 +115,15 @@ totals placement, writable cells marked and read-only ones explained, typed spre
 check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, data bars, shades and coloured rules kept with views, earlier versions of the model compared and restored, calculations added from a heading (difference, ratio, % change, share of parent), the largest or smallest N rows by a column, the feeder check offered from Explain, undo and
 redo of values, only the rows in view drawn, in the grid and in every tree of members, so
 that results and dimensions of any size show whole and scroll smoothly, each cell's history
-of changes, who made each and from what to what, beside its comments, and the changes across
-cubes for administrators, by cube, user and time, each opened in Explore. Still to do, most
-valuable first:
+of changes, who made each and from what to what, beside its comments, the changes across
+cubes for administrators, by cube, user and time, each opened in Explore, and picklists: a
+string element's cells offer its values in a list, marked with the list's arrow, and take no
+others. Still to do, most valuable first:
 
 | Gap | Seen in | Shape here |
 | --- | --- | --- |
 | Named sandboxes, compared side by side | PAW, Oracle, Pigment, SAP Analytics Cloud | A kept, named transaction, shown as a column beside the stored values |
-| Picklists and validation | TM1, Oracle smart lists and validation rules | A picklist attribute with a dropdown in the cell; rules that warn or refuse |
+| Validation rules | Oracle validation rules, Anaplan | Rules over a cube's cells that warn, or refuse a value, as it is saved |
 | Supporting detail beneath a cell | Oracle, OneStream, Adaptive Planning | Lines that add up to the cell's value, kept with it |
 | Seeing the model as another user does | Pigment | A read-only "view as" with a banner, recorded in the audit log |
 

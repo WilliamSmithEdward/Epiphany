@@ -885,6 +885,31 @@ pub fn check(
     }
 }
 
+/// Whether a text written to a cell is one its picklist offers, where the cell's element in
+/// the cube's last dimension has a picklist. Emptying a cell is always allowed. Only what is
+/// written is held to it: text stored before the picklist was given is kept.
+pub fn offered(
+    model: &Model,
+    cube: &Cube,
+    at: &[ElementId],
+    value: &Scalar,
+) -> Result<(), CellError> {
+    let Scalar::Text(text) = value else {
+        return Ok(());
+    };
+    let picklist = elements(model, cube, at)
+        .next_back()
+        .and_then(|element| element.picklist.as_ref());
+    match picklist {
+        Some(offered) if !text.is_empty() && !offered.contains(text) => {
+            Err(CellError::NotOffered {
+                offered: offered.clone(),
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
 /// The elements of a coordinate, in dimension order.
 fn elements<'a>(
     model: &'a Model,
@@ -932,6 +957,10 @@ pub enum CellError {
     NotFinite,
     /// A value could not be shared out among the leaves of a cell; the text says why.
     Spread(String),
+    /// A text was written to a cell whose picklist does not offer it.
+    NotOffered {
+        offered: Vec<String>,
+    },
 }
 
 impl CellError {
@@ -946,6 +975,7 @@ impl CellError {
             Self::Calculated => "calculated_cell",
             Self::NotFinite => "not_finite",
             Self::Spread(_) => "spread_failed",
+            Self::NotOffered { .. } => "not_offered",
         }
     }
 }
@@ -965,6 +995,21 @@ impl fmt::Display for CellError {
             Self::Calculated => write!(f, "the cell is calculated by a rule and cannot be written"),
             Self::NotFinite => write!(f, "the number is not finite"),
             Self::Spread(reason) => reason.fmt(f),
+            Self::NotOffered { offered } => {
+                // A long list is told by its first few.
+                let shown: Vec<&str> = offered.iter().take(8).map(String::as_str).collect();
+                let more = offered.len().saturating_sub(shown.len());
+                let rest = if more > 0 {
+                    format!(" and {more} more")
+                } else {
+                    String::new()
+                };
+                write!(
+                    f,
+                    "the cell takes only the values its picklist offers: {}{rest}",
+                    shown.join(", ")
+                )
+            }
         }
     }
 }

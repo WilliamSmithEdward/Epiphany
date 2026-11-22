@@ -127,9 +127,15 @@ export const writeback = {
     if (grid.legend) grid.legend.hidden = !this.writable.size;
   },
 
+  /** The values a cell's picklist offers, where its element in the cube's last dimension has one. */
+  picklistAt(r, c) {
+    const at = this.coordinate(r, c);
+    return at ? this.dims.get(this.cube.dimensions.at(-1))?.byName.get(at.at(-1))?.picklist ?? null : null;
+  },
+
   /**
-   * Marks a cell as it may be written: taking a value, changed and not yet saved, taking a
-   * value to spread over the leaves beneath it, or held as spreads go.
+   * Marks a cell as it may be written: taking a value, from a picklist or not, changed and
+   * not yet saved, taking a value to spread over the leaves beneath it, or held as spreads go.
    */
   markWriting(td, r, c) {
     const { total, rowTuples, columnTuples, spreads } = this.grid;
@@ -139,6 +145,7 @@ export const writeback = {
     const spreadable = spreads && (total(tuple) || total(column)) && !editable && ![...tuple, ...column].some((m) => m.type === 'calculated');
     const held = this.holds.size > 0 && this.holds.has(this.key(r, c));
     td.classList.toggle('editable', editable);
+    td.classList.toggle('picklist', editable && typeof this.valueAt(r, c) !== 'number' && Boolean(this.picklistAt(r, c)));
     td.classList.toggle('edited', edited);
     td.classList.toggle('spreadable', spreadable);
     td.classList.toggle('held', held);
@@ -162,23 +169,42 @@ export const writeback = {
 
   /** Opens the editor in a cell, with what was typed into it or its current value. */
   edit(cell, typed) {
-    if (!cell || cell.querySelector('input')) return;
+    if (!cell || cell.querySelector('.cell-editor')) return;
     const r = Number(cell.dataset.r);
     const c = Number(cell.dataset.c);
     const before = this.result.cells[r * this.result.axes[0].tuples.length + c];
     // A total takes a value, or a spreading code, to spread over the leaves beneath it.
     const spreading = cell.classList.contains('spreadable');
-    const input = h('input', {
-      class: 'cell-editor',
-      'aria-label': spreading ? 'A value to spread over the leaves beneath' : 'New value',
-      title: spreading ? 'A number spreads in proportion. Or P, S or R and a number: in proportion, equally, or the whole into each; + or ~ after the letter adds or takes away; C clears.' : null,
-      inputmode: typeof before === 'string' ? 'text' : spreading ? 'text' : 'decimal',
-    });
-    input.value = typed ?? (before ?? '');
+    // A text cell with a picklist is given one of its values, chosen from the list; one typed
+    // chooses the first value that begins with it.
+    const picklist = spreading ? null : this.picklistAt(r, c);
+    const input = picklist
+      ? h('select', { class: 'cell-editor', 'aria-label': 'New value' },
+        h('option', { value: '' }, '—'),
+        before && !picklist.includes(before) ? h('option', { value: before }, `${before} (not offered)`) : null,
+        picklist.map((value) => h('option', { value }, value)))
+      : h('input', {
+        class: 'cell-editor',
+        'aria-label': spreading ? 'A value to spread over the leaves beneath' : 'New value',
+        title: spreading ? 'A number spreads in proportion. Or P, S or R and a number: in proportion, equally, or the whole into each; + or ~ after the letter adds or takes away; C clears.' : null,
+        inputmode: typeof before === 'string' ? 'text' : spreading ? 'text' : 'decimal',
+      });
+    input.value = picklist && typed !== undefined
+      ? picklist.find((value) => value.toLowerCase().startsWith(typed.toLowerCase())) ?? (before ?? '')
+      : typed ?? (before ?? '');
     const shown = [...cell.childNodes];
     cell.replaceChildren(input);
     input.focus();
-    if (typed === undefined) input.select();
+    if (!picklist && typed === undefined) input.select();
+    if (picklist && typed === undefined) {
+      try {
+        // The list opens at once where the browser lets it, within a click or a key. A value
+        // typed is chosen already, for Enter to take.
+        input.showPicker?.();
+      } catch {
+        // Opened after waiting on the server, it opens at a click or a key instead.
+      }
+    }
     let done = false;
     const finish = (save, move) => {
       if (done) return;
@@ -188,6 +214,9 @@ export const writeback = {
       else if (save) this.write(r, c, before, input.value, move);
       else cell.focus();
     };
+    // A value chosen from the open list is taken at once; one stepped to with the keys, the
+    // list closed, waits for Enter, Tab or leaving the cell.
+    let keyed = false;
     input.addEventListener('keydown', (event) => {
       event.stopPropagation();
       if (event.key === 'Enter') {
@@ -199,8 +228,12 @@ export const writeback = {
       } else if (event.key === 'Escape') {
         event.preventDefault();
         finish(false);
+      } else {
+        keyed = true;
+        setTimeout(() => { keyed = false; });
       }
     });
+    if (picklist) input.addEventListener('change', () => { if (!keyed) finish(true); });
     input.addEventListener('blur', () => finish(true));
   },
 
@@ -283,8 +316,8 @@ export const writeback = {
   /**
    * Writes pasted text into the grid, as a spreadsheet does: one value into every cell
    * chosen, or a block of tab-separated values from the top left of what is chosen, across
-   * and down. Cells that may not be written, empty values, and text where a number belongs
-   * are left out, and the notice says how many.
+   * and down. Cells that may not be written, empty values, text where a number belongs and
+   * text a cell's picklist does not offer are left out, and the notice says how many.
    */
   async paste(text) {
     if (!this.mayWrite()) {
@@ -310,17 +343,25 @@ export const writeback = {
         leftOut += 1;
         continue;
       }
-      const value = typeof this.valueAt(r, c) === 'string' ? raw : parseNumber(raw);
+      const value = typeof this.valueAt(r, c) === 'string' ? this.offeredAs(r, c, raw) : parseNumber(raw);
       if (value === null) leftOut += 1;
       else cells.push({ r, c, value });
     }
     if (!cells.length) {
-      notify(leftOut ? 'None of the cells it would go into can be written.' : 'There is nothing to paste.', 'bad');
+      notify(leftOut ? 'None of the cells it would go into take it.' : 'There is nothing to paste.', 'bad');
       return;
     }
     this.focusAfter = [top, left];
     const pasted = `Pasted ${cells.length.toLocaleString()} value${cells.length === 1 ? '' : 's'}.`;
-    await this.writeCells(cells, leftOut ? `${pasted} ${leftOut.toLocaleString()} left out: cells that cannot be written, or text where a number belongs.` : pasted);
+    await this.writeCells(cells, leftOut ? `${pasted} ${leftOut.toLocaleString()} left out: cells that cannot be written, or values they do not take.` : pasted);
+  },
+
+  /** Text as a cell takes it: as given, or as its picklist spells it; null where its picklist does not offer it. */
+  offeredAs(r, c, text) {
+    const picklist = this.picklistAt(r, c);
+    if (!picklist) return text;
+    const wanted = text.trim().toLowerCase();
+    return picklist.find((value) => value.toLowerCase() === wanted) ?? null;
   },
 
   /** Pastes what the clipboard holds, where the browser lets the page read it. */

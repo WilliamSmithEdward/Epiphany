@@ -485,6 +485,9 @@ button.twisty:hover { border-color: var(--accent); color: var(--accent-text); }
 .pivot td.edited::after { content: ""; float: right; width: 6px; height: 6px; margin: -6px -10px 0 4px; border-radius: 50%; background: var(--warn); }
 .pivot td:has(.cell-editor) { padding: 0; }
 .cell-editor { width: 100%; min-width: 104px; height: 31px; padding: 0 var(--s3); border: 2px solid var(--accent); background: var(--surface); text-align: right; font: inherit; font-variant-numeric: tabular-nums; outline: none; }
+/* A text cell with a picklist: marked with the arrow every choice has, and given a choice to edit. */
+select.cell-editor { appearance: none; text-align: left; padding-right: 26px; background: var(--surface) var(--chevron) no-repeat right 8px center / 12px; cursor: pointer; }
+.pivot tbody td.picklist.editable { padding-right: 24px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right 8px center; background-size: 12px; }
 .pending { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s5); border-top: 1px solid var(--line); background: var(--warn-soft); color: var(--warn); font-weight: 600; font-size: var(--text-s); }
 .pending[hidden] { display: none; }
 .pending .grow { flex: 1; }

@@ -3269,6 +3269,17 @@
           "name": {
             "type": "string"
           },
+          "picklist": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PicklistDef",
+                "description": "For a string element of a cube's last dimension, the values its text cells may take:\noffered as a list where they are written, and any other refused. Text stored before\nis kept."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "type": {
             "$ref": "#/components/schemas/ElementType"
           }
@@ -3323,6 +3334,16 @@
             "items": {
               "type": "string"
             }
+          },
+          "picklist": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "For a string element with a picklist, the values its text cells may be given."
           },
           "type": {
             "$ref": "#/components/schemas/ElementType"
@@ -3692,6 +3713,25 @@
           "calculated"
         ]
       },
+      "MembersDef": {
+        "type": "object",
+        "description": "The elements of a dimension, or of one of its subsets, as a picklist offers them.",
+        "required": [
+          "dimension"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "string"
+          },
+          "subset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "ModelDef": {
         "type": "object",
         "properties": {
@@ -3810,6 +3850,20 @@
           }
         },
         "additionalProperties": false
+      },
+      "PicklistDef": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/schemas/MembersDef"
+          }
+        ],
+        "description": "The values a text cell may take: given one by one, or the elements of a dimension, or of\none of its subsets, in order."
       },
       "QueryRequest": {
         "type": "object",

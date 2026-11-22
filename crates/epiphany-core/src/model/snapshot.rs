@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use rustc_hash::FxHashMap as HashMap;
 
 use super::definition::{
-    AttributeType, CubeDef, DimensionDef, DimensionType, ElementDef, ElementType, ModelDef,
-    SubsetDef, ViewDef,
+    AttributeType, CubeDef, DimensionDef, DimensionType, ElementDef, ElementType, MembersDef,
+    ModelDef, PicklistDef, SubsetDef, ViewDef,
 };
 use super::error::ModelError;
 use crate::Scalar;
@@ -70,6 +70,23 @@ impl Model {
                     name: name.clone(),
                     elements,
                 });
+            }
+        }
+        // A picklist may offer another dimension's elements, or a subset's, so every subset
+        // is in place first; it is worked out to its values once, here.
+        for (id, dimension) in def.dimensions.iter().enumerate() {
+            for (element, definition) in dimension.elements.iter().enumerate() {
+                let Some(picklist) = &definition.picklist else {
+                    continue;
+                };
+                if definition.kind != ElementType::Text {
+                    return Err(ModelError::Picklist {
+                        dimension: dimension.name.clone(),
+                        element: definition.name.clone(),
+                    });
+                }
+                let values = model.picklist(picklist, &dimension.name, &definition.name)?;
+                model.dimensions[id].elements[element].picklist = Some(values);
             }
         }
         // Rules and feeders may refer to other cubes, so every cube is in place first.
@@ -149,6 +166,45 @@ impl Model {
     pub fn dimension(&self, name: &str) -> Option<&Dimension> {
         let id = *self.dimension_ids.get(&key(name))?;
         Some(&self.dimensions[id as usize])
+    }
+
+    /// The values a picklist offers: those it gives, or the names of a dimension's elements,
+    /// or of a subset's, in order.
+    fn picklist(
+        &self,
+        picklist: &PicklistDef,
+        dimension: &str,
+        element: &str,
+    ) -> Result<Vec<String>, ModelError> {
+        let MembersDef {
+            dimension: from,
+            subset,
+        } = match picklist {
+            PicklistDef::Values(values) => return Ok(values.clone()),
+            PicklistDef::Members(members) => members,
+        };
+        let unknown = |what, name: &str| ModelError::Unknown {
+            what,
+            within: format!("the picklist of element '{element}' of dimension '{dimension}'"),
+            name: name.to_owned(),
+        };
+        let source = self
+            .dimension(from)
+            .ok_or_else(|| unknown("dimension", from))?;
+        let name = |&id: &ElementId| source.elements[id as usize].name.clone();
+        Ok(match subset {
+            Some(subset) => {
+                let chosen = source
+                    .subset(subset)
+                    .ok_or_else(|| unknown("subset", subset))?;
+                chosen.elements.iter().map(name).collect()
+            }
+            None => source
+                .elements
+                .iter()
+                .map(|each| each.name.clone())
+                .collect(),
+        })
     }
 
     /// The position of a cube in [`Model::cubes`].
@@ -379,6 +435,9 @@ pub struct Element {
     pub leaves: Vec<(ElementId, f64)>,
     /// One value per attribute of the dimension, in [`Dimension::attributes`] order.
     pub attributes: Vec<Option<Scalar>>,
+    /// For a string element, the values its text cells may be given, where it has a
+    /// picklist: worked out with the model, from a list or a dimension's or subset's elements.
+    pub picklist: Option<Vec<String>>,
 }
 
 impl Element {
@@ -443,6 +502,7 @@ impl Element {
             level: 0,
             leaves: Vec::new(),
             attributes: values,
+            picklist: None,
         })
     }
 }

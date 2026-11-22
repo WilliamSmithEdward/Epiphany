@@ -575,6 +575,7 @@ class DimensionEditor extends Editor {
       h('div', { class: 'card-body facts' },
         h('div', { class: 'field' }, h('label', { for: 'element-name' }, 'Name'), name),
         h('div', { class: 'field' }, h('label', { for: 'element-type' }, 'Type'), type),
+        element.type === 'string' ? this.picklistField(element) : null,
         parents.length ? h('p', { class: 'muted' }, `Part of ${parents.map((parent) => parent.name).join(', ')}.`) : null,
         element.type === 'consolidated' ? h('div', { class: 'field' },
           h('label', {}, 'Children and their weights'),
@@ -649,7 +650,70 @@ class DimensionEditor extends Editor {
     element.type = type;
     if (type === 'consolidated') element.children ??= [];
     else delete element.children;
+    // Only a string element offers a picklist.
+    if (type !== 'string') delete element.picklist;
     this.changed();
+  }
+
+  /**
+   * A string element's picklist, the values its text cells may be given where it is the
+   * element of a cube's last dimension: any text, values listed one to a line, or the
+   * elements of a dimension, or of one of its subsets.
+   */
+  picklistField(element) {
+    const picklist = element.picklist;
+    const kind = !picklist ? '' : Array.isArray(picklist) ? 'values' : 'members';
+    const dimensions = this.page.definition.dimensions.map((dimension) => (dimension.name === this.working.name ? this.working : dimension));
+    const how = h('select', {
+      class: 'select',
+      id: 'picklist-kind',
+      onchange: (event) => {
+        const chosen = event.target.value;
+        if (!chosen) delete element.picklist;
+        else element.picklist = chosen === 'values' ? [] : { dimension: dimensions[0].name };
+        this.changed();
+      },
+    },
+    h('option', { value: '', selected: kind === '' }, 'Any text'),
+    h('option', { value: 'values', selected: kind === 'values' }, 'Values listed here'),
+    h('option', { value: 'members', selected: kind === 'members' }, 'The elements of a dimension'));
+    let chooser = null;
+    if (kind === 'values') {
+      chooser = h('textarea', { class: 'textarea', rows: 4, spellcheck: 'false', 'aria-label': 'The values offered, one to a line', placeholder: 'One value to a line' });
+      chooser.value = picklist.join('\n');
+      chooser.addEventListener('change', () => {
+        element.picklist = chooser.value.split('\n').map((line) => line.trim()).filter(Boolean);
+        this.changed();
+      });
+    } else if (kind === 'members') {
+      // Named as the server names them, ignoring case.
+      const same = (name, named) => name.toLowerCase() === named?.toLowerCase();
+      const from = dimensions.find((dimension) => same(dimension.name, picklist.dimension));
+      chooser = h('div', { class: 'field-pair' },
+        h('select', {
+          class: 'select',
+          'aria-label': 'The dimension whose elements are offered',
+          onchange: (event) => {
+            element.picklist = { dimension: event.target.value };
+            this.changed();
+          },
+        }, dimensions.map((dimension) => h('option', { value: dimension.name, selected: dimension === from }, dimension.name))),
+        h('select', {
+          class: 'select',
+          'aria-label': 'Its subset, if only those',
+          onchange: (event) => {
+            element.picklist = { dimension: picklist.dimension, ...(event.target.value ? { subset: event.target.value } : {}) };
+            this.changed();
+          },
+        },
+        h('option', { value: '' }, 'Every element'),
+        Object.keys(from?.subsets ?? {}).map((name) => h('option', { value: name, selected: same(name, picklist.subset) }, `The subset ${name}`))));
+    }
+    return h('div', { class: 'field' },
+      h('label', { for: 'picklist-kind' }, 'Picklist'),
+      how,
+      chooser,
+      h('span', { class: 'hint' }, 'Where this is a cube\'s last dimension, its text cells take only the values offered, chosen from a list. Text stored before stays.'));
   }
 
   deleteElement(name) {

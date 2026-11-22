@@ -98,6 +98,17 @@ from the leaves up, and say that it is the cube's calendar:
 A query can then say `[Period].Levels('Quarter').Members`, and `Sum(Ytd(), ...)` for a figure
 to date.
 
+A string element may give its cells a picklist: values listed, or the elements of a dimension
+or of one of its subsets, in order.
+
+```json
+{ "name": "Owner", "type": "string", "picklist": ["Ada", "Grace", "Lin"] }
+{ "name": "Region", "type": "string", "picklist": { "dimension": "Entity", "subset": "Regions" } }
+```
+
+A write of other text to such a cell is refused (`not_offered`), saying what is offered.
+Emptying a cell is always allowed, and text stored before the picklist was given is kept.
+
 ## The API
 
 Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also served at

@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::Scalar;
 use crate::cells::CellError;
-use crate::cells::{At, Cells, Coordinate, Writes, check, coordinate};
+use crate::cells::{At, Cells, Coordinate, Writes, check, coordinate, offered};
 use crate::mdx::{self, MdxError, QueryResult};
 use crate::model::{Cube, ElementId, Model, ModelDef, ModelError};
 use crate::reader::{Fed, Reader, Totals, feed};
@@ -993,6 +993,7 @@ impl Database {
                 let definition = &self.model.cubes()[cube];
                 let value = batch.value(index);
                 check(&self.model, definition, at, value)?;
+                offered(&self.model, definition, at, value)?;
                 let text = matches!(value, Scalar::Text(_));
                 match definition.rule_for_leaf(at, text) {
                     Some(_) => Err(CellError::Calculated),

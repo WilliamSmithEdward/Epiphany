@@ -49,6 +49,7 @@ pub fn random_model(rng: &mut Rng, dimensions: usize, shape: &Shape) -> ModelDef
         name,
         children,
         attributes: Default::default(),
+        picklist: None,
     };
     let child = |id: usize, weight: f64| ChildDef {
         name: format!("e{id}"),
