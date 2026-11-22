@@ -27,13 +27,21 @@ function leafCount(dim, name) {
   return dim.leafCounts.get(name);
 }
 
+/**
+ * What a spreading code typed into a total asks for: `{ method, value }`, the value being
+ * the total's new one; null when the text is not a code. A number alone is spread in
+ * proportion; P, S or LS, and R or LR before it say in proportion, equally, or the whole
+ * into each; + or ~ after P or S adds to the total `before` or takes from it; P% changes it
+ * by a percentage, in proportion; C clears.
+ */
 function spreadCode(text, before) {
-  const [, letters = 'P', action, rest] = /^\s*(?:(LS|LR|P|S|R|C)\s*([+~])?)?\s*(.*?)\s*$/i.exec(String(text));
+  const [, letters = 'P', action, rest] = /^\s*(?:(LS|LR|P%|P|S|R|C)\s*([+~])?)?\s*(.*?)\s*$/i.exec(String(text));
   const kind = letters.toUpperCase();
   if (kind === 'C') return rest === '' && !action ? { method: 'repeat', value: 0 } : null;
   const amount = parseNumber(rest);
-  const method = { P: 'proportional', S: 'equal', LS: 'equal', R: 'repeat', LR: 'repeat' }[kind];
-  if (amount === null || (action && method === 'repeat')) return null;
+  const method = { P: 'proportional', 'P%': 'proportional', S: 'equal', LS: 'equal', R: 'repeat', LR: 'repeat' }[kind];
+  if (amount === null || (action && (method === 'repeat' || kind === 'P%'))) return null;
+  if (kind === 'P%') return { method, value: before * (1 + amount / 100) };
   return { method, value: action === '+' ? before + amount : action === '~' ? before - amount : amount };
 }
 
@@ -216,7 +224,7 @@ export const writeback = {
       : h('input', {
         class: 'cell-editor',
         'aria-label': spreading ? 'A value to spread over the leaves beneath' : 'New value',
-        title: spreading ? 'A number spreads in proportion. Or P, S or R and a number: in proportion, equally, or the whole into each; + or ~ after the letter adds or takes away; C clears.' : null,
+        title: spreading ? 'A number spreads in proportion. Or P, S or R and a number: in proportion, equally, or the whole into each; + or ~ after the letter adds or takes away; P% and a number changes it by that percentage; C clears.' : null,
         inputmode: typeof before === 'string' ? 'text' : spreading ? 'text' : 'decimal',
       });
     input.value = picklist && typed !== undefined
@@ -481,13 +489,14 @@ export const writeback = {
    * Spreads what was typed into a total over the leaves beneath it, as TM1 does: a number
    * in proportion to what they hold; P, S (or LS) and R (or LR) before a number spread it in
    * proportion, equally, or the whole of it into each leaf; + or ~ after P or S adds the
-   * number to the total or takes it away; and C clears every leaf.
+   * number to the total or takes it away; P% before a number changes every leaf by that
+   * percentage; and C clears every leaf.
    */
   async spreadTyped(r, c, before, text, move) {
     this.focusAfter = [r + (move?.[0] ?? 0), c + (move?.[1] ?? 0)];
     const asked = spreadCode(text, typeof before === 'number' ? before : 0);
     if (!asked) {
-      if (String(text).trim() !== '' && String(text) !== String(before ?? '')) notify(`“${text}” is neither a number nor a spreading code such as P100, S100 or R100.`, 'bad');
+      if (String(text).trim() !== '' && String(text) !== String(before ?? '')) notify(`“${text}” is neither a number nor a spreading code such as P100, S100, R100 or P%10.`, 'bad');
       this.focusCell();
       return;
     }

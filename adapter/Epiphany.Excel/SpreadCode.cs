@@ -9,17 +9,19 @@ namespace Epiphany.Excel
     /// TM1's clients have it, and as the GUI's grid takes it: a code and then the value,
     /// "P1200" say. P spreads in proportion to what the leaves hold, S (or LS) in equal shares,
     /// R (or LR) gives each leaf the value itself, and C, alone, clears them. After P or S, a
-    /// "+" or "~" before the value adds it to what the cell holds, or takes it away.
+    /// "+" or "~" before the value adds it to what the cell holds, or takes it away. P% and a
+    /// value changes what the cell holds by that percentage, in proportion: "P%10" for a tenth
+    /// more.
     /// </summary>
     public sealed class SpreadCode
     {
         private static readonly Regex Typed = new Regex(
-            @"^\s*(LS|LR|P|S|R|C)\s*([+~])?\s*(.*?)\s*$",
+            @"^\s*(LS|LR|P%|P|S|R|C)\s*([+~])?\s*(.*?)\s*$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         private static readonly Dictionary<string, string> Methods = new Dictionary<string, string>
         {
-            ["P"] = "proportional", ["S"] = "equal", ["LS"] = "equal",
+            ["P"] = "proportional", ["P%"] = "proportional", ["S"] = "equal", ["LS"] = "equal",
             ["R"] = "repeat", ["LR"] = "repeat", ["C"] = "repeat",
         };
 
@@ -33,6 +35,12 @@ namespace Epiphany.Excel
         /// from it, and 0 where it is the cell's new value.</summary>
         public int Change { get; private set; }
 
+        /// <summary>Whether the value is the percentage by which what the cell holds changes.</summary>
+        public bool Percent { get; private set; }
+
+        /// <summary>Whether what the cell comes to depends on what it holds before.</summary>
+        public bool Relative => Change != 0 || Percent;
+
         /// <summary>The spread a text says, or null where it says none.</summary>
         public static SpreadCode Parse(object typed)
         {
@@ -45,15 +53,18 @@ namespace Epiphany.Excel
             if (code == "C")
                 return change == 0 && rest.Length == 0 ? new SpreadCode { Method = "repeat", Value = 0 } : null;
             var method = Methods[code];
+            var percent = code == "P%";
             if (!double.TryParse(rest, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
-                || (change != 0 && method == "repeat"))
+                || (change != 0 && (method == "repeat" || percent)))
                 return null;
-            return new SpreadCode { Method = method, Value = value, Change = change };
+            return new SpreadCode { Method = method, Value = value, Change = change, Percent = percent };
         }
 
         /// <summary>What the cell comes to once spread, from what it holds before.</summary>
         public double ComesTo(double before)
         {
+            if (Percent)
+                return before * (1 + Value / 100);
             return Change == 0 ? Value : before + Change * Value;
         }
     }

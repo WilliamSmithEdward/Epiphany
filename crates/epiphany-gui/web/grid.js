@@ -9,12 +9,6 @@ import { beneath } from './tree.js';
 import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, SCALES, shownText, working } from './ui.js';
 
 /**
- * What a spreading code typed into a total asks for: `{ method, value }`, the value being
- * the total's new one; null when the text is not a code. A number alone is spread in
- * proportion; P, S or LS, and R or LR before it say in proportion, equally, or the whole
- * into each; + or ~ after P or S adds to the total `before` or takes from it; C clears.
- */
-/**
  * What a view's highlights do to a cell of its grid, or null when it has none: a bar as
  * long as the number's share of the largest in its column, a shade from the column's lowest
  * to its highest, and the colour of the first rule the number meets. Totals take no bar or

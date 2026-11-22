@@ -106,6 +106,7 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 | A number over a consolidated or calculated cell | Nothing is written, the formula is put back, and the status bar says so | Unverified |
 | `P`, `S` or `LS`, `R` or `LR` and a number over a consolidated cell, `P1200` say | The number is spread over the leaves beneath: `P` in proportion to what they hold, `S` or `LS` in equal shares, `R` or `LR` the number itself to each | TM1's spreading shortcuts, of which these are some; unverified |
 | `+` or `~` between `P` or `S` and the number, `P+100` say | The cell's value is read, and it comes to that with the number added, or taken away, spread as `P` or `S` spreads | TM1's relative spreads; unverified |
+| `P%` and a number over a consolidated cell, `P%10` say | The cell's value is read, and it comes to that changed by the number as a percentage, a tenth more for `P%10`, spread in proportion | TM1's percent change; unverified |
 | `C` alone over a consolidated cell | The leaves beneath are cleared | TM1's clearing shortcut; unverified |
 | The same over a leaf | The number is written | Unverified |
 | The same over a string cell | It is text, and written as typed | Unverified |
@@ -156,6 +157,6 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 
 - `DBS` to a consolidated cell as a spread. A value is spread by typing it with its letter
   over a `DBRW`, not by a worksheet function.
-- TM1's other spreading shortcuts: directions, percentage changes, holds. The add-in takes
-  the codes the GUI's grid takes, no more.
+- TM1's other spreading shortcuts: directions, straight lines, growth, holds. The add-in
+  takes the codes the GUI's grid takes, `P%` for a percentage change among them, no more.
 - `VIEW`, `TM1RPTROW` and the other functions of PAfE's reports.

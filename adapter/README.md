@@ -60,7 +60,8 @@ Once a value is written, every formula asks the server again, so totals over it 
 Over a consolidation, type a code before the number to spread it over the leaves beneath, as
 in the GUI's grid: `P1200` in proportion to what they hold, `S1200` (or `LS1200`) in equal
 shares, `R100` (or `LR100`) to give each 100. `P+100` or `S~100` adds 100 to what the cell
-holds, or takes it away, and spreads that; `C` alone clears the leaves.
+holds, or takes it away, and spreads that; `P%10` makes it a tenth more, in proportion, and
+`P%-10` a tenth less; `C` alone clears the leaves.
 
 While a value is on its way a cell shows the value it had last, or `#GETTING_DATA` the first
 time. It shows `#N/A` when the server cannot be reached or wants a sign-in, and `*KEY_ERR`

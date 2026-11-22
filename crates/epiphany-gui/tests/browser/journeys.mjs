@@ -555,6 +555,26 @@ async function exploring() {
     expect(shownNumber(shown.cells['0,1']) === 1100.5, `The grid shows February's salaries as ${quoted(shown.cells['0,1'])}.`);
     await page.audit('Cells a calculated member formats');
   });
+  await step('A percentage typed into a total changes every leaf beneath it', async () => {
+    // January's budgeted operating expenses: salaries of 1,000 and rent of -200, 800 in all.
+    const mdx = 'SELECT {[Period].[Jan], [Period].[Feb]} ON COLUMNS, {[Account].[Operating Expenses]} ON ROWS FROM [General Ledger] WHERE ([Entity].[US], [Version].[Budget])';
+    await page.click('[role="tab"]', 'MDX');
+    await page.fill('textarea.mdx-editor', mdx);
+    await page.click('button', 'Run');
+    await page.waitFor(`[...document.querySelectorAll('th.row-head[data-r1]')].map((th) => th.textContent.trim()).join() === 'Operating Expenses'`, 'the total the query asks for');
+    await page.click('td[data-r="0"][data-c="0"]');
+    await page.waitFor(`document.querySelector('td[data-r="0"][data-c="0"]').classList.contains('spreadable')`, 'the total to take a spread');
+    await page.type('P');
+    await page.waitFor(`document.querySelector('.cell-editor')`, 'the cell\'s editor');
+    await page.type('%10');
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('.pending:not([hidden])')?.textContent.includes('unsaved change')`, 'the spread, waiting');
+    await page.click('.pending button', 'Save changes');
+    await page.waitFor(`document.querySelector('.pending')?.hidden`, 'the spread, saved');
+    const cells = ['Salaries', 'Rent'].map((account) => ({ cube: 'General Ledger', at: at(account, 'Jan') }));
+    const [salaries, rent] = (await page.api('POST', '/cells/read', { cells })).data.cells.map((cell) => cell.value);
+    expect(Math.abs(salaries - 1100) < 1e-6 && Math.abs(rent + 220) < 1e-6, `The API reads salaries of ${quoted(salaries)} and rent of ${quoted(rent)} where a tenth more, 1,100 and -220, was spread.`);
+  });
 }
 
 async function changingTheModel() {

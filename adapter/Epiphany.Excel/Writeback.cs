@@ -164,9 +164,10 @@ namespace Epiphany.Excel
             // a leaf, or a number written to a string cell as text.
             var spread = SpreadCode.Parse(value);
             double? comesTo = null;
-            if (spread != null && spread.Change != 0)
+            if (spread != null && spread.Relative)
             {
-                // Added to or taken from what the cell holds, which is asked for first.
+                // Added to, taken from or changed by a percentage of what the cell holds, which
+                // is asked for first.
                 var before = await source.Connection.Read(source.Cube, source.At).ConfigureAwait(false);
                 if (before is double held)
                     comesTo = spread.ComesTo(held);
