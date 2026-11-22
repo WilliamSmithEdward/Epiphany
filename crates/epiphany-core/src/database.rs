@@ -28,7 +28,7 @@ use crate::Scalar;
 use crate::cells::CellError;
 use crate::cells::{Cells, Writes, check, coordinate};
 use crate::mdx::{self, MdxError, QueryResult};
-use crate::model::{ElementId, Model, ModelDef, ModelError};
+use crate::model::{Cube, ElementId, Model, ModelDef, ModelError};
 use crate::reader::{Fed, Reader, Totals, feed};
 use locks::{Locks, Mode, Resource};
 
@@ -152,8 +152,52 @@ impl NamedCells<'_> {
 }
 
 impl serde::Serialize for NamedCells<'_> {
+    /// Written as [`CellWrite`]s are, from names borrowed from the model rather than copied.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.collect_seq(self.each())
+        let model = self.model;
+        let cubes = model.cubes().iter().zip(self.cells);
+        serializer.collect_seq(cubes.flat_map(|(cube, cells)| {
+            cells.entries().map(move |(at, value)| Named {
+                model,
+                cube,
+                at,
+                value,
+            })
+        }))
+    }
+}
+
+/// A cell as a [`CellWrite`] is written, its names borrowed.
+struct Named<'a> {
+    model: &'a Model,
+    cube: &'a Cube,
+    at: &'a [ElementId],
+    value: Scalar,
+}
+
+impl serde::Serialize for Named<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut cell = serializer.serialize_struct("CellWrite", 3)?;
+        cell.serialize_field("cube", &self.cube.name)?;
+        cell.serialize_field("at", &Names(self))?;
+        cell.serialize_field("value", &self.value)?;
+        cell.end()
+    }
+}
+
+/// The names of a cell's elements.
+struct Names<'a>(&'a Named<'a>);
+
+impl serde::Serialize for Names<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let Named {
+            model, cube, at, ..
+        } = self.0;
+        let dimensions = cube.dimensions.iter().zip(*at);
+        serializer.collect_seq(dimensions.map(|(&dimension, &element)| {
+            &model.dimensions()[dimension as usize].elements[element as usize].name
+        }))
     }
 }
 

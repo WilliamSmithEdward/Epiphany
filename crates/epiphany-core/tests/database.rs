@@ -790,3 +790,21 @@ fn a_snapshot_is_taken_in_the_commit_or_left_for_later() {
         assert_eq!(units(&database, None, "All"), 3.0);
     }
 }
+
+#[test]
+fn every_cell_is_written_out_as_a_cell_write_is() {
+    let mut database = database();
+    let note = CellWrite {
+        value: Scalar::Text("a \"quoted\"\nline".to_owned()),
+        ..set("Sales", ["A", "Note"], 0.0)
+    };
+    let writes = [
+        set("Sales", ["A", "Units"], 1.5),
+        set("Sales", ["B", "Units"], -2.0),
+        note,
+    ];
+    database.write(None, &writes).unwrap();
+    let written = serde_json::to_string(&database.named_cells()).unwrap();
+    assert_eq!(written, serde_json::to_string(&database.cells()).unwrap());
+    assert_eq!(database.cells().len(), 3);
+}
