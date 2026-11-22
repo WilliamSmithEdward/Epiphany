@@ -399,6 +399,118 @@ async fn an_administrator_views_as_another_user_reading_only_and_on_record() {
 }
 
 #[tokio::test]
+async fn a_users_views_are_their_own_and_go_with_them() {
+    let (home, app) = secured("private-views", None);
+    let admin = token(&app).await;
+    let reader = json!({ "password": PASSWORD, "role": "read" });
+    send(&app, "PUT", "/admin/users/lin", Some(&admin), Some(reader)).await;
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    let lin = signed["token"].as_str().unwrap().to_owned();
+    let views = "/cubes/General%20Ledger/private-views";
+    let mdx = "SELECT {[Period].[Jan]} ON COLUMNS FROM [General Ledger]";
+
+    // A reader keeps a view, which nobody else sees.
+    let view = json!({ "mdx": mdx, "format": { "decimals": 1 } });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        &format!("{views}/Mine"),
+        Some(&lin),
+        Some(view.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, theirs) = send(
+        &app,
+        "GET",
+        "/cubes/generalledger/private-views",
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!((status, theirs), (StatusCode::OK, json!({ "Mine": view })));
+    let (_, _, admins) = send(&app, "GET", views, Some(&admin), None).await;
+    assert_eq!(admins, json!({}));
+
+    // Saved under the same name, case and spaces aside, it takes the old one's place.
+    let plain = json!({ "mdx": mdx });
+    send(
+        &app,
+        "PUT",
+        &format!("{views}/%20mine"),
+        Some(&lin),
+        Some(plain.clone()),
+    )
+    .await;
+    let (_, _, theirs) = send(&app, "GET", views, Some(&lin), None).await;
+    assert_eq!(theirs, json!({ "mine": plain }));
+
+    // A query that fails, or that selects from another cube, and a name too long, will not do.
+    let (_, _, model) = send(&app, "GET", "/model", Some(&admin), None).await;
+    let second = json!({ "based_on": model["version"], "cube": { "name": "Second", "dimensions": ["Period"] } });
+    send(&app, "PUT", "/cubes/Second", Some(&admin), Some(second)).await;
+    let elsewhere = json!({ "mdx": "SELECT {[Period].[Jan]} ON COLUMNS FROM [Second]" });
+    let refusals = [
+        (format!("{views}/Bad"), json!({ "mdx": "SELECT nonsense" })),
+        (format!("{views}/Elsewhere"), elsewhere),
+        (format!("{views}/{}", "x".repeat(121)), plain.clone()),
+    ];
+    for (path, body) in refusals {
+        let (status, _, _) = send(&app, "PUT", &path, Some(&lin), Some(body)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}");
+    }
+
+    // A view as Lin sees none of them, and keeps or takes away nothing of Lin's.
+    let asked = json!({ "user": "lin" });
+    let (_, _, viewing) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(asked)).await;
+    let viewing = viewing["token"].as_str().unwrap().to_owned();
+    let (_, _, seen) = send(&app, "GET", views, Some(&viewing), None).await;
+    assert_eq!(seen, json!({}));
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        &format!("{views}/Theirs"),
+        Some(&viewing),
+        Some(plain.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = send(
+        &app,
+        "DELETE",
+        &format!("{views}/mine"),
+        Some(&viewing),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // They are kept on disk, beside the users, and go with their user.
+    let kept = || -> Value {
+        serde_json::from_str(&fs::read_to_string(home.0.join("views.json")).unwrap()).unwrap()
+    };
+    assert_eq!(kept()["lin"]["General Ledger"]["mine"], plain);
+    send(
+        &app,
+        "PUT",
+        &format!("{views}/Spare"),
+        Some(&lin),
+        Some(plain.clone()),
+    )
+    .await;
+    let (status, _, _) = send(&app, "DELETE", &format!("{views}/MINE"), Some(&lin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, gone) = send(&app, "DELETE", &format!("{views}/mine"), Some(&lin), None).await;
+    assert_eq!(
+        (status, &gone["code"]),
+        (StatusCode::NOT_FOUND, &json!("unknown_view"))
+    );
+    assert_eq!(kept()["lin"]["General Ledger"], json!({ "Spare": plain }));
+    send(&app, "DELETE", "/admin/users/lin", Some(&admin), None).await;
+    assert_eq!(kept(), json!({}));
+}
+
+#[tokio::test]
 async fn a_cells_history_says_who_changed_it_and_from_what_to_what() {
     let (_home, app) = secured("history", None);
     let token = token(&app).await;
@@ -1082,5 +1194,12 @@ async fn a_server_without_users_lists_none_and_adds_none() {
     assert_eq!(
         (status, refusal["code"].clone()),
         (StatusCode::CONFLICT, json!("no_users"))
+    );
+    // Nor has anybody views of their own: every view is everybody's, kept with its cube.
+    let views = "/cubes/General%20Ledger/private-views";
+    let (status, _, refusal) = send(&app, "GET", views, None, None).await;
+    assert_eq!(
+        (status, refusal["code"].clone()),
+        (StatusCode::NOT_FOUND, json!("no_users"))
     );
 }

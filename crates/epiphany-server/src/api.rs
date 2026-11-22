@@ -25,11 +25,12 @@ use epiphany_core::database::{
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
     AttributeType, ChildDef, CubeDef, DashboardDef, Dimension, DimensionDef, DimensionType,
-    ElementId, ElementType, ModelDef,
+    ElementId, ElementType, ModelDef, ViewDef, key,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{Admitted, AuditEntry, Auth, Grants, Refusal, Role, UserView};
+use crate::views::{PrivateViews, Refused};
 use utoipa::openapi::RefOr;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
 use utoipa::{IntoParams, OpenApi, ToSchema};
@@ -178,6 +179,8 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(lock))
         .routes(routes!(list_sandboxes, create_sandbox))
         .routes(routes!(delete_sandbox))
+        .routes(routes!(list_private_views))
+        .routes(routes!(put_private_view, delete_private_view))
         .routes(routes!(put_dashboard, delete_dashboard))
         .routes(routes!(server_status))
         .routes(routes!(list_users))
@@ -287,6 +290,8 @@ async fn survive(State(state): State<AppState>, request: Request, next: Next) ->
 
     let most = match (request.method(), request.uri().path()) {
         (_, "/sessions") => MOST_SIGN_IN,
+        // A user's own view, which a reader may keep, is given the room of a question.
+        (&Method::PUT, path) if path.contains("/private-views/") => MOST_ASKED,
         (&Method::PUT, _) | (_, "/cells/write") => MOST_BODY,
         _ => MOST_ASKED,
     };
@@ -391,6 +396,10 @@ fn needed(method: &Method, path: &str) -> Role {
             true => Role::Read,
             false => Role::Write,
         };
+    }
+    // A user's own views are theirs to keep and take away, with no more than reading.
+    if let ["", "cubes", _, "private-views", ..] = segments.as_slice() {
+        return Role::Read;
     }
     let reads = ["/cells/read", "/cells/explain", "/cells/history", "/mdx"];
     if method == Method::GET || path == "/sessions" || reads.contains(&path) {
@@ -1705,6 +1714,144 @@ async fn delete_sandbox(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/* ---- Private views: each user's own, beside the model's ---- */
+
+impl From<Refused> for ApiError {
+    fn from(refused: Refused) -> Self {
+        let (status, code) = match refused {
+            Refused::Invalid(_) => (StatusCode::UNPROCESSABLE_ENTITY, "invalid_view"),
+            Refused::Missing(_) => (StatusCode::NOT_FOUND, "unknown_view"),
+            Refused::Unkept(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
+        };
+        ApiError::new(status, code, refused.to_string())
+    }
+}
+
+/// The views the users keep for themselves; a server without users has none, its views
+/// being everybody's.
+fn private_views(state: &AppState) -> Result<&PrivateViews, ApiError> {
+    let message = "this server has no users, so its views are everybody's: save them with the cube";
+    let views = state.auth.as_ref().map(|auth| &auth.views);
+    views.ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "no_users", message.to_owned()))
+}
+
+/// Refuses in a view as another user, which may keep and take away nothing of theirs.
+fn not_viewing(viewing: Option<Extension<Viewing>>, user: &str) -> Result<(), ApiError> {
+    match viewing {
+        Some(_) => {
+            let message = format!("a view as {user} only reads; their views are theirs to change");
+            Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden", message))
+        }
+        None => Ok(()),
+    }
+}
+
+/// The signed-in user's own views of a cube, by name: queries saved for them alone, beside
+/// the cube's views, which everybody sees. A view as the user sees none of them.
+#[utoipa::path(
+    get,
+    path = "/cubes/{cube}/private-views",
+    params(("cube" = String, Path, description = "Cube name, ignoring case and spaces")),
+    responses(
+        (status = OK, body = BTreeMap<String, ViewDef>, description = "The user's views of the cube"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown cube, or a server without users, which has no views of anybody's own")
+    )
+)]
+async fn list_private_views(
+    State(state): State<AppState>,
+    Extension(grants): Held,
+    Extension(Signed(user)): Extension<Signed>,
+    viewing: Option<Extension<Viewing>>,
+    Path(cube): Path<String>,
+) -> Result<Json<BTreeMap<String, ViewDef>>, ApiError> {
+    let views = private_views(&state)?;
+    allow(&grants, &cube, Role::Read)?;
+    let named = state
+        .database
+        .read()
+        .unwrap()
+        .model()
+        .cube(&cube)
+        .map(|found| found.name.clone());
+    let named = named.ok_or_else(|| unknown("cube", &cube))?;
+    match viewing {
+        Some(_) => Ok(Json(BTreeMap::new())),
+        None => Ok(Json(views.of(&user, &named))),
+    }
+}
+
+/// Saves a view of a cube for the signed-in user alone, in place of one of theirs of the
+/// same name, case and spaces aside. Its query is run first, as theirs: it must select from
+/// the cube, and they must be able to read what it reads. Each user's views may take 4 MiB.
+#[utoipa::path(
+    put,
+    path = "/cubes/{cube}/private-views/{name}",
+    params(("cube" = String, Path), ("name" = String, Path, description = "The view's name, up to 120 characters")),
+    request_body = ViewDef,
+    responses(
+        (status = NO_CONTENT, description = "Saved"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown cube, or a server without users"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The query fails or selects from another cube, the name will not do, or the user's views would take too much room"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The view could not be kept")
+    )
+)]
+async fn put_private_view(
+    State(state): State<AppState>,
+    Extension(grants): Held,
+    Extension(Signed(user)): Extension<Signed>,
+    viewing: Option<Extension<Viewing>>,
+    Path((cube, name)): Path<(String, String)>,
+    Body(view): Body<ViewDef>,
+) -> Result<StatusCode, ApiError> {
+    let views = private_views(&state)?;
+    not_viewing(viewing, &user)?;
+    allow(&grants, &cube, Role::Read)?;
+    let named = {
+        let database = state.database.read().unwrap();
+        let named = database.model().cube(&cube).map(|found| found.name.clone());
+        let named = named.ok_or_else(|| unknown("cube", &cube))?;
+        let may_read = |other: &str| grants.on(other) >= Role::Read;
+        let answered = database.query_as(None, &view.mdx, &may_read, &[])?;
+        if key(&answered.cube) != key(&named) {
+            let message = format!(
+                "the view's query selects from {}, not from {named}",
+                answered.cube
+            );
+            return Err(ApiError::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_view",
+                message,
+            ));
+        }
+        named
+    };
+    views.keep(&user, &named, &name, view)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Takes one of the signed-in user's own views away; of a cube that is gone, too.
+#[utoipa::path(
+    delete,
+    path = "/cubes/{cube}/private-views/{name}",
+    params(("cube" = String, Path), ("name" = String, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Taken away"),
+        (status = NOT_FOUND, body = ApiError, description = "The user has no such view, or the server has no users"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The views could not be kept")
+    )
+)]
+async fn delete_private_view(
+    State(state): State<AppState>,
+    Extension(Signed(user)): Extension<Signed>,
+    viewing: Option<Extension<Viewing>>,
+    Path((cube, name)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let views = private_views(&state)?;
+    not_viewing(viewing, &user)?;
+    views.forget(&user, &cube, &name)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /* ---- Dashboards: pages of saved views, kept with the model ---- */
 
 #[derive(Deserialize, ToSchema)]
@@ -1717,12 +1864,6 @@ struct DashboardPut {
 
 /// Where a dashboard is in the definition, by its name ignoring case and spaces.
 fn dashboard_at(definition: &ModelDef, name: &str) -> Option<usize> {
-    let key = |text: &str| -> String {
-        text.chars()
-            .filter(|character| !character.is_whitespace())
-            .flat_map(char::to_lowercase)
-            .collect()
-    };
     definition
         .dashboards
         .iter()

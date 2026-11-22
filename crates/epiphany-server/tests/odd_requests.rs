@@ -108,6 +108,10 @@ fn bodies() -> Vec<String> {
         }
     }
     bodies.push(spread(json!(1), "equal", json!([])));
+    // Views, as a user keeps them.
+    bodies.push(json!({ "mdx": "SELECT {[Period].[Jan]} ON COLUMNS FROM [General Ledger]" }));
+    bodies.push(json!({ "mdx": "" }));
+    bodies.push(json!({ "mdx": "SELECT", "format": { "decimals": -1 } }));
     let mut bodies: Vec<String> = bodies.iter().map(Value::to_string).collect();
     // And what is no JSON at all.
     bodies.extend(["", "{", "{\"cells\": [", "\u{0}", "nonsense"].map(str::to_owned));
@@ -115,7 +119,7 @@ fn bodies() -> Vec<String> {
     bodies
 }
 
-const ROUTES: [(&str, &str); 67] = [
+const ROUTES: [(&str, &str); 70] = [
     ("POST", "/sessions"),
     ("DELETE", "/sessions"),
     ("GET", "/model"),
@@ -173,6 +177,9 @@ const ROUTES: [(&str, &str); 67] = [
     ("POST", "/sandboxes"),
     ("DELETE", "/sandboxes/Extra"),
     ("DELETE", "/sandboxes/%00"),
+    ("GET", "/cubes/General%20Ledger/private-views"),
+    ("PUT", "/cubes/General%20Ledger/private-views/Mine"),
+    ("DELETE", "/cubes/Nowhere/private-views/%00"),
     ("POST", "/admin/view-as"),
     ("GET", "/admin/audit"),
     ("GET", "/admin/audit?most=-1"),

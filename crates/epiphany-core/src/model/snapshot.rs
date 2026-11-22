@@ -612,7 +612,7 @@ fn roll_up(
 }
 
 /// The form in which names are compared: case and spaces are ignored.
-pub(crate) fn key(name: &str) -> String {
+pub fn key(name: &str) -> String {
     let mut key = String::with_capacity(name.len());
     write_key(name, &mut key);
     key

@@ -10,7 +10,6 @@ pub use definition::{
     NumberFormat, PicklistDef, Scale, SubsetDef, TileDef, TileShow, Tone, ValidationDef, ViewDef,
 };
 pub use error::ModelError;
-pub(crate) use snapshot::key;
 pub use snapshot::{
-    Attribute, Cube, Dimension, DimensionId, Element, ElementId, Model, Validation,
+    Attribute, Cube, Dimension, DimensionId, Element, ElementId, Model, Validation, key,
 };

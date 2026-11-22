@@ -1,7 +1,7 @@
 // Exploring a cube: a field list, a layout of rows, columns and filters, and the pivot grid
 // of the query that layout makes.
 
-import { ApiError, get, modelVersion, part, post, put } from './api.js';
+import { ApiError, del, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { chart, shape } from './chart.js';
 import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, mdx, saved, shown, takeOver } from './layout.js';
@@ -301,23 +301,8 @@ class Explorer {
       class: 'button',
       'aria-haspopup': 'menu',
       onclick: (event) => {
-        const views = Object.keys(this.cube.views ?? {});
-        const admin = state.user?.role === 'admin';
-        menu([
-          { heading: views.length ? 'Saved views' : 'No saved views yet' },
-          ...views.map((name) => ({
-            label: name,
-            icon: 'grid',
-            action: () => this.change((layout) => {
-              layout.mdx = this.cube.views[name].mdx;
-              layout.geometry = this.cube.views[name].geometry ?? null;
-              layout.format = this.cube.views[name].format ?? null;
-              layout.highlights = this.cube.views[name].highlights ?? null;
-            }, true),
-          })),
-          admin ? '-' : null,
-          admin ? { label: 'Save this query as a view…', icon: 'save', disabled: !this.text, action: () => this.saveView() } : null,
-        ], event.currentTarget);
+        const button = event.currentTarget;
+        working(button, () => this.viewsMenu(button));
       },
     }, icon('grid', 16), 'Views', icon('down', 14));
     // Where the values come from: the stored ones, or a sandbox of the user's.
@@ -1145,34 +1130,129 @@ class Explorer {
     this.draw();
   }
 
-  /* ---- Saving a view ---- */
+  /* ---- Views: the user's own, and everyone's, kept with the cube ---- */
+
+  /**
+   * The views to open: the user's own, which only they see, then the cube's, which everyone
+   * does; and saving the query shown as one. A server without users keeps no views of
+   * anybody's own, and a view as another user changes nothing of theirs.
+   */
+  async viewsMenu(button) {
+    const keepsOwn = !state.open;
+    const viewing = Boolean(state.user?.viewer);
+    let own = {};
+    let unfetched = false;
+    if (keepsOwn) {
+      try {
+        own = await get(`/cubes/${part(this.cube.name)}/private-views`, { quiet: true });
+      } catch {
+        unfetched = true;
+      }
+    }
+    const open = (view) => () => this.change((layout) => {
+      layout.mdx = view.mdx;
+      layout.geometry = view.geometry ?? null;
+      layout.format = view.format ?? null;
+      layout.highlights = view.highlights ?? null;
+    }, true);
+    const mine = Object.entries(own);
+    const everyones = Object.entries(this.cube.views ?? {});
+    const saving = !viewing && (keepsOwn || state.user?.role === 'admin');
+    menu([
+      mine.length ? { heading: 'Your views' } : null,
+      ...mine.map(([name, view]) => ({ label: name, icon: 'user', action: open(view) })),
+      unfetched ? { heading: 'Your views could not be fetched' } : null,
+      { heading: everyones.length ? 'Everyone\'s views' : 'No views for everyone yet' },
+      ...everyones.map(([name, view]) => ({ label: name, icon: 'grid', action: open(view) })),
+      saving ? '-' : null,
+      saving ? { label: 'Save this query as a view…', icon: 'save', disabled: !this.text, action: () => this.saveView() } : null,
+      saving && mine.length ? { label: 'Take one of your views away…', icon: 'trash', action: () => this.removeOwnViews(mine) } : null,
+    ], button);
+  }
+
+  /** The query shown, with the sizes, number format and highlights it is shown with. */
+  asView() {
+    const geometry = this.layout.geometry;
+    const sized = geometry && (geometry.row_height || Object.keys(geometry.widths ?? {}).length)
+      ? { geometry: { ...(geometry.row_height ? { row_height: geometry.row_height } : {}), widths: geometry.widths ?? {} } }
+      : {};
+    const format = this.layout.format ? { format: this.layout.format } : {};
+    const highlights = this.layout.highlights ? { highlights: this.layout.highlights } : {};
+    return { mdx: this.text, ...sized, ...format, ...highlights };
+  }
+
+  /**
+   * Saves the query shown as a view: the user's own, on a server with users, or with the
+   * cube for everyone, which takes an administrator, who chooses which.
+   */
   async saveView() {
+    const keepsOwn = !state.open;
+    const shares = state.user?.role === 'admin';
     const name = h('input', { class: 'input', id: 'view-name', required: true, maxlength: 120 });
+    const own = h('input', { type: 'radio', name: 'view-whose', checked: true });
+    const everyone = h('input', { type: 'radio', name: 'view-whose' });
+    const whose = keepsOwn && shares
+      ? h('fieldset', { class: 'field' }, h('legend', {}, 'Who sees it'),
+        h('label', { class: 'check' }, own, 'Only you'),
+        h('label', { class: 'check' }, everyone, `Everyone who may read ${this.cube.name}`))
+      : null;
     const saved = await dialog({
       title: 'Save as a view',
       confirm: 'Save',
       body: h('div', { class: 'facts' },
         h('div', { class: 'field' }, h('label', { for: 'view-name' }, 'Name'), name),
-        h('p', { class: 'hint' }, `Saved with ${this.cube.name}, where everyone who may read the cube can open it. A view of the same name is replaced.`)),
+        whose,
+        h('p', { class: 'hint' }, keepsOwn && !shares
+          ? 'Kept for you alone: nobody else sees it. A view of yours of the same name is replaced.'
+          : 'A view of the same name is replaced.')),
       onsubmit: async () => {
         const view = name.value.trim();
         if (!view) throw new Error('Give the view a name.');
+        if (keepsOwn && (!shares || own.checked)) {
+          await put(`/cubes/${part(this.cube.name)}/private-views/${part(view)}`, this.asView());
+          return `Saved the view “${view}” for you alone.`;
+        }
         // The cube as it is now, saved against the version it was read at, so that a change
         // someone else made meanwhile is not overwritten.
         const cube = await get(`/cubes/${part(this.cube.name)}`);
-        const geometry = this.layout.geometry;
-        const kept = geometry && (geometry.row_height || Object.keys(geometry.widths ?? {}).length)
-          ? { geometry: { ...(geometry.row_height ? { row_height: geometry.row_height } : {}), widths: geometry.widths ?? {} } }
-          : {};
-        const format = this.layout.format ? { format: this.layout.format } : {};
-        const highlights = this.layout.highlights ? { highlights: this.layout.highlights } : {};
-        const views = { ...(cube.views ?? {}), [view]: { mdx: this.text, ...kept, ...format, ...highlights } };
+        const views = { ...(cube.views ?? {}), [view]: this.asView() };
         await put(`/cubes/${part(this.cube.name)}`, { based_on: Number(modelVersion), cube: { ...cube, views } });
         this.cube.views = views;
-        return view;
+        return `Saved the view “${view}” for everyone.`;
       },
     });
-    if (saved) notify(`Saved the view “${saved}”.`, 'good');
+    if (saved) notify(saved, 'good');
+  }
+
+  /** Lists the user's own views of the cube, each to be taken away. */
+  async removeOwnViews(mine) {
+    const list = h('ul', { class: 'history-list' });
+    const none = () => h('li', { class: 'muted' }, 'You keep no views of this cube now.');
+    mount(list, mine.map(([name]) => {
+      const item = h('li', {},
+        h('span', { class: 'grow' }, name),
+        h('button', {
+          class: 'button small danger',
+          type: 'button',
+          'aria-label': `Take away the view ${name}`,
+          onclick: (event) => working(event.currentTarget, async () => {
+            try {
+              await del(`/cubes/${part(this.cube.name)}/private-views/${part(name)}`);
+            } catch (problem) {
+              notify(problem.message, 'bad');
+              return;
+            }
+            // The keys go on to the view after, or before, or to Done.
+            const next = item.nextElementSibling ?? item.previousElementSibling;
+            item.remove();
+            if (!list.children.length) list.append(none());
+            (next?.querySelector('button') ?? list.closest('dialog')?.querySelector('button[type="submit"]'))?.focus();
+            notify(`Took away the view “${name}”.`, 'good');
+          }),
+        }, 'Take away'));
+      return item;
+    }));
+    await dialog({ title: `Your views of ${this.cube.name}`, confirm: 'Done', cancel: null, body: list });
   }
 
   /* ---- MDX ---- */

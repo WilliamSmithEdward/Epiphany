@@ -431,6 +431,30 @@ async function exploring() {
     await page.press('Home');
     await page.waitFor(`document.activeElement?.textContent === 'Grid' && document.querySelector('td[data-r]')`, 'the grid, chosen by the keys');
   });
+  await step('A view kept for oneself is listed apart, and taken away', async () => {
+    const views = '/cubes/General%20Ledger/private-views';
+    await page.click('button', 'Views');
+    await page.click('.menu [role="menuitem"]', 'Save this query as a view…');
+    await page.waitFor(`document.querySelector('dialog[open] #view-name')`, 'the dialog that saves a view');
+    await page.audit('Saving a view');
+    await page.fill('#view-name', 'Budget detail');
+    await page.press('Enter');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('for you alone'))`, 'the view, saved');
+    const kept = (await page.api('GET', views)).data;
+    // The query as typed, laid out over lines as Explore lays it out.
+    const asked = (mdx) => mdx?.replace(/\s+/g, ' ').trim();
+    expect(asked(kept['Budget detail']?.mdx) === asked(QUERY), `The API keeps ${quoted(kept)}.`);
+    await page.click('button', 'Views');
+    await page.waitFor(`[...document.querySelectorAll('.menu .menu-label')].some((label) => label.textContent === 'Your views')`, 'the user\'s own views, apart');
+    await page.audit('The views, the user\'s own apart');
+    await page.click('.menu [role="menuitem"]', 'Take one of your views away…');
+    await page.waitFor(`document.querySelector('dialog[open]')?.getAttribute('aria-label') === 'Your views of General Ledger'`, 'the user\'s views, to take away');
+    await page.audit('Taking a view away');
+    await page.click('dialog[open] button', 'Take away the view Budget detail');
+    await page.waitFor(`document.querySelector('dialog[open]')?.textContent.includes('You keep no views of this cube now.')`, 'the view, taken away');
+    await page.click('dialog[open] button', 'Done');
+    expect(quoted((await page.api('GET', views)).data) === '{}', 'The view is still kept.');
+  });
   await step('A cell\'s comments, history and detail open beside the grid', async () => {
     await page.click('td[data-r="1"][data-c="1"]');
     await page.press('F2', SHIFT);
@@ -499,6 +523,12 @@ async function administering({ reader }) {
     await page.type('5');
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('not write to it'))`, 'the refusal');
     await page.audit('A value refused');
+    // Nor is a view saved in the reader's name.
+    await page.click('button', 'Views');
+    await page.waitFor(`document.querySelector('.menu')`, 'the views');
+    const offered = await page.evaluate(`[...document.querySelectorAll('.menu [role="menuitem"]')].map((item) => item.textContent.trim())`);
+    expect(!offered.some((label) => label.startsWith('Save')), `A view as a reader offers ${quoted(offered)}.`);
+    await page.press('Escape');
   });
   await step('Stop goes back to the administrator, and the audit keeps the view', async () => {
     const loaded = page.once('Page.loadEventFired');

@@ -11,6 +11,8 @@
 //! An administrator may view the server as another user does: a session of that user's,
 //! able only to read what they may read, which names the administrator viewing. Each is
 //! recorded in `audit.jsonl` before it is given.
+//!
+//! What a user keeps for themself, their own views, is kept with them ([`PrivateViews`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
@@ -25,11 +27,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
+use epiphany_core::model::key;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use utoipa::ToSchema;
 
 use crate::storage::{read_json, write_json};
+use crate::views::PrivateViews;
 
 const FILE: &str = "users.json";
 /// Where what administrators do as others is recorded, one line each, beside the users.
@@ -140,14 +144,6 @@ impl Grants {
     }
 }
 
-/// Cube names are compared as the engine compares them: ignoring case and spaces.
-fn key(name: &str) -> String {
-    name.chars()
-        .filter(|character| !character.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
 #[derive(Serialize, Deserialize)]
 struct User {
     name: String,
@@ -241,6 +237,8 @@ pub struct Auth {
     pub(crate) waiting: Semaphore,
     /// Taken to add a line to the audit, one at a time.
     recording: Mutex<()>,
+    /// The views each user keeps for themself, which go with them.
+    pub(crate) views: PrivateViews,
 }
 
 impl Auth {
@@ -260,7 +258,10 @@ impl Auth {
                 (account.name.to_lowercase(), account)
             })
             .collect();
-        Ok((!users.is_empty()).then(|| Self {
+        if users.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(Self {
             directory: directory.to_owned(),
             users: RwLock::new(users),
             sessions: Mutex::default(),
@@ -270,6 +271,7 @@ impl Auth {
             checking: Semaphore::new(CHECKED_AT_ONCE),
             waiting: Semaphore::new(WAITING),
             recording: Mutex::default(),
+            views: PrivateViews::load(directory)?,
         }))
     }
 
@@ -553,7 +555,8 @@ impl Auth {
         Ok(())
     }
 
-    /// Removes a user and ends their sessions. The last administrator cannot be removed.
+    /// Removes a user, ends their sessions and takes their views away. The last
+    /// administrator cannot be removed.
     pub fn remove(&self, name: &str) -> Result<(), String> {
         let key = name.trim().to_lowercase();
         let mut users = self.users.write().unwrap_or_else(PoisonError::into_inner);
@@ -567,7 +570,9 @@ impl Auth {
         *users = changed;
         drop(users);
         self.end_sessions(&key);
-        Ok(())
+        self.views
+            .forget_user(&key)
+            .map_err(|error| format!("{name} is removed, but not their views: {error}"))
     }
 
     /// Ends every session of a user, their views as others with them; says how many there

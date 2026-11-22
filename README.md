@@ -35,7 +35,8 @@ epiphany-server serve <directory> [address]
 ```
 
 The directory holds the model in `<directory>/model` (see below), keeps its data in
-`<directory>/data` and its users in `<directory>/users.json`. The address defaults to
+`<directory>/data`, its users in `<directory>/users.json` and the views each keeps for
+themself in `<directory>/views.json`. The address defaults to
 `127.0.0.1:8080`. Every commit is written to disk before it is acknowledged, and the data is
 there again after a restart.
 
@@ -151,6 +152,7 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `GET`, `POST /cubes/{cube}/comments`, `DELETE /cubes/{cube}/comments/{id}` | Comments pinned to cells, signed by their authors |
 | `POST /mdx` | An MDX query, optionally stood at other members in place of those its WHERE names (`context`) |
 | `GET /cubes/{cube}/views/{view}` | A saved view |
+| `GET /cubes/{cube}/private-views`, `PUT`, `DELETE /cubes/{cube}/private-views/{name}` | The signed-in user's own views of a cube, which nobody else sees |
 | `GET /cubes/{cube}/feeders/check` | Calculated cells that no feeder feeds |
 | `GET /admin/models`, `GET /admin/models/{name}` | The earlier versions of the model the server keeps; one is restored by `PUT /model` |
 | `GET /admin/changes` | The changes saved to cells across cubes, the newest first, by cube, user and time |
@@ -165,6 +167,12 @@ the sum of, such as a travel budget's flights and hotels. The detail is written 
 as one write, and waits, commits and rolls back with it. A value written to the cell plainly
 takes the detail away, for its lines no longer add up to it. `POST /cells/explain` gives a
 cell's detail with the rest of what it says of the cell.
+
+A user may keep views of their own beside a cube's, which everyone sees: queries saved for
+them alone, with the same sizes, number format and highlights a cube's view may have. Anyone
+who may read a cube may keep views of it; the query is run as it is saved, and must select
+from that cube. A user's views take at most 4 MiB, and go when the user does. A server
+without users keeps none: its views are everybody's.
 
 A sandbox is a transaction its owner keeps under a name, for values to be tried out in
 before anyone else sees them. It holds no locks, so it holds up nobody, never expires, and
