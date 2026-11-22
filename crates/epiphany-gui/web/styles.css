@@ -803,6 +803,19 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .pivot tbody tr:hover td.editable:not(.edited) { background-color: color-mix(in oklab, var(--good) 10%, var(--accent-soft)); }
 .legend-input::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; background: color-mix(in oklab, var(--good) 22%, var(--surface)); border: 1px solid color-mix(in oklab, var(--good) 45%, transparent); }
 
+/* ---- Sandboxes ---- */
+
+/* The button that says where the values come from, accented while a sandbox is worked in. */
+.sandbox-button { max-width: 240px; }
+.sandbox-button .clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sandbox-button.in-sandbox { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+/* A cell whose value a sandbox changes, and the stored value struck through before it when compared. */
+.pivot tbody td.sandboxed:not(.edited) { background-color: color-mix(in oklab, var(--accent) 12%, var(--surface)); color: var(--accent-text); font-weight: 600; }
+.pivot tbody tr:hover td.sandboxed:not(.edited) { background-color: color-mix(in oklab, var(--accent) 18%, var(--surface)); }
+.pivot td del.was { margin-right: var(--s2); color: var(--text-3); font-weight: 400; }
+.legend-sandboxed::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; background: color-mix(in oklab, var(--accent) 22%, var(--surface)); border: 1px solid color-mix(in oklab, var(--accent) 45%, transparent); }
+.pending.sandbox { background: var(--accent-soft); color: var(--accent-text); }
+
 /* ---- A dashboard's filters ---- */
 
 .dash-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); margin: calc(var(--s2) * -1) 0 var(--s4); color: var(--text-3); }

@@ -11,6 +11,7 @@ import { beneath } from './tree.js';
 import { dialog, download, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid } from './grid.js';
+import { sandboxes } from './sandboxes.js';
 import { writeback } from './writeback.js';
 
 /** What an entry of the history of changes changed, as the Undo and Redo buttons say it. */
@@ -31,16 +32,24 @@ export async function render(target, { params }) {
       h('a', { class: 'button', href: '/explore', 'data-link': '' }, 'Explore another cube'))));
     return;
   }
-  const dims = new Map(await Promise.all(cube.dimensions.map(async (dim) => [dim, await dimension(dim)])));
+  // The user's sandboxes come with the dimensions, so that the first query runs in the one
+  // last worked in.
+  const [dims, kept] = await Promise.all([
+    Promise.all(cube.dimensions.map(async (dim) => [dim, await dimension(dim)])).then((pairs) => new Map(pairs)),
+    get('/sandboxes', { quiet: true }).catch(() => []),
+  ]);
   // A query left for this cube, from another cube's page or another page, is run here.
   const handed = takeOver(cube.name);
   const view = handed ? { mdx: handed } : cube.views?.[params.get('view')];
-  return new Explorer(target, definition, cube, dims, view);
+  return new Explorer(target, definition, cube, dims, view, kept);
 }
 
 class Explorer {
-  /** `view`, where one is given, is a saved view to open in place of the last layout. */
-  constructor(target, definition, cube, dims, view) {
+  /**
+   * `view`, where one is given, is a saved view to open in place of the last layout; `kept`
+   * the user's sandboxes, one of which the values may be worked on in.
+   */
+  constructor(target, definition, cube, dims, view, kept) {
     this.definition = definition;
     this.cube = cube;
     this.dims = dims;
@@ -51,9 +60,10 @@ class Explorer {
     this.view = 'grid';
     this.result = null;
     this.ticket = 0;
-    // Writing back: the transaction the edits are held in, the edits by cell, and the cells
-    // of the result that may be written, as "row,column".
+    // Writing back: the transaction the edits are held in, a sandbox's where one is worked
+    // in, the edits by cell, and the cells of the result that may be written, as "row,column".
     this.tx = null;
+    this.resume(kept);
     this.edits = new Map();
     this.forgetWritable();
     // Cells held, which spreads leave as they are: by their place in the cube, so that a hold
@@ -64,13 +74,15 @@ class Explorer {
       return at.length === cube.dimensions.length && at.every((name, index) => dims.get(cube.dimensions[index])?.byName.has(name));
     };
     this.holds = new Set(JSON.parse(localStorage.getItem(`epiphany.holds.${cube.name}`) ?? '[]').filter(fits));
+    // A sandbox keeps its changes whatever becomes of the page; only unsaved changes to the
+    // stored values are asked about, or let go.
     addEventListener('beforeunload', (event) => {
-      if (this.tx && this.changes && this.page.isConnected) event.preventDefault();
+      if (this.tx && !this.sandbox && this.changes && this.page.isConnected) event.preventDefault();
     });
     // A page closed with changes unsaved lets them go at once, rather than leaving them to
     // hold their cells until the server gives up on them.
     addEventListener('pagehide', () => {
-      if (this.tx) {
+      if (this.tx && !this.sandbox) {
         fetch(`/api/transactions/${this.tx}/rollback`, { method: 'POST', keepalive: true, headers: { 'x-requested-by': 'epiphany-gui' } });
       }
     });
@@ -80,7 +92,7 @@ class Explorer {
 
   /** Asked before the page is left: unsaved changes are discarded only if the user agrees. */
   async leave() {
-    if (!this.tx) return true;
+    if (!this.tx || this.sandbox) return true;
     // A transaction whose changes were all taken back is let go without asking.
     if (!this.changes) {
       post(`/transactions/${this.tx}/rollback`).catch(() => {});
@@ -308,6 +320,8 @@ class Explorer {
         ], event.currentTarget);
       },
     }, icon('grid', 16), 'Views', icon('down', 14));
+    // Where the values come from: the stored ones, or a sandbox of the user's.
+    this.sandboxButton = h('button', { class: 'button sandbox-button', 'aria-haspopup': 'menu', onclick: (event) => this.sandboxMenu(event.currentTarget) });
     this.tabs = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Show as' });
     this.finder = this.buildFinder();
     const outputRow = h('div', { class: 'output-row' }, this.output, this.commentPanel);
@@ -315,7 +329,7 @@ class Explorer {
       this.fields,
       h('section', { class: 'work' },
         h('div', { class: 'work-head' },
-          h('div', { class: 'toolbar' }, icon('cube', 20), cubes, viewButton, this.finder.box, h('div', { class: 'grow' }), this.tabs),
+          h('div', { class: 'toolbar' }, icon('cube', 20), cubes, viewButton, this.sandboxButton, this.finder.box, h('div', { class: 'grow' }), this.tabs),
           this.toolbar,
           this.layoutBar),
         outputRow,
@@ -350,10 +364,24 @@ class Explorer {
     });
   }
 
-  /** The strip that says what is not yet saved, with the ways to save or discard it. */
+  /**
+   * The strip that says what is not yet saved, with the ways to save or discard it: in a
+   * sandbox, what it holds, to publish or discard.
+   */
   drawPending() {
-    this.pendingBar.hidden = !this.tx || !this.changes;
+    const sandbox = this.sandbox;
+    this.pendingBar.classList.toggle('sandbox', Boolean(sandbox));
+    this.pendingBar.hidden = sandbox ? !sandbox.pending : !this.tx || !this.changes;
     if (this.pendingBar.hidden) return;
+    if (sandbox) {
+      const cells = `${sandbox.pending.toLocaleString()} cell${sandbox.pending === 1 ? '' : 's'}`;
+      mount(this.pendingBar,
+        icon('sandbox', 16),
+        h('span', { class: 'grow' }, `${sandbox.name} changes ${cells}, not yet published. Totals here include them; nobody else sees them until you publish.`),
+        h('button', { class: 'button small', onclick: (event) => working(event.currentTarget, () => this.discard()) }, 'Discard…'),
+        h('button', { class: 'button small primary', onclick: (event) => working(event.currentTarget, () => this.save()) }, icon('publish', 14), 'Publish'));
+      return;
+    }
     const count = this.changes || 0;
     mount(this.pendingBar,
       icon('edit', 16),
@@ -377,6 +405,7 @@ class Explorer {
 
   drawToolbar() {
     this.drawPending();
+    this.drawSandboxButton();
     const layout = this.layout;
     const button = (label, iconName, action, props = {}) => h('button', { class: 'button small quiet', onclick: action, ...props }, icon(iconName, 16), h('span', {}, label));
     mount(this.toolbar,
@@ -749,18 +778,31 @@ class Explorer {
     this.output.classList.add('busy');
     const started = performance.now();
     const telling = setTimeout(() => this.drawRunning(started, stopping), 700);
+    const asking = { quiet: true, signal: stopping.signal };
     try {
-      const result = await post('/mdx', { mdx: text, transaction: this.tx ?? undefined }, { quiet: true, signal: stopping.signal });
+      // In a sandbox the stored answer comes beside its own, for the cells it changes to be
+      // marked, and the sandbox's count of them with it.
+      const [result, stored, kept] = await Promise.all([
+        post('/mdx', { mdx: text, transaction: this.tx ?? undefined }, asking),
+        this.sandbox ? post('/mdx', { mdx: text }, asking) : null,
+        this.sandbox ? get('/sandboxes', asking) : null,
+      ]);
       if (ticket !== this.ticket) return;
       this.result = result;
       this.error = null;
       this.took = performance.now() - started;
       this.forgetWritable();
+      this.compareStored(result, stored);
+      if (kept) this.takeSandboxes(kept);
       if (this.layout.mdx) this.adopt(result);
     } catch (problem) {
       if (ticket !== this.ticket) return;
       if (problem.code === 'stopped') {
         this.stopped();
+        return;
+      }
+      if (problem.code === 'unknown_transaction' && this.sandbox) {
+        this.lostSandbox();
         return;
       }
       this.result = null;
@@ -1216,4 +1258,4 @@ class Explorer {
 export { ApiError };
 
 // The grid, writing back and comments are the explorer's too.
-Object.assign(Explorer.prototype, grid, writeback, comments);
+Object.assign(Explorer.prototype, grid, writeback, comments, sandboxes);

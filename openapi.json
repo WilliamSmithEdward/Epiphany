@@ -2185,6 +2185,164 @@
         }
       }
     },
+    "/sandboxes": {
+      "get": {
+        "summary": "The signed-in user's sandboxes, in the order of their names. Values are read, written,\nspread and queried in one with its transaction; `POST /transactions/{id}/commit`\npublishes them, and `POST /transactions/{id}/rollback` empties it.",
+        "operationId": "list_sandboxes",
+        "responses": {
+          "200": {
+            "description": "The user's sandboxes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Sandbox"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Makes a sandbox for the signed-in user: a transaction kept under a name, which holds no\nlocks, never expires and outlives the server, for values to wait in until they are\npublished.",
+        "operationId": "create_sandbox",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SandboxRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new sandbox, empty",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The user has a sandbox of that name, or a sandbox cannot be called that",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The sandbox could not be kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{name}": {
+      "delete": {
+        "summary": "Deletes one of the signed-in user's sandboxes, with the values it holds.",
+        "operationId": "delete_sandbox",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user has no sandbox of that name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sessions": {
       "post": {
         "summary": "Signs in, starting a session.",
@@ -2325,7 +2483,7 @@
     },
     "/transactions/{id}/commit": {
       "post": {
-        "summary": "Stores a transaction's pending writes in one step and ends it.",
+        "summary": "Stores a transaction's pending writes in one step and ends it. A sandbox's are published,\nchecked and locked as any commit's, and the sandbox stays open, empty. Values go only\ninto cubes the user may write to now, however long ago they were written.",
         "operationId": "commit_transaction",
         "parameters": [
           {
@@ -2365,6 +2523,26 @@
           },
           "404": {
             "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Publishing a sandbox: another transaction holds a lock, or has one of its cells pending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Publishing a sandbox: one of its values can no longer be written where it is",
             "content": {
               "application/json": {
                 "schema": {
@@ -2531,7 +2709,7 @@
     },
     "/transactions/{id}/rollback": {
       "post": {
-        "summary": "Discards a transaction's pending writes and ends it.",
+        "summary": "Discards a transaction's pending writes and ends it. A sandbox is emptied, and stays.",
         "operationId": "rollback_transaction",
         "parameters": [
           {
@@ -3985,6 +4163,42 @@
           "admin"
         ]
       },
+      "Sandbox": {
+        "type": "object",
+        "description": "A sandbox as its owner sees it.",
+        "required": [
+          "name",
+          "transaction",
+          "pending"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "pending": {
+            "type": "integer",
+            "description": "How many cells it holds values for, not yet published.",
+            "minimum": 0
+          },
+          "transaction": {
+            "$ref": "#/components/schemas/u64",
+            "description": "The transaction to read, write and query in it with. It is kept and never expires."
+          }
+        }
+      },
+      "SandboxRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "A name none of the user's other sandboxes has, case and spaces aside."
+          }
+        },
+        "additionalProperties": false
+      },
       "Scalar": {
         "oneOf": [
           {
@@ -4559,6 +4773,11 @@
           }
         },
         "additionalProperties": false
+      },
+      "u64": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
       }
     },
     "securitySchemes": {

@@ -378,6 +378,9 @@ export const grid = {
       dataset: { r, c },
     }, formatValue(shown, this.layout.format));
     this.markWriting(td, r, c);
+    // Compared with the stored values, a value a sandbox changes has the stored one before it.
+    const stored = this.compare ? this.storedText(r, c) : null;
+    if (stored) td.prepend(h('del', { class: 'was' }, stored));
     highlight?.(td, r, c, shown);
     if (this.commented?.size) this.markComments(td, r, c);
     return td;
@@ -426,10 +429,21 @@ export const grid = {
           [long, longest] = [r, String(each).length];
         }
       });
+      const own = (row) => String(formatValue(value(row, c), this.layout.format));
       const [r, text] = [large, low, long]
-        .map((row) => [row, String(formatValue(value(row, c), this.layout.format))])
+        .map((row) => [row, own(row)])
         .reduce((a, b) => (b[1].length > a[1].length ? b : a));
-      cells.push(h('td', { class: total(rowTuples[r]) || total(columnTuples[c]) ? 'total' : '' }, text));
+      // Stored values shown beside a sandbox's widen their column by as much.
+      let [beside, was] = [r, ''];
+      if (this.compare && this.stored) {
+        rowTuples.forEach((_, row) => {
+          const stored = this.storedText(row, c);
+          if (stored && stored.length + own(row).length > was.length + own(beside).length) [beside, was] = [row, stored];
+        });
+      }
+      const wider = was.length + own(beside).length > text.length;
+      const widest = wider ? [h('del', { class: 'was' }, was), own(beside)] : [text];
+      cells.push(h('td', { class: total(rowTuples[wider ? beside : r]) || total(columnTuples[c]) ? 'total' : '' }, ...widest));
     }
     return h('tr', { class: 'measure', 'aria-hidden': 'true' }, cells);
   },
@@ -443,6 +457,10 @@ export const grid = {
       h('span', {}, `${grid.rowTuples.length.toLocaleString()} rows × ${grid.columnCount.toLocaleString()} columns`),
       h('span', { class: 'muted' }, `${cells.toLocaleString()} cells in ${Math.round(this.took)} ms`),
       grid.legend,
+      this.differing ? h('span', {
+        class: 'legend-sandboxed muted',
+        title: `Marked cells hold values the sandbox ${this.sandbox.name} changes. ${this.compare ? 'The stored value is struck through beside each.' : 'Show the stored values beside them from the sandbox menu.'}`,
+      }, `${this.differing.toLocaleString()} changed in ${this.sandbox.name}`) : null,
       this.layout.format?.scale ? h('span', { class: 'badge' }, SCALES[this.layout.format.scale][1]) : null,
       this.holds.size ? h('span', { class: 'badge held-badge', title: 'Spreads leave held cells as they are. Release them from a cell\'s menu.' }, `${this.holds.size.toLocaleString()} held`) : null,
       this.layout.sort ? h('span', { class: 'badge accent' }, `Sorted ${this.layout.sort.descending ? 'largest' : 'smallest'} first`) : null,

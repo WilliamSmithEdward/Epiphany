@@ -49,6 +49,7 @@ their practices, not their looks.
 | A slice of a view into a workbook that stays live (TM1 Perspectives' slice) | Copy as Excel formulas: the cells chosen as DBRW formulas for the add-in, with their headings |
 | Undo and redo of data entry (PAW added it after years of asking) that costs nothing to keep | One history of layout and values: a change of values goes back to a point of the edit transaction, which the server keeps as a log of what each write replaced; Redo makes it again |
 | Input cells told apart from calculated ones at a glance (PAW's green, Oracle's white on grey) | Writable cells tinted, with a key in the status line |
+| Changes tried out apart, kept for days, before anyone else sees them (PAW and Oracle sandboxes, Pigment scenarios, SAP's private versions) | Named sandboxes, chosen beside Views: each a transaction the server keeps for its owner, the cells it changes tinted and counted, the stored value struck through beside each when compared, published or discarded whole |
 
 What they get wrong is avoided as well: crowded ribbons, low contrast, drag and drop as the
 only way to do something, and modal dialogs where a side panel would keep the data in view.
@@ -116,13 +117,14 @@ check before sweeping spreads, drilling to the leaves, DBRW formulas copied out,
 redo of values, only the rows in view drawn, in the grid and in every tree of members, so
 that results and dimensions of any size show whole and scroll smoothly, each cell's history
 of changes, who made each and from what to what, beside its comments, the changes across
-cubes for administrators, by cube, user and time, each opened in Explore, and picklists: a
+cubes for administrators, by cube, user and time, each opened in Explore, picklists: a
 string element's cells offer its values in a list, marked with the list's arrow, and take no
-others. Still to do, most valuable first:
+others, and named sandboxes: changes kept apart, on the server, until they are published,
+the cells they change marked in the grid, and the stored value struck through beside each
+when compared. Still to do, most valuable first:
 
 | Gap | Seen in | Shape here |
 | --- | --- | --- |
-| Named sandboxes, compared side by side | PAW, Oracle, Pigment, SAP Analytics Cloud | A kept, named transaction, shown as a column beside the stored values |
 | Validation rules | Oracle validation rules, Anaplan | Rules over a cube's cells that warn, or refuse a value, as it is saved |
 | Supporting detail beneath a cell | Oracle, OneStream, Adaptive Planning | Lines that add up to the cell's value, kept with it |
 | Seeing the model as another user does | Pigment | A read-only "view as" with a banner, recorded in the audit log |

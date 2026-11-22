@@ -166,15 +166,17 @@ async fn a_user_may_do_only_what_the_role_allows() {
                 Some(json!({ "cube": "General Ledger", "at": at })),
             ),
             ("POST", "/mdx", Some(query.clone())),
+            ("GET", "/sandboxes", None),
         ] {
             let (status, _, _) = send(&app, method, uri, Some(token), body).await;
             assert_eq!(status, StatusCode::OK, "{method} {uri}");
         }
     }
-    // Writing and transactions need the write role.
+    // Writing, transactions and sandboxes need the write role.
     for (method, uri, body) in [
         ("POST", "/cells/write", Some(write.clone())),
         ("POST", "/transactions", None),
+        ("POST", "/sandboxes", Some(json!({ "name": "Plan" }))),
     ] {
         let (status, _, body_) = send(&app, method, uri, Some(&reader), body.clone()).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
@@ -196,6 +198,106 @@ async fn a_user_may_do_only_what_the_role_allows() {
     // Anyone may sign out.
     let (status, _, _) = send(&app, "DELETE", "/sessions", Some(&reader), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_sandbox_is_its_owners_own_and_published_only_where_they_may_write() {
+    let (_home, app) = secured("sandboxes", None);
+    let admin = token(&app).await;
+    let user = |cubes: Value| json!({ "password": PASSWORD, "role": "write", "cubes": cubes });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(user(json!({}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    let lin = signed["token"].as_str().unwrap().to_owned();
+
+    // Lin makes a sandbox and writes into it, and the stored value stays as it was.
+    let named = |name: &str| Some(json!({ "name": name }));
+    let (status, _, sandbox) = send(&app, "POST", "/sandboxes", Some(&lin), named(" Plan ")).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        (&sandbox["name"], &sandbox["pending"]),
+        (&json!("Plan"), &json!(0))
+    );
+    let id = sandbox["transaction"].as_u64().unwrap();
+    let at = json!(["Rent", "UK", "Jan", "Actual"]);
+    let read = |transaction: Option<u64>| json!({ "cells": [{ "cube": "General Ledger", "at": at }], "transaction": transaction });
+    let (_, _, before) = send(&app, "POST", "/cells/read", Some(&lin), Some(read(None))).await;
+    let write = json!({ "transaction": id, "cells": [{ "cube": "General Ledger", "at": at, "value": 4321 }] });
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&lin), Some(write)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let value = async |transaction| {
+        let (_, _, cells) = send(
+            &app,
+            "POST",
+            "/cells/read",
+            Some(&lin),
+            Some(read(transaction)),
+        )
+        .await;
+        cells["cells"][0]["value"].clone()
+    };
+    assert_eq!(value(Some(id)).await, json!(4321.0));
+    assert_eq!(value(None).await, before["cells"][0]["value"]);
+
+    // It is Lin's alone; another of its name is refused; it takes no locks, and it is no
+    // open transaction an administrator would end.
+    let (_, _, theirs) = send(&app, "GET", "/sandboxes", Some(&lin), None).await;
+    assert_eq!(
+        theirs,
+        json!([{ "name": "Plan", "transaction": id, "pending": 1 }])
+    );
+    let (_, _, others) = send(&app, "GET", "/sandboxes", Some(&admin), None).await;
+    assert_eq!(others, json!([]));
+    let (status, _, refused) = send(&app, "POST", "/sandboxes", Some(&lin), named("plan")).await;
+    assert_eq!(
+        (status, &refused["code"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("sandbox_refused"))
+    );
+    let lock = json!({ "cube": "General Ledger", "mode": "exclusive" });
+    let locks = format!("/transactions/{id}/locks");
+    let (status, _, _) = send(&app, "POST", &locks, Some(&lin), Some(lock)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (_, _, open) = send(&app, "GET", "/admin/transactions", Some(&admin), None).await;
+    assert_eq!(open, json!([]));
+
+    // Once Lin may only read the cube, its values are not published there.
+    let read_only = user(json!({ "General Ledger": "read" }));
+    send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(read_only),
+    )
+    .await;
+    let commit = format!("/transactions/{id}/commit");
+    let (status, _, _) = send(&app, "POST", &commit, Some(&lin), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(user(json!({}))),
+    )
+    .await;
+    let (status, _, _) = send(&app, "POST", &commit, Some(&lin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(value(None).await, json!(4321.0));
+    let (_, _, theirs) = send(&app, "GET", "/sandboxes", Some(&lin), None).await;
+    assert_eq!(theirs[0]["pending"], 0);
+
+    let (status, _, _) = send(&app, "DELETE", "/sandboxes/PLAN", Some(&lin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(&app, "DELETE", "/sandboxes/Plan", Some(&lin), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

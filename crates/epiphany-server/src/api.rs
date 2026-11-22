@@ -20,7 +20,7 @@ use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
     Asked, CellChange, CellRef, CellRefs, CellWrite, CellWrites, Comment, Database, EarlierModel,
-    Error, Explanation, HistoryRead, LockMode, ModelUpdate, Spread, TransactionId,
+    Error, Explanation, HistoryRead, LockMode, ModelUpdate, Sandbox, Spread, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
@@ -175,6 +175,8 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(transaction_point))
         .routes(routes!(undo_transaction))
         .routes(routes!(lock))
+        .routes(routes!(list_sandboxes, create_sandbox))
+        .routes(routes!(delete_sandbox))
         .routes(routes!(put_dashboard, delete_dashboard))
         .routes(routes!(server_status))
         .routes(routes!(list_users))
@@ -379,6 +381,14 @@ fn needed(method: &Method, path: &str) -> Role {
     {
         return Role::Write;
     }
+    // A sandbox is its owner's own, to write values into: listing them takes reading, and
+    // making or deleting one writing.
+    if segments.get(1) == Some(&"sandboxes") {
+        return match method == Method::GET {
+            true => Role::Read,
+            false => Role::Write,
+        };
+    }
     let reads = ["/cells/read", "/cells/explain", "/cells/history", "/mdx"];
     if method == Method::GET || path == "/sessions" || reads.contains(&path) {
         Role::Read
@@ -556,7 +566,8 @@ impl From<Error> for ApiError {
             | Error::Model(_)
             | Error::Mdx(_)
             | Error::Rule(_)
-            | Error::Comment(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            | Error::Comment(_)
+            | Error::Sandbox(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Error::UnknownTransaction(_) | Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::Locked(_) | Error::StaleVersion { .. } => StatusCode::CONFLICT,
@@ -1425,7 +1436,9 @@ async fn begin_transaction(
     (StatusCode::CREATED, Json(TransactionView { transaction }))
 }
 
-/// Stores a transaction's pending writes in one step and ends it.
+/// Stores a transaction's pending writes in one step and ends it. A sandbox's are published,
+/// checked and locked as any commit's, and the sandbox stays open, empty. Values go only
+/// into cubes the user may write to now, however long ago they were written.
 #[utoipa::path(
     post,
     path = "/transactions/{id}/commit",
@@ -1433,18 +1446,25 @@ async fn begin_transaction(
     responses(
         (status = NO_CONTENT, description = "Done"),
         (status = NOT_FOUND, body = ApiError, description = "Unknown transaction"),
+        (status = CONFLICT, body = ApiError, description = "Publishing a sandbox: another transaction holds a lock, or has one of its cells pending"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "Publishing a sandbox: one of its values can no longer be written where it is"),
         (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
     )
 )]
 async fn commit_transaction(
     State(database): State<Shared>,
+    Extension(grants): Held,
     Path(id): Path<TransactionId>,
 ) -> Result<StatusCode, ApiError> {
-    database.write().commit(id)?;
+    let mut database = database.write();
+    for cube in database.pending_cubes(id)? {
+        allow(&grants, &cube, Role::Write)?;
+    }
+    database.commit(id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Discards a transaction's pending writes and ends it.
+/// Discards a transaction's pending writes and ends it. A sandbox is emptied, and stays.
 #[utoipa::path(
     post,
     path = "/transactions/{id}/rollback",
@@ -1548,6 +1568,67 @@ async fn lock(
     }
     let mut database = database.write();
     database.lock(id, request.cube.as_deref(), request.mode)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/* ---- Sandboxes: transactions kept under a name, for values to be tried out in ---- */
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct SandboxRequest {
+    /// A name none of the user's other sandboxes has, case and spaces aside.
+    name: String,
+}
+
+/// The signed-in user's sandboxes, in the order of their names. Values are read, written,
+/// spread and queried in one with its transaction; `POST /transactions/{id}/commit`
+/// publishes them, and `POST /transactions/{id}/rollback` empties it.
+#[utoipa::path(get, path = "/sandboxes", responses((status = OK, body = Vec<Sandbox>, description = "The user's sandboxes")))]
+async fn list_sandboxes(
+    State(database): State<Shared>,
+    Extension(Signed(user)): Extension<Signed>,
+) -> Json<Vec<Sandbox>> {
+    Json(database.read().unwrap().sandboxes(&user))
+}
+
+/// Makes a sandbox for the signed-in user: a transaction kept under a name, which holds no
+/// locks, never expires and outlives the server, for values to wait in until they are
+/// published.
+#[utoipa::path(
+    post,
+    path = "/sandboxes",
+    request_body = SandboxRequest,
+    responses(
+        (status = CREATED, body = Sandbox, description = "The new sandbox, empty"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The user has a sandbox of that name, or a sandbox cannot be called that"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The sandbox could not be kept")
+    )
+)]
+async fn create_sandbox(
+    State(database): State<Shared>,
+    Extension(Signed(user)): Extension<Signed>,
+    Body(request): Body<SandboxRequest>,
+) -> Result<(StatusCode, Json<Sandbox>), ApiError> {
+    let sandbox = database.write().create_sandbox(&user, &request.name)?;
+    Ok((StatusCode::CREATED, Json(sandbox)))
+}
+
+/// Deletes one of the signed-in user's sandboxes, with the values it holds.
+#[utoipa::path(
+    delete,
+    path = "/sandboxes/{name}",
+    params(("name" = String, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Done"),
+        (status = NOT_FOUND, body = ApiError, description = "The user has no sandbox of that name")
+    )
+)]
+async fn delete_sandbox(
+    State(database): State<Shared>,
+    Extension(Signed(user)): Extension<Signed>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    database.write().delete_sandbox(&user, &name)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

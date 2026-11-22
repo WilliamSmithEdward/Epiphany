@@ -123,7 +123,12 @@ practice that means:
   commit is acknowledged. A snapshot truncates the log.
 - Done. The server is given one directory: `model/` holds the current model with its
   version in `model.json`; `data/` holds `snapshot.json`, `log.jsonl`, `comments.jsonl`,
-  `history.jsonl` and every earlier model under `models/<version>/`.
+  `history.jsonl`, each sandbox under `sandboxes/<transaction>.json` and every earlier model
+  under `models/<version>/`.
+- A sandbox is written whole to its own file each time it changes, beside its place and then
+  renamed into it, before the change is acknowledged. It names its cells, so it is placed
+  afresh in whatever the model is when the server starts. A file that cannot be read stops
+  the server from opening the directory, as a damaged commit does: it is someone's work.
 - The history of cells, `history.jsonl`, keeps one line for each commit that changed a
   value: when, who began its transaction, and each cell's value before and after. A
   snapshot does not replace it. It is written after the commit is safe in the log, without

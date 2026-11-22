@@ -9,6 +9,9 @@
 //! Reads take no locks and see committed values plus the transaction's own writes. A client
 //! that writes a value computed from what it read must first lock the cube, or another
 //! transaction may commit a change between its read and its write.
+//!
+//! A sandbox is a transaction kept under a name for its owner: it holds no locks and never
+//! expires, and its values wait in it until they are published ([`sandboxes`]).
 
 mod batch;
 use batch::Resolver;
@@ -18,6 +21,8 @@ mod history;
 mod load;
 mod locks;
 mod migrate;
+mod sandboxes;
+use sandboxes::Kept;
 mod spread;
 
 use std::borrow::Cow;
@@ -42,6 +47,7 @@ pub use comments::{Comment, CommentChange};
 pub use error::Error;
 pub use history::{Asked, CellChange, Changes, History, HistoryRead};
 pub use locks::LockMode;
+pub use sandboxes::{KeptSandbox, Sandbox};
 pub use spread::{Spread, SpreadMethod};
 
 pub type TransactionId = u64;
@@ -174,6 +180,14 @@ pub trait Journal: Send + Sync + fmt::Debug {
     /// Where the history of cells can be read, apart from the journal; nowhere if it keeps none.
     fn history(&self) -> Option<Box<dyn History>> {
         None
+    }
+
+    /// Keeps a sandbox as it now is, under its transaction id, or forgets it once it is
+    /// deleted. Its values are its owner's alone until they are published, so they are kept
+    /// apart from the commits; if keeping them fails, the change to the sandbox is refused.
+    fn sandbox(&mut self, id: TransactionId, sandbox: Option<&KeptSandbox<'_>>) -> io::Result<()> {
+        let _ = (id, sandbox);
+        Ok(())
     }
 }
 
@@ -338,6 +352,8 @@ struct Transaction {
     used: AtomicU64,
     /// Who began it, as the history of cells records its commit.
     author: Option<String>,
+    /// Its name and owner, for a sandbox.
+    kept: Option<Kept>,
 }
 
 #[derive(Debug)]
@@ -527,18 +543,20 @@ impl Database {
             .collect()
     }
 
-    /// The transactions that are open, the longest idle first.
+    /// The transactions that are open, the longest idle first. Sandboxes, which hold no
+    /// locks and never expire, are not among them.
     pub fn open_transactions(&self) -> Vec<OpenTransaction> {
         let now = self.now();
         let mut open: Vec<OpenTransaction> = self
             .transactions
             .iter()
+            .filter(|(_, transaction)| transaction.kept.is_none())
             .map(|(&id, transaction)| OpenTransaction {
                 id,
                 idle: Duration::from_millis(
                     now.saturating_sub(transaction.used.load(Ordering::Relaxed)),
                 ),
-                pending: transaction.writes.iter().map(Writes::len).sum(),
+                pending: transaction.pending(),
             })
             .collect();
         open.sort_by_key(|transaction| std::cmp::Reverse(transaction.idle));
@@ -788,7 +806,7 @@ impl Database {
     ) -> Result<(), Error> {
         self.expire();
         if let Some(id) = transaction {
-            return self.stage(id, batch);
+            return self.changing(id, |database| database.stage(id, batch));
         }
         let id = self.begin();
         let written = self.stage(id, batch).and_then(|()| self.commit(id));
@@ -813,15 +831,20 @@ impl Database {
             undo: Vec::new(),
             used: AtomicU64::new(self.now()),
             author: self.author.clone(),
+            kept: None,
         };
         self.transactions.insert(id, transaction);
         id
     }
 
     /// Stores a transaction's writes and ends it. If the writes cannot be recorded in the
-    /// journal, nothing is stored and the transaction stays open.
+    /// journal, nothing is stored and the transaction stays open. A sandbox is published
+    /// instead, and stays open, empty.
     pub fn commit(&mut self, id: TransactionId) -> Result<(), Error> {
         self.expire();
+        if self.transaction(id)?.kept.is_some() {
+            return self.publish(id);
+        }
         let record = NamedWrites {
             model: &self.model,
             writes: &self.transaction(id)?.writes,
@@ -855,10 +878,24 @@ impl Database {
         Ok(())
     }
 
-    /// Discards a transaction's writes and ends it.
+    /// Discards a transaction's writes and ends it. A sandbox is emptied, and stays open.
     pub fn rollback(&mut self, id: TransactionId) -> Result<(), Error> {
         self.expire();
+        if self.transaction(id)?.kept.is_some() {
+            return self.changing(id, |database| {
+                database.empty(id);
+                Ok(())
+            });
+        }
         self.end(id).map(drop)
+    }
+
+    /// The names of the cubes a transaction holds writes for.
+    pub fn pending_cubes(&self, id: TransactionId) -> Result<Vec<String>, Error> {
+        let transaction = self.transaction(id)?;
+        let cubes = self.model.cubes().iter().zip(&transaction.writes);
+        let written = cubes.filter(|(_, writes)| !writes.is_empty());
+        Ok(written.map(|(cube, _)| cube.name.clone()).collect())
     }
 
     /// The point a transaction has come to: how many writes it has been given. Its writes
@@ -879,17 +916,20 @@ impl Database {
                 transaction.undo.len()
             )));
         }
-        let transaction = self.transactions.get_mut(&id).expect("checked above");
-        for (cube, at, before) in transaction.undo.drain(point..).rev() {
-            match before {
-                Some(value) => transaction.writes[cube].insert(at, value),
-                None => transaction.writes[cube].remove(&at),
-            };
-        }
-        Ok(())
+        self.changing(id, |database| {
+            let transaction = database.transactions.get_mut(&id).expect("checked above");
+            for (cube, at, before) in transaction.undo.drain(point..).rev() {
+                match before {
+                    Some(value) => transaction.writes[cube].insert(at, value),
+                    None => transaction.writes[cube].remove(&at),
+                };
+            }
+            Ok(())
+        })
     }
 
     /// Locks a cube, or the whole server when no cube is named, until the transaction ends.
+    /// A sandbox takes no locks: it would hold them for as long as it is kept.
     pub fn lock(
         &mut self,
         id: TransactionId,
@@ -897,7 +937,12 @@ impl Database {
         mode: LockMode,
     ) -> Result<(), Error> {
         self.expire();
-        self.transaction(id)?;
+        if self.transaction(id)?.kept.is_some() {
+            return Err(Error::Sandbox(
+                "a sandbox holds no locks; its values are checked and locked as it is published"
+                    .to_owned(),
+            ));
+        }
         let Some(cube) = cube else {
             return self.acquire(id, Resource::Server, mode.mode());
         };
@@ -928,13 +973,22 @@ impl Database {
         free?;
 
         let model = Model::compile(&definition)?;
-        // A change to subsets, views, rules and feeders alone leaves every cell where it is.
+        // A change to subsets, attributes, picklists, the names of levels, views, rules,
+        // feeders and dashboards alone leaves every cell where it is: it neither adds, takes
+        // away nor reorders an element, nor changes one's type or a cube's dimensions. Saving
+        // a dashboard need not carry millions of cells over and write them all out again.
         let structure = |definition: &ModelDef| {
             let mut structure = definition.clone();
-            structure
-                .dimensions
-                .iter_mut()
-                .for_each(|d| d.subsets.clear());
+            structure.dashboards.clear();
+            for dimension in &mut structure.dimensions {
+                dimension.subsets.clear();
+                dimension.attributes.clear();
+                dimension.levels.clear();
+                for element in &mut dimension.elements {
+                    element.attributes.clear();
+                    element.picklist = None;
+                }
+            }
             for cube in &mut structure.cubes {
                 cube.views.clear();
                 cube.rules.clear();
@@ -947,6 +1001,17 @@ impl Database {
         if let Some(mut journal) = self.journal() {
             journal.model(self.model_version + 1, &definition)?;
         }
+        // A sandbox's values go where their names are in the new model, as stored cells do;
+        // a plain transaction's are let go.
+        let sandboxes: Vec<(TransactionId, Vec<CellWrite>)> = match moved {
+            Some(_) => self
+                .transactions
+                .iter()
+                .filter(|(_, transaction)| transaction.kept.is_some())
+                .map(|(&id, transaction)| (id, self.named_writes(&transaction.writes)))
+                .collect(),
+            None => Vec::new(),
+        };
         self.model = model;
         self.definition = definition;
         self.model_version += 1;
@@ -959,6 +1024,7 @@ impl Database {
             }
             self.cells = cells;
             dropped_cells = dropped;
+            self.carry(sandboxes);
             // The commits recorded so far name cells of the old model.
             self.snapshot();
         }
@@ -982,9 +1048,10 @@ impl Database {
         self.query(transaction, &saved.mdx)
     }
 
-    /// Checks a batch of writes and adds it to a transaction's pending writes.
+    /// Checks a batch of writes and adds it to a transaction's pending writes. A sandbox's
+    /// writes take no locks and wait on nobody's: the locks are taken as it is published.
     fn stage(&mut self, id: TransactionId, batch: &CellWrites) -> Result<(), Error> {
-        self.transaction(id)?;
+        let kept = self.transaction(id)?.kept.is_some();
         let mut names = Resolver::new(&self.model, batch.listed());
         let mut located: Vec<(usize, Coordinate)> = Vec::with_capacity(batch.len());
         for index in 0..batch.len() {
@@ -1002,6 +1069,25 @@ impl Database {
             };
             located.push(locate().map_err(|error| Error::Write { index, error })?);
         }
+        if !kept {
+            self.claim(id, &located, batch)?;
+        }
+        let transaction = self.transactions.get_mut(&id).expect("checked above");
+        for (index, (cube, at)) in located.into_iter().enumerate() {
+            let before = transaction.writes[cube].insert(at.clone(), batch.value(index).clone());
+            transaction.undo.push((cube, at, before));
+        }
+        Ok(())
+    }
+
+    /// Takes the locks a batch of writes needs, and makes sure no other transaction has
+    /// any of its cells pending. A sandbox's pending values are no other's concern.
+    fn claim(
+        &mut self,
+        id: TransactionId,
+        located: &[(usize, Coordinate)],
+        batch: &CellWrites,
+    ) -> Result<(), Error> {
         // The locks are asked for once for the batch and once for each cube in it, not
         // again for every cell.
         let mut cubes: Vec<usize> = located.iter().map(|&(cube, _)| cube).collect();
@@ -1015,7 +1101,8 @@ impl Database {
         }
         for (index, (cube, at)) in located.iter().enumerate() {
             let pending_elsewhere = |(&other, transaction): (&TransactionId, &Transaction)| {
-                other != id && transaction.writes[*cube].contains_key(&**at)
+                let plain = transaction.kept.is_none();
+                other != id && plain && transaction.writes[*cube].contains_key(&**at)
             };
             if self.transactions.iter().any(pending_elsewhere) {
                 let names: Vec<&str> = batch.listed().at(index).collect();
@@ -1026,12 +1113,6 @@ impl Database {
                 );
                 return Err(Error::Locked(cell));
             }
-        }
-
-        let transaction = self.transactions.get_mut(&id).expect("checked above");
-        for (index, (cube, at)) in located.into_iter().enumerate() {
-            let before = transaction.writes[cube].insert(at.clone(), batch.value(index).clone());
-            transaction.undo.push((cube, at, before));
         }
         Ok(())
     }
@@ -1065,12 +1146,14 @@ impl Database {
             .ok_or(Error::UnknownTransaction(id))
     }
 
-    /// Rolls back every transaction that has been idle for longer than the timeout.
+    /// Rolls back every transaction that has been idle for longer than the timeout. A
+    /// sandbox is kept however long it waits.
     fn expire(&mut self) {
         let now = self.now();
         let timeout = self.timeout.as_millis() as u64;
         let idle = |transaction: &Transaction| {
-            now.saturating_sub(transaction.used.load(Ordering::Relaxed)) > timeout
+            let waited = now.saturating_sub(transaction.used.load(Ordering::Relaxed));
+            transaction.kept.is_none() && waited > timeout
         };
         let expired: Vec<TransactionId> = self
             .transactions
@@ -1086,8 +1169,8 @@ impl Database {
     fn transaction(&self, id: TransactionId) -> Result<&Transaction, Error> {
         let now = self.now();
         let live = |transaction: &&Transaction| {
-            now.saturating_sub(transaction.used.load(Ordering::Relaxed))
-                <= self.timeout.as_millis() as u64
+            let waited = now.saturating_sub(transaction.used.load(Ordering::Relaxed));
+            transaction.kept.is_some() || waited <= self.timeout.as_millis() as u64
         };
         let transaction = self.transactions.get(&id).filter(live);
         let transaction = transaction.ok_or(Error::UnknownTransaction(id))?;

@@ -103,6 +103,8 @@ const ICONS = {
   expand: 'M7 15l5 5 5-5 M7 9l5-5 5 5',
   collapse: 'M7 20l5-5 5 5 M7 4l5 5 5-5',
   clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2',
+  sandbox: 'M12 3l9 4.5-9 4.5-9-4.5z M3 12l9 4.5 9-4.5 M3 16.5l9 4.5 9-4.5',
+  publish: 'M12 20V8 M7 13l5-5 5 5 M4 4h16',
 };
 
 /** An icon by name, `size` pixels square. */

@@ -13,6 +13,8 @@
 //!     history.jsonl        one line per commit that changed a value: when, by whom, and
 //!                          each cell's value before and after, kept through snapshots
 //!     comments.jsonl       one line per comment added or taken away
+//!     sandboxes/<id>.json  each sandbox, under its transaction id: its name, its owner and
+//!                          the values it holds, written whole as it changes
 //!     models/<version>/    every earlier model
 //! ```
 //!
@@ -29,7 +31,7 @@ use std::time::UNIX_EPOCH;
 use epiphany_core::Scalar;
 use epiphany_core::database::{
     Asked, CellChange, CellWrite, Changes, CommentChange, Database, EarlierModel, History, Journal,
-    NamedCells, NamedWrites,
+    KeptSandbox, NamedCells, NamedWrites, TransactionId,
 };
 use epiphany_core::model::ModelDef;
 use serde::de::DeserializeOwned;
@@ -231,12 +233,60 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
             Err(error) => return Err(format!("{COMMENTS}, line {}: {error}", number + 1).into()),
         }
     }
+    // The sandboxes, each whole in a file of its own. A file is written beside its place and
+    // renamed into it, so one is never found half written; one that cannot be read is a
+    // user's work, and the directory is not opened without it.
+    let mut dropped = 0;
+    for (id, path) in sandbox_files(&data.join(SANDBOXES))? {
+        let kept: KeptFile = read_json(&path)?.expect("listed above");
+        dropped += database.restore_sandbox(id, &kept.owner, &kept.name, &kept.cells);
+    }
+    if dropped > 0 {
+        eprintln!(
+            "warning: {dropped} values in sandboxes no longer fit the model and were dropped"
+        );
+    }
     database.set_journal(Box::new(files));
     Ok(database)
 }
 
 /// Where the comments are kept, in the data folder.
 const COMMENTS: &str = "comments.jsonl";
+
+/// Where the sandboxes are kept, in the data folder: one file each, named by its transaction.
+const SANDBOXES: &str = "sandboxes";
+
+/// A sandbox as its file holds it.
+#[derive(Deserialize)]
+struct KeptFile {
+    name: String,
+    owner: String,
+    cells: Vec<CellWrite>,
+}
+
+/// The file of each sandbox kept in a folder, with the transaction it is kept under. None
+/// if there is no folder.
+fn sandbox_files(folder: &Path) -> Result<Vec<(TransactionId, PathBuf)>, String> {
+    let entries = match fs::read_dir(folder) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(at(folder, &error)),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(|error| at(folder, &error))?.path();
+        let json = path
+            .extension()
+            .is_some_and(|extension| extension == "json");
+        let id = path
+            .file_stem()
+            .and_then(|stem| stem.to_str()?.parse().ok());
+        if let (true, Some(id)) = (json, id) {
+            files.push((id, path));
+        }
+    }
+    Ok(files)
+}
 
 /// Where the history of cells is kept, in the data folder: one line for each commit that
 /// changed a value, never replaced by a snapshot.
@@ -487,6 +537,27 @@ impl Journal for Files {
         Some(Box::new(HistoryFile(
             self.directory.join("data").join(HISTORY),
         )))
+    }
+
+    /// Writes a sandbox whole to its file, flushed to disk before it is acknowledged, or
+    /// removes the file once the sandbox is deleted.
+    fn sandbox(&mut self, id: TransactionId, sandbox: Option<&KeptSandbox<'_>>) -> io::Result<()> {
+        let data = self.directory.join("data");
+        let folder = data.join(SANDBOXES);
+        let path = folder.join(format!("{id}.json"));
+        let Some(sandbox) = sandbox else {
+            return match fs::remove_file(&path) {
+                Ok(()) => settle(&folder),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(error),
+            };
+        };
+        // A folder that is new must be known to its own before a sandbox is trusted to it.
+        if !folder.exists() {
+            fs::create_dir_all(&folder)?;
+            settle(&data)?;
+        }
+        write_whole(&path, sandbox, false)
     }
 
     fn model(&mut self, version: u64, definition: &ModelDef) -> io::Result<()> {

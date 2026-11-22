@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use common::Home;
 use epiphany_core::Scalar;
-use epiphany_core::database::{Asked, CellRef, CellWrite, Database, Error};
+use epiphany_core::database::{Asked, CellRef, CellWrite, Database, Error, Sandbox};
 use epiphany_server::open;
 use serde_json::{Value as Json, json};
 
@@ -799,6 +799,44 @@ fn the_history_of_a_cell_outlasts_snapshots_and_the_process() {
         ..cube
     };
     assert!(read(later, 10).is_empty());
+}
+
+#[test]
+fn a_sandbox_outlives_the_process_until_it_is_deleted() {
+    let home = Home::new("sandboxes-kept");
+    let mut database = home.open();
+    let stored = get(&database, RENT);
+    let id = database.create_sandbox("ada", "Plan").unwrap().transaction;
+    let writes = [set(RENT, stored + 25.0), set(SALARIES, 40.0)];
+    database.write(Some(id), &writes).unwrap();
+    drop(database);
+
+    // Opened again, it is there under its transaction, holding its values apart.
+    let mut database = home.open();
+    let sandbox = |pending| Sandbox {
+        name: "Plan".to_owned(),
+        transaction: id,
+        pending,
+    };
+    assert_eq!(database.sandboxes("ada"), [sandbox(2)]);
+    let cell = CellRef {
+        cube: CUBE.to_owned(),
+        at: RENT.map(str::to_owned).to_vec(),
+    };
+    let held = database.read(Some(id), &cell).unwrap();
+    assert_eq!(held, Scalar::Number(stored + 25.0));
+    assert_eq!(get(&database, RENT), stored);
+
+    // Emptied, it stays so; deleted, it is gone for good, and so is its file.
+    database.rollback(id).unwrap();
+    drop(database);
+    let mut database = home.open();
+    assert_eq!(database.sandboxes("ada"), [sandbox(0)]);
+    database.delete_sandbox("ada", "plan").unwrap();
+    drop(database);
+    assert!(home.open().sandboxes("ada").is_empty());
+    let files = fs::read_dir(home.path("data/sandboxes")).unwrap().count();
+    assert_eq!(files, 0);
 }
 
 #[test]

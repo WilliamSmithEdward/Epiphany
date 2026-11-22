@@ -135,7 +135,8 @@ export const writeback = {
 
   /**
    * Marks a cell as it may be written: taking a value, from a picklist or not, changed and
-   * not yet saved, taking a value to spread over the leaves beneath it, or held as spreads go.
+   * not yet saved, changed in the sandbox worked in, taking a value to spread over the
+   * leaves beneath it, or held as spreads go.
    */
   markWriting(td, r, c) {
     const { total, rowTuples, columnTuples, spreads } = this.grid;
@@ -144,12 +145,17 @@ export const writeback = {
     const edited = editable && this.edits.size > 0 && this.edits.has(this.key(r, c));
     const spreadable = spreads && (total(tuple) || total(column)) && !editable && ![...tuple, ...column].some((m) => m.type === 'calculated');
     const held = this.holds.size > 0 && this.holds.has(this.key(r, c));
+    const stored = this.storedText(r, c);
     td.classList.toggle('editable', editable);
     td.classList.toggle('picklist', editable && typeof this.valueAt(r, c) !== 'number' && Boolean(this.picklistAt(r, c)));
     td.classList.toggle('edited', edited);
+    td.classList.toggle('sandboxed', stored !== null);
     td.classList.toggle('spreadable', spreadable);
     td.classList.toggle('held', held);
-    const title = held ? 'Held: spreads leave it as it is' : edited ? 'Changed, not yet saved' : spreadable ? 'Type a value to spread it over the leaves beneath' : null;
+    const title = held ? 'Held: spreads leave it as it is'
+      : edited ? 'Changed, not yet saved'
+        : stored !== null ? `Changed in ${this.sandbox.name}. Stored: ${stored || 'nothing'}`
+          : spreadable ? 'Type a value to spread it over the leaves beneath' : null;
     if (title) td.title = title;
     else td.removeAttribute('title');
   },
@@ -289,7 +295,8 @@ export const writeback = {
     const label = written.length === 1 ? `the change to ${written[0].at.join(' · ')}` : `${written.length.toLocaleString()} changes`;
     await this.changeValues(label, async () => {
       await post('/cells/write', { transaction: this.tx, cells: written.map(({ at, value }) => ({ cube: this.cube.name, at, value })) });
-      for (const { at, value } of written) this.edits.set(JSON.stringify(at), value);
+      // In a sandbox, the cells it changes are marked against the stored values instead.
+      if (!this.sandbox) for (const { at, value } of written) this.edits.set(JSON.stringify(at), value);
       this.changes = (this.changes ?? 0) + written.length;
       return done;
     });
@@ -466,20 +473,28 @@ export const writeback = {
     this.tx = answer.transaction;
   },
 
-  /** Stores every change made since the last save, in one step. */
+  /**
+   * Stores every change made since the last save, in one step. A sandbox's are published,
+   * every cell it changes, and it stays, empty.
+   */
   async save() {
+    const published = this.sandbox?.pending;
     try {
       await post(`/transactions/${this.tx}/commit`);
     } catch (problem) {
       this.refused(problem);
       return;
     }
-    notify(`Saved ${this.changes} change${this.changes === 1 ? '' : 's'}.`, 'good');
+    notify(this.sandbox
+      ? `Published ${published.toLocaleString()} changed cell${published === 1 ? '' : 's'} from ${this.sandbox.name} to the stored values.`
+      : `Saved ${this.changes} change${this.changes === 1 ? '' : 's'}.`, 'good');
     this.forget();
     await this.run();
   },
 
+  /** Lets every change made since the last save go: a sandbox's, all it holds, once the user agrees. */
   async discard() {
+    if (this.sandbox && !(await this.discarding())) return;
     try {
       await post(`/transactions/${this.tx}/rollback`);
     } catch {
@@ -489,8 +504,9 @@ export const writeback = {
     await this.run();
   },
 
+  /** Forgets the changes of values made so far: the edit transaction goes, a sandbox stays. */
   forget() {
-    this.tx = null;
+    this.tx = this.sandbox?.transaction ?? null;
     this.edits.clear();
     this.changes = 0;
     // Changes of values went with the transaction; the layout's history stays.
@@ -501,7 +517,12 @@ export const writeback = {
 
   /** Reports a write the server refused; a transaction it no longer has is let go. */
   refused(problem) {
-    if (problem.status === 404 && this.tx) {
+    const gone = problem.code === 'unknown_transaction';
+    if (gone && this.sandbox) {
+      this.lostSandbox();
+      return;
+    }
+    if (gone && this.tx) {
       notify('Your unsaved changes were dropped after a long pause. Make them again to carry on.', 'bad');
       this.forget();
       this.run();

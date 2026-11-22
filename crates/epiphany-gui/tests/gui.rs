@@ -167,6 +167,19 @@ async fn the_application_is_served_with_headers_that_keep_it_to_itself() {
 }
 
 #[tokio::test]
+async fn every_file_of_the_application_is_built_into_the_program() {
+    // One left out of the program would be missed only once it shipped: a folder served
+    // while the application is worked on has every file.
+    let gui = Gui::new("http://127.0.0.1:1", None);
+    let web = Path::new(env!("CARGO_MANIFEST_DIR")).join("web");
+    for entry in fs::read_dir(web).unwrap() {
+        let name = entry.unwrap().file_name().into_string().unwrap();
+        let answer = call(&gui, HERE, Method::GET, &format!("/{name}"), &[], None).await;
+        assert_eq!(answer.status, StatusCode::OK, "{name} is not built in");
+    }
+}
+
+#[tokio::test]
 async fn signing_in_keeps_the_token_in_a_cookie_the_page_cannot_read() {
     let home = Home::new("sign-in", true);
     let gui = Gui::new(&server(&home).await, None);

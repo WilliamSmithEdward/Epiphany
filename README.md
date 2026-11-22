@@ -133,8 +133,16 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `GET /admin/models`, `GET /admin/models/{name}` | The earlier versions of the model the server keeps; one is restored by `PUT /model` |
 | `GET /admin/changes` | The changes saved to cells across cubes, the newest first, by cube, user and time |
 | `POST /transactions`, then `/transactions/{id}/commit`, `rollback`, `locks`, `point` and `undo` | Transactions, and taking one back to a point it came to |
+| `GET`, `POST /sandboxes`, `DELETE /sandboxes/{name}` | The signed-in user's sandboxes: transactions kept under a name |
 
 A read, a write or a query can carry a transaction id; without one it stands alone.
+
+A sandbox is a transaction its owner keeps under a name, for values to be tried out in
+before anyone else sees them. It holds no locks, so it holds up nobody, never expires, and
+outlives the server; a change to the model carries its values to wherever their elements
+are. Its values are read, written, spread and queried with its transaction id, as any
+transaction's. Committing it publishes them, checked and locked as any commit is, into the
+cubes its owner may write to, and leaves it open and empty; rolling it back empties it.
 
 ```
 curl -s http://127.0.0.1:8080/mdx -H "content-type: application/json" -d "{\"mdx\": \"SELECT {[Period].[Q1].Children} ON COLUMNS, {[Account].[Revenue]} ON ROWS FROM [General Ledger]\"}"

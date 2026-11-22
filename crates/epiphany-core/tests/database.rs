@@ -9,8 +9,8 @@ use common::{Rng, Shape, random_model};
 use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
 use epiphany_core::database::{
-    CellRef, CellWrite, Changes, Database, Error, Journal, LockMode, ModelUpdate, NamedCells,
-    NamedWrites,
+    CellRef, CellWrite, Changes, Database, Error, Journal, KeptSandbox, LockMode, ModelUpdate,
+    NamedCells, NamedWrites,
 };
 use epiphany_core::model::{MembersDef, ModelDef, ModelError, PicklistDef, SubsetDef};
 use serde_json::json;
@@ -1024,4 +1024,178 @@ fn a_commit_is_recorded_as_the_cell_writes_it_holds() {
     recorded.sort_by(|a, b| a.at.cmp(&b.at));
     writes.sort_by(|a, b| a.at.cmp(&b.at));
     assert_eq!(recorded, writes);
+}
+
+#[test]
+fn a_sandbox_keeps_its_values_to_itself_until_they_are_published() {
+    let mut database = database();
+    let sandbox = database.create_sandbox("ada", " Plan ").unwrap();
+    assert_eq!((sandbox.name.as_str(), sandbox.pending), ("Plan", 0));
+    let id = sandbox.transaction;
+    // Another of the same name, in any case, is refused; another user may have one.
+    assert!(matches!(
+        database.create_sandbox("Ada", "plan"),
+        Err(Error::Sandbox(_))
+    ));
+    database.create_sandbox("lin", "Plan").unwrap();
+
+    database
+        .write(Some(id), &[set("Sales", ["A", "Units"], 5.0)])
+        .unwrap();
+    assert_eq!(units(&database, Some(id), "A"), 5.0);
+    assert_eq!(units(&database, None, "A"), 0.0);
+    let theirs = database.sandboxes("ADA");
+    assert_eq!((theirs.len(), theirs[0].pending), (1, 1));
+
+    // It holds no locks and waits on nobody, and is no open transaction: another writes
+    // the same cell and locks the cube while it holds its value.
+    assert!(database.open_transactions().is_empty());
+    assert!(matches!(
+        database.lock(id, Some("Sales"), LockMode::Exclusive),
+        Err(Error::Sandbox(_))
+    ));
+    let other = database.begin();
+    database
+        .write(Some(other), &[set("Sales", ["A", "Units"], 7.0)])
+        .unwrap();
+    database
+        .lock(other, Some("Sales"), LockMode::Exclusive)
+        .unwrap();
+    // Published while the cube is locked, it is refused, and keeps its value.
+    assert!(matches!(database.commit(id), Err(Error::Locked(_))));
+    database.commit(other).unwrap();
+    assert_eq!(units(&database, None, "A"), 7.0);
+    assert_eq!(units(&database, Some(id), "A"), 5.0);
+
+    // Published, its values are stored, and it stays, empty; rolled back, it is emptied.
+    database.commit(id).unwrap();
+    assert_eq!(units(&database, None, "A"), 5.0);
+    assert_eq!(database.sandboxes("ada")[0].pending, 0);
+    database
+        .write(Some(id), &[set("Sales", ["B", "Units"], 3.0)])
+        .unwrap();
+    database.rollback(id).unwrap();
+    assert_eq!(units(&database, Some(id), "B"), 0.0);
+    assert_eq!(database.sandboxes("ada")[0].transaction, id);
+
+    // However long it waits, it is kept; a plain transaction is not.
+    database.set_transaction_timeout(Duration::ZERO);
+    let idle = database.begin();
+    thread::sleep(Duration::from_millis(5));
+    database
+        .write(Some(id), &[set("Sales", ["B", "Units"], 4.0)])
+        .unwrap();
+    assert!(matches!(
+        database.rollback(idle),
+        Err(Error::UnknownTransaction(_))
+    ));
+    assert_eq!(units(&database, Some(id), "B"), 4.0);
+
+    database.delete_sandbox("ada", "PLAN").unwrap();
+    assert!(database.sandboxes("ada").is_empty());
+    let gone = database.read(Some(id), &cell("Sales", ["B", "Units"]));
+    assert!(matches!(gone, Err(Error::UnknownTransaction(_))));
+    assert!(matches!(
+        database.delete_sandbox("ada", "Plan"),
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[test]
+fn a_sandbox_is_published_whole_or_not_at_all() {
+    let mut database = database();
+    let id = database.create_sandbox("ada", "Plan").unwrap().transaction;
+    let note = CellWrite {
+        value: Scalar::Text("High".to_owned()),
+        ..set("Sales", ["A", "Note"], 0.0)
+    };
+    let writes = [set("Sales", ["B", "Units"], 2.0), note];
+    database.write(Some(id), &writes).unwrap();
+    // Since it was written, the model has come to offer only "Low" there.
+    let mut definition = definition();
+    let offered = PicklistDef::Values(vec!["Low".to_owned()]);
+    definition.dimensions[1].elements[1].picklist = Some(offered);
+    database.update_model(1, definition).unwrap();
+    let refused = database.commit(id).unwrap_err();
+    let names_the_cell = |message: &str| message.contains("cell (A, Note) of cube 'Sales'");
+    assert!(
+        matches!(&refused, Error::Sandbox(message) if names_the_cell(message) && message.contains("Low")),
+        "{refused}"
+    );
+    assert_eq!(units(&database, None, "B"), 0.0);
+    assert_eq!(database.sandboxes("ada")[0].pending, 2);
+}
+
+/// A journal that keeps each sandbox as it would be written out, by its transaction.
+#[derive(Debug, Default)]
+struct Sandboxes(Arc<std::sync::Mutex<std::collections::BTreeMap<u64, Option<serde_json::Value>>>>);
+
+impl Journal for Sandboxes {
+    fn commit(&mut self, _: &NamedWrites<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        false
+    }
+
+    fn snapshot(&mut self, _: u64, _: &NamedCells<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn sandbox(&mut self, id: u64, sandbox: Option<&KeptSandbox<'_>>) -> std::io::Result<()> {
+        let kept = sandbox.map(|sandbox| serde_json::to_value(sandbox).unwrap());
+        self.0.lock().unwrap().insert(id, kept);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_sandbox_is_kept_by_the_journal_and_carried_into_a_new_model() {
+    let journal = Sandboxes::default();
+    let kept = Arc::clone(&journal.0);
+    let mut database = database();
+    database.set_journal(Box::new(journal));
+    let id = database.create_sandbox("ada", "Plan").unwrap().transaction;
+    let writes = [
+        set("Sales", ["A", "Units"], 5.0),
+        set("Sales", ["B", "Units"], 6.0),
+    ];
+    database.write(Some(id), &writes).unwrap();
+    let saved = || kept.lock().unwrap()[&id].clone().unwrap();
+    assert_eq!(
+        (&saved()["name"], &saved()["owner"]),
+        (&json!("Plan"), &json!("ada"))
+    );
+    assert_eq!(saved()["cells"].as_array().unwrap().len(), 2);
+
+    // In a model where B is gone and C comes before A, the value at A goes where A is now;
+    // the one at B has no place.
+    let mut definition = definition();
+    let product = &mut definition.dimensions[0];
+    product.elements.retain(|element| element.name != "B");
+    product.elements[0]
+        .children
+        .retain(|child| child.name != "B");
+    let c = serde_json::from_value(json!({ "name": "C", "type": "numeric" })).unwrap();
+    product.elements.insert(1, c);
+    database.update_model(1, definition.clone()).unwrap();
+    assert_eq!(units(&database, Some(id), "A"), 5.0);
+    assert_eq!(units(&database, Some(id), "C"), 0.0);
+    assert_eq!(database.sandboxes("ada")[0].pending, 1);
+    assert_eq!(saved()["cells"].as_array().unwrap().len(), 1);
+
+    // Taken in as the journal kept it, it is the same sandbox, under the same transaction.
+    let cells: Vec<CellWrite> = serde_json::from_value(saved()["cells"].clone()).unwrap();
+    let mut restored = Database::new(definition).unwrap();
+    assert_eq!(restored.restore_sandbox(id, "ada", "Plan", &cells), 0);
+    assert_eq!(units(&restored, Some(id), "A"), 5.0);
+    assert_eq!(restored.sandboxes("ada")[0].transaction, id);
+
+    database.delete_sandbox("ada", "Plan").unwrap();
+    assert_eq!(kept.lock().unwrap()[&id], None);
 }
