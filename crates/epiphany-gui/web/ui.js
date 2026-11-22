@@ -310,3 +310,11 @@ export function download(name, text, type = 'text/plain') {
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+/** Puts text on the clipboard, and says so. */
+export function copyText(text) {
+  navigator.clipboard?.writeText(text).then(
+    () => notify('Copied.', 'good'),
+    () => notify('The browser kept the page from the clipboard. Press Ctrl C instead.', 'bad'),
+  );
+}
