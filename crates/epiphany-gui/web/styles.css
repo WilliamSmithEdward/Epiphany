@@ -674,3 +674,15 @@ dialog.wide .dialog-body { max-height: none; }
 .row-resize:hover { box-shadow: inset 0 -2px 0 var(--accent); }
 .pivot tbody th.pinned { position: sticky; }
 .resizing { user-select: none; cursor: col-resize; }
+
+/* ---- Cells chosen ---- */
+
+/* A tint laid over whatever the cell shows, totals and changes among them. */
+.pivot td.selected { position: relative; }
+.pivot td.selected::before { content: ""; position: absolute; inset: 0; background: color-mix(in oklab, var(--accent) 22%, transparent); pointer-events: none; }
+.pivot th[data-r1], .pivot th[data-c1], .pivot th.corner { cursor: pointer; }
+.pivot thead th.in-selection { color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.pivot tbody th.in-selection { color: var(--accent); box-shadow: inset -2px 0 0 var(--accent); }
+.pivot td { user-select: none; }
+.selection-summary { display: flex; gap: var(--s4); margin-left: auto; font-variant-numeric: tabular-nums; }
+.selection-summary:empty { display: none; }

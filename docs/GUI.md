@@ -29,6 +29,8 @@ their practices, not their looks.
 | Rows, Columns and Filters areas, with empty areas that say what to drop there | The layout bar, with every drag also reachable by keyboard and menu |
 | Filters shown with their chosen members, as in "Gender [Male]" | Filter chips |
 | Expandable members, totals set apart, numbers right-aligned in tabular figures, headers that stay in view | The pivot grid |
+| Columns fitted to their content, widths and row height dragged by hand and kept with a view | The grid's geometry, with Reset sizes |
+| Choosing cells as in a spreadsheet: ranges, whole rows and columns from their headings, Ctrl to add, Shift to stretch, with count, sum, average, min and max beneath | The grid's selection, which copies as tab-separated text and clears writable cells in one write |
 | Show or hide empty rows, swap axes, export, undo and redo, defer updates | The grid's toolbar |
 | A menu on a cell: sort, drill, show as a share of the row or column | The cell menu |
 | Moving between the visual builder and MDX | An MDX view of the same query, editable |

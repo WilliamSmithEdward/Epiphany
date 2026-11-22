@@ -3,6 +3,7 @@
 
 import { ApiError, get, modelVersion, part, post, put } from './api.js';
 import { chart, shape } from './chart.js';
+import { Selection } from './selection.js';
 import { editSet } from './sets.js';
 import { empty, failure, go, model, state } from './app.js';
 import { dialog, download, formatNumber, h, icon, menu, mount, notify } from './ui.js';
@@ -824,7 +825,7 @@ class Explorer {
         const key = (i) => columnTuples[i].slice(0, level + 1).map((m) => m.unique_name).join('|');
         let span = 1;
         while (index + span < columnTuples.length && key(index + span) === key(index)) span += 1;
-        groups.push([columnTuples[index][level], span]);
+        groups.push([columnTuples[index][level], span, index]);
         index += span;
       }
       const tr = h('tr');
@@ -833,17 +834,20 @@ class Explorer {
         const labels = rowTuples[0]?.flatMap((m, index) => [m.dimension, ...rowAttributes[index]]) ?? [];
         tr.append(...(labels.length ? labels : ['']).map((label) => h('th', { class: 'corner', rowspan: headRows, scope: 'col' }, label)));
       }
-      for (const [m, span] of groups) {
-        tr.append(h('th', { scope: 'col', colspan: span, class: `col-head ${m.type === 'consolidated' ? 'total' : ''}` },
+      // Each heading knows the columns beneath it, to choose them when it is clicked.
+      const across = (span, index) => ({ c1: index, c2: index + span - 1 });
+      for (const [m, span, index] of groups) {
+        tr.append(h('th', { scope: 'col', colspan: span, class: `col-head ${m.type === 'consolidated' ? 'total' : ''}`, dataset: across(span, index) },
           this.memberLabel('columns', m)));
       }
       head.append(tr);
       for (const attribute of columnAttributes[level]) {
-        head.append(h('tr', { class: 'attribute-row-head' }, groups.map(([m, span]) => h('th', {
+        head.append(h('tr', { class: 'attribute-row-head' }, groups.map(([m, span, index]) => h('th', {
           scope: 'col',
           colspan: span,
           class: 'col-attribute',
           title: attribute,
+          dataset: across(span, index),
         }, this.attributeValue(m, attribute)))));
       }
     }
@@ -853,10 +857,15 @@ class Explorer {
       const tr = h('tr', { class: total(tuple) ? 'total-row' : '' });
       tuple.forEach((m, level) => {
         // A member repeated from the row above is left blank, so groups read clearly.
-        const same = r > 0 && shownRows[r - 1].slice(0, level + 1).every((other, i) => other.unique_name === tuple[i].unique_name);
-        tr.append(h('th', { scope: 'row', class: `row-head ${m.type === 'consolidated' ? 'total' : ''}` }, same ? '' : this.memberLabel('rows', m)));
+        const shares = (other) => other && other.slice(0, level + 1).every((o, i) => o.unique_name === tuple[i].unique_name);
+        const same = shares(shownRows[r - 1]);
+        // A heading stands for its row and the rows beneath that repeat it.
+        let last = r;
+        while (!same && shares(shownRows[last + 1])) last += 1;
+        const down = { r1: r, r2: last };
+        tr.append(h('th', { scope: 'row', class: `row-head ${m.type === 'consolidated' ? 'total' : ''}`, dataset: down }, same ? '' : this.memberLabel('rows', m)));
         for (const attribute of rowAttributes[level] ?? []) {
-          tr.append(h('th', { scope: 'row', class: 'row-attribute', title: attribute }, same ? '' : this.attributeValue(m, attribute)));
+          tr.append(h('th', { scope: 'row', class: 'row-attribute', title: attribute, dataset: down }, same ? '' : this.attributeValue(m, attribute)));
         }
       });
       for (let c = 0; c < columnCount; c += 1) {
@@ -879,11 +888,20 @@ class Explorer {
       ...columnTuples.map((tuple) => `col:${tuple.map((m) => m.unique_name).join('|')}`),
     ];
     table.append(h('colgroup', {}, keys.map((key) => h('col', { dataset: { key } }))), head, body);
+    const summary = h('span', { class: 'selection-summary', 'aria-live': 'polite' });
+    this.selection = new Selection(table, {
+      rows: shownRows.length,
+      columns: columnCount,
+      value: (r, c) => result.cells[r * columnCount + c],
+      changed: (chosen) => mount(summary, ...this.summarize(chosen)),
+    });
     table.addEventListener('contextmenu', (event) => {
       const cell = event.target.closest('td');
       if (!cell) return;
       event.preventDefault();
-      this.cellMenu(Number(cell.dataset.r), Number(cell.dataset.c), { x: event.clientX, y: event.clientY });
+      const [r, c] = [Number(cell.dataset.r), Number(cell.dataset.c)];
+      if (!this.selection.has(r, c)) this.selection.choose({ r1: r, r2: r, c1: c, c2: c });
+      this.cellMenu(r, c, { x: event.clientX, y: event.clientY });
     });
     table.addEventListener('keydown', (event) => this.moveFocus(event, table));
     table.addEventListener('dblclick', (event) => {
@@ -900,7 +918,23 @@ class Explorer {
       h('span', {}, `${rowTuples.length.toLocaleString()} rows × ${columnCount.toLocaleString()} columns`),
       h('span', { class: 'muted' }, `${cells.toLocaleString()} cells in ${Math.round(this.took)} ms`),
       rowTuples.length > limit ? h('span', { class: 'badge warn' }, `Showing the first ${limit.toLocaleString()} rows`) : null,
-      this.layout.sort ? h('span', { class: 'badge accent' }, `Sorted ${this.layout.sort.descending ? 'largest' : 'smallest'} first`) : null);
+      this.layout.sort ? h('span', { class: 'badge accent' }, `Sorted ${this.layout.sort.descending ? 'largest' : 'smallest'} first`) : null,
+      summary);
+  }
+
+  /** Says, for more than one cell chosen, how many there are and what their numbers add to. */
+  summarize(chosen) {
+    if (chosen.count < 2) return [];
+    const figure = (label, value) => h('span', {}, h('span', { class: 'muted' }, `${label} `), formatNumber(value));
+    return [
+      h('span', {}, h('span', { class: 'muted' }, 'Count '), chosen.count.toLocaleString()),
+      ...(chosen.numbers ? [
+        figure('Sum', chosen.sum),
+        figure('Average', chosen.average),
+        figure('Min', chosen.min),
+        figure('Max', chosen.max),
+      ] : []),
+    ];
   }
 
   /** A member's heading: with a button that opens or closes it where it has children. */
@@ -1109,7 +1143,7 @@ class Explorer {
 
   moveFocus(event, table) {
     const cell = event.target.closest('td');
-    if (!cell) return;
+    if (!cell || event.defaultPrevented) return;
     const r = Number(cell.dataset.r);
     const c = Number(cell.dataset.c);
     const moves = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
@@ -1126,7 +1160,8 @@ class Explorer {
       }
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault();
-        this.write(r, c, this.result.cells[r * this.result.axes[0].tuples.length + c], '');
+        const chosen = this.selection.cells();
+        this.clear(chosen.length ? chosen : [[r, c]]);
         return;
       }
       if (event.key.length === 1) {
@@ -1151,6 +1186,7 @@ class Explorer {
     const columnTuple = columns.tuples[c] ?? [];
     const openable = (place, tuple) => tuple.filter((m) => this.dims.get(m.dimension)?.byName.get(m.name)?.children.length);
     const rowOpen = openable('rows', rowTuple);
+    const chosen = this.selection?.cells().length ?? 0;
     menu([
       { heading: [...rowTuple, ...columnTuple].map((m) => m.name).join(' · ') },
       { label: 'Sort rows by this column, largest first', icon: 'down', disabled: !this.layout.rows.length, action: () => this.sortBy(columnTuple, true) },
@@ -1168,7 +1204,12 @@ class Explorer {
         ? { label: 'Spread a value over its leaves…', icon: 'sigma', action: () => this.spread(r, c) }
         : null,
       { label: 'Explain this value', icon: 'info', action: () => this.explain(rowTuple, columnTuple) },
-      { label: 'Copy the value', icon: 'save', action: () => navigator.clipboard?.writeText(String(this.result.cells[r * columns.tuples.length + c] ?? '')) },
+      chosen > 1
+        ? { label: `Copy the ${chosen.toLocaleString()} cells chosen`, icon: 'save', action: () => navigator.clipboard?.writeText(this.selection.text()) }
+        : { label: 'Copy the value', icon: 'save', action: () => navigator.clipboard?.writeText(String(this.result.cells[r * columns.tuples.length + c] ?? '')) },
+      chosen > 1 && this.selection.cells().some(([row, column]) => this.writable.has(`${row},${column}`))
+        ? { label: 'Clear the cells chosen', icon: 'trash', action: () => this.clear(this.selection.cells()) }
+        : null,
     ], at);
   }
 
@@ -1288,6 +1329,34 @@ class Explorer {
     }
     this.edits.set(JSON.stringify(at), value);
     this.changes = (this.changes ?? 0) + 1;
+    await this.run();
+  }
+
+  /**
+   * Empties the cells given that may be written, in one write: numbers to zero and text to
+   * nothing, within the transaction the edits are held in.
+   */
+  async clear(cells) {
+    const columnCount = this.result.axes[0].tuples.length;
+    const cleared = cells
+      .filter(([r, c]) => this.writable.has(`${r},${c}`))
+      .map(([r, c]) => {
+        const before = this.result.cells[r * columnCount + c];
+        return { at: this.coordinate(r, c), value: typeof before === 'string' ? '' : 0, before };
+      })
+      .filter(({ before }) => before !== null && before !== undefined && before !== 0 && before !== '');
+    if (!cleared.length) return;
+    const [r, c] = cells[0];
+    this.focusAfter = [r, c];
+    try {
+      await this.ensureTransaction();
+      await post('/cells/write', { transaction: this.tx, cells: cleared.map(({ at, value }) => ({ cube: this.cube.name, at, value })) });
+    } catch (problem) {
+      this.refused(problem);
+      return;
+    }
+    for (const { at, value } of cleared) this.edits.set(JSON.stringify(at), value);
+    this.changes = (this.changes ?? 0) + cleared.length;
     await this.run();
   }
 

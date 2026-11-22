@@ -28,6 +28,7 @@ const FILES: &[(&str, &[u8])] = files![
     "model.js",
     "admin.js",
     "sets.js",
+    "selection.js",
     "later.js",
 ];
 
