@@ -189,6 +189,29 @@ async fn the_model_is_served_as_defined() {
 }
 
 #[tokio::test]
+async fn the_outline_gives_the_model_but_its_dimensions_elements() {
+    let app = example();
+    let (_, whole) = call(&app, "GET", "/model", None).await;
+    let (status, outline) = call(&app, "GET", "/model/outline", None).await;
+    assert_eq!(status, StatusCode::OK);
+    // Each dimension by its name, type and size; the cubes and dashboards whole.
+    let sized: Vec<Value> = whole["model"]["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|dimension| {
+            let kind = dimension.get("type").cloned().unwrap_or(json!("standard"));
+            let count = dimension["elements"].as_array().unwrap().len();
+            json!({ "name": dimension["name"], "type": kind, "element_count": count })
+        })
+        .collect();
+    assert_eq!(outline["dimensions"], json!(sized));
+    assert_eq!(outline["cubes"], whole["model"]["cubes"]);
+    assert_eq!(outline["dashboards"], json!([]));
+    assert_eq!(outline["version"], whole["version"]);
+}
+
+#[tokio::test]
 async fn a_dimension_is_served_with_its_hierarchy() {
     let (status, body) = call(&example(), "GET", "/dimensions/period", None).await;
     assert_eq!(status, StatusCode::OK);

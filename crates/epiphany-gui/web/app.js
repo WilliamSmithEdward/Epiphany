@@ -409,12 +409,16 @@ export function failure(problem, retry) {
     retry ? h('button', { class: 'button', onclick: retry }, icon('refresh', 16), 'Try again') : null);
 }
 
-/** The model, fetched once and again after it changes. */
+/**
+ * The model in outline, fetched once and again after it changes: its cubes and dashboards,
+ * and its dimensions by name, type and `element_count`. A dimension's elements are fetched
+ * apart, only where they are shown, however many there are.
+ */
 export async function model() {
   if (!state.model) {
-    const view = await get('/model');
-    state.model = view.model;
-    state.version = view.version;
+    const outline = await get('/model/outline');
+    state.model = { dimensions: outline.dimensions, cubes: outline.cubes, dashboards: outline.dashboards };
+    state.version = outline.version;
   }
   return state.model;
 }
@@ -548,7 +552,7 @@ addEventListener('keydown', (event) => {
 
 async function overview(target) {
   const definition = await model();
-  const elements = definition.dimensions.reduce((total, dimension) => total + dimension.elements.length, 0);
+  const elements = definition.dimensions.reduce((total, dimension) => total + dimension.element_count, 0);
   const stat = (label, value, iconName) => h('div', { class: 'card tile' },
     h('div', { class: 'tile-icon' }, icon(iconName, 20)),
     h('div', { class: 'stat' }, value.toLocaleString()),

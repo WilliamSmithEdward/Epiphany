@@ -140,6 +140,7 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | --- | --- |
 | `POST /sessions`, `DELETE /sessions` | Sign in and out |
 | `GET /model`, `PUT /model` | The whole model, and replacing it against its version |
+| `GET /model/outline` | The model without its dimensions' elements: its cubes and dashboards, and each dimension's name, type and size |
 | `GET`, `PUT`, `DELETE /dimensions/{name}` | One dimension, with its hierarchy and subsets |
 | `GET`, `PUT`, `DELETE /cubes/{name}` | One cube, with its rules, feeders and views |
 | `POST /cells/read` | A batch of cells, each with its value or its own error |

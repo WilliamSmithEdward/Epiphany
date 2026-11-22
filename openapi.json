@@ -2857,6 +2857,44 @@
         }
       }
     },
+    "/model/outline": {
+      "get": {
+        "summary": "The model in outline: every cube, with its rules, views and checks, and every dashboard,\nbut each dimension only by its name, type and number of elements. What lists the cubes\nand views asks for this; `GET /dimensions/{name}` gives a dimension whole.",
+        "operationId": "get_outline",
+        "responses": {
+          "200": {
+            "description": "The model, without its dimensions' elements",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelOutline"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sandboxes": {
       "get": {
         "summary": "The signed-in user's sandboxes, in the order of their names. Values are read, written,\nspread and queried in one with its transaction; `POST /transactions/{id}/commit`\npublishes them, and `POST /transactions/{id}/rollback` empties it.",
@@ -4055,6 +4093,28 @@
         },
         "additionalProperties": false
       },
+      "DimensionOutline": {
+        "type": "object",
+        "description": "A dimension as the outline of the model gives it: by its name, type and size.",
+        "required": [
+          "name",
+          "type",
+          "element_count"
+        ],
+        "properties": {
+          "element_count": {
+            "type": "integer",
+            "description": "How many elements it has.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/DimensionType"
+          }
+        }
+      },
       "DimensionPut": {
         "type": "object",
         "required": [
@@ -4732,6 +4792,42 @@
           }
         },
         "additionalProperties": false
+      },
+      "ModelOutline": {
+        "type": "object",
+        "description": "The model in outline: its cubes and dashboards whole, and its dimensions without their\nelements, so that it stays small however large the dimensions grow.",
+        "required": [
+          "version",
+          "dimensions",
+          "cubes",
+          "dashboards"
+        ],
+        "properties": {
+          "cubes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CubeDef"
+            }
+          },
+          "dashboards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardDef"
+            }
+          },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DimensionOutline"
+            }
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Counts up by one with every update.",
+            "minimum": 0
+          }
+        }
       },
       "ModelPut": {
         "type": "object",

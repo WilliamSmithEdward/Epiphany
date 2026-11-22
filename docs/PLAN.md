@@ -399,7 +399,10 @@ practice that means:
   committed to the repository, and a test fails when the committed copy differs. The code
   and the contract cannot drift.
 - Resource groups:
-  - `/model`: read (done) and versioned update
+  - `/model`: read (done) and versioned update; `/model/outline`, the model without its
+    dimensions' elements, each dimension by its name, type and size, for what lists cubes,
+    views and dashboards. A dimension of half a million elements makes the whole model
+    some 19 MB; the outline stays a few hundred bytes (done)
   - `/dimensions/{name}`: one dimension with each element's level, parents, children and
     attributes (done)
   - `/cells/read`, `/cells/write`, `/cells/spread`: batched. Each cell names its cube, so

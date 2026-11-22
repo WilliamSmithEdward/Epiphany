@@ -122,10 +122,11 @@ fn bodies() -> Vec<String> {
     bodies
 }
 
-const ROUTES: [(&str, &str); 73] = [
+const ROUTES: [(&str, &str); 74] = [
     ("POST", "/sessions"),
     ("DELETE", "/sessions"),
     ("GET", "/model"),
+    ("GET", "/model/outline"),
     ("PUT", "/model"),
     ("GET", "/dimensions/Period"),
     ("GET", "/dimensions/Nowhere"),

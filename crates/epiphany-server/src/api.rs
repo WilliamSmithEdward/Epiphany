@@ -159,6 +159,7 @@ fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(Contract::openapi())
         .routes(routes!(sign_in, sign_out))
         .routes(routes!(get_model, put_model))
+        .routes(routes!(get_outline))
         .routes(routes!(get_dimension, put_dimension, delete_dimension))
         .routes(routes!(get_cube, put_cube, delete_cube))
         .routes(routes!(read_cells))
@@ -860,6 +861,50 @@ struct LockRequest {
     /// The cube to lock. Without it the whole server is locked.
     cube: Option<String>,
     mode: LockMode,
+}
+
+/// A dimension as the outline of the model gives it: by its name, type and size.
+#[derive(Serialize, ToSchema)]
+struct DimensionOutline {
+    name: String,
+    #[serde(rename = "type")]
+    kind: DimensionType,
+    /// How many elements it has.
+    element_count: usize,
+}
+
+/// The model in outline: its cubes and dashboards whole, and its dimensions without their
+/// elements, so that it stays small however large the dimensions grow.
+#[derive(Serialize, ToSchema)]
+struct ModelOutline {
+    /// Counts up by one with every update.
+    version: u64,
+    dimensions: Vec<DimensionOutline>,
+    cubes: Vec<CubeDef>,
+    dashboards: Vec<DashboardDef>,
+}
+
+/// The model in outline: every cube, with its rules, views and checks, and every dashboard,
+/// but each dimension only by its name, type and number of elements. What lists the cubes
+/// and views asks for this; `GET /dimensions/{name}` gives a dimension whole.
+#[utoipa::path(get, path = "/model/outline", responses((status = OK, body = ModelOutline, description = "The model, without its dimensions' elements")))]
+async fn get_outline(State(database): State<Shared>) -> Json<ModelOutline> {
+    let database = database.read().unwrap();
+    let definition = database.definition();
+    let dimensions = definition
+        .dimensions
+        .iter()
+        .map(|dimension| DimensionOutline {
+            name: dimension.name.clone(),
+            kind: dimension.kind,
+            element_count: dimension.elements.len(),
+        });
+    Json(ModelOutline {
+        version: database.model_version(),
+        dimensions: dimensions.collect(),
+        cubes: definition.cubes.clone(),
+        dashboards: definition.dashboards.clone(),
+    })
 }
 
 /// The model definition and its version.

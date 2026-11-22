@@ -361,6 +361,11 @@ async function signingIn({ admin }) {
     await page.press('Enter');
     await page.waitFor(`document.querySelector('h1')?.textContent === ${quoted(`Welcome, ${admin.name}`)}`, 'the welcome');
     await page.settled();
+    // Counted from the model's outline, the elements are as many as the whole model has.
+    const { data } = await page.api('GET', '/model');
+    const elements = data.model.dimensions.reduce((total, dimension) => total + dimension.elements.length, 0);
+    const shown = await page.evaluate(`[...document.querySelectorAll('.tile')].find((tile) => tile.textContent.includes('Elements'))?.querySelector('.stat')?.textContent`);
+    expect(shown === elements.toLocaleString('en-US'), `The overview counts ${shown} elements; the model has ${elements}.`);
     await page.audit('The overview');
   });
   await step('A session that ends is signed into again over the page, which stays', async () => {
