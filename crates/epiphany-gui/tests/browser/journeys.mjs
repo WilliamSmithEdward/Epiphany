@@ -171,6 +171,7 @@ class Browser {
 }
 
 const KEYS = { Enter: 13, Escape: 27, Tab: 9, Backspace: 8, Delete: 46, Home: 36, End: 35, ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40, F2: 113 };
+const CTRL = 2;
 const SHIFT = 8;
 
 /** A tab, and what a person does in it: going to a page, clicking, typing, pressing keys. */
@@ -417,6 +418,34 @@ async function signingIn({ admin }) {
     await page.press('Enter');
     await page.waitFor(`!document.querySelector('dialog[open]') && [...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Signed in again'))`, 'signing in again');
     await page.waitFor(`document.querySelector('h1')?.textContent === 'Administration'`, 'the page as it was');
+  });
+  await step('The palette finds a saved view by a word of its name, the best first, and offers again what was chosen', async () => {
+    const options = `[...document.querySelectorAll('dialog.palette [role="option"]')].map((option) => ({
+      label: option.firstElementChild.nextElementSibling.textContent,
+      marked: [...option.querySelectorAll('mark')].map((mark) => mark.textContent).join('|'),
+      kind: option.querySelector('.kind').textContent,
+    }))`;
+    const open = async () => {
+      await page.press('k', CTRL);
+      await page.waitFor(`document.querySelector('dialog.palette[open]') && !document.querySelector('dialog.palette .finding')`, 'the palette, with the cubes');
+    };
+    await open();
+    await page.type('quart');
+    await page.waitFor(`document.querySelector('dialog.palette [role="option"]')?.textContent.startsWith('Quarterly')`, 'the view, first');
+    const [first] = await page.evaluate(options);
+    expect(first.label === 'Quarterly income by entity' && first.marked === 'Quart' && first.kind === 'View of General Ledger', `The first command offered is ${quoted(first)}.`);
+    await page.audit('The palette');
+    // A word that begins a word of the name ranks above one found within what it belongs to.
+    await page.fill('dialog.palette input', 'ledg');
+    await page.waitFor(`document.querySelector('dialog.palette [role="option"]')?.textContent.startsWith('Explore General Ledger')`, 'the cube, first');
+    await page.fill('dialog.palette input', 'overview');
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('h1')?.textContent.startsWith('Welcome')`, 'the overview');
+    await open();
+    const [lately] = await page.evaluate(options);
+    expect(lately.label === 'Overview', `With nothing typed, the first command offered is ${quoted(lately)}, not the one chosen last.`);
+    await page.press('Escape');
+    await page.waitFor(`!document.querySelector('dialog.palette')`, 'the palette, closed');
   });
 }
 

@@ -1,6 +1,7 @@
 // The application: signing in, the shell around every page, and moving between pages.
 
 import { ApiError, api, events, get } from './api.js';
+import { marked } from './tree.js';
 import { dialog, h, icon, menu, MOD, mount, notify, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
@@ -526,8 +527,62 @@ function setStatus(up) {
 
 /* ---- Command palette ---- */
 
+/** Where the commands chosen lately are kept, the latest first. */
+const RECENT = 'epiphany.palette.recent';
+const RECENT_KEPT = 5;
+const commandKey = (command) => `${command.kind}: ${command.label}`;
+
+function chosenLately() {
+  try {
+    return JSON.parse(localStorage.getItem(RECENT)) ?? [];
+  } catch {
+    return [];
+  }
+}
+
+/** Whether `word` begins one of the words of `text`. */
+function beginsWord(text, word) {
+  for (let at = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1)) {
+    if (at === 0 || !/[\p{L}\p{N}]/u.test(text[at - 1])) return true;
+  }
+  return false;
+}
+
+/**
+ * The commands with every word typed, in their label or else in what they belong to, the best
+ * matches first: words that begin the label, then words that begin one of its words, then
+ * any. With nothing typed, the commands chosen lately come first.
+ */
+function ranked(commands, words) {
+  if (!words.length) {
+    const lately = chosenLately();
+    const place = (command) => {
+      const at = lately.indexOf(commandKey(command));
+      return at < 0 ? lately.length : at;
+    };
+    return [...commands].sort((a, b) => place(a) - place(b));
+  }
+  const scored = [];
+  for (const command of commands) {
+    const label = command.label.toLowerCase();
+    const context = command.context?.toLowerCase() ?? '';
+    let score = 0;
+    for (const word of words) {
+      const points = label.startsWith(word) ? 3 : beginsWord(label, word) ? 2 : label.includes(word) || context.includes(word) ? 1 : 0;
+      if (!points) {
+        score = 0;
+        break;
+      }
+      score += points;
+    }
+    if (score) scored.push([score, command]);
+  }
+  return scored.sort((a, b) => b[0] - a[0]).map(([, command]) => command);
+}
+
 async function palette() {
-  if (document.querySelector('dialog.palette')) return;
+  // One closed a moment ago may wait for its close event to be taken away.
+  if (document.querySelector('dialog.palette[open]')) return;
   const pages = visible().map((entry) => ({ label: entry.title, kind: 'Page', icon: entry.icon, run: () => go(entry.path) }));
   const others = [
     { label: 'Use the light theme', kind: 'Theme', icon: 'sun', run: () => chooseTheme('light') },
@@ -547,7 +602,7 @@ async function palette() {
   let selected = 0;
   const draw = () => {
     const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
-    shown = [...pages, ...found, ...others].filter((command) => words.every((word) => command.label.toLowerCase().includes(word)));
+    shown = ranked([...pages, ...found, ...others], words);
     selected = Math.min(selected, Math.max(0, shown.length - 1));
     mount(list, shown.length
       ? shown.map((command, index) => h('li', {
@@ -561,7 +616,7 @@ async function palette() {
           }
         },
         onclick: () => choose(index),
-      }, icon(command.icon, 16), command.label, h('span', { class: 'kind' }, command.kind)))
+      }, icon(command.icon, 16), h('span', {}, marked(command.label, words)), h('span', { class: 'kind' }, command.kind)))
       : finding ? null : h('li', { class: 'none' }, 'Nothing matches'),
     finding ? h('li', { class: 'none finding' }, h('span', { class: 'spinner small', 'aria-hidden': 'true' }), 'Finding cubes and dashboards…') : null);
     input.setAttribute('aria-activedescendant', shown.length ? `palette-${selected}` : '');
@@ -570,7 +625,10 @@ async function palette() {
   const choose = (index) => {
     const command = shown[index];
     element.close();
-    command?.run();
+    if (!command) return;
+    const key = commandKey(command);
+    localStorage.setItem(RECENT, JSON.stringify([key, ...chosenLately().filter((other) => other !== key)].slice(0, RECENT_KEPT)));
+    command.run();
   };
   input.addEventListener('input', () => {
     selected = 0;
@@ -596,9 +654,17 @@ async function palette() {
   input.focus();
   try {
     const definition = await model();
+    const explore = (cube, view) => `/explore?cube=${encodeURIComponent(cube.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`;
     found = [
-      ...definition.cubes.map((cube) => ({ label: `Explore ${cube.name}`, kind: 'Cube', icon: 'cube', run: () => go(`/explore?cube=${encodeURIComponent(cube.name)}`) })),
+      ...definition.cubes.map((cube) => ({ label: `Explore ${cube.name}`, kind: 'Cube', icon: 'cube', run: () => go(explore(cube)) })),
+      ...definition.cubes.flatMap((cube) => Object.keys(cube.views ?? {}).map((view) => ({
+        label: view, context: cube.name, kind: `View of ${cube.name}`, icon: 'grid', run: () => go(explore(cube, view)),
+      }))),
       ...(definition.dashboards ?? []).map((dashboard) => ({ label: dashboard.name, kind: 'Dashboard', icon: 'dashboard', run: () => go(`/dashboards?name=${encodeURIComponent(dashboard.name)}`) })),
+      ...(isAdmin() ? [
+        ...definition.dimensions.map((dimension) => ({ label: `Edit ${dimension.name}`, kind: 'Dimension', icon: 'dimension', run: () => go(`/model?dimension=${encodeURIComponent(dimension.name)}`) })),
+        ...definition.cubes.map((cube) => ({ label: `Edit ${cube.name}`, kind: 'Cube in the model', icon: 'model', run: () => go(`/model?cube=${encodeURIComponent(cube.name)}`) })),
+      ] : []),
     ];
   } catch {
     // The pages are still there to choose.

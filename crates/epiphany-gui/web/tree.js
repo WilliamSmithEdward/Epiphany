@@ -93,20 +93,22 @@ export function beneath(names, children) {
   return out;
 }
 
-/** Text with each place the words occur marked. */
+/** Text with each place the words occur marked: `words`, in lower case, a string or several. */
 export function marked(text, words) {
   const value = String(text);
   const lower = value.toLowerCase();
+  const sought = [words].flat().filter(Boolean);
   // Where lower case changes the length, the places found would not line up.
-  if (!words || lower.length !== value.length) return value;
-  const parts = [];
-  let from = 0;
-  for (let at = lower.indexOf(words); at >= 0; at = lower.indexOf(words, from)) {
-    if (at > from) parts.push(value.slice(from, at));
-    parts.push(h('mark', {}, value.slice(at, at + words.length)));
-    from = at + words.length;
+  if (!sought.length || lower.length !== value.length) return value;
+  const found = new Array(value.length).fill(false);
+  for (const word of sought) {
+    for (let at = lower.indexOf(word); at >= 0; at = lower.indexOf(word, at + word.length)) found.fill(true, at, at + word.length);
   }
-  if (from < value.length) parts.push(value.slice(from));
+  const parts = [];
+  for (let from = 0, to = 0; from < value.length; from = to) {
+    while (to < value.length && found[to] === found[from]) to += 1;
+    parts.push(found[from] ? h('mark', {}, value.slice(from, to)) : value.slice(from, to));
+  }
   return parts;
 }
 

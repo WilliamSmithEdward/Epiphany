@@ -56,7 +56,8 @@ function together(keys) {
 
 /** Lists the keys the application takes, by where they work. */
 export function showShortcuts() {
-  if (document.querySelector('dialog[aria-label="Keyboard shortcuts"]')) return;
+  // One closed a moment ago may wait for its close event to be taken away.
+  if (document.querySelector('dialog[open][aria-label="Keyboard shortcuts"]')) return;
   const sections = KEYS.map(([where, lines]) => h('section', { class: 'shortcuts-section' },
     h('h3', {}, where),
     h('dl', { class: 'shortcuts' }, lines.flatMap(([alternatives, what]) => [

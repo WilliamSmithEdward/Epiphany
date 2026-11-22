@@ -89,7 +89,10 @@ only way to do something, and modal dialogs where a side panel would keep the da
   rights. Moving to another page leaves the one shown, still, until the next is drawn: a
   quick load shows no gap, and a slow one the outline of what is coming. Choosing another
   dimension, cube or dashboard within a page changes only what it shows.
-- **One command palette** (Ctrl+K) reaching every screen and action.
+- **One command palette** (Ctrl+K) reaching every screen and action: pages, cubes, saved
+  views, dashboards and, for administrators, each dimension and cube of the model. The best
+  matches come first, the words typed marked in them, and, with nothing typed, the commands
+  chosen lately.
 - **Nothing lost to a session ending.** When the session ends, a sign-in dialog opens over
   the page, and the page, its unsaved changes with it, stays as it was. Signing out asks
   first about changes not saved, as do closing the page and loading it afresh.
