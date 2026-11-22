@@ -1496,14 +1496,39 @@ class Explorer {
         ? { label: 'Spread a value over its leaves…', icon: 'sigma', action: () => this.spread(r, c) }
         : null,
       { label: 'Explain this value', icon: 'info', action: () => this.explain(rowTuple, columnTuple) },
+      [...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
+        ? { label: 'Show the leaves beneath', icon: 'level', action: () => this.drillToLeaves(rowTuple, columnTuple) }
+        : null,
       '-',
       { label: chosen > 1 ? `Copy the ${chosen.toLocaleString()} cells` : 'Copy the value', icon: 'copy', action: () => copied(this.selection.text()) },
       { label: 'Copy with headings', icon: 'grid', action: () => copied(this.textWithHeadings()) },
+      { label: 'Copy as Excel formulas (DBRW)', icon: 'code', action: () => copied(this.textWithHeadings(true)) },
       this.mayWrite() ? { label: 'Paste', icon: 'paste', action: () => this.pasteFromClipboard() } : null,
       this.selection.cells().some(([row, column]) => this.writable.has(`${row},${column}`))
         ? { label: chosen > 1 ? 'Clear the cells chosen' : 'Clear the value', icon: 'trash', action: () => this.clear(this.selection.cells()) }
         : null,
     ], at);
+  }
+
+  /**
+   * Shows what lies behind a total: each consolidated member of its row and column replaced
+   * on its axis by the leaves beneath it, and empty rows and columns left out. Undo goes back.
+   */
+  drillToLeaves(rowTuple, columnTuple) {
+    this.change((layout) => {
+      for (const [place, tuple] of [['rows', rowTuple], ['columns', columnTuple]]) {
+        for (const m of tuple) {
+          const dim = this.dims.get(m.dimension);
+          const entry = layout[place].find((candidate) => candidate.dimension === m.dimension);
+          if (m.type !== 'consolidated' || !entry || !dim) continue;
+          const under = beneath([m.name], (name) => this.childrenOf(dim, name));
+          entry.members = dim.elements.filter((element) => under.has(element.name) && !element.children.length).map((element) => element.name);
+          entry.expanded = [];
+        }
+      }
+      layout.nonEmpty = true;
+      layout.sort = null;
+    });
   }
 
   /** Pastes what the clipboard holds, where the browser lets the page read it. */
@@ -1720,11 +1745,28 @@ class Explorer {
     await this.writeCells(cells, leftOut ? `${pasted} ${leftOut.toLocaleString()} left out: cells that cannot be written, or text where a number belongs.` : pasted);
   }
 
-  /** The cells chosen, with the headings of their rows and columns, as tab-separated text. */
-  textWithHeadings() {
+  /**
+   * The cells chosen, with the headings of their rows and columns, as tab-separated text;
+   * with `formulas`, each value is a DBRW formula that the Excel add-in reads live, naming
+   * the cube and one element for each dimension, so that it works wherever it is pasted.
+   */
+  textWithHeadings(formulas = false) {
     if (!this.selection.ranges.length) return '';
     const box = this.selection.ranges.reduce((a, b) => ({ r1: Math.min(a.r1, b.r1), r2: Math.max(a.r2, b.r2), c1: Math.min(a.c1, b.c1), c2: Math.max(a.c2, b.c2) }));
-    return this.tableOf([box.r1, box.r2], [box.c1, box.c2]).map((cells) => cells.map(cellText).join('\t')).join('\n');
+    const table = this.tableOf([box.r1, box.r2], [box.c1, box.c2]);
+    if (formulas) {
+      const heads = table.length - (box.r2 - box.r1 + 1);
+      const quote = (text) => `"${String(text).replaceAll('"', '""')}"`;
+      table.slice(heads).forEach((cells, down) => {
+        const lead = cells.length - (box.c2 - box.c1 + 1);
+        for (let across = 0; across <= box.c2 - box.c1; across += 1) {
+          const at = this.coordinate(box.r1 + down, box.c1 + across);
+          // A calculated member's cell has no address in the cube, and keeps its value.
+          if (at) cells[lead + across] = { formula: `=DBRW(${[this.cube.name, ...at].map(quote).join(',')})` };
+        }
+      });
+    }
+    return table.map((cells) => cells.map((cell) => cell?.formula ?? cellText(cell)).join('\t')).join('\n');
   }
 
   /** Asks for a value to share out among the leaves beneath a total, and how. */

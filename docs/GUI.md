@@ -45,6 +45,8 @@ their practices, not their looks.
 | Numbers in the units a reader thinks in: decimals, thousands or millions, negatives in parentheses, zeros as a dash (PAW's Format, Power BI's display units) | A view's number format, set from the toolbar, saved with the view and used by its dashboard tiles |
 | Typing into a total spreads it, with TM1's codes (P, S or LS, R or LR, C, and + or ~), but a spread over many cells, or one that empties them, asks first | Typed spreading in the grid, within the edit transaction |
 | A cell that takes no value says why when typed into (a rule works it out, the role only reads) | The grid's notice, from the facts the server explains |
+| What lies behind a number (Excel's Show Details, PAW drill, OneStream's base members) | Show the leaves beneath: a total's consolidated members replaced by their non-empty leaves; Undo goes back |
+| A slice of a view into a workbook that stays live (TM1 Perspectives' slice) | Copy as Excel formulas: the cells chosen as DBRW formulas for the add-in, with their headings |
 | Input cells told apart from calculated ones at a glance (PAW's green, Oracle's white on grey) | Writable cells tinted, with a key in the status line |
 
 What they get wrong is avoided as well: crowded ribbons, low contrast, drag and drop as the
