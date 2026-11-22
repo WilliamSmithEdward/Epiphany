@@ -811,6 +811,221 @@
         }
       }
     },
+    "/cubes/{cube}/comments": {
+      "get": {
+        "summary": "The comments on a cube's cells.",
+        "operationId": "list_comments",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The comments, the oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comments"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown cube",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Pins a comment to a cell, signed by its author. Takes a user who may write to the cube.",
+        "operationId": "add_comment",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommentPost"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The comment as kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comment"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown cube",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown cell, a comment empty or too long, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The comment could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cubes/{cube}/comments/{id}": {
+      "delete": {
+        "summary": "Takes a comment away: its author may, and an administrator.",
+        "operationId": "remove_comment",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Taken away"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown cube or comment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cubes/{cube}/feeders/check": {
       "get": {
         "summary": "Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's\nconsolidations therefore leave out. It works every calculated leaf out, so it is slow on\na large cube. At most a hundred cells are returned; none means the feeders are complete\nfor the data held, or the cube is not fed.",
@@ -2409,6 +2624,84 @@
           }
         },
         "additionalProperties": false
+      },
+      "Comment": {
+        "type": "object",
+        "description": "A note pinned to a cell.",
+        "required": [
+          "id",
+          "cube",
+          "at",
+          "author",
+          "written",
+          "text"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One element name for each dimension of the cube."
+          },
+          "author": {
+            "type": "string",
+            "description": "Who wrote it."
+          },
+          "cube": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          },
+          "written": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was written, in seconds since 1970.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "CommentPost": {
+        "type": "object",
+        "required": [
+          "at",
+          "text"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The cell: one element name or alias for each dimension of the cube."
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Comments": {
+        "type": "object",
+        "required": [
+          "comments"
+        ],
+        "properties": {
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Comment"
+            },
+            "description": "The oldest first."
+          }
+        }
       },
       "Comparison": {
         "type": "string",

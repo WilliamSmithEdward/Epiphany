@@ -308,21 +308,30 @@ impl Auth {
         Ok((token, grants))
     }
 
-    /// What the user of a live session may do; the session then counts as used just now.
-    /// Nothing if the token belongs to no live session.
-    pub fn admits(&self, token: &str) -> Option<Arc<Grants>> {
-        let mut sessions = self.sessions();
-        let now = Instant::now();
-        match sessions.get_mut(token) {
-            Some(session) if now.duration_since(session.used) <= self.idle => {
-                session.used = now;
-                Some(Arc::clone(&session.grants))
+    /// The user of a live session, by the name as it was given, and what they may do; the
+    /// session then counts as used just now. Nothing if the token belongs to no live session.
+    pub fn admits(&self, token: &str) -> Option<(String, Arc<Grants>)> {
+        let (user, grants) = {
+            let mut sessions = self.sessions();
+            let now = Instant::now();
+            match sessions.get_mut(token) {
+                Some(session) if now.duration_since(session.used) <= self.idle => {
+                    session.used = now;
+                    (session.user.clone(), Arc::clone(&session.grants))
+                }
+                _ => {
+                    sessions.remove(token);
+                    return None;
+                }
             }
-            _ => {
-                sessions.remove(token);
-                None
-            }
-        }
+        };
+        // The name as it was given, looked up once the sessions are let go, so that the two
+        // locks are never held together.
+        let users = self.users.read().unwrap_or_else(PoisonError::into_inner);
+        let name = users
+            .get(&user)
+            .map_or(user.clone(), |account| account.name.clone());
+        Some((name, grants))
     }
 
     pub fn sign_out(&self, token: &str) {

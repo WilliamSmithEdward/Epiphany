@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{
     Arc, LockResult, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Extension;
 use axum::extract::rejection::JsonRejection;
@@ -19,8 +19,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    CellRef, CellRefs, CellWrite, CellWrites, Database, EarlierModel, Error, Explanation, LockMode,
-    ModelUpdate, Spread, TransactionId,
+    CellRef, CellRefs, CellWrite, CellWrites, Comment, Database, EarlierModel, Error, Explanation,
+    LockMode, ModelUpdate, Spread, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
@@ -167,6 +167,8 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_transactions))
         .routes(routes!(list_earlier_models))
         .routes(routes!(get_earlier_model))
+        .routes(routes!(list_comments, add_comment))
+        .routes(routes!(remove_comment))
 }
 
 /// The OpenAPI document describing every route.
@@ -352,6 +354,14 @@ fn needed(method: &Method, path: &str) -> Role {
     if path.starts_with("/admin/") {
         return Role::Admin;
     }
+    // Commenting on a cube's cells takes writing to it; taking a comment away, its author
+    // or an administrator, as the route says.
+    let segments: Vec<&str> = path.split('/').collect();
+    if let ["", "cubes", _, "comments", ..] = segments.as_slice()
+        && method != Method::GET
+    {
+        return Role::Write;
+    }
     let reads = ["/cells/read", "/cells/explain", "/mdx"];
     if method == Method::GET || path == "/sessions" || reads.contains(&path) {
         Role::Read
@@ -374,11 +384,14 @@ async fn require_session(
     let Some(auth) = state.auth.as_ref().filter(|_| !signing_in) else {
         // A server without users lets everyone do everything.
         request.extensions_mut().insert(Arc::new(Grants::default()));
+        request
+            .extensions_mut()
+            .insert(Signed(OPEN_USER.to_owned()));
         return next.run(request).await;
     };
-    let grants = bearer(request.headers()).and_then(|token| auth.admits(token));
+    let admitted = bearer(request.headers()).and_then(|token| auth.admits(token));
     let needed = needed(request.method(), request.uri().path());
-    if let Some(grants) = grants {
+    if let Some((name, grants)) = admitted {
         // The model belongs to no cube, so changing it takes the user's own role. Anything
         // else is let in by a role on any cube; the route then asks about the cube it names.
         let held = match needed {
@@ -390,6 +403,7 @@ async fn require_session(
             return ApiError::new(StatusCode::FORBIDDEN, "forbidden", message).into_response();
         }
         request.extensions_mut().insert(grants);
+        request.extensions_mut().insert(Signed(name));
         return next.run(request).await;
     }
     let refusal = ApiError::new(
@@ -524,7 +538,8 @@ impl From<Error> for ApiError {
             | Error::Write { .. }
             | Error::Model(_)
             | Error::Mdx(_)
-            | Error::Rule(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            | Error::Rule(_)
+            | Error::Comment(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Error::UnknownTransaction(_) | Error::NotFound(_) => StatusCode::NOT_FOUND,
             Error::Forbidden(_) => StatusCode::FORBIDDEN,
             Error::Locked(_) | Error::StaleVersion { .. } => StatusCode::CONFLICT,
@@ -1012,6 +1027,13 @@ async fn delete_cube(
 
 /// The grants the session layer put with the request.
 type Held = Extension<Arc<Grants>>;
+
+/// The name of the user a request is from, as the session layer found it.
+#[derive(Clone)]
+struct Signed(String);
+
+/// Who a server without users takes a request to be from.
+const OPEN_USER: &str = "this machine";
 
 /// Refuses unless the user has at least a role on a cube.
 fn allow(grants: &Grants, cube: &str, needed: Role) -> Result<(), ApiError> {
@@ -1694,6 +1716,105 @@ async fn list_transactions(State(state): State<AppState>) -> Json<Vec<Transactio
         })
         .collect(),
     )
+}
+
+/* ---- Comments: notes pinned to cells ---- */
+
+#[derive(Serialize, ToSchema)]
+struct Comments {
+    /// The oldest first.
+    comments: Vec<Comment>,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct CommentPost {
+    /// The cell: one element name or alias for each dimension of the cube.
+    at: Vec<String>,
+    text: String,
+}
+
+/// The comments on a cube's cells.
+#[utoipa::path(
+    get,
+    path = "/cubes/{cube}/comments",
+    params(("cube" = String, Path)),
+    responses(
+        (status = OK, body = Comments, description = "The comments, the oldest first"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown cube")
+    )
+)]
+async fn list_comments(
+    State(database): State<Shared>,
+    Extension(grants): Held,
+    Path(cube): Path<String>,
+) -> Result<Json<Comments>, ApiError> {
+    allow(&grants, &cube, Role::Read)?;
+    let comments = database.read().unwrap().comments(&cube)?;
+    Ok(Json(Comments { comments }))
+}
+
+/// Pins a comment to a cell, signed by its author. Takes a user who may write to the cube.
+#[utoipa::path(
+    post,
+    path = "/cubes/{cube}/comments",
+    params(("cube" = String, Path)),
+    request_body = CommentPost,
+    responses(
+        (status = CREATED, body = Comment, description = "The comment as kept"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown cube"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "Unknown cell, a comment empty or too long, or the request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The comment could not be stored")
+    )
+)]
+async fn add_comment(
+    State(database): State<Shared>,
+    Extension(grants): Held,
+    Extension(Signed(author)): Extension<Signed>,
+    Path(cube): Path<String>,
+    Body(post): Body<CommentPost>,
+) -> Result<(StatusCode, Json<Comment>), ApiError> {
+    allow(&grants, &cube, Role::Write)?;
+    let written = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let comment = database
+        .write()
+        .comment(&cube, &post.at, &author, written, &post.text)?;
+    Ok((StatusCode::CREATED, Json(comment)))
+}
+
+/// Takes a comment away: its author may, and an administrator.
+#[utoipa::path(
+    delete,
+    path = "/cubes/{cube}/comments/{id}",
+    params(("cube" = String, Path), ("id" = u64, Path)),
+    responses(
+        (status = NO_CONTENT, description = "Taken away"),
+        (status = FORBIDDEN, body = ApiError, description = "Someone else's comment, and the user is no administrator"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown cube or comment"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be stored")
+    )
+)]
+async fn remove_comment(
+    State(database): State<Shared>,
+    Extension(grants): Held,
+    Extension(Signed(user)): Extension<Signed>,
+    Path((cube, id)): Path<(String, u64)>,
+) -> Result<StatusCode, ApiError> {
+    allow(&grants, &cube, Role::Write)?;
+    let mut database = database.write();
+    let comment = database
+        .comments(&cube)?
+        .into_iter()
+        .find(|comment| comment.id == id)
+        .ok_or_else(|| Error::NotFound(format!("cube '{cube}' has no comment {id}")))?;
+    if !comment.author.eq_ignore_ascii_case(&user) && grants.role() < Role::Admin {
+        let message = format!("the comment is {}'s to take away", comment.author);
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden", message));
+    }
+    database.uncomment(id)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// The models kept from before the current one, newest first. One is restored by sending it

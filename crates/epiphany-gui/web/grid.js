@@ -159,6 +159,7 @@ export const grid = {
           dataset: { r, c },
         }, formatValue(value, this.layout.format));
         highlight?.(td, r, c, value);
+        if (this.commented?.size) this.markComments(td, r, c);
         tr.append(td);
       }
       body.append(tr);
@@ -410,6 +411,11 @@ export const grid = {
     const r = Number(cell.dataset.r);
     const c = Number(cell.dataset.c);
     const moves = { ArrowUp: [-1, 0], ArrowDown: [1, 0], ArrowLeft: [0, -1], ArrowRight: [0, 1] };
+    if (event.key === 'F2' && event.shiftKey) {
+      event.preventDefault();
+      this.openComments(r, c);
+      return;
+    }
     if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
       event.preventDefault();
       this.cellMenu(r, c, cell);
@@ -639,6 +645,7 @@ export const grid = {
         : null,
       this.holds.size ? { label: `Release every hold (${this.holds.size.toLocaleString()})`, icon: 'lock', action: () => this.hold(null, null, false) } : null,
       { label: 'Explain this value', icon: 'info', action: () => this.explain(rowTuple, columnTuple) },
+      this.coordinate(r, c) ? { label: this.commentsAt(r, c).length ? `Comments (${this.commentsAt(r, c).length})…` : 'Comment on it…', icon: 'edit', action: () => this.openComments(r, c) } : null,
       [...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
         ? { label: 'Show the leaves beneath', icon: 'level', action: () => this.drillToLeaves(rowTuple, columnTuple) }
         : null,

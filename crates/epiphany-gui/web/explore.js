@@ -9,6 +9,7 @@ import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
 import { dialog, download, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES } from './ui.js';
+import { comments } from './comments.js';
 import { grid } from './grid.js';
 import { writeback } from './writeback.js';
 
@@ -270,6 +271,7 @@ class Explorer {
     this.layoutBar = h('div', { class: 'layout-bar' });
     this.output = h('div', { class: 'output' });
     this.statusLine = h('div', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
+    this.commentPanel = h('aside', { class: 'comment-panel', 'aria-label': 'Comments', hidden: true });
     this.pendingBar = h('div', { class: 'pending', role: 'status', 'aria-live': 'polite', hidden: true });
     const cubes = h('select', {
       class: 'select',
@@ -308,7 +310,7 @@ class Explorer {
           h('div', { class: 'toolbar' }, icon('cube', 20), cubes, viewButton, this.finder.box, h('div', { class: 'grow' }), this.tabs),
           this.toolbar,
           this.layoutBar),
-        this.output,
+        h('div', { class: 'output-row' }, this.output, this.commentPanel),
         this.pendingBar,
         this.statusLine));
     mount(target, this.page);
@@ -724,7 +726,8 @@ class Explorer {
       this.error = null;
       this.took = performance.now() - started;
       if (this.layout.mdx) this.adopt(result);
-      ({ writable: this.writable, why: this.why } = await this.findWritable(result));
+      const [found] = await Promise.all([this.findWritable(result), this.loadComments()]);
+      ({ writable: this.writable, why: this.why } = found);
       if (ticket !== this.ticket) return;
     } catch (problem) {
       if (ticket !== this.ticket) return;
@@ -735,6 +738,7 @@ class Explorer {
     }
     this.drawToolbar();
     this.draw();
+    if (this.commentCell) this.drawComments();
   }
 
   draw() {
@@ -1129,5 +1133,5 @@ class Explorer {
 /* An unhandled refusal is reported, not lost. */
 export { ApiError };
 
-// The grid and writing back are the explorer's too.
-Object.assign(Explorer.prototype, grid, writeback);
+// The grid, writing back and comments are the explorer's too.
+Object.assign(Explorer.prototype, grid, writeback, comments);

@@ -194,6 +194,79 @@ async fn a_user_may_do_only_what_the_role_allows() {
 }
 
 #[tokio::test]
+async fn comments_are_signed_and_only_their_authors_or_an_admin_take_them_away() {
+    let home = Home::new("comments");
+    for (name, role) in [
+        ("Reader", Role::Read),
+        ("Writer", Role::Write),
+        ("Other", Role::Write),
+        ("Admin", Role::Admin),
+    ] {
+        set_user(&home.0, name, PASSWORD, &self::role(role)).unwrap();
+    }
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let mut tokens = Vec::new();
+    for name in ["reader", "writer", "other", "admin"] {
+        let (_, body) = sign_in(&app, name, PASSWORD).await;
+        tokens.push(body["token"].as_str().unwrap().to_owned());
+    }
+    let [reader, writer, other, admin] = tokens.try_into().unwrap();
+    let comments = "/cubes/General%20Ledger/comments";
+    let note = |text: &str| json!({ "at": ["rent", "UK", "Jan", "Actual"], "text": text });
+
+    // A reader may read comments but not write one; a writer's is signed with their name,
+    // and its cell is kept by the elements' own names.
+    let (status, _, _) = send(&app, "POST", comments, Some(&reader), Some(note("No"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, kept) = send(
+        &app,
+        "POST",
+        comments,
+        Some(&writer),
+        Some(note("  Rent rose with the new lease. ")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(kept["author"], "Writer");
+    assert_eq!(kept["text"], "Rent rose with the new lease.");
+    assert_eq!(kept["at"], json!(["Rent", "UK", "Jan", "Actual"]));
+    let (status, _, listed) = send(&app, "GET", comments, Some(&reader), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["comments"], json!([kept]));
+
+    // Nothing to say, or a cell that is not there, is refused.
+    let (status, _, body) = send(&app, "POST", comments, Some(&writer), Some(note("  "))).await;
+    assert_eq!(
+        (status, body["code"].clone()),
+        (StatusCode::UNPROCESSABLE_ENTITY, json!("invalid_comment"))
+    );
+    let nowhere = json!({ "at": ["Rent", "Mars", "Jan", "Actual"], "text": "Hello" });
+    let (status, _, _) = send(&app, "POST", comments, Some(&writer), Some(nowhere)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Only its author, or an administrator, takes a comment away.
+    let id = kept["id"].as_u64().unwrap();
+    let one = format!("{comments}/{id}");
+    let (status, _, _) = send(&app, "DELETE", &one, Some(&other), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = send(&app, "DELETE", &one, Some(&writer), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, second) = send(&app, "POST", comments, Some(&other), Some(note("Agreed."))).await;
+    let two = format!("{comments}/{}", second["id"]);
+    let (status, _, _) = send(&app, "DELETE", &two, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, listed) = send(&app, "GET", comments, Some(&reader), None).await;
+    assert_eq!(listed["comments"], json!([]));
+    let (status, _, _) = send(&app, "DELETE", &two, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A cube named "comments" is still the model's to change: no writer may put one.
+    let cube = json!({ "based_on": 1, "cube": { "name": "comments", "dimensions": ["Period"] } });
+    let (status, _, _) = send(&app, "PUT", "/cubes/comments", Some(&writer), Some(cube)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
 async fn too_many_wrong_passwords_pause_a_name() {
     let home = Home::new("pause");
     set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();

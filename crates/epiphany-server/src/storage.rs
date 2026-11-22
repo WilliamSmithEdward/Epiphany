@@ -10,6 +10,7 @@
 //!     lock                 held by the one process serving the directory
 //!     snapshot.json        every stored cell at some moment
 //!     log.jsonl            one line per commit since the snapshot
+//!     comments.jsonl       one line per comment added or taken away
 //!     models/<version>/    every earlier model
 //! ```
 //!
@@ -24,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use epiphany_core::database::{
-    CellWrite, Database, EarlierModel, Journal, NamedCells, NamedWrites,
+    CellWrite, CommentChange, Database, EarlierModel, Journal, NamedCells, NamedWrites,
 };
 use epiphany_core::model::ModelDef;
 use serde::de::DeserializeOwned;
@@ -210,9 +211,28 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
     if !recorded.is_empty() {
         files.snapshot(version, &database.named_cells())?;
     }
+    // The comments, as each was added or taken away. A line cut short by the process dying
+    // as it was written was never acknowledged, and is left out.
+    let comments = fs::read_to_string(data.join(COMMENTS)).or_else(|error| match error.kind() {
+        io::ErrorKind::NotFound => Ok(String::new()),
+        _ => Err(error),
+    })?;
+    let lines: Vec<&str> = comments.lines().collect();
+    for (number, line) in lines.iter().enumerate() {
+        match serde_json::from_str::<CommentChange>(line) {
+            Ok(change) => database.load_comment(change),
+            Err(_) if number + 1 == lines.len() => {
+                eprintln!("warning: the last comment was cut short and is left out")
+            }
+            Err(error) => return Err(format!("{COMMENTS}, line {}: {error}", number + 1).into()),
+        }
+    }
     database.set_journal(Box::new(files));
     Ok(database)
 }
+
+/// Where the comments are kept, in the data folder.
+const COMMENTS: &str = "comments.jsonl";
 
 /// Loads every `dimensions/*.json` and `cubes/*.json` under a model directory, in name order.
 pub fn load_model(directory: &Path) -> Result<ModelDef, Box<dyn Error>> {
@@ -343,6 +363,22 @@ impl Journal for Files {
         self.log.write_all(&line)?;
         self.log.sync_data()?;
         self.log_bytes += line.len() as u64;
+        Ok(())
+    }
+
+    /// Appends the change to the comments file, flushed to disk before it is acknowledged.
+    fn comment(&mut self, change: &CommentChange) -> io::Result<()> {
+        let path = self.directory.join("data").join(COMMENTS);
+        let created = !path.exists();
+        let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut line = serde_json::to_vec(change)?;
+        line.push(b'\n');
+        file.write_all(&line)?;
+        file.sync_data()?;
+        // A file that is new must be known to its folder before the comment is trusted to it.
+        if created {
+            settle(&self.directory.join("data"))?;
+        }
         Ok(())
     }
 

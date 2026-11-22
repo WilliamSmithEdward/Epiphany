@@ -12,6 +12,7 @@
 
 mod batch;
 use batch::Resolver;
+mod comments;
 mod error;
 mod load;
 mod locks;
@@ -36,6 +37,7 @@ use crate::reader::{Fed, Reader, Totals, feed};
 use locks::{Locks, Mode, Resource};
 
 pub use batch::{CellRefs, CellWrites};
+pub use comments::{Comment, CommentChange};
 pub use error::Error;
 pub use locks::LockMode;
 pub use spread::{Spread, SpreadMethod};
@@ -146,6 +148,12 @@ pub trait Journal: Send + Sync + fmt::Debug {
     /// keeps none.
     fn earlier_models(&self) -> Vec<EarlierModel> {
         Vec::new()
+    }
+
+    /// Records a change to the comments.
+    fn comment(&mut self, change: &CommentChange) -> io::Result<()> {
+        let _ = change;
+        Ok(())
     }
 
     /// An earlier model the journal keeps, by the name it lists it under; nothing if it
@@ -336,6 +344,9 @@ pub struct Database {
     fed: OnceLock<Result<Fed, MdxError>>,
     /// The consolidated cells worked out since the data last changed.
     totals: Totals,
+    /// Notes pinned to cells, the oldest first, and the id the last was given.
+    comments: Vec<Comment>,
+    last_comment: u64,
 }
 
 impl Database {
@@ -367,6 +378,8 @@ impl Database {
             wanted: AtomicBool::new(false),
             fed: OnceLock::new(),
             totals: Totals::default(),
+            comments: Vec::new(),
+            last_comment: 0,
         })
     }
 

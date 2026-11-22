@@ -708,6 +708,29 @@ fn a_snapshot_cell_named_twice_is_damage_and_one_given_as_a_list_loads() {
 }
 
 #[test]
+fn comments_outlast_the_process_and_so_do_those_taken_away() {
+    let home = Home::new("comments-kept");
+    let mut database = home.open();
+    let at = ["Rent", "US", "Jan", "Actual"].map(str::to_owned);
+    let first = database
+        .comment(CUBE, &at, "Ada", 10, "Rent rose.")
+        .unwrap();
+    let second = database.comment(CUBE, &at, "Grace", 20, "It did.").unwrap();
+    database.uncomment(first.id).unwrap();
+    drop(database);
+
+    let mut reopened = home.open();
+    assert_eq!(reopened.comments(CUBE).unwrap(), [second.clone()]);
+    // Ids go on from the last one given, never again.
+    let third = reopened.comment(CUBE, &at, "Ada", 30, "Fixed.").unwrap();
+    assert!(third.id > second.id);
+    assert!(matches!(
+        reopened.comment(CUBE, &at, "Ada", 40, ""),
+        Err(Error::Comment(_))
+    ));
+}
+
+#[test]
 fn earlier_models_are_kept_and_can_be_read_back() {
     let home = Home::new("earlier-models");
     let mut database = home.open();
