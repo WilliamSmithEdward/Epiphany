@@ -559,3 +559,21 @@ for (const [event, then] of [['beforeprint', 'whole'], ['afterprint', 'after']])
     for (const element of document.querySelectorAll('[data-prints-whole]')) printed.get(element)?.[then]();
   });
 }
+
+/**
+ * What an ellipsis cuts short, pointed at, is shown whole as its title: the text, or the
+ * nearest of the two around it that cuts it, given a title only while it is cut, and never
+ * in place of one of its own.
+ */
+document.addEventListener('pointerover', ({ target }) => {
+  let element = target instanceof HTMLElement ? target : null;
+  for (let up = 0; element && up < 2 && getComputedStyle(element).textOverflow !== 'ellipsis'; up += 1) element = element.parentElement;
+  if (!element || element.matches('input, select, textarea') || (element.title && !('cut' in element.dataset))) return;
+  if (element.scrollWidth > element.clientWidth && getComputedStyle(element).textOverflow === 'ellipsis') {
+    element.title = element.textContent.trim();
+    element.dataset.cut = '';
+  } else if ('cut' in element.dataset) {
+    element.removeAttribute('title');
+    delete element.dataset.cut;
+  }
+});

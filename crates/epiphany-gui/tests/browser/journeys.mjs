@@ -716,7 +716,7 @@ async function exploring() {
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('This link is damaged'))`, 'the damaged link, said');
     await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid, as it was last');
   });
-  await step('At a phone\'s width no page is wider than the screen, and the grid shows on the first', async () => {
+  await step('At a phone\'s width no page is wider than the screen, the grid shows on the first, and a name cut short shows whole', async () => {
     // A phone widens the page to what it holds and draws it smaller: the screen is the measure.
     const phone = { width: 390, height: 844 };
     await page.call('Emulation.setDeviceMetricsOverride', { ...phone, deviceScaleFactor: 1, mobile: true });
@@ -727,6 +727,18 @@ async function exploring() {
         await page.settled();
         const wider = await page.evaluate('document.documentElement.scrollWidth') - phone.width;
         expect(wider <= 0, `${path} is ${wider} pixels wider than a phone's screen.`);
+        if (path === '/') {
+          // A place's name cut short shows whole, pointed at.
+          const cut = await page.evaluate(`(() => {
+            const name = [...document.querySelectorAll('.recent .grow')].find((each) => each.scrollWidth > each.clientWidth);
+            name?.scrollIntoView({ block: 'center' });
+            const box = name?.getBoundingClientRect();
+            return name ? { x: box.x + box.width / 2, y: box.y + box.height / 2, text: name.textContent } : null;
+          })()`);
+          expect(cut, 'No place\'s name is cut short at a phone\'s width.');
+          await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cut.x, y: cut.y });
+          await page.waitFor(`document.querySelector('.recent .grow[title]')?.title === ${quoted(cut.text)}`, 'the name, whole on hover');
+        }
         if (path.startsWith('/explore')) {
           const below = await page.evaluate(`document.querySelector('td[data-r]').getBoundingClientRect().bottom`) - phone.height;
           expect(below < 0, `The grid's first cell is ${below} pixels below a phone's screen.`);
