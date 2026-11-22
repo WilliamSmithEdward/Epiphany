@@ -243,6 +243,8 @@ main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: co
 .textarea { height: auto; padding: var(--s3); resize: vertical; font-family: var(--mono); font-size: var(--text-s); line-height: 1.6; }
 /* The arrow stands as far in from the right as the text does from the left. */
 .select { appearance: none; padding-right: 38px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right var(--s3) center; background-size: 14px; text-overflow: ellipsis; cursor: pointer; }
+/* The open list's choices, given room from its edges. */
+.select option { padding: 6px var(--s4) 6px var(--s3); }
 .input:hover, .select:hover, .textarea:hover { border-color: var(--text-3); }
 .input:focus, .select:focus, .textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .input[aria-invalid="true"] { border-color: var(--bad); }
@@ -319,6 +321,8 @@ main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: co
 
 /* ---- Dialogs and menus ---- */
 
+/* A dialog is as wide as its fields, lists and tables need, between a width a form reads well
+   at and the window's. Its paragraphs fill that width and wrap within it, never widening it. */
 dialog {
   padding: 0;
   border: 1px solid var(--line);
@@ -326,9 +330,11 @@ dialog {
   background: var(--surface);
   color: var(--text);
   box-shadow: var(--shadow-3);
-  max-width: min(560px, calc(100vw - 32px));
-  width: 100%;
+  width: fit-content;
+  min-width: min(440px, calc(100vw - 32px));
+  max-width: min(920px, calc(100vw - 32px));
 }
+.dialog-body p { contain: inline-size; text-wrap: pretty; }
 dialog::backdrop { background: rgb(8 12 20 / 45%); backdrop-filter: blur(2px); }
 dialog[open] { animation: pop .16s var(--ease); }
 @keyframes pop { from { transform: translateY(6px) scale(.98); opacity: 0; } }
@@ -459,7 +465,8 @@ a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transfo
 span.twisty { border-color: transparent; background: none; cursor: inherit; }
 button.twisty:hover { border-color: var(--accent); color: var(--accent-text); }
 
-.picker { display: flex; flex-direction: column; gap: var(--s3); }
+/* Its tree draws only the rows in view, so it has no width of its own to fit: it keeps one. */
+.picker { display: flex; flex-direction: column; gap: var(--s3); width: min(34rem, calc(100vw - 80px)); }
 .picker .select { height: var(--control-small); font-size: var(--text-s); }
 /* As tall as its members, up to most of the window. */
 .picker-tree { max-height: min(56vh, 620px); min-height: 120px; overflow: auto; padding: var(--s1); border: 1px solid var(--line); border-radius: var(--radius); }
@@ -630,7 +637,7 @@ dialog:has(.cube-roles) { max-width: min(620px, calc(100vw - 32px)); }
 
 /* ---- The set editor ---- */
 
-dialog.wide { max-width: min(1180px, calc(100vw - 48px)); }
+dialog.wide { width: 100%; max-width: min(1180px, calc(100vw - 48px)); }
 dialog.wide .dialog-body { max-height: none; }
 /* Most of the window's height, the lists within it scrolling. */
 .set-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: var(--s4); height: min(74vh, 820px); }
@@ -670,10 +677,13 @@ dialog.wide .dialog-body { max-height: none; }
 
 .filter-panel { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
 .filter-panel[hidden] { display: none; }
-.rules { display: flex; flex-direction: column; gap: var(--s2); }
-.rule { display: grid; grid-template-columns: 44px minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1.1fr) auto; gap: var(--s2); align-items: center; }
+/* The rules share one grid, so that their fields line up and the words that join them take
+   the room they need on one line. */
+.rules { display: grid; grid-template-columns: max-content minmax(7.5rem, 1fr) minmax(4.5rem, 0.7fr) minmax(9.5rem, 1.2fr) auto; gap: var(--s2); align-items: center; }
+.rule { display: contents; }
+.rules > .hint { grid-column: 1 / -1; }
 .rule .select, .rule .input { width: 100%; height: var(--control-small); font-size: var(--text-s); }
-.rule-join { font-size: var(--text-xs); text-align: right; }
+.rule-join { font-size: var(--text-s); white-space: nowrap; }
 .filter-count:empty { display: none; }
 .filter-panel .segmented button { height: 26px; }
 .input[readonly] { background: var(--surface-2); color: var(--text-2); }
@@ -869,8 +879,9 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 
 /* ---- Earlier versions of the model ---- */
 
-.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); min-width: min(560px, 80vw); }
-.history-list li { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s3); border-radius: var(--radius); }
+.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); }
+.history-list li { display: flex; align-items: center; gap: var(--s4); padding: var(--s2) var(--s3); border-radius: var(--radius); }
+.history-list li > * { white-space: nowrap; }
 .history-list li:hover { background: var(--surface-2); }
 .history-list .grow { flex: 1; }
 

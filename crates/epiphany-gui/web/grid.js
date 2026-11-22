@@ -1103,7 +1103,8 @@ export const grid = {
     const cell = { cube: this.cube.name, at: this.cube.dimensions.map((dim) => at.get(dim) ?? this.dims.get(dim).roots[0]) };
     let explanation;
     try {
-      const answer = await post('/cells/explain', { cells: [cell] });
+      // As the grid shows it: with the changes not yet saved, or the sandbox worked in.
+      const answer = await post('/cells/explain', { cells: [cell], transaction: this.tx ?? undefined });
       explanation = answer.cells[0];
     } catch (problem) {
       notify(problem.message, 'bad');
@@ -1132,6 +1133,10 @@ export const grid = {
         facts.rule ? row('Rule', h('code', { class: 'mono' }, facts.rule.text ?? JSON.stringify(facts.rule))) : null,
         facts.stored !== null && facts.stored !== undefined && facts.rule ? row('Stored beneath it', String(facts.stored)) : null,
         row('Can be written', facts.writable ? 'Yes' : 'No'),
+        facts.detail?.length ? row('Detail', h('ul', { class: 'plain-list' }, facts.detail.map((line) => h('li', {},
+          `${line.label || '—'} `, h('span', { class: 'num muted' }, formatValue(line.value, this.layout.format)))))) : null,
+        facts.invalid?.length ? row('Breaks', h('ul', { class: 'plain-list' }, facts.invalid.map((check) => h('li', {},
+          check.message, check.refuses ? h('span', { class: 'muted' }, ' (written before the check refused such values)') : null)))) : null,
         facts.fed === null || facts.fed === undefined ? null : row('Fed', facts.fed ? 'Yes' : h('span', {}, 'No: consolidations leave it out. ',
           h('button', { class: 'button small', type: 'button', onclick: (event) => this.checkFeeders(event.currentTarget) }, 'Check the feeders')))),
     });

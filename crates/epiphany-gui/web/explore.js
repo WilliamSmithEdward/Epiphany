@@ -1112,7 +1112,7 @@ class Explorer {
     const rules = (now.rules ?? []).map((rule) => ({ ...rule }));
     const list = h('div', { class: 'rules' });
     const TESTS = [['above', 'is above'], ['at_least', 'is at least'], ['below', 'is below'], ['at_most', 'is at most'], ['equals', 'equals']];
-    const TONES = [['good', 'Good, in green'], ['bad', 'Bad, in red'], ['warn', 'Watch, in amber'], ['accent', 'Note, in the accent colour']];
+    const TONES = [['good', 'Good, in green'], ['bad', 'Bad, in red'], ['warn', 'Watch, in amber'], ['accent', 'Note, in indigo']];
     const draw = () => mount(list, rules.length ? rules.map((rule, index) => h('div', { class: 'rule' },
       h('span', { class: 'rule-join muted' }, index === 0 ? 'A number that' : 'or else'),
       h('select', { class: 'select', 'aria-label': 'Test', onchange: (event) => { rule.test = event.target.value; } },
@@ -1130,7 +1130,7 @@ class Explorer {
       body: h('div', { class: 'facts' },
         h('label', { class: 'check' }, bars, 'Data bars: each number\'s share of the largest in its column'),
         h('label', { class: 'check' }, shades, 'Shades: from the lowest number in each column to the highest'),
-        h('fieldset', { class: 'field' }, h('legend', {}, 'Colours by rule, the first a number meets deciding'), list,
+        h('fieldset', { class: 'field' }, h('legend', {}, 'Colours by rule: the first rule a number meets decides'), list,
           h('div', { class: 'toolbar' }, h('button', { class: 'button small', type: 'button', onclick: () => { rules.push({ test: 'below', value: 0, tone: 'bad' }); draw(); } }, icon('plus', 14), 'Add a rule'))),
         h('p', { class: 'hint' }, 'Totals take no bar or shade, being out of scale with what they add up. A view saved keeps its highlights.')),
       onsubmit: () => {
