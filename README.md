@@ -165,8 +165,8 @@ Measured on one Windows machine with a build for release, a cube of four dimensi
 | Ten million cells | 865 MB held, 1.5 GB at the most; a 586 MB snapshot; a start of 14 seconds |
 
 Every 64 MiB of log, about a million cells written, the log is replaced by a snapshot,
-and the write that brings it to that size waits for the snapshot: at ten million cells,
-some 3.5 seconds, during which other writes wait too. [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
+written while reads carry on; writes wait for it, at ten million cells some 3.5 seconds.
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md)
 has the queries and how to repeat every figure.
 
 ## Excel

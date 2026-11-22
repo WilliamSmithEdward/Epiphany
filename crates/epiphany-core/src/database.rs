@@ -17,8 +17,8 @@ mod spread;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 use std::{fmt, io};
 
@@ -193,7 +193,13 @@ pub struct Database {
     locks: Locks,
     started: Instant,
     timeout: Duration,
-    journal: Option<Box<dyn Journal>>,
+    /// Behind a lock of its own, so that a snapshot can be written while the database is
+    /// only being read.
+    journal: Option<Mutex<Box<dyn Journal>>>,
+    /// Whether a commit that fills the log leaves the snapshot to `snapshot_if_wanted`.
+    deferred: bool,
+    /// Whether a snapshot is wanted and has not been taken.
+    wanted: AtomicBool,
     /// The cells the feeders feed, worked out when first needed after the data changes.
     fed: OnceLock<Result<Fed, MdxError>>,
     /// The consolidated cells worked out since the data last changed.
@@ -221,6 +227,8 @@ impl Database {
             started: Instant::now(),
             timeout: DEFAULT_TIMEOUT,
             journal: None,
+            deferred: false,
+            wanted: AtomicBool::new(false),
             fed: OnceLock::new(),
             totals: Totals::default(),
         })
@@ -246,7 +254,36 @@ impl Database {
 
     /// Records every later commit and model update in a journal.
     pub fn set_journal(&mut self, journal: Box<dyn Journal>) {
-        self.journal = Some(journal);
+        self.journal = Some(Mutex::new(journal));
+    }
+
+    /// Leaves the snapshot that a full log calls for to [`Database::snapshot_if_wanted`],
+    /// instead of taking it in the commit that fills the log. A snapshot of millions of cells
+    /// takes seconds; taken in a commit, it holds the database for writing all that while,
+    /// and nobody can read. Its owner can take it afterwards holding the database only for
+    /// reading, and readers carry on.
+    pub fn defer_snapshots(&mut self) {
+        self.deferred = true;
+    }
+
+    /// Whether a commit has called for a snapshot that has not been taken.
+    pub fn wants_snapshot(&self) -> bool {
+        self.wanted.load(Ordering::Acquire)
+    }
+
+    /// Takes the snapshot a commit has called for, if one has. Commits wait for it, but
+    /// reads do not: it needs the database only for reading. Says whether it took one.
+    pub fn snapshot_if_wanted(&self) -> bool {
+        let wanted = self.wanted.swap(false, Ordering::AcqRel);
+        if wanted {
+            self.snapshot();
+        }
+        wanted
+    }
+
+    fn journal(&self) -> Option<MutexGuard<'_, Box<dyn Journal>>> {
+        let journal = self.journal.as_ref()?;
+        Some(journal.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Every stored cell, addressed by name.
@@ -557,7 +594,7 @@ impl Database {
         } else {
             self.transaction(id)?;
         }
-        if let Some(journal) = &mut self.journal
+        if let Some(mut journal) = self.journal()
             && !record.is_empty()
         {
             journal.commit(&record)?;
@@ -570,12 +607,11 @@ impl Database {
             }
         }
         self.changed();
-        if self
-            .journal
-            .as_ref()
-            .is_some_and(|journal| journal.is_full())
-        {
-            self.snapshot();
+        if self.journal().is_some_and(|journal| journal.is_full()) {
+            match self.deferred {
+                true => self.wanted.store(true, Ordering::Release),
+                false => self.snapshot(),
+            }
         }
         Ok(())
     }
@@ -641,7 +677,7 @@ impl Database {
         };
         let moved = (structure(&definition) != structure(&self.definition))
             .then(|| migrate::migrate(&self.model, &model, &self.cells));
-        if let Some(journal) = &mut self.journal {
+        if let Some(mut journal) = self.journal() {
             journal.model(self.model_version + 1, &definition)?;
         }
         self.model = model;
@@ -731,22 +767,19 @@ impl Database {
         Ok(())
     }
 
-    /// Replaces the journal's recorded commits with a snapshot. The commits already recorded
-    /// say the same thing, so if the snapshot fails they are kept and it is tried again after
-    /// a later commit.
     /// Forgets what was worked out from the cells and the model as they were.
     fn changed(&mut self) {
         self.fed = OnceLock::new();
         self.totals = Totals::default();
     }
 
-    fn snapshot(&mut self) {
-        let cells = NamedCells {
-            model: &self.model,
-            cells: &self.cells,
-        };
-        if let Some(journal) = &mut self.journal {
-            let _ = journal.snapshot(self.model_version, &cells);
+    /// Replaces the journal's recorded commits with a snapshot. The commits already recorded
+    /// say the same thing, so if the snapshot fails they are kept and it is tried again after
+    /// a later commit. Nothing can be committed meanwhile: a commit needs the database for
+    /// writing, and this holds it at least for reading.
+    fn snapshot(&self) {
+        if let Some(mut journal) = self.journal() {
+            let _ = journal.snapshot(self.model_version, &self.named_cells());
         }
     }
 

@@ -717,3 +717,81 @@ fn an_open_transaction_survives_a_model_update_that_adds_a_cube() {
         Ok(Scalar::Number(3.0))
     );
 }
+
+/// A journal that counts what it is asked to do, and is full after a given number of commits.
+#[derive(Debug, Default)]
+struct Counted {
+    full_after: usize,
+    commits: std::sync::atomic::AtomicUsize,
+    snapshots: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl epiphany_core::database::Journal for Counted {
+    fn commit(&mut self, _: &[CellWrite]) -> std::io::Result<()> {
+        self.commits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        self.commits.load(std::sync::atomic::Ordering::SeqCst) >= self.full_after
+    }
+
+    fn snapshot(
+        &mut self,
+        _: u64,
+        cells: &epiphany_core::database::NamedCells<'_>,
+    ) -> std::io::Result<()> {
+        // The cells are written out as a snapshot would write them.
+        drop(serde_json::to_string(cells).unwrap());
+        self.snapshots
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.commits.store(0, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_snapshot_is_taken_in_the_commit_or_left_for_later() {
+    let taken = |snapshots: &Arc<std::sync::atomic::AtomicUsize>| {
+        snapshots.load(std::sync::atomic::Ordering::SeqCst)
+    };
+    for deferred in [false, true] {
+        let snapshots = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut database = database();
+        database.set_journal(Box::new(Counted {
+            full_after: 2,
+            snapshots: Arc::clone(&snapshots),
+            ..Counted::default()
+        }));
+        if deferred {
+            database.defer_snapshots();
+        }
+        database
+            .write(None, &[set("Sales", ["A", "Units"], 1.0)])
+            .unwrap();
+        assert!(!database.snapshot_if_wanted(), "not yet full");
+        database
+            .write(None, &[set("Sales", ["B", "Units"], 2.0)])
+            .unwrap();
+        match deferred {
+            // Taken inside the commit that filled the log.
+            false => {
+                assert_eq!(taken(&snapshots), 1);
+                assert!(!database.snapshot_if_wanted());
+            }
+            // Left until asked for, and taken once.
+            true => {
+                assert_eq!(taken(&snapshots), 0);
+                assert!(database.snapshot_if_wanted());
+                assert_eq!(taken(&snapshots), 1);
+                assert!(!database.snapshot_if_wanted());
+            }
+        }
+        assert_eq!(units(&database, None, "All"), 3.0);
+    }
+}

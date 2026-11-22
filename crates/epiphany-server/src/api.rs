@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{
+    Arc, LockResult, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 
 use axum::Extension;
 use axum::extract::rejection::JsonRejection;
@@ -32,7 +34,68 @@ use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
 
-type Shared = Arc<RwLock<Database>>;
+type Shared = Arc<Guarded>;
+
+/// The database, and a turn that whoever writes to it takes first.
+///
+/// A snapshot holds the turn while it is written, reading the database. A writer that
+/// waited for the database itself meanwhile would hold up every reader behind it, for the
+/// lock lets nobody new in once a writer is waiting; waiting for the turn, it holds up nobody.
+struct Guarded {
+    database: RwLock<Database>,
+    turn: Mutex<()>,
+}
+
+/// The database held for writing, and the turn taken for it, given back in that order.
+struct Writing<'a> {
+    database: RwLockWriteGuard<'a, Database>,
+    _turn: MutexGuard<'a, ()>,
+}
+
+impl Guarded {
+    fn new(database: Database) -> Shared {
+        Arc::new(Guarded {
+            database: RwLock::new(database),
+            turn: Mutex::new(()),
+        })
+    }
+
+    fn read(&self) -> LockResult<RwLockReadGuard<'_, Database>> {
+        self.database.read()
+    }
+
+    /// Takes the turn, then the database. Fails as a poisoned lock does, after a write that
+    /// stopped part of the way through.
+    fn write(&self) -> Writing<'_> {
+        let turn = self.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        Writing {
+            database: self.database.write().unwrap(),
+            _turn: turn,
+        }
+    }
+
+    /// Writes a snapshot if a commit has called for one, in the turn and holding the
+    /// database for reading, so that others go on reading meanwhile.
+    fn snapshot_if_wanted(&self) {
+        let _turn = self.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Ok(database) = self.database.read() {
+            database.snapshot_if_wanted();
+        }
+    }
+}
+
+impl std::ops::Deref for Writing<'_> {
+    type Target = Database;
+    fn deref(&self) -> &Database {
+        &self.database
+    }
+}
+
+impl std::ops::DerefMut for Writing<'_> {
+    fn deref_mut(&mut self) -> &mut Database {
+        &mut self.database
+    }
+}
 
 /// What every request can reach: the database, and the users if the server has any.
 #[derive(Clone)]
@@ -147,12 +210,15 @@ pub fn app(database: Database) -> Router {
 pub fn app_with(mut database: Database, auth: Option<Auth>) -> Router {
     // A transaction id is all that is needed to use a transaction, so it must not be
     // guessable. Fifty-three random bits survive a trip through JSON and JavaScript.
+    // A snapshot is taken after the request whose commit filled the log, holding the
+    // database for reading only, rather than inside the commit, holding it for writing.
+    database.defer_snapshots();
     database.set_transaction_ids(|| {
         getrandom::u64().expect("the operating system provides randomness") >> 11
     });
     let state = AppState {
         version: Arc::new(AtomicU64::new(database.model_version())),
-        database: Arc::new(RwLock::new(database)),
+        database: Guarded::new(database),
         auth: auth.map(Arc::new),
     };
     let (router, contract) = router().split_for_parts();
@@ -179,6 +245,7 @@ async fn survive(State(state): State<AppState>, request: Request, next: Next) ->
     // The body is taken in first, here where waiting for it holds up nothing: a request
     // handed over while its body was still on its way would keep a thread for as long as
     // the sender cared to take, and a few hundred senders in no hurry would have them all.
+
     let most = match (request.method(), request.uri().path()) {
         (_, "/sessions") => MOST_SIGN_IN,
         (&Method::PUT, _) | (_, "/cells/write") => MOST_BODY,
@@ -204,15 +271,25 @@ async fn survive(State(state): State<AppState>, request: Request, next: Next) ->
     let (shared, version) = (Arc::clone(database), Arc::clone(&state.version));
     let answer = tokio::task::spawn_blocking(move || {
         let response = runtime.block_on(next.run(request));
-        if let (true, Ok(database)) = (changes, shared.read()) {
-            version.fetch_max(database.model_version(), Ordering::Relaxed);
+        let wanted = shared.read().is_ok_and(|database| {
+            if changes {
+                version.fetch_max(database.model_version(), Ordering::Relaxed);
+            }
+            database.wants_snapshot()
+        });
+        // A snapshot a commit has called for is written in a task of its own: others go on
+        // reading, only writers wait, and no request's answer waits for it. Taken on the way
+        // out of a request, it held up that request, whichever it was, by the seconds a
+        // snapshot of millions of cells takes.
+        if wanted {
+            runtime.spawn_blocking(move || shared.snapshot_if_wanted());
         }
         response
     });
     if let Ok(response) = answer.await {
         return response;
     }
-    if database.is_poisoned() {
+    if database.database.is_poisoned() {
         eprintln!("A write failed part of the way through. Stopping; start the server again.");
         std::process::exit(70);
     }
@@ -683,7 +760,7 @@ async fn put_model(
     State(database): State<Shared>,
     Body(request): Body<ModelPut>,
 ) -> Result<Json<ModelUpdate>, ApiError> {
-    let mut database = database.write().unwrap();
+    let mut database = database.write();
     Ok(Json(
         database.update_model(request.based_on, request.model)?,
     ))
@@ -753,7 +830,7 @@ fn change(
     based_on: u64,
     edit: impl FnOnce(&Database, &mut ModelDef) -> Result<(), ApiError>,
 ) -> Result<Json<ModelUpdate>, ApiError> {
-    let mut database = database.write().unwrap();
+    let mut database = database.write();
     let mut definition = database.definition().clone();
     edit(&database, &mut definition)?;
     Ok(Json(database.update_model(based_on, definition)?))
@@ -1000,7 +1077,7 @@ async fn write_cells(
             ..refusal
         })?;
     }
-    let mut database = database.write().unwrap();
+    let mut database = database.write();
     database.write(request.transaction, &request.cells)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1025,7 +1102,7 @@ async fn spread_cells(
     Body(request): Body<SpreadRequest>,
 ) -> Result<Json<SpreadResult>, ApiError> {
     allow(&grants, &request.spread.cube, Role::Write)?;
-    let mut database = database.write().unwrap();
+    let mut database = database.write();
     let written = database.spread(request.transaction, &request.spread)?;
     Ok(Json(SpreadResult { written }))
 }
@@ -1148,7 +1225,7 @@ async fn check_feeders(
 /// Begins a transaction. It is rolled back if left idle.
 #[utoipa::path(post, path = "/transactions", responses((status = CREATED, body = TransactionView, description = "The new transaction")))]
 async fn begin_transaction(State(database): State<Shared>) -> (StatusCode, Json<TransactionView>) {
-    let transaction = database.write().unwrap().begin();
+    let transaction = database.write().begin();
     (StatusCode::CREATED, Json(TransactionView { transaction }))
 }
 
@@ -1167,7 +1244,7 @@ async fn commit_transaction(
     State(database): State<Shared>,
     Path(id): Path<TransactionId>,
 ) -> Result<StatusCode, ApiError> {
-    database.write().unwrap().commit(id)?;
+    database.write().commit(id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1185,7 +1262,7 @@ async fn rollback_transaction(
     State(database): State<Shared>,
     Path(id): Path<TransactionId>,
 ) -> Result<StatusCode, ApiError> {
-    database.write().unwrap().rollback(id)?;
+    database.write().rollback(id)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1217,7 +1294,7 @@ async fn lock(
             return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden", message));
         }
     }
-    let mut database = database.write().unwrap();
+    let mut database = database.write();
     database.lock(id, request.cube.as_deref(), request.mode)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1235,7 +1312,7 @@ mod tests {
         let database = Database::new(serde_json::from_value(model).unwrap()).unwrap();
         let state = AppState {
             version: Arc::new(AtomicU64::new(database.model_version())),
-            database: Arc::new(RwLock::new(database)),
+            database: Guarded::new(database),
             auth: None,
         };
         let fail = get(async || -> &'static str { panic!("as nobody foresaw") });

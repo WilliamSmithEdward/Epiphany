@@ -200,6 +200,15 @@ holding 792 MB with 1,044 MB at the most on the way, from a snapshot of 586 MB. 
 requests that brought the log past 64 MiB at 7.5 and 9 million cells took 3.4 and 3.5 s,
 nearly all of it the snapshot (2026-11-21).
 
+That snapshot held the database for writing, so reads waited for it too. With five million
+cells loaded and six writes of 250,000 cells taking the log past its limit, a client
+reading one cell over and over for twenty seconds waited at most 2,097 ms. The snapshot is
+now written after the request, in a task of its own reading the database, and writers
+take a turn that the snapshot holds, so that none queues for the lock ahead of the
+readers. The longest read is now 263 ms, as long as an ordinary write of 250,000 cells
+holds the database; without the turn it was 1,224 ms. The write that arrives during the
+snapshot waits for it: 1.9 s, against 0.5 s for the others (2026-11-21).
+
 At a million and a half cells in the same table it is 70 bytes a cell. With the
 coordinate kept apart from the cell, as it was until 2026-11-21, the same two loads came
 to 89 and 74 bytes a cell: the cell kept whole costs more just after the table grows and

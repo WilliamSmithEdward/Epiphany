@@ -131,7 +131,14 @@ practice that means:
   model is current, dropping cells that no longer fit. That makes hand-edited model files
   and interrupted model updates safe.
 - A snapshot replaces the log at every start, after every model update, and once the log
-  passes 64 MiB.
+  passes 64 MiB. The last is taken by the server after the request whose commit filled
+  the log, in a task of its own holding the database for reading only: readers carry on
+  while it is written, and only writers wait. Taken inside the commit, it held the database
+  for writing and nobody could read for the seconds a snapshot of millions of cells takes.
+  A writer first takes a turn, which the snapshot holds while it is written, so that it
+  waits there rather than in the lock's queue, where it would hold up every reader behind
+  it. The engine by itself still takes the snapshot in the commit, unless asked to leave it
+  (`defer_snapshots`).
 - A model update writes the new model beside the old one, moves the old one into the
   history, and moves the new one into place; opening the directory finishes or discards an
   update that was interrupted.
