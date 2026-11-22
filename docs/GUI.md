@@ -112,7 +112,7 @@ Analytics Workspace and TM1, Oracle EPM and Smart View, SAP Analytics Cloud and 
 Office, Excel and Power BI, Anaplan, Pigment, Workday Adaptive Planning, OneStream, Jedox,
 Tableau, Atoti) found these gaps. Already taken up: dashboard filters, number formats and
 totals placement, writable cells marked and read-only ones explained, typed spreading with a
-check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, data bars, shades and coloured rules kept with views, the feeder check offered from Explain, and undo and
+check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, data bars, shades and coloured rules kept with views, earlier versions of the model compared and restored, the feeder check offered from Explain, and undo and
 redo of values. Still to do, most valuable first:
 
 | Gap | Seen in | Shape here |
@@ -124,7 +124,7 @@ redo of values. Still to do, most valuable first:
 | Picklists and validation | TM1, Oracle smart lists and validation rules | A picklist attribute with a dropdown in the cell; rules that warn or refuse |
 | Supporting detail beneath a cell | Oracle, OneStream, Adaptive Planning | Lines that add up to the cell's value, kept with it |
 | Rows drawn as they scroll, for very large results | Power BI's matrix | Only the visible rows drawn (stage G8) |
-| Model history and seeing as another user | Anaplan, Pigment | The numbered model copies the server keeps, listed with a restore; a read-only "view as" |
+| Seeing the model as another user does | Pigment | A read-only "view as" with a banner, recorded in the audit log |
 
 Anti-patterns the tools are criticised for, to avoid: spreads that empty whole years from one
 typed zero; suppression that hides rows people must plan into; affordances that look like

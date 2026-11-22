@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use common::Home;
 use epiphany_core::Scalar;
-use epiphany_core::database::{CellRef, CellWrite, Database};
+use epiphany_core::database::{CellRef, CellWrite, Database, Error};
 use epiphany_server::open;
 use serde_json::{Value as Json, json};
 
@@ -704,6 +704,42 @@ fn a_snapshot_cell_named_twice_is_damage_and_one_given_as_a_list_loads() {
         fs::write(home.path("data/snapshot.json"), damaged).unwrap();
         let error = epiphany_server::open(&home.0).unwrap_err().to_string();
         assert!(error.contains("duplicate field"), "{error}");
+    }
+}
+
+#[test]
+fn earlier_models_are_kept_and_can_be_read_back() {
+    let home = Home::new("earlier-models");
+    let mut database = home.open();
+    let first = database.definition().clone();
+    let mut second = first.clone();
+    second.cubes[0].rules = vec!["[Account].[Rent] = 1".to_owned()];
+    database.update_model(1, second.clone()).unwrap();
+    let mut third = second.clone();
+    third.cubes[0].rules.clear();
+    database.update_model(2, third).unwrap();
+
+    let kept: Vec<(String, u64)> = database
+        .earlier_models()
+        .into_iter()
+        .map(|earlier| (earlier.name, earlier.version))
+        .collect();
+    assert_eq!(kept, [("2".to_owned(), 2), ("1".to_owned(), 1)]);
+    assert!(
+        database
+            .earlier_models()
+            .iter()
+            .all(|earlier| earlier.saved.is_some())
+    );
+    assert_eq!(database.earlier_model("1").unwrap(), first);
+    assert_eq!(database.earlier_model("2").unwrap(), second);
+
+    // Only a name the history lists is read: no other folder can be asked for.
+    for name in ["3", "..", "../model", "1/../2"] {
+        assert!(
+            matches!(database.earlier_model(name), Err(Error::NotFound(_))),
+            "{name}"
+        );
     }
 }
 

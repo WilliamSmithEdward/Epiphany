@@ -62,7 +62,8 @@ class ModelPage {
     };
     search.addEventListener('input', draw);
     mount(this.list,
-      h('div', { class: 'model-head' }, h('h2', {}, 'Model'), h('span', { class: 'badge' }, `Version ${this.version}`)),
+      h('div', { class: 'model-head' }, h('h2', {}, 'Model'), h('span', { class: 'badge' }, `Version ${this.version}`),
+        h('button', { class: 'button quiet small icon', 'aria-label': 'Earlier versions of the model', title: 'Earlier versions, to compare and restore', onclick: () => this.showHistory() }, icon('undo', 16))),
       h('div', { class: 'search' }, icon('search', 16), search),
       items);
     draw();
@@ -120,6 +121,69 @@ class ModelPage {
       notify(`Removed ${name}.`, 'good');
       this.editor = null;
       go('/model');
+    } catch (problem) {
+      this.refused(problem);
+    }
+  }
+
+  /**
+   * The earlier versions of the model the server keeps: each can be compared with the
+   * current one and restored, which makes it the newest version.
+   */
+  async showHistory() {
+    let earlier;
+    try {
+      earlier = await get('/admin/models');
+    } catch (problem) {
+      notify(problem.message, 'bad');
+      return;
+    }
+    const when = (seconds) => (seconds ? new Date(seconds * 1000).toLocaleString() : '');
+    const list = h('ul', { class: 'history-list' }, earlier.length
+      ? earlier.map((kept) => h('li', {},
+        h('span', { class: 'grow' }, h('strong', {}, `Version ${kept.version}`), kept.name !== String(kept.version) ? h('span', { class: 'muted' }, ` (${kept.name})`) : null),
+        h('span', { class: 'muted' }, when(kept.saved)),
+        h('button', { class: 'button small', type: 'button', onclick: () => this.compare(kept) }, 'Compare and restore…')))
+      : h('li', { class: 'muted' }, 'No earlier versions are kept yet: each change to the model keeps the one it replaces.'));
+    await dialog({ title: 'Earlier versions of the model', confirm: 'Close', cancel: null, body: list });
+  }
+
+  /** Shows what restoring an earlier model would change, and restores it if asked to. */
+  async compare(kept) {
+    document.querySelector('dialog[open]')?.close();
+    let earlier;
+    try {
+      earlier = (await get(`/admin/models/${part(kept.name)}`)).model;
+    } catch (problem) {
+      notify(problem.message, 'bad');
+      return;
+    }
+    const said = [['dimensions', 'Dimensions'], ['cubes', 'Cubes'], ['dashboards', 'Dashboards']].flatMap(([key, label]) => {
+      const byName = (list) => new Map((list ?? []).map((item) => [item.name, JSON.stringify(item)]));
+      const [now, then] = [byName(this.definition[key]), byName(earlier[key])];
+      const added = [...then.keys()].filter((name) => !now.has(name));
+      const removed = [...now.keys()].filter((name) => !then.has(name));
+      const changed = [...then.keys()].filter((name) => now.has(name) && now.get(name) !== then.get(name));
+      const line = (verb, names) => (names.length ? h('li', {}, h('strong', {}, `${label} ${verb}: `), names.join(', ')) : null);
+      return [line('brought back', added), line('taken away', removed), line('put back as they were', changed)].filter(Boolean);
+    });
+    const agreed = await dialog({
+      title: `Restore version ${kept.version}?`,
+      confirm: 'Restore it',
+      danger: true,
+      body: h('div', { class: 'facts' },
+        said.length
+          ? h('ul', { class: 'plain-list' }, said)
+          : h('p', {}, 'It is the same as the current model.'),
+        h('p', { class: 'hint' }, `It becomes version ${Number(this.version) + 1}, and the current model is kept among the earlier ones, so this too can be undone. Cells stored where the restored model has no place for them are removed.`)),
+    });
+    // Changes being edited would go with the page; they are given up only if the user agrees.
+    if (!agreed || !(await this.leave())) return;
+    try {
+      const update = await put('/model', { based_on: this.version, model: earlier });
+      notify(`Restored version ${kept.version} as version ${update.version}.${update.dropped_cells ? ` ${update.dropped_cells.toLocaleString()} stored cells no longer fitted and were removed.` : ''}`, 'good');
+      // The page is drawn again from the model as it now is.
+      location.assign('/model');
     } catch (problem) {
       this.refused(problem);
     }

@@ -790,3 +790,10 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .pivot td.tone-bad:not(.edited) { background-color: color-mix(in oklab, var(--bad) 18%, var(--surface)); color: var(--bad); font-weight: 600; }
 .pivot td.tone-warn:not(.edited) { background-color: color-mix(in oklab, var(--warn) 22%, var(--surface)); font-weight: 600; }
 .pivot td.tone-accent:not(.edited) { background-color: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+
+/* ---- Earlier versions of the model ---- */
+
+.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); min-width: min(560px, 80vw); }
+.history-list li { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s3); border-radius: var(--radius); }
+.history-list li:hover { background: var(--surface-2); }
+.history-list .grow { flex: 1; }

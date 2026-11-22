@@ -141,6 +141,31 @@ pub trait Journal: Send + Sync + fmt::Debug {
     fn bytes(&self) -> Option<(u64, u64)> {
         None
     }
+
+    /// The models the journal keeps from before the current one, newest first. None if it
+    /// keeps none.
+    fn earlier_models(&self) -> Vec<EarlierModel> {
+        Vec::new()
+    }
+
+    /// An earlier model the journal keeps, by the name it lists it under; nothing if it
+    /// lists none of that name.
+    fn earlier_model(&self, name: &str) -> io::Result<Option<ModelDef>> {
+        let _ = name;
+        Ok(None)
+    }
+}
+
+/// A model kept from before the current one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct EarlierModel {
+    /// The name it is kept under, to ask for it by.
+    pub name: String,
+    /// The model version it was.
+    pub version: u64,
+    /// When it was saved, in seconds since 1970, where the journal can say.
+    pub saved: Option<u64>,
 }
 
 /// An open transaction, as an administrator sees it.
@@ -486,6 +511,22 @@ impl Database {
     /// How many bytes the journal keeps on disk: its log, then its snapshot.
     pub fn journal_bytes(&self) -> Option<(u64, u64)> {
         self.journal()?.bytes()
+    }
+
+    /// The models kept from before the current one, newest first.
+    pub fn earlier_models(&self) -> Vec<EarlierModel> {
+        self.journal()
+            .map(|journal| journal.earlier_models())
+            .unwrap_or_default()
+    }
+
+    /// A model kept from before the current one, by the name it is kept under.
+    pub fn earlier_model(&self, name: &str) -> Result<ModelDef, Error> {
+        let kept = match self.journal() {
+            Some(journal) => journal.earlier_model(name)?,
+            None => None,
+        };
+        kept.ok_or_else(|| Error::NotFound(format!("no earlier model is kept as '{name}'")))
     }
 
     /// Reads a cell: its committed value, or within a transaction its value as that

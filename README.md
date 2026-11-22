@@ -117,6 +117,7 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `POST /mdx` | An MDX query, optionally stood at other members in place of those its WHERE names (`context`) |
 | `GET /cubes/{cube}/views/{view}` | A saved view |
 | `GET /cubes/{cube}/feeders/check` | Calculated cells that no feeder feeds |
+| `GET /admin/models`, `GET /admin/models/{name}` | The earlier versions of the model the server keeps; one is restored by `PUT /model` |
 | `POST /transactions`, then `/transactions/{id}/commit`, `rollback`, `locks`, `point` and `undo` | Transactions, and taking one back to a point it came to |
 
 A read, a write or a query can carry a transaction id; without one it stands alone.

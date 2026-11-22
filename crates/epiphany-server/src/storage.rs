@@ -21,8 +21,11 @@ use std::error::Error;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
-use epiphany_core::database::{CellWrite, Database, Journal, NamedCells, NamedWrites};
+use epiphany_core::database::{
+    CellWrite, Database, EarlierModel, Journal, NamedCells, NamedWrites,
+};
 use epiphany_core::model::ModelDef;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -384,6 +387,40 @@ impl Journal for Files {
     fn bytes(&self) -> Option<(u64, u64)> {
         let snapshot = fs::metadata(self.directory.join("data").join("snapshot.json"));
         Some((self.log_bytes, snapshot.map_or(0, |file| file.len())))
+    }
+
+    /// The numbered copies under `data/models`, each a model's folder, newest first.
+    fn earlier_models(&self) -> Vec<EarlierModel> {
+        let Ok(entries) = fs::read_dir(self.directory.join("data").join("models")) else {
+            return Vec::new();
+        };
+        let kept = |entry: fs::DirEntry| {
+            let name = entry.file_name().into_string().ok()?;
+            // A copy is named for its version, with "-2" and on where a version came twice.
+            let version = name.split('-').next()?.parse().ok()?;
+            let metadata = entry.metadata().ok().filter(fs::Metadata::is_dir)?;
+            let saved = metadata.modified().ok()?.duration_since(UNIX_EPOCH).ok();
+            Some(EarlierModel {
+                name,
+                version,
+                saved: saved.map(|since| since.as_secs()),
+            })
+        };
+        let mut models: Vec<EarlierModel> =
+            entries.filter_map(Result::ok).filter_map(kept).collect();
+        models.sort_by(|a, b| (b.version, &b.name).cmp(&(a.version, &a.name)));
+        models
+    }
+
+    fn earlier_model(&self, name: &str) -> io::Result<Option<ModelDef>> {
+        // Only a copy the history lists is read, so that no other folder can be asked for.
+        if !self.earlier_models().iter().any(|model| model.name == name) {
+            return Ok(None);
+        }
+        let folder = self.directory.join("data").join("models").join(name);
+        load_model(&folder)
+            .map(Some)
+            .map_err(|error| io::Error::other(error.to_string()))
     }
 
     fn snapshot(&mut self, model_version: u64, cells: &NamedCells<'_>) -> io::Result<()> {

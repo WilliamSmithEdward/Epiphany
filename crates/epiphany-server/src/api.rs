@@ -19,8 +19,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    CellRef, CellRefs, CellWrite, CellWrites, Database, Error, Explanation, LockMode, ModelUpdate,
-    Spread, TransactionId,
+    CellRef, CellRefs, CellWrite, CellWrites, Database, EarlierModel, Error, Explanation, LockMode,
+    ModelUpdate, Spread, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
@@ -165,6 +165,8 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(put_user, delete_user))
         .routes(routes!(end_sessions))
         .routes(routes!(list_transactions))
+        .routes(routes!(list_earlier_models))
+        .routes(routes!(get_earlier_model))
 }
 
 /// The OpenAPI document describing every route.
@@ -1692,6 +1694,44 @@ async fn list_transactions(State(state): State<AppState>) -> Json<Vec<Transactio
         })
         .collect(),
     )
+}
+
+/// The models kept from before the current one, newest first. One is restored by sending it
+/// back with `PUT /model`, which makes it the newest version. For administrators.
+#[utoipa::path(
+    get,
+    path = "/admin/models",
+    responses((status = OK, body = Vec<EarlierModel>, description = "The earlier models kept"))
+)]
+async fn list_earlier_models(State(database): State<Shared>) -> Json<Vec<EarlierModel>> {
+    Json(database.read().unwrap().earlier_models())
+}
+
+/// A model kept from before the current one, with the version it was. For administrators.
+#[utoipa::path(
+    get,
+    path = "/admin/models/{name}",
+    params(("name" = String, Path, description = "The name it is kept under, as the list of earlier models gives it")),
+    responses(
+        (status = OK, body = ModelView, description = "The earlier model"),
+        (status = NOT_FOUND, body = ApiError, description = "No earlier model is kept under that name"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The kept model could not be read")
+    )
+)]
+async fn get_earlier_model(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+) -> Result<Json<ModelView>, ApiError> {
+    let database = database.read().unwrap();
+    let model = database.earlier_model(&name)?;
+    let kept = database
+        .earlier_models()
+        .into_iter()
+        .find(|earlier| earlier.name == name);
+    Ok(Json(ModelView {
+        version: kept.map_or(0, |earlier| earlier.version),
+        model,
+    }))
 }
 
 #[cfg(test)]

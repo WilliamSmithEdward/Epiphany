@@ -9,6 +9,116 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/admin/models": {
+      "get": {
+        "summary": "The models kept from before the current one, newest first. One is restored by sending it\nback with `PUT /model`, which makes it the newest version. For administrators.",
+        "operationId": "list_earlier_models",
+        "responses": {
+          "200": {
+            "description": "The earlier models kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EarlierModel"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/models/{name}": {
+      "get": {
+        "summary": "A model kept from before the current one, with the version it was. For administrators.",
+        "operationId": "get_earlier_model",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name it is kept under, as the list of earlier models gives it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The earlier model",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No earlier model is kept under that name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The kept model could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/status": {
       "get": {
         "summary": "The state of the server: the cells each cube stores, what it keeps on disk, its open\nsessions and transactions, and how long it has run. For administrators.",
@@ -2585,6 +2695,35 @@
           },
           "type": {
             "$ref": "#/components/schemas/DimensionType"
+          }
+        }
+      },
+      "EarlierModel": {
+        "type": "object",
+        "description": "A model kept from before the current one.",
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name it is kept under, to ask for it by."
+          },
+          "saved": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When it was saved, in seconds since 1970, where the journal can say.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model version it was.",
+            "minimum": 0
           }
         }
       },
