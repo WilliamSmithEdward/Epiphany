@@ -118,13 +118,18 @@ impl<'a> Reader<'a> {
     }
 
     pub(crate) fn read(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {
-        let ruled = !self.model.cubes()[cube].rules.is_empty();
+        let (text, consolidated) = self.kind(cube, at);
         // A leaf is quicker to look up where it is stored than among the totals.
-        let totals = self.kind(cube, at).1.then_some(self.totals());
+        let totals = consolidated.then_some(self.totals());
         if let Some(kept) = totals.and_then(|totals| totals.get(cube, at)) {
             return Ok(kept);
         }
-        let value = match ruled {
+        // Only what rules may decide is worked out, and remembered for the reads that follow:
+        // a leaf no rule covers is what is stored. A consolidation is always worked out, for
+        // rules may reach beneath it, and so that one that depends on itself is found.
+        let rules = &self.model.cubes()[cube].rules;
+        let decided = consolidated || rules.iter().any(|rule| rule.covers(at, text, false));
+        let value = match !rules.is_empty() && decided {
             true => self.work_out(cube, at)?,
             false => self.stored(cube, at),
         };

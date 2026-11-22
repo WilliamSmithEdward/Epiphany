@@ -191,8 +191,9 @@ practice that means:
   carry across from the cell being calculated; the members given move the rest.
 - Names in a rule are checked and resolved when the model is compiled, so a mistake makes
   the model invalid and evaluation does no lookups by name.
-- Evaluation is on read, remembered for the length of one request, and a cell that depends
-  on itself is reported instead of looping.
+- Evaluation is on read. What rules decide, and the consolidations, are remembered for the
+  length of one request; a leaf no rule covers is looked up as it is stored. A cell that
+  depends on itself is reported instead of looping.
 - A cell is worked out inside the cell that needs it, so a chain of cells that depend on
   one another uses a thread's stack in proportion to its length, and a thread that runs
   out of stack ends the process. A chain that has taken 512 KB is left off where it

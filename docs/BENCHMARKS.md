@@ -232,6 +232,20 @@ same day, before and after (2026-11-22):
 With feeders, whose reading did not change, the grid takes 107 ms one at a time and 12 ms
 together.
 
+A leaf that no rule covers was still worked out as rules work cells out, and remembered for
+the rest of the request, though it is only what is stored: each calculated cell here reads
+one so, and kept it. It is now looked up as it is stored, and only what rules decide is
+remembered. Rerun the same day, before and after (2026-11-22):
+
+| Read | Without feeders, before | After | With feeders, before | After |
+| --- | --- | --- | --- | --- |
+| Total of the calculated element | 4.2 ms | 2.8 ms | 10.0 ms | 8.1 ms |
+| Grand total | 11.4 ms | 9.7 ms | 4.4 ms | 3.0 ms |
+| 113 totals, one at a time | 12.4 ms | 8.0 ms | 28.7 ms | 24.8 ms |
+| The same 113 read together | 5.2 ms | 3.9 ms | 11.8 ms | 9.4 ms |
+| A grid of 338 totals, one at a time | 96 ms | 78 ms | 107 ms | 96 ms |
+| The same grid read together | 37 ms | 35 ms | 12.2 ms | 10.1 ms |
+
 Read one at a time, each total of a fed cube passes over every stored and fed cell. Read
 together, as the cells of a query or of one `/cells/read` are, each of those cells that counts
 towards one of the totals is worked out once and shared out among them; a rule is not asked
