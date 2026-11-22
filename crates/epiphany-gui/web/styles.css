@@ -590,7 +590,7 @@ fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(-
 .table .bar-col { width: 32%; }
 .share { height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
 .share-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
-.table .actions { display: flex; justify-content: flex-end; gap: var(--s1); }
+.table td.actions .button + .button { margin-left: var(--s1); }
 .table td.actions { padding-top: var(--s2); padding-bottom: var(--s2); }
 .badge.you { margin-left: var(--s2); }
 .field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); }
@@ -609,13 +609,14 @@ dialog:has(.cube-roles) { max-width: min(620px, calc(100vw - 32px)); }
 
 dialog.wide { max-width: min(1180px, calc(100vw - 48px)); }
 dialog.wide .dialog-body { max-height: none; }
-.set-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: var(--s4); min-height: 0; }
+.set-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: var(--s4); height: min(64vh, 600px); }
+.set-pane { min-height: 0; }
 .set-pane { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; }
 .set-pane-head { display: flex; align-items: baseline; gap: var(--s3); }
 .set-pane-head .grow { flex: 1; }
 .set-pane .toolbar { gap: var(--s2); min-height: 32px; }
 .select.small-select { height: 30px; font-size: var(--text-s); min-width: 150px; }
-.set-tree, .set-list { height: min(52vh, 460px); overflow: auto; margin: 0; padding: var(--s1); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); list-style: none; }
+.set-tree, .set-list { flex: 1; min-height: 140px; overflow: auto; margin: 0; padding: var(--s1); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); list-style: none; }
 .set-row, .set-item { display: flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 var(--s2); border-radius: var(--radius-s); cursor: default; user-select: none; }
 .set-row:hover, .set-item:hover { background: var(--surface-2); }
 .set-row[aria-selected="true"], .set-item[aria-selected="true"] { background: var(--accent-soft); color: var(--accent-text); }
@@ -643,3 +644,16 @@ dialog.wide .dialog-body { max-height: none; }
   .set-moves .button { width: auto; }
   .set-moves hr { display: none; }
 }
+
+/* ---- Filtering the set editor by rules ---- */
+
+.filter-panel { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
+.filter-panel[hidden] { display: none; }
+.rules { display: flex; flex-direction: column; gap: var(--s2); }
+.rule { display: grid; grid-template-columns: 44px minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1.1fr) auto; gap: var(--s2); align-items: center; }
+.rule .select, .rule .input { width: 100%; height: 32px; font-size: var(--text-s); }
+.rule-join { font-size: var(--text-xs); text-align: right; }
+.filter-count:empty { display: none; }
+.filter-panel .segmented button { height: 26px; }
+.input[readonly] { background: var(--surface-2); color: var(--text-2); }
+.input[readonly]:focus { border-color: var(--line-strong); box-shadow: none; }

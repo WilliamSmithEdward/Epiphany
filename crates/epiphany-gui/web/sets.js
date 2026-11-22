@@ -24,6 +24,207 @@ class SetEditor {
     this.withDescendants = false;
     this.showAttributes = false;
     this.attributes = Object.keys(dim.attributes ?? {});
+    // Rules the available members must meet: each a field, a test and a value.
+    this.rules = [];
+    this.matchAll = true;
+    this.filtering = false;
+  }
+
+  /* ---- Filtering by rules ---- */
+
+  /** The fields a rule can test: name, level, type and each attribute. */
+  fields() {
+    return [
+      { id: 'name', label: 'Name', kind: 'text' },
+      { id: 'level', label: 'Level', kind: 'level' },
+      { id: 'type', label: 'Type', kind: 'type' },
+      ...this.attributes.map((attribute) => ({
+        id: `attribute:${attribute}`,
+        label: attribute,
+        kind: this.dim.attributes[attribute] === 'numeric' ? 'number' : 'text',
+      })),
+    ];
+  }
+
+  field(id) {
+    return this.fields().find((field) => field.id === id) ?? this.fields()[0];
+  }
+
+  /** The tests a field's kind allows. */
+  tests(kind) {
+    const empty = [['empty', 'is empty'], ['present', 'is not empty']];
+    if (kind === 'text') {
+      return [['contains', 'contains'], ['equals', 'is'], ['differs', 'is not'], ['starts', 'starts with'], ['ends', 'ends with'], ['lacks', 'does not contain'], ...empty];
+    }
+    if (kind === 'type') return [['equals', 'is'], ['differs', 'is not']];
+    const order = [['equals', '='], ['differs', '≠'], ['above', '>'], ['from', '≥'], ['below', '<'], ['to', '≤']];
+    return kind === 'level' ? order : [...order, ...empty];
+  }
+
+  value(element, field) {
+    if (field.id === 'name') return element.name;
+    if (field.id === 'level') return element.level;
+    if (field.id === 'type') return element.type;
+    return element.attributes?.[field.id.slice('attribute:'.length)];
+  }
+
+  /** The rules that say something: those with a value, or a test that needs none. */
+  activeRules() {
+    return this.rules.filter((rule) => rule.test === 'empty' || rule.test === 'present' || String(rule.value ?? '').trim() !== '');
+  }
+
+  meets(element, rule) {
+    const field = this.field(rule.field);
+    const actual = this.value(element, field);
+    const missing = actual === undefined || actual === null || actual === '';
+    if (rule.test === 'empty') return missing;
+    if (rule.test === 'present') return !missing;
+    if (field.kind === 'number' || field.kind === 'level') {
+      if (missing) return rule.test === 'differs';
+      const [a, b] = [Number(actual), Number(rule.value)];
+      if (!Number.isFinite(b)) return false;
+      return { equals: a === b, differs: a !== b, above: a > b, from: a >= b, below: a < b, to: a <= b }[rule.test] ?? false;
+    }
+    const a = String(actual ?? '').toLowerCase();
+    const b = String(rule.value ?? '').trim().toLowerCase();
+    return {
+      contains: a.includes(b),
+      lacks: !a.includes(b),
+      equals: a === b,
+      differs: a !== b,
+      starts: a.startsWith(b),
+      ends: a.endsWith(b),
+    }[rule.test] ?? false;
+  }
+
+  /** Whether a member passes the rules: all of them, or any, as chosen. */
+  passes(element) {
+    const rules = this.activeRules();
+    if (!rules.length) return true;
+    return this.matchAll ? rules.every((rule) => this.meets(element, rule)) : rules.some((rule) => this.meets(element, rule));
+  }
+
+  /** Every member the search and the rules let through, in the dimension's order. */
+  matches() {
+    return this.dim.elements.filter((element) => {
+      const named = !this.words || element.name.toLowerCase().includes(this.words)
+        || (this.showAttributes && Object.values(element.attributes ?? {}).some((value) => String(value).toLowerCase().includes(this.words)));
+      return named && this.passes(element);
+    });
+  }
+
+  drawFilter() {
+    this.filterPanel.hidden = !this.filtering;
+    this.filterButton.setAttribute('aria-pressed', String(this.filtering));
+    const active = this.activeRules().length;
+    this.filterButton.querySelector('.filter-count').textContent = active ? String(active) : '';
+    if (!this.filtering) return;
+    const levelName = (level) => this.dim.levels?.[level] || (level === 0 ? 'Leaves' : `Level ${level}`);
+    const levels = [...new Set(this.dim.elements.map((element) => element.level))].sort((a, b) => a - b);
+    const rows = this.rules.map((rule, index) => {
+      const field = this.field(rule.field);
+      const tests = this.tests(field.kind);
+      if (!tests.some(([id]) => id === rule.test)) rule.test = tests[0][0];
+      const redraw = () => {
+        this.drawFilter();
+        this.drawLeft();
+      };
+      const fieldSelect = h('select', {
+        class: 'select',
+        'aria-label': 'Field',
+        onchange: (event) => {
+          rule.field = event.target.value;
+          rule.value = '';
+          redraw();
+        },
+      }, this.fields().map((option) => h('option', { value: option.id, selected: option.id === field.id }, option.label)));
+      const testSelect = h('select', {
+        class: 'select',
+        'aria-label': 'Test',
+        onchange: (event) => {
+          rule.test = event.target.value;
+          redraw();
+        },
+      }, tests.map(([id, label]) => h('option', { value: id, selected: id === rule.test }, label)));
+      const needsValue = rule.test !== 'empty' && rule.test !== 'present';
+      let value = null;
+      if (needsValue && field.kind === 'type') {
+        if (!rule.value) rule.value = 'consolidated';
+        value = h('select', { class: 'select', 'aria-label': 'Value', onchange: (event) => { rule.value = event.target.value; this.drawLeft(); } },
+          [['numeric', 'Number'], ['string', 'Text'], ['consolidated', 'Consolidation']].map(([id, label]) => h('option', { value: id, selected: id === rule.value }, label)));
+      } else if (needsValue && field.kind === 'level') {
+        if (rule.value === '') rule.value = String(levels[0] ?? 0);
+        value = h('select', { class: 'select', 'aria-label': 'Value', onchange: (event) => { rule.value = event.target.value; this.drawLeft(); } },
+          levels.map((level) => h('option', { value: level, selected: String(level) === String(rule.value) }, levelName(level))));
+      } else if (needsValue) {
+        value = h('input', {
+          class: 'input',
+          'aria-label': 'Value',
+          type: field.kind === 'number' ? 'number' : 'text',
+          step: 'any',
+          placeholder: field.kind === 'number' ? 'A number' : 'Text',
+          oninput: (event) => {
+            rule.value = event.target.value;
+            this.drawLeft();
+            this.drawFilterCount();
+          },
+          onkeydown: (event) => {
+            if (event.key === 'Enter') event.preventDefault();
+          },
+        });
+        value.value = rule.value ?? '';
+      }
+      return h('div', { class: 'rule' },
+        h('span', { class: 'rule-join muted' }, index === 0 ? 'Where' : this.matchAll ? 'and' : 'or'),
+        fieldSelect, testSelect, value ?? h('span'),
+        h('button', {
+          class: 'button quiet small icon',
+          type: 'button',
+          'aria-label': 'Remove this rule',
+          onclick: () => {
+            this.rules.splice(index, 1);
+            redraw();
+          },
+        }, icon('close', 14)));
+    });
+    this.filterCount = h('span', { class: 'muted' });
+    mount(this.filterPanel,
+      rows.length ? h('div', { class: 'rules' }, rows) : h('p', { class: 'hint' }, 'Add a rule to narrow the members: by name, level, type or any attribute.'),
+      h('div', { class: 'toolbar' },
+        h('button', {
+          class: 'button small',
+          type: 'button',
+          onclick: () => {
+            this.rules.push({ field: this.attributes.length ? `attribute:${this.attributes[0]}` : 'name', test: 'contains', value: '' });
+            this.drawFilter();
+            this.filterPanel.querySelector('.rule:last-child input, .rule:last-child select')?.focus();
+          },
+        }, icon('plus', 14), 'Add a rule'),
+        this.rules.length > 1 ? h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Combine the rules' },
+          h('button', { type: 'button', role: 'tab', 'aria-selected': String(this.matchAll), onclick: () => { this.matchAll = true; this.drawFilter(); this.drawLeft(); } }, 'Match all'),
+          h('button', { type: 'button', role: 'tab', 'aria-selected': String(!this.matchAll), onclick: () => { this.matchAll = false; this.drawFilter(); this.drawLeft(); } }, 'Match any')) : null,
+        h('div', { class: 'grow' }),
+        this.filterCount),
+      h('div', { class: 'toolbar' },
+        h('button', { class: 'button small', type: 'button', onclick: () => this.add(this.matches().map((element) => element.name)) }, icon('chevron', 14), 'Add the matches'),
+        h('button', {
+          class: 'button small',
+          type: 'button',
+          onclick: () => this.change(() => {
+            this.set = this.matches().map((element) => element.name);
+          }),
+        }, icon('swap', 14), 'Replace the set with them'),
+        h('div', { class: 'grow' }),
+        this.rules.length ? h('button', { class: 'button small quiet', type: 'button', onclick: () => { this.rules = []; this.drawFilter(); this.drawLeft(); } }, 'Clear the rules') : null));
+    this.drawFilterCount();
+  }
+
+  drawFilterCount() {
+    if (!this.filterCount) return;
+    const count = this.matches().length;
+    this.filterCount.textContent = `${count.toLocaleString()} member${count === 1 ? '' : 's'} match`;
+    const active = this.activeRules().length;
+    this.filterButton.querySelector('.filter-count').textContent = active ? String(active) : '';
   }
 
   /* ---- Changing the set, with undo ---- */
@@ -143,16 +344,32 @@ class SetEditor {
     h('option', { value: 'top:' }, 'The top members'),
     levels.map((level) => h('option', { value: `level:${level}` }, `Every member of ${levelName(level)}`)),
     Object.keys(this.dim.subsets ?? {}).map((subset) => h('option', { value: `subset:${subset}` }, `The subset ${subset}`)));
+    this.filterPanel = h('div', { class: 'filter-panel', role: 'group', 'aria-label': 'Filter rules', hidden: true });
+    this.filterButton = h('button', {
+      class: 'button small quiet',
+      type: 'button',
+      'aria-pressed': 'false',
+      onclick: () => {
+        this.filtering = !this.filtering;
+        if (this.filtering && !this.rules.length) {
+          this.rules.push({ field: this.attributes.length ? `attribute:${this.attributes[0]}` : 'name', test: 'contains', value: '' });
+        }
+        this.drawFilter();
+        this.drawLeft();
+      },
+    }, icon('filter', 14), 'Filter', h('span', { class: 'badge accent filter-count' }));
     const move = (label, iconName, action, title) => h('button', { class: 'button small', type: 'button', title, onclick: action }, icon(iconName, 14), h('span', {}, label));
     const body = h('div', { class: 'set-editor' },
       h('section', { class: 'set-pane', 'aria-label': 'Available members' },
         h('div', { class: 'set-pane-head' }, h('h3', {}, 'Available members'), h('span', { class: 'muted' }, `${this.dim.elements.length.toLocaleString()} in ${this.dim.name}`)),
         h('div', { class: 'search' }, icon('search', 16), search),
         h('div', { class: 'toolbar' },
+          this.filterButton,
           toggle('With descendants', 'withDescendants', 'level'),
           this.attributes.length ? toggle('Attributes', 'showAttributes', 'eye') : null,
           h('div', { class: 'grow' }),
           levels.length > 1 ? expand : null),
+        this.filterPanel,
         this.left),
       h('div', { class: 'set-moves', role: 'group', 'aria-label': 'Add to the set' },
         move('Add', 'chevron', () => this.add(this.pickedInOrder()), 'Add the members picked'),
@@ -260,10 +477,10 @@ class SetEditor {
       inSet.has(name) ? h('span', { class: 'badge accent', title: 'In the set' }, icon('check', 12)) : null);
       rows.push(element_row);
     };
-    if (this.words) {
-      // Matches by name, or by attribute where attributes are shown; with descendants,
-      // everything beneath a match comes too.
-      const matches = this.dim.elements.filter((element) => element.name.toLowerCase().includes(this.words)
+    if (this.words || (this.filtering && this.activeRules().length)) {
+      // Matches by name, or by attribute where attributes are shown, that meet the rules;
+      // with descendants, everything beneath a match comes too.
+      const matches = this.filtering ? this.matches() : this.dim.elements.filter((element) => element.name.toLowerCase().includes(this.words)
         || (this.showAttributes && Object.values(element.attributes ?? {}).some((value) => String(value).toLowerCase().includes(this.words))));
       const shown = new Set();
       for (const element of matches.slice(0, 500)) {
@@ -292,6 +509,7 @@ class SetEditor {
       for (const root of this.dim.roots) visit(root, 0);
     }
     mount(this.left, rows.length ? rows : h('p', { class: 'muted set-none' }, 'Nothing matches.'));
+    this.drawFilterCount();
     if (this.attributes.length && this.showAttributes) {
       this.left.prepend(h('div', { class: 'set-row set-head-row' }, h('span', { class: 'twisty' }), h('span', { class: 'set-name' }, 'Member'),
         this.attributes.map((attribute) => h('span', { class: 'set-attribute' }, attribute))));
