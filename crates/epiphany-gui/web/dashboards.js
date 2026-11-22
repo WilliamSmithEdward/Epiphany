@@ -17,14 +17,20 @@ const GRID_ROWS = 60;
 
 export async function render(target, { params }) {
   const definition = await model();
-  return new Dashboards(target, definition, params.get('name'));
+  return new Dashboards(target, definition, params);
 }
 
 class Dashboards {
-  constructor(target, definition, name) {
+  constructor(target, definition, params) {
     this.target = target;
     this.definition = definition;
     this.admin = state.user?.role === 'admin';
+    this.update(params);
+  }
+
+  /** Shows the dashboard the address names, or else the first, moving to it in place. */
+  update(params) {
+    const name = params.get('name');
     // The dashboard being edited, a copy, and whether it is new; null when only shown.
     this.editing = null;
     this.fresh = false;
@@ -144,11 +150,11 @@ class Dashboards {
       return;
     }
     const editing = Boolean(this.editing);
-    const tabs = h('div', { class: 'dash-tabs', role: 'tablist', 'aria-label': 'Dashboards' }, this.list().map((dashboard) => h('a', {
-      role: 'tab',
+    // Links from one dashboard to the next, the one shown marked as the page it is.
+    const tabs = h('nav', { class: 'dash-tabs', 'aria-label': 'Dashboards' }, this.list().map((dashboard) => h('a', {
       href: `/dashboards?name=${encodeURIComponent(dashboard.name)}`,
       'data-link': '',
-      'aria-selected': String(dashboard.name === this.name),
+      'aria-current': dashboard.name === this.name ? 'page' : null,
     }, dashboard.name)));
     const actions = editing
       ? [
@@ -168,6 +174,8 @@ class Dashboards {
       ];
     const head = editing
       ? h('div', { class: 'grow dash-names' },
+        // The name is in a field while it is edited, so the page is headed for a screen reader.
+        h('h1', { class: 'visually-hidden' }, 'Editing a dashboard'),
         h('input', { class: 'input dash-name', 'aria-label': 'Name of the dashboard', value: shown.name, oninput: (event) => { this.editing.name = event.target.value; } }),
         h('input', { class: 'input', 'aria-label': 'What the dashboard is for', placeholder: 'What it is for, in a line', value: shown.description ?? '', oninput: (event) => { this.editing.description = event.target.value; } }))
       : h('div', { class: 'grow' }, h('h1', {}, shown.name), shown.description ? h('p', {}, shown.description) : null);
@@ -281,6 +289,8 @@ class Dashboards {
   /** The controls a tile has while editing: its title, how it shows, its width, its place. */
   tileControls(tile, index) {
     const tiles = this.editing.tiles;
+    // Each tile's controls name it, to be told from the next tile's.
+    const name = tile.title || tile.view;
     const move = (to) => {
       if (to < 0 || to >= tiles.length) return;
       const [moved] = tiles.splice(index, 1);
@@ -289,27 +299,29 @@ class Dashboards {
       this.target.querySelector(`.dash-tile[data-index="${to}"] .tile-move`)?.focus();
     };
     return h('div', { class: 'tile-controls' },
-      h('input', { class: 'input', 'aria-label': 'Title of the tile', placeholder: tile.view, value: tile.title ?? '', oninput: (event) => { tile.title = event.target.value; } }),
+      h('input', { class: 'input', 'aria-label': `Title of the tile showing ${tile.view}`, placeholder: tile.view, value: tile.title ?? '', oninput: (event) => { tile.title = event.target.value; } }),
       h('select', {
         class: 'select',
-        'aria-label': 'Show as',
+        'aria-label': `Show ${name} as`,
         onchange: (event) => {
           tile.show = event.target.value;
           this.draw();
         },
       }, Object.entries(SHOWS).map(([value, label]) => h('option', { value, selected: (tile.show ?? 'bars') === value }, label))),
+      // A switch says the same whether on or off: pressed, the tile is two columns wide.
       h('button', {
         class: 'button small quiet',
-        title: tile.width === 2 ? 'Make it one column wide' : 'Make it two columns wide',
+        title: 'Two columns wide, rather than one',
+        'aria-label': `Wide: ${name}`,
         'aria-pressed': String(tile.width === 2),
         onclick: () => {
           tile.width = tile.width === 2 ? 1 : 2;
           this.draw();
         },
-      }, icon('columns', 14), tile.width === 2 ? 'Wide' : 'Narrow'),
+      }, icon('columns', 14), 'Wide'),
       h('button', {
         class: 'button small quiet icon tile-move',
-        'aria-label': 'Move the tile: Left and Right arrows move it',
+        'aria-label': `Move ${name}: Left and Right arrows move it`,
         title: 'Drag to move, or use the arrow keys',
         onkeydown: (event) => {
           const step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1 }[event.key];
@@ -320,7 +332,7 @@ class Dashboards {
       }, icon('drag', 16)),
       h('button', {
         class: 'button small quiet icon',
-        'aria-label': `Remove ${tile.title || tile.view}`,
+        'aria-label': `Remove ${name}`,
         onclick: () => {
           tiles.splice(index, 1);
           this.draw();

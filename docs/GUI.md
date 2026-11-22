@@ -62,7 +62,10 @@ only way to do something, and modal dialogs where a side panel would keep the da
 - **Tokens.** Colour, space, type and radius are CSS custom properties, with light and dark
   themes and the system's choice followed by default.
 - **Accessible.** WCAG 2.2 AA contrast, a visible focus ring on everything, full keyboard
-  use, ARIA grid semantics for the pivot, and motion reduced where the system asks.
+  use, ARIA grid semantics for the pivot, rows of tabs and of choices that are one stop for
+  Tab and gone along by the arrow keys, and, where the system asks for less motion, nothing
+  that moves or fades. A screen reader hears a heading on every page and a name for every
+  control, told apart from the control beside it.
 - **Numbers read well.** Tabular figures, right-aligned, with formats that follow the
   browser's locale, and negatives and missing values clearly told apart.
 - **Fast with large results.** Only the rows and columns in view are drawn, so a grid of
@@ -108,6 +111,37 @@ Each is added to the OpenAPI contract, with the existing route tests.
 | G6 | Model: dimensions, cubes, rules, feeders and subsets, saved against the model's version | A change made in the GUI matches one sent to the API |
 | G7 | Admin: users, roles, sessions, transactions, server status, with the server routes above | An admin can do every listed task; a non-admin sees none of it |
 | G8 | Polish: accessibility audit, large-result performance, browser tests of the main journeys | The journeys pass in the browser, and 100,000 cells scroll smoothly |
+
+Every stage is done; the journeys below are how G8's are kept done.
+
+## Checked in a browser
+
+`crates/epiphany-gui/tests/browser/journeys.mjs` takes the main journeys in Chrome, as a person
+takes them, against the builds in `target/debug`, on a copy of `lab/model` with users made for
+the run.
+
+| Journey | What it shows |
+| --- | --- |
+| Signing in | A wrong password refused; the overview; a session that ends signed into again over the page, which stays as it was |
+| Exploring and writing back | An MDX query typed in shows what the API answers to it; a value typed into a cell is saved and read back through the API; the tabs over the grid gone along by the arrow keys; a cell's comments, history and detail |
+| Changing the model | An element added in the editor is the one the API gives back |
+| Administering | The users; viewing the server as a reader, who is shown no administration and whose writes are refused; back to the administrator, the view kept in the audit |
+| A large grid | 100,000 cells: only those in view drawn, and scrolled to the end at the pace the page keeps at rest |
+
+At each step `audit.js` checks the page as it stands, in the light theme and the dark: a
+control without a name, a field named only by its placeholder, a tab order of its own, the keys
+reaching what a screen reader is told is not there, an image without words, an id given twice,
+a page without one main landmark or a heading, a row of tabs or choices that is more than one
+stop for Tab, anything that moves when motion is to be reduced, and text that stands out from
+what is behind it by less than WCAG AA asks.
+
+```
+cargo build -p epiphany-server -p epiphany-gui
+node crates/epiphany-gui/tests/browser/journeys.mjs
+```
+
+It needs Node and Chrome or Edge and installs nothing, speaking to the browser over the
+DevTools protocol on a pipe. CI runs it on every push.
 
 ## Backlog from the survey of OLAP tools (2026-11-21)
 

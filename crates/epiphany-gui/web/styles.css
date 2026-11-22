@@ -13,7 +13,7 @@
   --line-strong: #cdd3dc;
   --text: #121826;
   --text-2: #4a5466;
-  --text-3: #6b7587;
+  --text-3: #5f6878;
   --accent: #4f46e5;
   --accent-hover: #4338ca;
   --accent-soft: #eef0ff;
@@ -45,7 +45,7 @@
   --control: 36px;
   --control-small: 32px;
   /* The arrow of every choice, drawn the same way whatever the browser draws. */
-  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7587' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235f6878' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
 }
 
 :root[data-theme="dark"] {
@@ -102,9 +102,14 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .mono { font-family: var(--mono); font-size: var(--text-s); }
 .num { font-variant-numeric: tabular-nums; }
 
-/* Without motion, what moves stands still: once, at once, rather than flickering forever. */
+/*
+ * Without motion, what moves stands still: an animation once, at once, rather than flickering
+ * forever, and a change of style at once, with no transition at all. (The shortest transition
+ * would still be one, of every property, drawn for a frame as it begins: a hover's line drawn
+ * at the top of a cell, then at the bottom.)
+ */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0s !important; scroll-behavior: auto !important; }
 }
 
 /* ---- Shell ---- */
@@ -285,7 +290,7 @@ main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: co
 
 .segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
 .segmented button { height: 28px; padding: 0 var(--s3); border: 0; border-radius: var(--radius-s); background: transparent; color: var(--text-2); font-weight: 550; font-size: var(--text-s); cursor: pointer; }
-.segmented button[aria-selected="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-1); }
+.segmented button[aria-selected="true"], .segmented button[aria-checked="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-1); }
 
 /* ---- Feedback ---- */
 
@@ -487,7 +492,6 @@ button.twisty:hover { border-color: var(--accent); color: var(--accent-text); }
 /* ---- Writing back ---- */
 
 .pivot td.editable { cursor: cell; }
-.pivot td.editable:hover { box-shadow: inset 0 -2px 0 var(--accent); }
 .pivot td.edited, .pivot tbody tr:hover td.edited { background: var(--warn-soft); color: var(--text); font-weight: 600; }
 .pivot td.edited::after { content: ""; float: right; width: 6px; height: 6px; margin: -6px -10px 0 4px; border-radius: 50%; background: var(--warn); }
 .pivot td:has(.cell-editor) { padding: 0; }
@@ -544,6 +548,8 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .model-page > .splitter { left: calc(var(--model-list, 260px) - 3px); }
 .model-list { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); border-right: 1px solid var(--line); background: var(--surface); overflow: auto; }
 .model-head { display: flex; align-items: center; justify-content: space-between; }
+/* The page's heading, as large as a section's; the item open beside it, as large as a page's. */
+.model-head h1 { font-size: var(--text-xl); }
 .model-items { display: flex; flex-direction: column; gap: 2px; }
 .model-section { display: flex; align-items: center; justify-content: space-between; margin: var(--s3) var(--s2) var(--s1); font-size: var(--text-xs); font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
 .model-item { display: flex; align-items: center; gap: var(--s2); height: 36px; padding: 0 var(--s3); border-radius: var(--radius); color: var(--text-2); text-decoration: none; }
@@ -554,6 +560,7 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .model-pane > .empty { flex: 1; }
 .editor-head { display: flex; align-items: flex-end; gap: var(--s4); padding: var(--s5) var(--s6) var(--s4); border-bottom: 1px solid var(--line); background: var(--surface); }
 .editor-head .grow { flex: 1; }
+.editor-head h2 { font-size: var(--text-2xl); }
 .editor-body { flex: 1; min-height: 0; overflow: auto; padding: var(--s5) var(--s6); display: flex; flex-direction: column; }
 /*
  * The elements beside the one being edited: the list as wide as its names need, or as it
@@ -766,7 +773,7 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .dash-tabs { display: flex; gap: var(--s1); margin-bottom: var(--s4); overflow-x: auto; border-bottom: 1px solid var(--line); }
 .dash-tabs a { padding: var(--s2) var(--s3); color: var(--text-2); text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; font-weight: 550; }
 .dash-tabs a:hover { color: var(--text); }
-.dash-tabs a[aria-selected="true"] { color: var(--accent-text); border-bottom-color: var(--accent); }
+.dash-tabs a[aria-current="page"] { color: var(--accent-text); border-bottom-color: var(--accent); }
 /* As many columns of tiles as the width holds, rather than two stretched across it. */
 .dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr)); gap: var(--s4); align-items: start; }
 .dash-tile { display: flex; flex-direction: column; min-width: 0; }
@@ -795,9 +802,11 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .table.compact tbody th { position: sticky; left: 0; background: var(--surface); text-align: left; text-transform: none; letter-spacing: 0; font-size: var(--text-s); color: var(--text); font-weight: 550; }
 .table.compact .n { text-align: right; }
 .table.compact td.negative { color: var(--bad); }
-.tile-controls { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; justify-content: flex-end; }
-.tile-controls .input { width: 160px; height: var(--control-small); }
+.tile-controls { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.tile-controls .input { flex: 1; min-width: 8rem; height: var(--control-small); }
 .tile-controls .select { height: var(--control-small); min-width: 0; }
+/* While a dashboard is edited, a tile's controls take a row beneath its name: neither squeezes the other. */
+.dashboard.editing .tile-head { flex-direction: column; align-items: stretch; gap: var(--s2); }
 .dashboard.editing .dash-tile { outline: 1px dashed var(--line-strong); outline-offset: 3px; cursor: grab; }
 .dash-tile.drop-target { box-shadow: 0 0 0 2px var(--accent); }
 .dash-names { display: flex; flex-direction: column; gap: var(--s2); }
@@ -860,7 +869,18 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 /* ---- Totals that take a value to spread ---- */
 
 .pivot td.spreadable { cursor: cell; }
-.pivot td.spreadable:hover { background-image: linear-gradient(to right, var(--accent) 60%, transparent 0); background-size: 6px 2px; background-repeat: repeat-x; background-position: left bottom; }
+/*
+ * A cell that takes a value says so under the pointer: a line beneath its value, inside the
+ * cell and clear of its edges, so that it never seems to belong to the row below. Whole for a
+ * value of its own, dashed for a total that spreads what is typed. A data bar keeps its bar.
+ */
+.pivot tbody td:is(.editable, .spreadable):not(.data-bar):hover {
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-repeat: no-repeat;
+  background-position: left var(--s3) bottom 6px;
+  background-size: calc(100% - 2 * var(--s3)) 2px;
+}
+.pivot tbody td.spreadable:not(.data-bar):hover { background-image: repeating-linear-gradient(to right, var(--accent) 0 4px, transparent 4px 7px); }
 
 /* ---- Held cells ---- */
 

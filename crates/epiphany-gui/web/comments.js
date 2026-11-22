@@ -6,7 +6,7 @@
 
 import { del, get, part, post } from './api.js';
 import { loading, state } from './app.js';
-import { dialog, formatValue, h, icon, mount, notify, parseNumber, working } from './ui.js';
+import { choices, dialog, formatValue, h, icon, mount, notify, parseNumber, working } from './ui.js';
 
 /** Comments: methods of the explorer. */
 export const comments = {
@@ -102,20 +102,20 @@ export const comments = {
       this.commentPanel.hidden = true;
       return;
     }
-    const tab = (id, label) => h('button', {
-      type: 'button',
-      role: 'tab',
-      'aria-selected': String(cell.tab === id),
-      onclick: () => {
-        cell.tab = id;
-        this.drawComments(true);
-      },
-    }, label);
     this.commentPanel.hidden = false;
     mount(this.commentPanel,
       h('div', { class: 'comment-head' },
         h('div', { class: 'grow' },
-          h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'About the cell' }, tab('comments', 'Comments'), tab('history', 'History'), tab('detail', 'Detail')),
+          choices({
+            label: 'About the cell',
+            options: [['comments', 'Comments'], ['history', 'History'], ['detail', 'Detail']],
+            chosen: cell.tab,
+            choose: (id, byKeys) => {
+              cell.tab = id;
+              // Clicked, the keys go into the tab's pane; moved to by the keys, they stay on it.
+              this.drawComments(!byKeys);
+            },
+          }),
           h('p', { class: 'muted' }, cell.at.join(' · '))),
         h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Close the panel', onclick: () => this.closeComments() }, icon('close', 16))),
       cell.tab === 'history' ? this.drawHistory(cell) : cell.tab === 'detail' ? this.drawDetail(cell, focus) : this.drawThread(cell));
@@ -158,12 +158,30 @@ export const comments = {
     }
     const list = h('ol', { class: 'detail-lines' });
     const total = h('strong', { class: 'num' });
+    // Each line's fields say which line they are, to be told from the next line's.
+    const number = () => [...list.children].forEach((item, index) => {
+      const [label, amount, away] = item.querySelectorAll('input, button');
+      label.setAttribute('aria-label', `What line ${index + 1} is`);
+      amount.setAttribute('aria-label', `Amount of line ${index + 1}`);
+      away.setAttribute('aria-label', `Take line ${index + 1} away`);
+    });
     const row = (line = { label: '', value: '' }) => {
-      const label = h('input', { class: 'input', value: line.label, placeholder: 'What it is', 'aria-label': 'What the line is', maxlength: 200 });
-      const amount = h('input', { class: 'input num', value: line.value === '' ? '' : String(line.value), inputmode: 'decimal', placeholder: '0', 'aria-label': 'Its amount' });
+      const label = h('input', { class: 'input', value: line.label, placeholder: 'What it is', maxlength: 200 });
+      const amount = h('input', { class: 'input num', value: line.value === '' ? '' : String(line.value), inputmode: 'decimal', placeholder: '0' });
       amount.addEventListener('input', sum);
       const item = h('li', {}, label, amount,
-        h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Take the line away', onclick: () => { item.remove(); sum(); } }, icon('close', 14)));
+        h('button', {
+          class: 'button quiet small icon',
+          type: 'button',
+          onclick: () => {
+            // The keys go on to the line after, or before, or to adding one.
+            const next = item.nextElementSibling ?? item.previousElementSibling;
+            item.remove();
+            number();
+            sum();
+            (next?.querySelector('input') ?? adding).focus();
+          },
+        }, icon('close', 14)));
       return item;
     };
     // The lines as typed: each a label and a number, blank ones left out; null where an
@@ -184,6 +202,7 @@ export const comments = {
       total.textContent = lines ? format(lines.reduce((all, line) => all + line.value, 0)) : '—';
     }
     list.append(...(kept.length ? kept : [undefined, undefined]).map(row));
+    number();
     sum();
     const save = h('button', {
       class: 'button small primary',
@@ -200,12 +219,14 @@ export const comments = {
     const add = () => {
       const added = row();
       list.append(added);
+      number();
       added.querySelector('input').focus();
     };
+    const adding = h('button', { class: 'button small', type: 'button', onclick: add }, icon('plus', 14), 'Add a line');
     return [
       list,
       h('div', { class: 'toolbar' },
-        h('button', { class: 'button small', type: 'button', onclick: add }, icon('plus', 14), 'Add a line'),
+        adding,
         h('span', { class: 'grow' }),
         h('span', { class: 'muted' }, 'Total'), total),
       h('div', { class: 'toolbar' },
@@ -258,7 +279,12 @@ export const comments = {
             h('strong', {}, comment.author),
             h('span', { class: 'muted' }, new Date(comment.written * 1000).toLocaleString()),
             comment.author.toLowerCase() === me.toLowerCase() || admin
-              ? h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Take the comment away', onclick: () => this.removeComment(comment) }, icon('trash', 14))
+              ? h('button', {
+                class: 'button quiet small icon',
+                type: 'button',
+                'aria-label': `Take away the comment by ${comment.author}, ${new Date(comment.written * 1000).toLocaleString()}`,
+                onclick: () => this.removeComment(comment),
+              }, icon('trash', 14))
               : null),
           h('p', {}, comment.text)))
         : h('li', { class: 'muted comment-none' }, 'No comments yet.')),

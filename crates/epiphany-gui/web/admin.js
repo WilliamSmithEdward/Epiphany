@@ -145,15 +145,17 @@ class AdminPage {
             h('td', {}, h('span', { class: `badge ${user.role === 'admin' ? 'accent' : user.role === 'none' ? 'bad' : ''}` }, ROLES[user.role])),
             h('td', { class: 'muted' }, cubes.length ? cubes.map(([cube, role]) => `${cube}: ${ROLES[role].toLowerCase()}`).join(' · ') : '—'),
             h('td', { class: 'num-col num' }, user.sessions.toLocaleString()),
+            // Each row's buttons name its user, to be told from the next row's.
             h('td', { class: 'actions' },
-              h('button', { class: 'button small quiet', onclick: (event) => this.editUser(user, event.currentTarget) }, icon('edit', 14), 'Edit'),
+              h('button', { class: 'button small quiet', 'aria-label': `Edit ${user.name}`, onclick: (event) => this.editUser(user, event.currentTarget) }, icon('edit', 14), 'Edit'),
               user.name.toLowerCase() === me ? null : h('button', {
                 class: 'button small quiet',
+                'aria-label': `View as ${user.name}`,
                 title: `See the server as ${user.name} does, reading only. It is kept on record.`,
                 onclick: (event) => working(event.currentTarget, () => this.viewAs(user)),
               }, icon('eye', 14), 'View as'),
-              h('button', { class: 'button small quiet', disabled: !user.sessions, onclick: (event) => working(event.currentTarget, () => this.signOut(user)) }, icon('out', 14), 'Sign out'),
-              h('button', { class: 'button small quiet danger', onclick: () => this.removeUser(user) }, icon('trash', 14), 'Remove')));
+              h('button', { class: 'button small quiet', 'aria-label': `Sign out ${user.name}`, disabled: !user.sessions, onclick: (event) => working(event.currentTarget, () => this.signOut(user)) }, icon('out', 14), 'Sign out'),
+              h('button', { class: 'button small quiet danger', 'aria-label': `Remove ${user.name}`, onclick: () => this.removeUser(user) }, icon('trash', 14), 'Remove')));
         }))));
   }
 
@@ -344,7 +346,12 @@ class AdminPage {
           h('td', {}, change.at.join(' · ')),
           h('td', { class: 'num-col num' }, shown(change.before)),
           h('td', { class: 'num-col num' }, h('strong', {}, shown(change.after))),
-          h('td', { class: 'actions' }, h('button', { class: 'button small quiet', title: 'Open the cell in Explore', onclick: () => this.explore(change) }, icon('explore', 14), 'Open')))))),
+          h('td', { class: 'actions' }, h('button', {
+            class: 'button small quiet',
+            'aria-label': `Open ${change.at.join(' · ')} of ${change.cube} in Explore`,
+            title: 'Open the cell in Explore',
+            onclick: () => this.explore(change),
+          }, icon('explore', 14), 'Open')))))),
       changes.length === 200 ? h('p', { class: 'hint card-body' }, 'The newest 200. Choose a cube, a user or a time to see others.') : null);
   }
 
@@ -372,7 +379,11 @@ class AdminPage {
             h('td', { class: 'mono' }, `…${String(transaction.transaction).slice(-6)}`),
             h('td', {}, duration(transaction.idle_seconds)),
             h('td', { class: 'num-col num' }, transaction.pending.toLocaleString()),
-            h('td', { class: 'actions' }, h('button', { class: 'button small quiet danger', onclick: () => this.rollBack(transaction) }, icon('undo', 14), 'Roll back'))))))
+            h('td', { class: 'actions' }, h('button', {
+              class: 'button small quiet danger',
+              'aria-label': `Roll back the transaction ending ${String(transaction.transaction).slice(-6)}`,
+              onclick: () => this.rollBack(transaction),
+            }, icon('undo', 14), 'Roll back'))))))
         : h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'None. Every write has been committed or rolled back.')));
   }
 

@@ -275,8 +275,12 @@ function roleName(role) {
 /* ---- Moving between pages ---- */
 
 let rendering = 0;
-/** The page shown, which may ask to stay when it is left. */
+/**
+ * The page shown, which may ask to stay when it is left, and may move to other parameters
+ * in place, by its `update`; and its path, without them.
+ */
 let active = null;
+let activePath = null;
 let shownPath = location.pathname + location.search;
 
 async function route() {
@@ -285,9 +289,16 @@ async function route() {
     history.pushState(null, '', shownPath);
     return;
   }
-  active = null;
   shownPath = location.pathname + location.search;
   const path = location.pathname.replace(/\/+$/, '') || '/';
+  // The page shown, asked for again with other parameters, moves to them where it stands:
+  // what stays the same is not drawn again, and nothing comes in between.
+  if (active?.update && path === activePath) {
+    active.update(new URLSearchParams(location.search));
+    return;
+  }
+  active = null;
+  activePath = path;
   const entry = visible().find((candidate) => candidate.path === path)
     ?? visible().find((candidate) => candidate.path !== '/' && path.startsWith(`${candidate.path}/`));
   for (const link of shellElement.querySelectorAll('.nav a')) {

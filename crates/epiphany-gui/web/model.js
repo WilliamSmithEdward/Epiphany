@@ -5,7 +5,7 @@
 import { del, get, part, put } from './api.js';
 import { empty, failure, go } from './app.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { dialog, h, icon, menu, mount, notify, parseNumber, splitter, textWidths, working } from './ui.js';
+import { choices, dialog, h, icon, menu, mount, notify, parseNumber, splitter, textWidths, working } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 
@@ -21,8 +21,6 @@ class ModelPage {
     this.version = view.version;
     this.definition = view.model;
     this.editor = null;
-    const dimension = params.get('dimension');
-    const cube = params.get('cube');
     this.list = h('nav', { class: 'model-list', 'aria-label': 'Dimensions and cubes' });
     this.pane = h('section', { class: 'model-pane' });
     const page = h('div', { class: 'model-page' }, this.list, this.pane);
@@ -31,9 +29,21 @@ class ModelPage {
     const width = textWidths();
     const names = [...this.definition.dimensions, ...this.definition.cubes].map((item) => width(item.name));
     splitter(page, { name: 'model-list', key: 'model', min: 200, max: 520, fit: () => Math.ceil(Math.max(120, ...names) + 130) }).fit();
-    this.drawList(dimension, cube);
-    if (dimension) this.open('dimension', dimension);
-    else if (cube) this.open('cube', cube);
+    this.drawList();
+    this.update(params);
+  }
+
+  /**
+   * Opens the dimension or cube the address names beside the list, which stays as it is,
+   * scrolled and searched: choosing from it changes only what is open.
+   */
+  update(params) {
+    const dimension = params.get('dimension');
+    const cube = params.get('cube');
+    this.chosen = dimension ? ['dimension', dimension] : cube ? ['cube', cube] : null;
+    this.drawItems();
+    this.editor = null;
+    if (this.chosen) this.open(...this.chosen);
     else mount(this.pane, empty('model', 'Choose a dimension or a cube', 'Pick one from the list to edit it, or add a new one.'));
   }
 
@@ -42,14 +52,14 @@ class ModelPage {
     return this.editor ? this.editor.leave() : true;
   }
 
-  drawList(dimension, cube) {
+  drawList() {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Find', 'aria-label': 'Find a dimension or cube' });
     const items = h('div', { class: 'model-items' });
     const draw = () => {
       const words = search.value.trim().toLowerCase();
       const entry = (kind, name, iconName, detail) => {
         if (words && !name.toLowerCase().includes(words)) return null;
-        const current = (kind === 'dimension' ? dimension : cube) === name;
+        const current = this.chosen?.[0] === kind && this.chosen[1] === name;
         return h('a', {
           class: 'model-item',
           href: `/model?${kind}=${encodeURIComponent(name)}`,
@@ -66,12 +76,17 @@ class ModelPage {
         this.definition.cubes.map((c) => entry('cube', c.name, 'cube', `${c.dimensions.length}`)));
     };
     search.addEventListener('input', draw);
+    this.versionBadge = h('span', { class: 'badge' });
     mount(this.list,
-      h('div', { class: 'model-head' }, h('h2', {}, 'Model'), h('span', { class: 'badge' }, `Version ${this.version}`),
+      h('div', { class: 'model-head' }, h('h1', {}, 'Model'), this.versionBadge,
         h('button', { class: 'button quiet small icon', 'aria-label': 'Earlier versions of the model', title: 'Earlier versions, to compare and restore', onclick: (event) => this.showHistory(event.currentTarget) }, icon('undo', 16))),
       h('div', { class: 'search' }, icon('search', 16), search),
       items);
-    draw();
+    // The items, again, as the model or the one chosen changes; the search stays as typed.
+    this.drawItems = () => {
+      this.versionBadge.textContent = `Version ${this.version}`;
+      draw();
+    };
   }
 
   open(kind, name) {
@@ -107,7 +122,7 @@ class ModelPage {
     const at = list.findIndex((entry) => entry.name === item.name);
     if (at >= 0) list[at] = structuredClone(item);
     else list.push(structuredClone(item));
-    this.drawList(kind === 'dimension' ? item.name : null, kind === 'cube' ? item.name : null);
+    this.drawItems();
   }
 
   async remove(kind, name) {
@@ -128,6 +143,8 @@ class ModelPage {
     });
     if (!update) return;
     this.version = update.version;
+    const key = kind === 'cube' ? 'cubes' : 'dimensions';
+    this.definition[key] = this.definition[key].filter((entry) => entry.name !== name);
     notify(`Removed ${name}.`, 'good');
     this.editor = null;
     go('/model');
@@ -152,7 +169,14 @@ class ModelPage {
       ? earlier.map((kept) => h('li', {},
         h('span', { class: 'grow' }, h('strong', {}, `Version ${kept.version}`), kept.name !== String(kept.version) ? h('span', { class: 'muted' }, ` (${kept.name})`) : null),
         h('span', { class: 'muted' }, when(kept.saved)),
-        h('button', { class: 'button small', type: 'button', onclick: (event) => this.compare(kept, event.currentTarget) }, 'Compare and restore…')))
+        h('button', {
+          class: 'button small',
+          type: 'button',
+          // Each row's button says which version it is for, heard apart from the others, and
+          // begins with the words shown, which speech input says to press it.
+          'aria-label': `Compare and restore version ${kept.version}…`,
+          onclick: (event) => this.compare(kept, event.currentTarget),
+        }, 'Compare and restore…')))
       : h('li', { class: 'muted' }, 'No earlier versions are kept yet: each change to the model keeps the one it replaces.'));
     await dialog({ title: 'Earlier versions of the model', confirm: 'Close', cancel: null, body: list });
   }
@@ -223,6 +247,7 @@ class ModelPage {
         if (this.definition.dimensions.some((d) => d.name.toLowerCase() === value.toLowerCase())) throw new Error('There is already a dimension of that name.');
         const dimension = { name: value, type: type.value, elements: [{ name: 'Total', type: 'consolidated', children: [] }] };
         if (!(await this.save(`/dimensions/${part(value)}`, { dimension }))) throw new Error('It was not added.');
+        this.replace('dimension', dimension);
         return value;
       },
     });
@@ -245,7 +270,9 @@ class ModelPage {
         if (!value) throw new Error('Give the cube a name.');
         if (chosen.size < 1) throw new Error('Choose at least one dimension.');
         const dimensions = this.definition.dimensions.map((d) => d.name).filter((d) => chosen.has(d));
-        if (!(await this.save(`/cubes/${part(value)}`, { cube: { name: value, dimensions } }))) throw new Error('It was not added.');
+        const cube = { name: value, dimensions };
+        if (!(await this.save(`/cubes/${part(value)}`, { cube }))) throw new Error('It was not added.');
+        this.replace('cube', cube);
         return value;
       },
     });
@@ -264,10 +291,10 @@ class Editor {
     this.tab = 'main';
     this.strip = h('div', { class: 'pending', role: 'status', hidden: true });
     this.body = h('div', { class: 'editor-body' });
-    this.tabs = h('div', { class: 'segmented', role: 'tablist' });
+    this.tabs = h('div');
     mount(page.pane,
       h('div', { class: 'editor-head' },
-        h('div', { class: 'grow' }, h('p', { class: 'muted' }, kind === 'dimension' ? 'Dimension' : 'Cube'), h('h1', {}, original.name)),
+        h('div', { class: 'grow' }, h('p', { class: 'muted' }, kind === 'dimension' ? 'Dimension' : 'Cube'), h('h2', {}, original.name)),
         this.tabs,
         h('button', { class: 'button danger', onclick: () => page.remove(kind, original.name) }, icon('trash', 16), 'Remove')),
       this.body,
@@ -294,14 +321,16 @@ class Editor {
   }
 
   drawTabs(tabs) {
-    mount(this.tabs, tabs.map(([id, label]) => h('button', {
-      role: 'tab',
-      'aria-selected': String(this.tab === id),
-      onclick: () => {
+    choices({
+      into: this.tabs,
+      label: `Parts of the ${this.kind}`,
+      options: tabs,
+      chosen: this.tab,
+      choose: (id) => {
         this.tab = id;
         this.draw();
       },
-    }, label)));
+    });
   }
 
   discard() {
@@ -999,7 +1028,7 @@ class CubeEditor extends Editor {
       dims.splice(index + step, 0, moved);
       this.changed();
     };
-    const add = h('select', { class: 'select', 'aria-label': 'Add a dimension' }, h('option', { value: '' }, 'Add a dimension…'), others.map((name) => h('option', { value: name }, name)));
+    const add = h('select', { class: 'select', 'aria-label': 'Add a dimension to the cube' }, h('option', { value: '' }, 'Add a dimension…'), others.map((name) => h('option', { value: name }, name)));
     add.addEventListener('change', () => {
       if (!add.value) return;
       dims.push(add.value);

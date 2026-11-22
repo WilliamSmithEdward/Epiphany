@@ -339,6 +339,52 @@ export function menu(items, at) {
   openMenu = { close };
 }
 
+/* ---- Choices side by side ---- */
+
+/**
+ * A row of choices, one of them chosen: the tabs over a pane (`tablist`), or the values of a
+ * setting (`radiogroup`). `options` are `[value, label]`; `choose(value, byKeys)` takes the
+ * one chosen, and draws the row again. The arrow keys, Home and End go along the row,
+ * choosing as they go, and Tab passes over all but the one chosen, as WAI-ARIA has it. The
+ * row is drawn into `into` when it is given, which keeps its place on the page.
+ */
+export function choices({ label, kind = 'tablist', options, chosen, choose, into = h('div') }) {
+  const role = kind === 'tablist' ? 'tab' : 'radio';
+  const state = kind === 'tablist' ? 'aria-selected' : 'aria-checked';
+  // With none chosen, Tab still comes to the row, at its first.
+  const reached = options.some(([value]) => value === chosen) ? chosen : options[0]?.[0];
+  into.classList.add('segmented');
+  into.setAttribute('role', kind);
+  into.setAttribute('aria-label', label);
+  // Drawn again by a choice, perhaps afresh, the row keeps the keys on what is chosen, unless
+  // the choice gave them somewhere else to go.
+  const keep = (always) => {
+    if (!always && document.activeElement && document.activeElement !== document.body) return;
+    const row = into.isConnected ? into : document.querySelector(`[role="${kind}"][aria-label="${CSS.escape(label)}"]`);
+    row?.querySelector('[tabindex="0"]')?.focus();
+  };
+  const buttons = options.map(([value, text]) => h('button', {
+    type: 'button',
+    role,
+    [state]: String(value === chosen),
+    tabindex: value === reached ? '0' : '-1',
+    onclick: () => {
+      choose(value, false);
+      keep(false);
+    },
+  }, text));
+  into.onkeydown = (event) => {
+    const at = buttons.indexOf(event.target);
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    const to = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : step && (at + step + buttons.length) % buttons.length;
+    if (at < 0 || to === undefined) return;
+    event.preventDefault();
+    choose(options[to][0], true);
+    keep(true);
+  };
+  return mount(into, buttons);
+}
+
 /** A number as the reader's locale writes it. */
 export function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return value ?? '';

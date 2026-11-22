@@ -8,7 +8,7 @@ import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, mdx, saved, s
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
-import { dialog, download, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
+import { choices, dialog, download, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid } from './grid.js';
 import { sandboxes } from './sandboxes.js';
@@ -329,12 +329,14 @@ class Explorer {
         working(button, () => this.sandboxMenu(button));
       },
     });
-    this.tabs = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Show as' });
+    this.tabs = h('div');
     this.finder = this.buildFinder();
     const outputRow = h('div', { class: 'output-row' }, this.output, this.commentPanel);
     this.page = h('div', { class: 'explorer' },
       this.fields,
       h('section', { class: 'work' },
+        // The cube's choice heads the page to the eye; this, to a screen reader.
+        h('h1', { class: 'visually-hidden' }, `Explore ${this.cube.name}`),
         h('div', { class: 'work-head' },
           h('div', { class: 'toolbar' }, icon('cube', 20), cubes, viewButton, this.sandboxButton, this.finder.box, h('div', { class: 'grow' }), this.tabs),
           this.toolbar,
@@ -398,16 +400,17 @@ class Explorer {
   }
 
   drawTabs() {
-    const tab = (id, label, iconName) => h('button', {
-      role: 'tab',
-      'aria-selected': String(this.view === id),
-      onclick: () => {
+    choices({
+      into: this.tabs,
+      label: 'Show as',
+      options: [['grid', 'Grid'], ['chart', 'Chart'], ['mdx', 'MDX']],
+      chosen: this.view,
+      choose: (id) => {
         this.view = id;
         this.drawTabs();
         this.draw();
       },
-    }, label);
-    mount(this.tabs, tab('grid', 'Grid'), tab('chart', 'Chart'), tab('mdx', 'MDX'));
+    });
   }
 
   drawToolbar() {
@@ -473,7 +476,7 @@ class Explorer {
   /* ---- Field list ---- */
   drawFields() {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Find a dimension or element', 'aria-label': 'Find a dimension or element' });
-    const list = h('div', { class: 'field-list', role: 'tree', 'aria-label': 'Dimensions' });
+    const list = h('div', { class: 'field-list', role: 'list', 'aria-label': 'Dimensions' });
     const draw = () => {
       const words = search.value.trim().toLowerCase();
       mount(list, this.cube.dimensions.map((name) => {
@@ -481,23 +484,17 @@ class Explorer {
         const matches = words ? dim.elements.filter((element) => element.name.toLowerCase().includes(words)).slice(0, 8) : [];
         if (words && !name.toLowerCase().includes(words) && !matches.length) return null;
         const place = this.placeOf(name);
-        return h('div', { class: 'field', role: 'treeitem', 'aria-expanded': 'false' },
+        // Dragged by the mouse; its Place button is the way to the same places by the keys.
+        return h('div', { class: 'field', role: 'listitem' },
           h('div', {
             class: 'field-row',
             draggable: 'true',
-            tabindex: '0',
             ondragstart: (event) => {
               event.dataTransfer.setData('text/x-epiphany-dimension', name);
               event.dataTransfer.effectAllowed = 'move';
               this.page.classList.add('dragging');
             },
             ondragend: () => this.page.classList.remove('dragging'),
-            onkeydown: (event) => {
-              if (event.key === 'Enter' || event.key === ' ' || event.key === 'ContextMenu') {
-                event.preventDefault();
-                this.placeMenu(name, event.currentTarget);
-              }
-            },
             oncontextmenu: (event) => {
               event.preventDefault();
               this.placeMenu(name, { x: event.clientX, y: event.clientY });
@@ -535,7 +532,7 @@ class Explorer {
       h('div', { class: 'fields-head' }, h('h3', {}, 'Fields'), h('span', { class: 'muted' }, `${this.cube.dimensions.length} dimensions`)),
       h('div', { class: 'search' }, icon('search', 16), search),
       list,
-      h('p', { class: 'hint fields-hint' }, 'Drag a dimension to Rows, Columns or Filters, or press Enter on it to choose where it goes. Drag one back here to leave it out of the query: it then stands at its first top element.'));
+      h('p', { class: 'hint fields-hint' }, 'Drag a dimension to Rows, Columns or Filters, or choose where it goes with the ⋯ button beside it. Drag one back here to leave it out of the query: it then stands at its first top element.'));
     this.drawFieldList = draw;
     draw();
   }
@@ -881,7 +878,7 @@ class Explorer {
     }
     if (!this.result) {
       const missing = !this.layout.rows.length ? 'rows' : 'columns';
-      mount(this.output, empty('grid', `Put a dimension on ${missing}`, 'Drag one from the field list, or press Enter on it to choose where it goes.'));
+      mount(this.output, empty('grid', `Put a dimension on ${missing}`, 'Drag one from the field list, or choose where it goes with the ⋯ button beside it.'));
       mount(this.statusLine);
       return;
     }
@@ -961,22 +958,24 @@ class Explorer {
       localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
       this.drawChart();
     };
-    const choice = (value, label, current, pick) => h('button', {
-      role: 'tab',
-      'aria-selected': String(current === value),
-      onclick: () => pick(value),
-    }, label);
     const data = shape(this.result, settings.byColumns);
     const plotted = data.series.some((entry) => entry.values.some((value) => value !== null));
     mount(this.output, h('div', { class: 'chart-pane' },
       h('div', { class: 'toolbar' },
-        h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Kind of chart' },
-          choice('bars', 'Bars', settings.kind, (kind) => set({ kind })),
-          choice('stacked', 'Stacked', settings.kind, (kind) => set({ kind })),
-          choice('lines', 'Lines', settings.kind, (kind) => set({ kind }))),
-        h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Series from' },
-          choice(false, 'A series for each row', settings.byColumns, (byColumns) => set({ byColumns })),
-          choice(true, 'A series for each column', settings.byColumns, (byColumns) => set({ byColumns })))),
+        choices({
+          kind: 'radiogroup',
+          label: 'Kind of chart',
+          options: [['bars', 'Bars'], ['stacked', 'Stacked'], ['lines', 'Lines']],
+          chosen: settings.kind,
+          choose: (kind) => set({ kind }),
+        }),
+        choices({
+          kind: 'radiogroup',
+          label: 'Series from',
+          options: [[false, 'A series for each row'], [true, 'A series for each column']],
+          chosen: Boolean(settings.byColumns),
+          choose: (byColumns) => set({ byColumns }),
+        })),
       plotted
         ? chart(data, settings.kind)
         : empty('chart', 'Nothing to chart', 'The result has no numbers. Choose other members, or show empty rows.')));

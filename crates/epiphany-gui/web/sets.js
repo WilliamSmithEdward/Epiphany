@@ -1,7 +1,7 @@
 // The set editor: a dimension's members on one side, the set being built on the other.
 
 import { beneath, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { copyText, dialog, h, icon, menu, mount, notify } from './ui.js';
+import { choices, copyText, dialog, h, icon, menu, mount, notify } from './ui.js';
 
 /**
  * Edits the set of members a dimension shows on an axis. `dim` is the dimension as the
@@ -208,9 +208,17 @@ class SetEditor {
             this.filterPanel.querySelector('.rule:last-child input, .rule:last-child select')?.focus();
           },
         }, icon('plus', 14), 'Add a rule'),
-        this.rules.length > 1 ? h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Combine the rules' },
-          h('button', { type: 'button', role: 'tab', 'aria-selected': String(this.matchAll), onclick: () => { this.matchAll = true; this.drawFilter(); this.drawLeft(); } }, 'Match all'),
-          h('button', { type: 'button', role: 'tab', 'aria-selected': String(!this.matchAll), onclick: () => { this.matchAll = false; this.drawFilter(); this.drawLeft(); } }, 'Match any')) : null,
+        this.rules.length > 1 ? choices({
+          kind: 'radiogroup',
+          label: 'Combine the rules',
+          options: [[true, 'Match all'], [false, 'Match any']],
+          chosen: this.matchAll,
+          choose: (all) => {
+            this.matchAll = all;
+            this.drawFilter();
+            this.drawLeft();
+          },
+        }) : null,
         h('div', { class: 'grow' }),
         this.filterCount),
       h('div', { class: 'toolbar' },

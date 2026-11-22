@@ -244,11 +244,23 @@ The adapter's tests need `cargo build -p epiphany-server` first and the .NET SDK
 a real server and need no Excel. Three scripts in [adapter](adapter) check the add-in inside
 Excel itself.
 
+The GUI's main journeys are taken in a browser, each page checked for accessibility as they
+go; they need Node and Chrome or Edge, and install nothing:
+
+```
+cargo build -p epiphany-server -p epiphany-gui
+node crates/epiphany-gui/tests/browser/journeys.mjs
+```
+
+[docs/GUI.md](docs/GUI.md) says what they check.
+
 | Path | What is there |
 | --- | --- |
 | `crates/epiphany-core` | The engine: model, cells, rules, MDX, transactions. No HTTP, no disk |
 | `crates/epiphany-server` | The program: routes, sign-in, files on disk |
+| `crates/epiphany-gui` | The browser application, and the program that serves it and passes its calls on; its journeys in a browser in `tests/browser` |
 | `adapter` | The Excel add-in and its tests |
 | `lab` | The page for trying things by hand, and its model |
 | `docs/PLAN.md` | How it is built, what was decided and why, and what is not done |
+| `docs/GUI.md` | The GUI: what was decided, what it learnt from other tools, and how it is checked |
 | `docs/BENCHMARKS.md` | Timings, and how to repeat them |
