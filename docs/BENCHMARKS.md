@@ -209,6 +209,12 @@ readers. The longest read is now 263 ms, as long as an ordinary write of 250,000
 holds the database; without the turn it was 1,224 ms. The write that arrives during the
 snapshot waits for it: 1.9 s, against 0.5 s for the others (2026-11-21).
 
+Each cell of a snapshot was then turned into a cell write before it was written, copying
+the cube's name and every element's. Written from the model's names instead, five million
+cells take 0.44 s to write out rather than 1.02 s, serialization alone. In the run above
+the write that came during the snapshot no longer waited longer than the others: 0.8 s,
+as each of them took in that run, which was slower throughout (2026-11-22).
+
 At a million and a half cells in the same table it is 70 bytes a cell. With the
 coordinate kept apart from the cell, as it was until 2026-11-21, the same two loads came
 to 89 and 74 bytes a cell: the cell kept whole costs more just after the table grows and
