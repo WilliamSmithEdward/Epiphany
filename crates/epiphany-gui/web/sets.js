@@ -1,6 +1,7 @@
 // The set editor: a dimension's members on one side, the set being built on the other.
 
-import { dialog, h, icon, mount } from './ui.js';
+import { beneath, marked, openButtons, reveal, ROW_LIMIT, searchBox, treeKey, treeRows } from './tree.js';
+import { dialog, h, icon, mount, notify } from './ui.js';
 
 /**
  * Edits the set of members a dimension shows on an axis. `dim` is the dimension as the
@@ -104,13 +105,20 @@ class SetEditor {
     return this.matchAll ? rules.every((rule) => this.meets(element, rule)) : rules.some((rule) => this.meets(element, rule));
   }
 
-  /** Every member the search and the rules let through, in the dimension's order. */
+  /** Every member the search, and the rules while filtering, let through, in the dimension's order. */
   matches() {
-    return this.dim.elements.filter((element) => {
-      const named = !this.words || element.name.toLowerCase().includes(this.words)
-        || (this.showAttributes && Object.values(element.attributes ?? {}).some((value) => String(value).toLowerCase().includes(this.words)));
-      return named && this.passes(element);
-    });
+    return this.dim.elements.filter((element) => this.named(element) && (!this.filtering || this.passes(element)));
+  }
+
+  /** Whether a member's name has the words searched for, or one of its attributes shown does. */
+  named(element) {
+    return !this.words || element.name.toLowerCase().includes(this.words)
+      || (this.showAttributes && Object.values(element.attributes ?? {}).some((value) => String(value).toLowerCase().includes(this.words)));
+  }
+
+  /** Whether the tree shows what was searched or filtered for, rather than all of it. */
+  searching() {
+    return Boolean(this.words) || (this.filtering && this.activeRules().length > 0);
   }
 
   drawFilter() {
@@ -290,19 +298,23 @@ class SetEditor {
     this.count = h('span', { class: 'muted' });
     this.undoButton = h('button', { class: 'button small quiet icon', type: 'button', 'aria-label': 'Undo', title: 'Undo', onclick: () => this.undo() }, icon('undo', 16));
     this.redoButton = h('button', { class: 'button small quiet icon', type: 'button', 'aria-label': 'Redo', title: 'Redo', onclick: () => this.redo() }, icon('redo', 16));
-    const search = h('input', { class: 'input', type: 'search', placeholder: `Find in ${this.dim.name}`, 'aria-label': `Find in ${this.dim.name}` });
-    // Enter in the search adds what was picked rather than applying the set.
-    search.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') event.preventDefault();
+    // Down or Enter in the search moves to the first member found.
+    this.search = searchBox({
+      label: `Find in ${this.dim.name}`,
+      onsearch: (words) => {
+        this.words = words;
+        this.drawLeft();
+      },
+      ondown: () => {
+        const first = this.left.querySelector('.set-row.match') ?? this.left.querySelector('.set-row[data-name]');
+        if (first) this.pick(first.dataset.name);
+      },
     });
-    search.addEventListener('input', () => {
-      this.words = search.value.trim().toLowerCase();
-      this.drawLeft();
-    });
-    const toggle = (label, key, iconName) => {
+    const toggle = (label, key, iconName, title) => {
       const button = h('button', {
         class: 'button small quiet',
         type: 'button',
+        title,
         'aria-pressed': String(this[key]),
         onclick: () => {
           this[key] = !this[key];
@@ -314,17 +326,18 @@ class SetEditor {
     };
     const levels = [...new Set(this.dim.elements.map((element) => element.level))].sort((a, b) => b - a);
     const levelName = (level) => this.dim.levels?.[level] || (level === 0 ? 'Leaves' : `Level ${level}`);
-    const expand = h('select', {
-      class: 'select small-select',
-      'aria-label': 'Open the tree down to a level',
-      onchange: (event) => {
-        const level = Number(event.target.value);
-        if (event.target.value === '') return;
-        this.open = new Set(this.dim.elements.filter((element) => element.level > level).map((element) => element.name));
-        event.target.value = '';
-        this.drawLeft();
-      },
-    }, h('option', { value: '' }, 'Open to a level…'), levels.filter((level) => level < levels[0]).map((level) => h('option', { value: level }, levelName(level))));
+    // Opening and closing act on the tree as shown: what was found, while searching.
+    const openWhere = (names) => {
+      if (this.found) this.found = new Set(names);
+      else this.open = new Set(names);
+      this.drawLeft();
+    };
+    const opening = openButtons({
+      all: () => openWhere(this.dim.elements.filter((element) => this.children(element.name).length).map((element) => element.name)),
+      none: () => openWhere([]),
+      levels: levels.map((level) => [level, levelName(level)]),
+      to: (level) => openWhere(this.dim.elements.filter((element) => element.level > level).map((element) => element.name)),
+    });
     const quick = h('select', {
       class: 'select small-select',
       'aria-label': 'Replace the set',
@@ -344,6 +357,17 @@ class SetEditor {
     h('option', { value: 'top:' }, 'The top members'),
     levels.map((level) => h('option', { value: `level:${level}` }, `Every member of ${levelName(level)}`)),
     Object.keys(this.dim.subsets ?? {}).map((subset) => h('option', { value: `subset:${subset}` }, `The subset ${subset}`)));
+    // Copying gives the names, one to a line; pasting adds the members a list names.
+    this.left.addEventListener('copy', (event) => this.copyNames(event, this.pickedInOrder()));
+    this.right.addEventListener('copy', (event) => this.copyNames(event, this.marked.size ? this.set.filter((name) => this.marked.has(name)) : this.set));
+    for (const pane of [this.left, this.right]) {
+      pane.addEventListener('paste', (event) => {
+        const text = event.clipboardData?.getData('text/plain');
+        if (!text) return;
+        event.preventDefault();
+        this.addNamed(text);
+      });
+    }
     this.filterPanel = h('div', { class: 'filter-panel', role: 'group', 'aria-label': 'Filter rules', hidden: true });
     this.filterButton = h('button', {
       class: 'button small quiet',
@@ -362,13 +386,13 @@ class SetEditor {
     const body = h('div', { class: 'set-editor' },
       h('section', { class: 'set-pane', 'aria-label': 'Available members' },
         h('div', { class: 'set-pane-head' }, h('h3', {}, 'Available members'), h('span', { class: 'muted' }, `${this.dim.elements.length.toLocaleString()} in ${this.dim.name}`)),
-        h('div', { class: 'search' }, icon('search', 16), search),
+        this.search.box,
         h('div', { class: 'toolbar' },
           this.filterButton,
-          toggle('With descendants', 'withDescendants', 'level'),
-          this.attributes.length ? toggle('Attributes', 'showAttributes', 'eye') : null,
+          toggle('With descendants', 'withDescendants', 'level', 'Open each member found to show everything beneath it'),
+          this.attributes.length ? toggle('Attributes', 'showAttributes', 'eye', 'Show attributes beside the members, and search them too') : null,
           h('div', { class: 'grow' }),
-          levels.length > 1 ? expand : null),
+          opening),
         this.filterPanel,
         this.left),
       h('div', { class: 'set-moves', role: 'group', 'aria-label': 'Add to the set' },
@@ -385,9 +409,10 @@ class SetEditor {
           h('div', { class: 'grow' }),
           h('button', { class: 'button small quiet', type: 'button', title: 'Put the set in the dimension\'s order', onclick: () => this.change(() => this.sortHierarchy()) }, icon('rows', 14), 'Hierarchy'),
           h('button', { class: 'button small quiet', type: 'button', title: 'Sort the set by name', onclick: () => this.change(() => this.set.sort((a, b) => a.localeCompare(b))) }, icon('swap', 14), 'A–Z'),
+          h('button', { class: 'button small quiet', type: 'button', title: 'Add members by name or alias, from a list', onclick: () => this.pasteList() }, icon('paste', 14), 'Paste'),
           h('button', { class: 'button small quiet', type: 'button', onclick: () => this.change(() => { this.set = []; }) }, 'Clear')),
         this.right,
-        h('p', { class: 'hint' }, 'Drag to reorder, or Alt with the arrow keys. Delete removes the members marked.')));
+        h('p', { class: 'hint' }, 'Drag to reorder, or Alt with the arrow keys. Delete removes the members marked. Ctrl C copies their names; Ctrl V adds the members a list names.')));
     this.draw();
     return dialog({
       title: `Members of ${this.dim.name}`,
@@ -399,6 +424,63 @@ class SetEditor {
         return this.set;
       },
     });
+  }
+
+  /** Puts names on the clipboard, one to a line. */
+  copyNames(event, names) {
+    if (!names.length) return;
+    event.preventDefault();
+    event.clipboardData.setData('text/plain', names.join('\n'));
+  }
+
+  /** Asks for a list of names, as pasted from elsewhere, and adds the members it names. */
+  async pasteList() {
+    const list = h('textarea', { class: 'textarea', id: 'names', rows: 10, spellcheck: 'false', placeholder: 'One name to a line, or a column copied from a spreadsheet' });
+    const text = await dialog({
+      title: `Add members of ${this.dim.name} by name`,
+      confirm: 'Add',
+      body: h('div', { class: 'field' }, h('label', { for: 'names' }, 'Names or aliases'), list),
+      onsubmit: () => list.value,
+    });
+    if (text) this.addNamed(text);
+  }
+
+  /**
+   * Adds the members a list names, one to a line or a cell, by name or by alias, after the
+   * last member marked or at the end, and says what it could not find.
+   */
+  addNamed(text) {
+    const words = text.split(/[\r\n\t]+/).map((word) => word.trim()).filter(Boolean);
+    const known = this.lookup();
+    const found = [];
+    const missing = [];
+    for (const word of words) {
+      const name = this.dim.byName.has(word) ? word : known.get(word.toLowerCase());
+      if (name) found.push(name);
+      else missing.push(word);
+    }
+    const fresh = [...new Set(found)].filter((name) => !this.set.includes(name));
+    if (fresh.length) {
+      const after = this.set.reduce((last, name, index) => (this.marked.has(name) ? index : last), -1);
+      this.change(() => this.set.splice(after >= 0 ? after + 1 : this.set.length, 0, ...fresh));
+    }
+    const added = fresh.length ? `Added ${fresh.length.toLocaleString()} member${fresh.length === 1 ? '' : 's'}.` : 'Nothing new to add.';
+    const shown = missing.slice(0, 5).join(', ') + (missing.length > 5 ? ` and ${(missing.length - 5).toLocaleString()} more` : '');
+    notify(missing.length ? `${added} Not in ${this.dim.name}: ${shown}.` : added, missing.length ? 'bad' : 'good');
+  }
+
+  /** Each member by its name or alias in lower case; names before aliases. */
+  lookup() {
+    const known = new Map();
+    const aliases = Object.entries(this.dim.attributes ?? {}).filter(([, kind]) => kind === 'alias').map(([attribute]) => attribute);
+    for (const element of this.dim.elements) {
+      for (const attribute of aliases) {
+        const alias = element.attributes?.[attribute];
+        if (alias !== undefined && alias !== null && alias !== '') known.set(String(alias).toLowerCase(), element.name);
+      }
+    }
+    for (const element of this.dim.elements) known.set(element.name.toLowerCase(), element.name);
+    return known;
   }
 
   sortHierarchy() {
@@ -438,84 +520,80 @@ class SetEditor {
 
   /* ---- Available members ---- */
 
-  drawLeft() {
-    const rows = [];
+  /** Draws the available members, keeping focus on the member that had it, or on `focus`. */
+  drawLeft(focus) {
+    const keep = focus ?? (this.left.contains(document.activeElement) ? document.activeElement.closest?.('.set-row')?.dataset.name : null);
+    const children = (name) => this.children(name);
+    const roots = this.dim.roots;
+    const matches = this.searching() ? new Set(this.matches().map((element) => element.name)) : null;
+    // A new search opens the tree to what it finds, and from there the reader opens and
+    // closes it; when the search is cleared, the tree opens to the members picked.
+    const asked = matches ? JSON.stringify([this.words, this.filtering && this.activeRules(), this.matchAll, this.showAttributes, this.withDescendants]) : null;
+    if (asked !== this.asked) {
+      if (!asked) for (const name of reveal({ roots, children, matches: this.picked })) this.open.add(name);
+      this.found = matches ? reveal({ roots, children, matches }) : null;
+      if (matches && this.withDescendants) for (const name of [...matches, ...beneath(matches, children)]) this.found.add(name);
+      this.asked = asked;
+    }
+    const open = this.found ?? this.open;
+    const { rows, cut } = treeRows({ roots, children, open, matches });
     const inSet = new Set(this.set);
-    const row = (name, depth, path) => {
+    // The member keys act on is the one last picked, or else the first found or shown.
+    const current = rows.find((row) => row.name === this.anchor) ?? rows.find((row) => row.match) ?? rows[0];
+    const words = this.words;
+    const drawn = rows.map((row) => {
+      const { name } = row;
       const element = this.dim.byName.get(name);
-      const kids = this.children(name);
-      const opened = this.open.has(name);
-      const picked = this.picked.has(name);
-      const element_row = h('div', {
-        class: 'set-row',
+      return h('div', {
+        class: `set-row${row.match ? ' match' : ''}${row.context ? ' context' : ''}`,
         role: 'treeitem',
-        'aria-selected': String(picked),
-        'aria-expanded': kids.length && !this.words ? String(opened) : null,
-        tabindex: '-1',
-        dataset: { depth: Math.min(depth, 8), name },
+        'aria-level': row.depth + 1,
+        'aria-selected': String(this.picked.has(name)),
+        'aria-expanded': row.kids ? String(row.open) : null,
+        tabindex: row === current ? '0' : '-1',
+        dataset: { depth: Math.min(row.depth, 8), name },
         onclick: (event) => this.pick(name, event),
         ondblclick: () => this.add([name]),
-        onkeydown: (event) => this.leftKey(event, name),
+        onkeydown: (event) => this.leftKey(event),
       },
-      kids.length && !this.words
+      row.kids
         ? h('button', {
           class: 'twisty',
           type: 'button',
           tabindex: '-1',
-          'aria-label': opened ? `Close ${name}` : `Open ${name}`,
+          'aria-label': row.open ? `Close ${name}` : `Open ${name}`,
           onclick: (event) => {
             event.stopPropagation();
-            if (opened) this.open.delete(name);
-            else this.open.add(name);
-            this.drawLeft();
+            this.openRows([name], !row.open);
           },
-        }, icon(opened ? 'down' : 'chevron', 12))
+        }, icon(row.open ? 'down' : 'chevron', 12))
         : h('span', { class: 'twisty' }),
       icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
-      h('span', { class: 'set-name' }, name, path ? h('span', { class: 'set-path' }, path) : null),
-      this.showAttributes ? this.attributes.map((attribute) => h('span', { class: 'set-attribute', title: attribute }, String(element.attributes?.[attribute] ?? ''))) : null,
+      h('span', { class: 'set-name' }, row.match ? marked(name, words) : name),
+      this.showAttributes ? this.attributes.map((attribute) => h('span', { class: 'set-attribute', title: attribute },
+        row.match ? marked(element.attributes?.[attribute] ?? '', words) : String(element.attributes?.[attribute] ?? ''))) : null,
       inSet.has(name) ? h('span', { class: 'badge accent', title: 'In the set' }, icon('check', 12)) : null);
-      rows.push(element_row);
-    };
-    if (this.words || (this.filtering && this.activeRules().length)) {
-      // Matches by name, or by attribute where attributes are shown, that meet the rules;
-      // with descendants, everything beneath a match comes too.
-      const matches = this.filtering ? this.matches() : this.dim.elements.filter((element) => element.name.toLowerCase().includes(this.words)
-        || (this.showAttributes && Object.values(element.attributes ?? {}).some((value) => String(value).toLowerCase().includes(this.words))));
-      const shown = new Set();
-      for (const element of matches.slice(0, 500)) {
-        if (!shown.has(element.name)) {
-          shown.add(element.name);
-          row(element.name, 0, element.parents.length ? `in ${element.parents.join(', ')}` : null);
-        }
-        if (this.withDescendants) {
-          for (const below of this.descendants(element.name)) {
-            if (!shown.has(below)) {
-              shown.add(below);
-              row(below, 1, null);
-            }
-          }
-        }
-      }
-      if (matches.length > 500) rows.push(h('p', { class: 'hint set-more' }, `Showing the first 500 of ${matches.length.toLocaleString()} matches. Narrow the search to see the rest.`));
-    } else {
-      const seen = new Set();
-      const visit = (name, depth) => {
-        if (seen.has(name) && depth > 0) return;
-        seen.add(name);
-        row(name, depth, null);
-        if (this.open.has(name)) for (const child of this.children(name)) visit(child, depth + 1);
-      };
-      for (const root of this.dim.roots) visit(root, 0);
-    }
-    mount(this.left, rows.length ? rows : h('p', { class: 'muted set-none' }, 'Nothing matches.'));
+    });
+    if (cut) drawn.push(h('p', { class: 'hint set-more' }, `Showing the first ${ROW_LIMIT.toLocaleString()} rows. Search, or close some members, to see the rest.`));
+    mount(this.left, drawn.length ? drawn : h('p', { class: 'muted set-none' }, 'Nothing matches.'));
+    this.search.found(matches?.size ?? 0, Boolean(matches));
     this.drawFilterCount();
     if (this.attributes.length && this.showAttributes) {
       this.left.prepend(h('div', { class: 'set-row set-head-row' }, h('span', { class: 'twisty' }), h('span', { class: 'set-name' }, 'Member'),
         this.attributes.map((attribute) => h('span', { class: 'set-attribute' }, attribute))));
     }
+    if (keep) this.left.querySelector(`.set-row[data-name="${CSS.escape(keep)}"]`)?.focus();
   }
 
+  /** Opens or closes members of the tree as shown. */
+  openRows(names, opened) {
+    const open = this.found ?? this.open;
+    for (const name of names) {
+      if (opened) open.add(name);
+      else open.delete(name);
+    }
+    this.drawLeft();
+  }
   /** Picks a member on the left: alone, or with Ctrl added or taken away, or with Shift a run. */
   pick(name, event) {
     if (event?.shiftKey && this.anchor) {
@@ -530,33 +608,22 @@ class SetEditor {
       this.picked = new Set([name]);
       this.anchor = name;
     }
-    this.drawLeft();
-    this.left.querySelector(`.set-row[data-name="${CSS.escape(name)}"]`)?.focus();
+    this.drawLeft(name);
   }
 
-  leftKey(event, name) {
-    const shown = [...this.left.querySelectorAll('.set-row[data-name]')];
-    const at = shown.findIndex((row) => row.dataset.name === name);
-    const go = (index) => {
-      const target = shown[Math.max(0, Math.min(index, shown.length - 1))];
-      if (target) this.pick(target.dataset.name, event.shiftKey ? { shiftKey: true } : null);
-    };
-    if (event.key === 'ArrowDown') go(at + 1);
-    else if (event.key === 'ArrowUp') go(at - 1);
-    else if (event.key === 'ArrowRight' && this.children(name).length && !this.open.has(name)) {
-      this.open.add(name);
+  /** The tree's keys: moving picks, with Shift a run; Enter adds what is picked. */
+  leftKey(event) {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+      event.preventDefault();
+      this.picked = new Set([...this.left.querySelectorAll('.set-row[data-name]')].map((row) => row.dataset.name));
       this.drawLeft();
-      this.left.querySelector(`.set-row[data-name="${CSS.escape(name)}"]`)?.focus();
-    } else if (event.key === 'ArrowLeft' && this.open.has(name)) {
-      this.open.delete(name);
-      this.drawLeft();
-      this.left.querySelector(`.set-row[data-name="${CSS.escape(name)}"]`)?.focus();
-    } else if (event.key === 'Enter') {
-      this.add(this.pickedInOrder().length ? this.pickedInOrder() : [name]);
-    } else {
       return;
     }
-    event.preventDefault();
+    treeKey(event, {
+      go: (name, key) => this.pick(name, key.shiftKey ? { shiftKey: true } : null),
+      open: (names, opened) => this.openRows(names, opened),
+      act: (name) => this.add(this.pickedInOrder().length ? this.pickedInOrder() : [name]),
+    });
   }
 
   /* ---- The set ---- */
@@ -568,12 +635,13 @@ class SetEditor {
       return;
     }
     let dragged = null;
+    const current = Math.max(0, this.set.findIndex((name) => this.marked.has(name)));
     mount(this.right, this.set.map((name, index) => {
       const element = this.dim.byName.get(name);
       const item = h('li', {
         class: 'set-item',
         draggable: 'true',
-        tabindex: '-1',
+        tabindex: index === current ? '0' : '-1',
         'aria-selected': String(this.marked.has(name)),
         dataset: { index },
         onclick: (event) => {
@@ -602,6 +670,11 @@ class SetEditor {
             event.preventDefault();
             if (!this.marked.size) this.marked.add(name);
             this.removeMarked();
+          } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+            event.preventDefault();
+            this.marked = new Set(this.set);
+            this.drawRight();
+            this.right.querySelector(`[data-index="${index}"]`)?.focus();
           }
         },
         ondragstart: (event) => {

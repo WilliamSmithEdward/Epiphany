@@ -4,7 +4,8 @@
 
 import { del, get, part, put } from './api.js';
 import { empty, failure, go } from './app.js';
-import { dialog, h, icon, menu, mount, notify } from './ui.js';
+import { beneath, marked, openButtons, reveal, ROW_LIMIT, searchBox, treeKey, treeRows } from './tree.js';
+import { dialog, h, icon, menu, mount, notify, parseNumber } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 
@@ -290,7 +291,52 @@ class DimensionEditor extends Editor {
     super(page, original, 'dimension');
     this.selected = null;
     this.open = new Set();
+    // What the tree was searched for, and the members open while it shows what was found.
+    this.words = '';
+    this.found = null;
+    this.search = searchBox({
+      label: 'Find an element',
+      onsearch: (words) => {
+        this.words = words;
+        const { roots, children } = this.hierarchy();
+        if (words) {
+          this.found = reveal({ roots, children, matches: this.matching() });
+        } else {
+          // Back to browsing, opened to the element chosen while searching.
+          if (this.selected) for (const name of reveal({ roots, children, matches: new Set([this.selected]) })) this.open.add(name);
+          this.found = null;
+        }
+        this.drawTree();
+      },
+      ondown: () => {
+        const first = this.tree?.querySelector('.element-row.match') ?? this.tree?.querySelector('.element-row');
+        if (first) this.select(first.dataset.name);
+      },
+    });
     this.draw();
+  }
+
+  /** The tree's roots, and each element's children, as the working copy has them. */
+  hierarchy() {
+    const byName = this.byName;
+    const named = new Set(this.working.elements.flatMap((element) => (element.children ?? []).map((child) => child.name)));
+    return {
+      byName,
+      roots: this.working.elements.filter((element) => !named.has(element.name)).map((element) => element.name),
+      children: (name) => (byName.get(name)?.children ?? []).map((child) => child.name).filter((child) => byName.has(child)),
+    };
+  }
+
+  /** The elements whose names have the words searched for. */
+  matching() {
+    return new Set(this.working.elements.filter((element) => element.name.toLowerCase().includes(this.words)).map((element) => element.name));
+  }
+
+  /** Chooses an element to edit, keeping the keys on it in the tree. */
+  select(name) {
+    this.selected = name;
+    this.draw();
+    this.tree?.querySelector(`.element-row[data-name="${CSS.escape(name)}"]`)?.focus();
   }
 
   get byName() {
@@ -307,63 +353,103 @@ class DimensionEditor extends Editor {
   }
 
   drawElements() {
-    const byName = this.byName;
-    const children = new Set(this.working.elements.flatMap((element) => (element.children ?? []).map((child) => child.name)));
-    const roots = this.working.elements.filter((element) => !children.has(element.name));
-    const tree = h('div', { class: 'element-tree', role: 'tree', 'aria-label': 'Elements' });
-    const visit = (element, depth, weight, trail) => {
-      const kids = (element.children ?? []).filter((child) => byName.has(child.name) && !trail.has(child.name));
-      const opened = this.open.has(element.name);
-      tree.append(h('div', {
-        class: 'element-row',
-        role: 'treeitem',
-        'aria-selected': String(this.selected === element.name),
-        'aria-expanded': kids.length ? String(opened) : null,
-        dataset: { depth: Math.min(depth, 8) },
-        tabindex: '0',
-        onclick: () => {
-          this.selected = element.name;
-          this.draw();
-        },
-        onkeydown: (event) => {
-          if (event.key === 'Enter') {
-            this.selected = element.name;
-            this.draw();
-          }
-        },
-      },
-      kids.length
-        ? h('button', {
-          class: 'twisty',
-          'aria-label': opened ? `Close ${element.name}` : `Open ${element.name}`,
-          onclick: (event) => {
-            event.stopPropagation();
-            if (opened) this.open.delete(element.name);
-            else this.open.add(element.name);
-            this.draw();
-          },
-        }, icon(opened ? 'down' : 'chevron', 12))
-        : h('span', { class: 'twisty' }),
-      icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
-      h('span', { class: 'grow' }, element.name),
-      weight !== undefined && weight !== 1 ? h('span', { class: 'badge' }, `× ${weight}`) : null,
-      h('span', { class: 'muted' }, TYPES[element.type])));
-      if (opened) {
-        const next = new Set(trail).add(element.name);
-        for (const child of kids) visit(byName.get(child.name), depth + 1, child.weight ?? 1, next);
-      }
+    const levels = this.levelsOf();
+    const height = levels.reduce((most, level) => Math.max(most, level), 0);
+    const names = this.working.levels ?? [];
+    const open = (names) => {
+      if (this.found) this.found = new Set(names);
+      else this.open = new Set(names);
+      this.drawTree();
     };
-    for (const root of roots) visit(root, 0, undefined, new Set());
-    const selected = byName.get(this.selected);
+    const consolidated = () => this.working.elements.filter((element) => element.children?.length).map((element) => element.name);
+    this.tree = h('div', { class: 'element-tree', role: 'tree', 'aria-label': 'Elements' });
+    // Copying gives the element chosen and all beneath it as an outline; pasting adds one.
+    this.tree.addEventListener('copy', (event) => {
+      const { roots } = this.hierarchy();
+      event.preventDefault();
+      event.clipboardData.setData('text/plain', this.outline(this.selected ? [this.selected] : roots));
+    });
+    this.tree.addEventListener('paste', (event) => {
+      const text = event.clipboardData?.getData('text/plain');
+      if (!text) return;
+      event.preventDefault();
+      this.addOutline(text);
+    });
+    const selected = this.byName.get(this.selected);
     mount(this.body, h('div', { class: 'element-layout' },
       h('div', { class: 'card element-list' },
         h('div', { class: 'card-head' },
           h('h3', { class: 'grow' }, `${this.working.elements.length.toLocaleString()} elements`),
+          h('button', { class: 'button small quiet', title: 'Add elements from an outline, as pasted from elsewhere', onclick: () => this.pasteElements() }, icon('paste', 14), 'Paste'),
           h('button', { class: 'button small', onclick: () => this.addElement() }, icon('plus', 14), 'Add element')),
-        tree),
+        h('div', { class: 'tree-tools' },
+          this.search.box,
+          openButtons({
+            all: () => open(consolidated()),
+            none: () => open([]),
+            levels: Array.from({ length: height + 1 }, (_, level) => height - level).map((level) => [level, names[level] || (level === 0 ? 'Leaves' : `Level ${level}`)]),
+            to: (level) => open(this.working.elements.filter((_, index) => levels[index] > level).map((element) => element.name)),
+          })),
+        this.tree),
       h('div', { class: 'card element-detail' }, selected ? this.detail(selected) : empty('member', 'Choose an element', 'Its name, type, children and attributes are edited here.'))));
+    this.drawTree();
   }
 
+  /** The tree of elements: as browsed, or showing what the search found in its place. */
+  drawTree() {
+    const { byName, roots, children } = this.hierarchy();
+    const matches = this.words ? this.matching() : null;
+    const { rows, cut } = treeRows({ roots, children, open: this.found ?? this.open, matches });
+    const current = rows.find((row) => row.name === this.selected) ?? rows.find((row) => row.match) ?? rows[0];
+    const toggle = (names, opened) => {
+      const into = this.found ?? this.open;
+      for (const name of names) {
+        if (opened) into.add(name);
+        else into.delete(name);
+      }
+      const focused = document.activeElement?.closest?.('.element-row')?.dataset.name;
+      this.drawTree();
+      if (focused) this.tree.querySelector(`.element-row[data-name="${CSS.escape(focused)}"]`)?.focus();
+    };
+    const drawn = rows.map((row) => {
+      const element = byName.get(row.name);
+      const weight = row.parent ? byName.get(row.parent)?.children?.find((child) => child.name === row.name)?.weight ?? 1 : 1;
+      return h('div', {
+        class: `element-row${row.match ? ' match' : ''}${row.context ? ' context' : ''}`,
+        role: 'treeitem',
+        'aria-level': row.depth + 1,
+        'aria-selected': String(this.selected === row.name),
+        'aria-expanded': row.kids ? String(row.open) : null,
+        dataset: { depth: Math.min(row.depth, 8), name: row.name },
+        tabindex: row === current ? '0' : '-1',
+        onclick: () => this.select(row.name),
+        onkeydown: (event) => treeKey(event, {
+          go: (name) => this.select(name),
+          open: toggle,
+          // Enter goes to the element's name, to edit it.
+          act: () => this.body.querySelector('#element-name')?.focus(),
+        }),
+      },
+      row.kids
+        ? h('button', {
+          class: 'twisty',
+          tabindex: '-1',
+          'aria-label': row.open ? `Close ${row.name}` : `Open ${row.name}`,
+          onclick: (event) => {
+            event.stopPropagation();
+            toggle([row.name], !row.open);
+          },
+        }, icon(row.open ? 'down' : 'chevron', 12))
+        : h('span', { class: 'twisty' }),
+      icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
+      h('span', { class: 'grow' }, row.match ? marked(row.name, this.words) : row.name),
+      weight !== 1 ? h('span', { class: 'badge' }, `× ${weight}`) : null,
+      h('span', { class: 'muted' }, TYPES[element.type]));
+    });
+    if (cut) drawn.push(h('p', { class: 'hint' }, `Showing the first ${ROW_LIMIT.toLocaleString()} rows. Search, or close some elements, to see the rest.`));
+    mount(this.tree, drawn.length ? drawn : h('p', { class: 'muted' }, this.words ? 'Nothing matches.' : 'No elements yet.'));
+    this.search.found(matches?.size ?? 0, Boolean(matches));
+  }
   detail(element) {
     const byName = this.byName;
     const name = h('input', { class: 'input', id: 'element-name', value: element.name });
@@ -524,6 +610,113 @@ class DimensionEditor extends Editor {
     this.changed();
   }
 
+  /* ---- Elements as outlines, to copy and paste ---- */
+
+  /**
+   * Elements and everything beneath them as an outline: one to a line, a tab deeper for
+   * each level, and a weight other than one after a tab.
+   */
+  outline(names) {
+    const { byName } = this.hierarchy();
+    const lines = [];
+    const visit = (name, depth, weight, trail) => {
+      if (trail.has(name)) return;
+      lines.push(`${'\t'.repeat(depth)}${name}${weight === 1 ? '' : `\t${weight}`}`);
+      const next = new Set(trail).add(name);
+      for (const child of byName.get(name)?.children ?? []) if (byName.has(child.name)) visit(child.name, depth + 1, child.weight ?? 1, next);
+    };
+    for (const name of names) visit(name, 0, 1, new Set());
+    return lines.join('\n');
+  }
+
+  /** Asks for an outline of elements, as typed or pasted, and adds them. */
+  async pasteElements() {
+    const text = h('textarea', { class: 'textarea', id: 'outline', rows: 12, spellcheck: 'false', placeholder: 'Revenue\n\tProduct Revenue\n\tService Revenue\nCosts\n\tRent\t-1' });
+    const target = this.pasteTarget();
+    const answer = await dialog({
+      title: target ? `Add elements beneath ${target.name}` : 'Add elements',
+      confirm: 'Add',
+      body: h('div', { class: 'facts' },
+        h('div', { class: 'field' }, h('label', { for: 'outline' }, 'Elements, one to a line'), text),
+        h('p', { class: 'hint' }, 'Indent a line with a tab, or spaces, to put it beneath the line above. A tab and a number after a name give its weight. Names the dimension has already are placed again where the outline puts them.')),
+      onsubmit: () => text.value,
+    });
+    if (answer) this.addOutline(answer);
+  }
+
+  /** Where pasted elements go: beneath the element chosen, or beside it if it is a leaf. */
+  pasteTarget() {
+    const byName = this.byName;
+    const chosen = byName.get(this.selected);
+    if (!chosen) return null;
+    if (chosen.type === 'consolidated') return chosen;
+    return this.working.elements.find((element) => element.children?.some((child) => child.name === chosen.name)) ?? null;
+  }
+
+  /**
+   * Adds the elements an outline names: those new to the dimension as consolidations where
+   * lines beneath them go deeper and as numbers otherwise, and each beneath the line above
+   * it that is less indented, or beneath where pasted elements go. Says what it did, and
+   * what it left out: a child of a leaf, or one that would contain itself.
+   */
+  addOutline(text) {
+    const lines = text.replace(/\r\n?/g, '\n').split('\n').filter((line) => line.trim());
+    if (!lines.length) return;
+    // Spaces indent too: the narrowest indent of spaces is one level.
+    const spaces = lines.map((line) => line.match(/^ */)[0].length).filter(Boolean);
+    const unit = spaces.length ? Math.min(...spaces) : 1;
+    const parsed = lines.map((line) => {
+      const indent = line.match(/^[\t ]*/)[0];
+      const [name, weight] = line.slice(indent.length).split('\t');
+      const depth = [...indent].filter((c) => c === '\t').length + Math.floor(indent.replaceAll('\t', '').length / unit);
+      return { name: name.trim(), depth, weight: weight === undefined || !weight.trim() ? 1 : parseNumber(weight) ?? 1 };
+    });
+    const least = parsed.reduce((low, line) => Math.min(low, line.depth), Infinity);
+    const target = this.pasteTarget();
+    const parents = [];
+    const added = [];
+    const placed = [];
+    const left = [];
+    let previous = -1;
+    parsed.forEach((line, index) => {
+      // A line indented past the one above goes just one deeper.
+      const depth = Math.min(line.depth - least, previous + 1);
+      previous = depth;
+      parents[depth] = line.name;
+      const deeper = parsed[index + 1] && parsed[index + 1].depth - least > depth;
+      const byName = this.byName;
+      let element = byName.get(line.name);
+      if (!element) {
+        element = deeper ? { name: line.name, type: 'consolidated', children: [] } : { name: line.name, type: 'numeric' };
+        this.working.elements.push(element);
+        added.push(line.name);
+      }
+      const parent = depth === 0 ? target : byName.get(parents[depth - 1]);
+      if (!parent) return;
+      if (parent.type !== 'consolidated') {
+        left.push(`${line.name} (${parent.name} is not a consolidation)`);
+        return;
+      }
+      if (parent.children?.some((child) => child.name === line.name)) return;
+      const { children } = this.hierarchy();
+      if (line.name === parent.name || beneath([line.name], children).has(parent.name)) {
+        left.push(`${line.name} (it would contain itself)`);
+        return;
+      }
+      parent.children ??= [];
+      parent.children.push(line.weight === 1 ? { name: line.name } : { name: line.name, weight: line.weight });
+      if (!added.includes(line.name)) placed.push(line.name);
+      this.open.add(parent.name);
+    });
+    const said = [
+      added.length ? `Added ${added.length.toLocaleString()} element${added.length === 1 ? '' : 's'}.` : null,
+      placed.length ? `Placed ${placed.length.toLocaleString()} the dimension had already.` : null,
+      left.length ? `Left out ${left.slice(0, 3).join(', ')}${left.length > 3 ? ` and ${left.length - 3} more` : ''}.` : null,
+    ].filter(Boolean).join(' ');
+    notify(said || 'Nothing new to add.', left.length ? 'bad' : 'good');
+    this.changed();
+  }
+
   drawAttributes() {
     const attributes = Object.entries(this.working.attributes ?? {});
     const name = h('input', { class: 'input', placeholder: 'New attribute', 'aria-label': 'New attribute name' });
@@ -564,7 +757,7 @@ class DimensionEditor extends Editor {
   }
 
   drawLevels() {
-    const height = Math.max(...this.levelsOf(), 0) + 1;
+    const height = this.levelsOf().reduce((most, level) => Math.max(most, level), 0) + 1;
     const levels = this.working.levels ?? [];
     mount(this.body, h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Levels'), h('span', { class: 'muted' }, 'Names for each level, from the leaves up. A time dimension\'s Year, Quarter, Month and Week let periods-to-date work.')),

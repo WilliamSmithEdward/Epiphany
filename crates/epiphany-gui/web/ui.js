@@ -94,6 +94,10 @@ const ICONS = {
   server: 'M3 4h18v6H3z M3 14h18v6H3z M7 7h.01 M7 17h.01',
   sigma: 'M18 7V4H6l6 8-6 8h12v-3',
   more: 'M12 12h.01 M19 12h.01 M5 12h.01',
+  copy: 'M9 9h11v11H9z M5 15H4V4h11v1',
+  paste: 'M9 3h6v4H9z M8 5H5v16h14V5h-3',
+  expand: 'M7 15l5 5 5-5 M7 9l5-5 5 5',
+  collapse: 'M7 20l5-5 5 5 M7 4l5 5 5-5',
 };
 
 /** An icon by name, `size` pixels square. */
@@ -232,6 +236,46 @@ export function menu(items, at) {
 export function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return value ?? '';
   return value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits });
+}
+
+/** The reader's decimal sign, a point or a comma. */
+const DECIMAL = (1.5).toLocaleString().replace(/\d/g, '') || '.';
+
+/** A number as text to copy: in full, without grouping, with the reader's decimal sign. */
+export function numberText(value) {
+  return DECIMAL === '.' ? String(value) : String(value).replace('.', DECIMAL);
+}
+
+/**
+ * A number as typed or pasted, or null if the text is not one. Spaces and currency signs
+ * are let go, and parentheses make it negative. Of a point and a comma both present, the
+ * later is the decimal sign. One alone, and only once, is the decimal sign if it is the
+ * reader's, or if other than three digits follow it, as in 1.5 or 2,25; otherwise, and
+ * whenever it comes more than once, it groups digits.
+ */
+export function parseNumber(text) {
+  let cleaned = String(text).trim().replace(/[\s  $€£¥]/g, '');
+  const negative = /^\(.*\)$/.test(cleaned);
+  if (negative) cleaned = cleaned.slice(1, -1);
+  const point = cleaned.lastIndexOf('.');
+  const comma = cleaned.lastIndexOf(',');
+  let decimal = null;
+  if (point >= 0 && comma >= 0) decimal = point > comma ? '.' : ',';
+  else if (point >= 0 || comma >= 0) {
+    const sign = point >= 0 ? '.' : ',';
+    const once = cleaned.indexOf(sign) === cleaned.lastIndexOf(sign);
+    const after = cleaned.slice(cleaned.lastIndexOf(sign) + 1);
+    decimal = once && (sign === DECIMAL || !/^\d{3}$/.test(after)) ? sign : null;
+  }
+  // Digits are grouped in threes, or the text is not a number.
+  const whole = decimal ? cleaned.slice(0, cleaned.lastIndexOf(decimal)) : cleaned;
+  if (/[.,]/.test(whole) && !/^[-+]?\d{1,3}([.,]\d{3})+$/.test(whole)) return null;
+  const grouping = decimal === '.' ? ',' : decimal === ',' ? '.' : /[.,]/g;
+  cleaned = cleaned.replaceAll(grouping, '');
+  if (decimal === ',') cleaned = cleaned.replace(',', '.');
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(cleaned)) return null;
+  const value = Number(cleaned);
+  return Number.isFinite(value) ? (negative ? -value : value) : null;
 }
 
 /** Text as a file the browser saves. */

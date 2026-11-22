@@ -3,7 +3,9 @@
 // Shift stretches the last rectangle to the cell or heading, Ctrl or Cmd adds one, and a
 // drag chooses everything it passes over. Shift and the arrow keys stretch it from the
 // keyboard, Shift Space and Ctrl Space choose the row and the column, Ctrl A every cell,
-// Escape just the active one, and Ctrl C copies the chosen values as tab-separated text.
+// Escape just the active one, and copying gives the chosen values as tab-separated text.
+
+import { numberText } from './ui.js';
 
 const ignored = 'button, a, input, select, textarea, .col-resize, .row-resize';
 
@@ -27,6 +29,11 @@ export class Selection {
     for (const cell of table.querySelectorAll('td[data-r]')) this.places[Number(cell.dataset.r) * columns + Number(cell.dataset.c)] = cell;
     table.addEventListener('pointerdown', (event) => this.pointed(event));
     table.addEventListener('keydown', (event) => this.key(event));
+    table.addEventListener('copy', (event) => {
+      if (!this.ranges.length || event.target.closest('input, textarea')) return;
+      event.preventDefault();
+      event.clipboardData.setData('text/plain', this.text());
+    });
     // Moving to another cell, by the arrow keys or Tab, chooses it on its own; focus coming
     // back to the active cell, from a menu say, leaves the choice as it is.
     table.addEventListener('focusin', (event) => {
@@ -150,10 +157,6 @@ export class Selection {
       range = { r1: 0, r2: this.rows - 1, c1: c, c2: c };
     } else if (command && event.key.toLowerCase() === 'a') {
       range = this.all();
-    } else if (command && event.key.toLowerCase() === 'c') {
-      event.preventDefault();
-      navigator.clipboard?.writeText(this.text());
-      return;
     } else if (event.key === 'Escape' && this.cells().length > 1) {
       range = { r1: r, r2: r, c1: c, c2: c };
     }
@@ -171,7 +174,7 @@ export class Selection {
     const lines = [];
     for (let r = top; r <= bottom; r += 1) {
       const line = [];
-      for (let c = left; c <= right; c += 1) line.push(this.has(r, c) ? String(this.value(r, c) ?? '') : '');
+      for (let c = left; c <= right; c += 1) line.push(this.has(r, c) ? cellText(this.value(r, c)) : '');
       lines.push(line.join('\t'));
     }
     return lines.join('\n');
@@ -220,6 +223,12 @@ export class Selection {
       max: numbers.length ? numbers.reduce((most, value) => Math.max(most, value)) : null,
     };
   }
+}
+
+/** A value as one cell of tab-separated text: numbers as the reader writes them. */
+export function cellText(value) {
+  if (typeof value === 'number') return numberText(value);
+  return String(value ?? '').replace(/[\t\r\n]+/g, ' ');
 }
 
 function union(a, b) {

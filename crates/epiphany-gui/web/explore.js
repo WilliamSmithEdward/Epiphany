@@ -3,10 +3,11 @@
 
 import { ApiError, get, modelVersion, part, post, put } from './api.js';
 import { chart, shape } from './chart.js';
-import { Selection } from './selection.js';
+import { cellText, Selection } from './selection.js';
+import { beneath, marked, openButtons, reveal, ROW_LIMIT, searchBox, treeKey, treeRows } from './tree.js';
 import { editSet } from './sets.js';
 import { empty, failure, go, model, state } from './app.js';
-import { dialog, download, formatNumber, h, icon, menu, mount, notify } from './ui.js';
+import { dialog, download, formatNumber, h, icon, menu, mount, notify, parseNumber } from './ui.js';
 
 /* ---- Names in MDX ---- */
 
@@ -87,6 +88,14 @@ function mdx(layout, dims) {
 }
 
 const saved = (cube) => `epiphany.explore.${cube}`;
+
+/** Puts text on the clipboard, and says so. */
+function copied(text) {
+  navigator.clipboard?.writeText(text).then(
+    () => notify('Copied.', 'good'),
+    () => notify('The browser kept the page from the clipboard. Press Ctrl C instead.', 'bad'),
+  );
+}
 
 /* ---- The page ---- */
 
@@ -314,11 +323,12 @@ class Explorer {
       },
     }, icon('grid', 16), 'Views', icon('down', 14));
     this.tabs = h('div', { class: 'segmented', role: 'tablist', 'aria-label': 'Show as' });
+    this.finder = this.buildFinder();
     this.page = h('div', { class: 'explorer' },
       this.fields,
       h('section', { class: 'work' },
         h('div', { class: 'work-head' },
-          h('div', { class: 'toolbar' }, icon('cube', 20), cubes, viewButton, h('div', { class: 'grow' }), this.tabs),
+          h('div', { class: 'toolbar' }, icon('cube', 20), cubes, viewButton, this.finder.box, h('div', { class: 'grow' }), this.tabs),
           this.toolbar,
           this.layoutBar),
         this.output,
@@ -331,7 +341,12 @@ class Explorer {
     this.drawLayout();
     this.page.addEventListener('keydown', (event) => {
       if (event.target.closest('input, textarea, select')) return;
-      if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
+      if ((event.ctrlKey || event.metaKey) && event.key === 'f' && this.output.contains(event.target)) {
+        // Within the grid, Ctrl F finds among its headings.
+        event.preventDefault();
+        this.finder.input.focus();
+        this.finder.input.select();
+      } else if ((event.ctrlKey || event.metaKey) && event.key === 'z') {
         event.preventDefault();
         if (event.shiftKey) this.redo();
         else this.undo();
@@ -340,6 +355,84 @@ class Explorer {
         this.redo();
       }
     });
+  }
+
+  /**
+   * A box that finds members among the grid's headings: Enter goes to the next, Shift Enter
+   * to the one before, and Escape clears it. A member not shown, beneath one closed, is
+   * opened to by Enter.
+   */
+  buildFinder() {
+    const input = h('input', { class: 'input', type: 'search', placeholder: 'Find in the grid', 'aria-label': 'Find a member in the grid', autocomplete: 'off', spellcheck: 'false' });
+    const count = h('span', { class: 'search-count', 'aria-live': 'polite' });
+    this.findWords = '';
+    this.findAt = -1;
+    input.addEventListener('input', () => {
+      this.findWords = input.value.trim().toLowerCase();
+      this.findAt = -1;
+      this.markFound();
+    });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        this.findNext(event.shiftKey ? -1 : 1);
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        if (input.value) {
+          input.value = '';
+          this.findWords = '';
+          this.markFound();
+        } else {
+          this.output.querySelector('td[tabindex="0"]')?.focus();
+        }
+      }
+    });
+    return { box: h('div', { class: 'search finder' }, icon('search', 16), input, count), input, count };
+  }
+
+  /** Marks the headings that hold the words found, and says how many there are. */
+  markFound() {
+    const words = this.findWords;
+    const headings = [...this.output.querySelectorAll('.pivot th[data-member]')];
+    this.found = [];
+    for (const heading of headings) {
+      const hit = Boolean(words) && (heading.textContent.toLowerCase().includes(words) || heading.dataset.member.toLowerCase().includes(words));
+      heading.classList.toggle('found', hit);
+      heading.classList.remove('found-current');
+      if (hit) this.found.push(heading);
+    }
+    this.unseen = words && !this.found.length ? this.hiddenMatch(words) : null;
+    const at = this.found[this.findAt];
+    at?.classList.add('found-current');
+    this.finder.count.textContent = !words ? ''
+      : this.found.length ? (at ? `${this.findAt + 1} of ${this.found.length}` : `${this.found.length} found`)
+        : this.unseen ? 'Enter shows it' : 'None found';
+  }
+
+  /** A member of a dimension on an axis, not shown, whose name holds the words. */
+  hiddenMatch(words) {
+    for (const entry of [...this.layout.rows, ...this.layout.columns]) {
+      const element = this.dims.get(entry.dimension).elements.find((candidate) => candidate.name.toLowerCase().includes(words));
+      if (element) return { dimension: entry.dimension, name: element.name };
+    }
+    return null;
+  }
+
+  /** Goes to the next heading found, or the one before; opens the grid to one not shown. */
+  findNext(step) {
+    if (!this.found?.length) {
+      if (this.unseen) {
+        this.findAt = 0;
+        this.focusMember(this.unseen.dimension, this.unseen.name);
+      }
+      return;
+    }
+    this.findAt = (this.findAt + step + this.found.length) % this.found.length;
+    this.markFound();
+    const heading = this.found[this.findAt];
+    heading.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    // The row or column found is chosen, so that its cells stand out too.
+    this.selection?.choose(this.selection.at(heading));
   }
 
   /** The strip that says what is not yet saved, with the ways to save or discard it. */
@@ -489,8 +582,10 @@ class Explorer {
 
   placeMenu(name, at) {
     const place = this.placeOf(name);
+    const onAxis = place === 'rows' || place === 'columns';
     menu([
       { heading: name },
+      ...(onAxis ? [...this.openItems(place, name), '-'] : []),
       { label: 'Put on rows', icon: 'rows', disabled: place === 'rows', action: () => this.move(name, 'rows') },
       { label: 'Put on columns', icon: 'columns', disabled: place === 'columns', action: () => this.move(name, 'columns') },
       { label: 'Use as a filter', icon: 'filter', disabled: place === 'filters', action: () => this.move(name, 'filters') },
@@ -504,6 +599,29 @@ class Explorer {
       '-',
       { label: 'Choose members…', icon: 'check', disabled: place === 'unused', action: () => this.pick(name) },
     ], at);
+  }
+
+  /**
+   * The ways to open and close a dimension's members on an axis: a level more than shows
+   * now, every level, none, or down to a named level.
+   */
+  openItems(place, dimension) {
+    const dim = this.dims.get(dimension);
+    const entry = this.entryOf(place, dimension);
+    const children = (name) => this.childrenOf(dim, name);
+    const within = [...new Set([...entry.members, ...beneath(entry.members, children)])].filter((name) => children(name).length);
+    const closed = shown(entry, dim).map(({ name }) => name).filter((name) => children(name).length && !entry.expanded.includes(name));
+    const levels = [...new Set(within.map((name) => dim.byName.get(name).level))].sort((a, b) => b - a);
+    return [
+      { label: 'Open one level more', icon: 'plus', disabled: !closed.length, action: () => this.setOpen(place, dimension, (expanded) => [...expanded, ...closed]) },
+      { label: 'Open every level', icon: 'expand', disabled: within.every((name) => entry.expanded.includes(name)), action: () => this.setOpen(place, dimension, () => within) },
+      ...levels.slice(1).map((level) => ({
+        label: `Open down to ${dim.levels?.[level] || `level ${level}`}`,
+        icon: 'level',
+        action: () => this.setOpen(place, dimension, () => within.filter((name) => dim.byName.get(name).level > level)),
+      })),
+      { label: 'Close every level', icon: 'collapse', disabled: !entry.expanded.length, action: () => this.setOpen(place, dimension, () => []) },
+    ];
   }
 
   /** Puts a dimension on an axis or among the filters, at `index` there or at the end. */
@@ -543,19 +661,35 @@ class Explorer {
         return;
       }
       const entry = layout[place].find((candidate) => candidate.dimension === dimName);
-      // Open every ancestor on the way from a chosen member down to it, or choose it.
-      const ancestors = [];
-      let parents = dim.byName.get(name).parents;
-      while (parents.length) {
-        ancestors.push(parents[0]);
-        parents = dim.byName.get(parents[0]).parents;
-      }
-      if (ancestors.some((ancestor) => entry.members.includes(ancestor))) {
-        for (const ancestor of ancestors) if (!entry.expanded.includes(ancestor)) entry.expanded.push(ancestor);
-      } else if (!entry.members.includes(name)) {
-        entry.members.push(name);
-      }
+      if (entry.members.includes(name)) return;
+      // Open the members on the way down to it from the nearest one chosen, or choose it.
+      const path = this.pathFrom(dim, entry.members, name);
+      if (path) entry.expanded = [...new Set([...entry.expanded, ...path])];
+      else entry.members.push(name);
     });
+  }
+
+  /**
+   * The members between the nearest of `chosen` above an element and the element, that one
+   * first: those to open to show it. Null when none of `chosen` is above it.
+   */
+  pathFrom(dim, chosen, name) {
+    const from = new Map([[name, null]]);
+    const queue = [name];
+    while (queue.length) {
+      const current = queue.shift();
+      for (const parent of dim.byName.get(current)?.parents ?? []) {
+        if (from.has(parent)) continue;
+        from.set(parent, current);
+        if (chosen.includes(parent)) {
+          const path = [];
+          for (let step = parent; step !== name; step = from.get(step)) path.push(step);
+          return path;
+        }
+        queue.push(parent);
+      }
+    }
+    return null;
   }
 
   /* ---- Layout bar ---- */
@@ -625,10 +759,9 @@ class Explorer {
   async pick(name) {
     const dim = this.dims.get(name);
     const place = this.placeOf(name);
-    const single = place === 'filters';
-    const entry = single ? null : this.layout[place].find((candidate) => candidate.dimension === name);
-    if (!single) {
+    if (place !== 'filters') {
       // A dimension on an axis gets the set editor, and keeps the order built there.
+      const entry = this.layout[place].find((candidate) => candidate.dimension === name);
       const set = await editSet({ ...dim, name }, entry.members);
       if (!set) return;
       this.change((layout) => {
@@ -639,110 +772,140 @@ class Explorer {
       });
       return;
     }
-    const chosen = new Set(single ? [this.layout.filters.find((filter) => filter.dimension === name).member] : entry.members);
-    const open = new Set(dim.roots);
-    const search = h('input', { class: 'input', type: 'search', placeholder: `Find in ${name}`, 'aria-label': `Find in ${name}` });
-    const tree = h('div', { class: 'picker-tree', role: 'tree', 'aria-multiselectable': String(!single) });
-    const count = h('span', { class: 'muted' });
-    const draw = () => {
-      const words = search.value.trim().toLowerCase();
-      const rows = [];
-      const visit = (element, depth, seen) => {
-        if (seen.has(element.name)) return;
-        seen.add(element.name);
-        const matches = !words || element.name.toLowerCase().includes(words);
-        const children = element.children.map((child) => dim.byName.get(child.name)).filter(Boolean);
-        if (matches) {
-          const checked = chosen.has(element.name);
-          rows.push(h('div', { class: 'picker-row', role: 'treeitem', 'aria-selected': String(checked), dataset: { depth } },
-            children.length && !words
-              ? h('button', {
-                class: 'twisty',
-                'aria-label': open.has(element.name) ? `Close ${element.name}` : `Open ${element.name}`,
-                onclick: () => {
-                  if (open.has(element.name)) open.delete(element.name);
-                  else open.add(element.name);
-                  draw();
-                },
-              }, icon(open.has(element.name) ? 'down' : 'chevron', 14))
-              : h('span', { class: 'twisty' }),
-            h('label', {},
-              h('input', {
-                type: single ? 'radio' : 'checkbox',
-                name: 'member',
-                checked,
-                onchange: (event) => {
-                  if (single) chosen.clear();
-                  if (event.target.checked) chosen.add(element.name);
-                  else chosen.delete(element.name);
-                  if (single) draw();
-                  count.textContent = `${chosen.size} chosen`;
-                },
-              }),
-              icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
-              element.name,
-              element.type === 'consolidated' ? h('span', { class: 'muted' }, ` ${element.children.length}`) : null)));
-        }
-        if (words || open.has(element.name)) for (const child of children) visit(child, depth + 1, seen);
+    // A filter stands at one member, chosen from the dimension's tree.
+    let chosen = this.layout.filters.find((filter) => filter.dimension === name).member;
+    const children = (element) => (dim.byName.get(element)?.children ?? []).map((child) => child.name).filter((child) => dim.byName.has(child));
+    const roots = dim.roots;
+    let open = reveal({ roots, children, matches: new Set([chosen]) });
+    let found = null;
+    let words = '';
+    const tree = h('div', { class: 'picker-tree', role: 'tree', 'aria-label': `Members of ${name}` });
+    // Choosing a member and applying it at once: the dialog's form is the tree's.
+    const apply = () => tree.closest('form')?.requestSubmit();
+    const draw = (focus) => {
+      const matches = words ? new Set(dim.elements.filter((element) => element.name.toLowerCase().includes(words)).map((element) => element.name)) : null;
+      const { rows, cut } = treeRows({ roots, children, open: found ?? open, matches });
+      const current = rows.find((row) => row.name === (focus ?? chosen)) ?? rows.find((row) => row.match) ?? rows[0];
+      const choose = (element) => {
+        chosen = element;
+        draw(element);
       };
-      const seen = new Set();
-      for (const root of dim.roots) visit(dim.byName.get(root), 0, seen);
-      mount(tree, rows.length ? rows : h('p', { class: 'muted' }, 'Nothing matches.'));
-      count.textContent = `${chosen.size} chosen`;
-    };
-    search.addEventListener('input', draw);
-    const choose = (names) => {
-      chosen.clear();
-      for (const element of names) chosen.add(element);
-      draw();
-    };
-    const byLevel = [...new Set(dim.elements.map((element) => element.level))].sort((a, b) => b - a);
-    const quick = single ? null : h('div', { class: 'toolbar' },
-      h('button', { class: 'button small', type: 'button', onclick: () => choose(dim.roots) }, 'Top'),
-      h('button', { class: 'button small', type: 'button', onclick: () => choose(dim.elements.filter((element) => element.level === 0).map((element) => element.name)) }, 'All leaves'),
-      byLevel.length > 2 ? h('select', {
-        class: 'select',
-        'aria-label': 'Choose a level',
-        onchange: (event) => {
-          if (event.target.value !== '') choose(dim.elements.filter((element) => element.level === Number(event.target.value)).map((element) => element.name));
-          event.target.value = '';
+      const drawn = rows.map((row) => {
+        const element = dim.byName.get(row.name);
+        return h('div', {
+          class: `picker-row${row.context ? ' context' : ''}`,
+          role: 'treeitem',
+          'aria-level': row.depth + 1,
+          'aria-selected': String(row.name === chosen),
+          'aria-expanded': row.kids ? String(row.open) : null,
+          tabindex: row === current ? '0' : '-1',
+          dataset: { depth: Math.min(row.depth, 8), name: row.name },
+          onclick: () => choose(row.name),
+          ondblclick: () => {
+            chosen = row.name;
+            apply();
+          },
+          onkeydown: (event) => {
+            if (event.key === ' ') {
+              event.preventDefault();
+              choose(row.name);
+              return;
+            }
+            // One member is chosen, so the choice follows the keys.
+            treeKey(event, {
+              go: (target) => choose(target),
+              open: (names, opened) => {
+                const into = found ?? open;
+                for (const each of names) {
+                  if (opened) into.add(each);
+                  else into.delete(each);
+                }
+                draw(row.name);
+              },
+              act: (target) => {
+                chosen = target;
+                apply();
+              },
+            });
+          },
         },
-      }, h('option', { value: '' }, 'A level…'), byLevel.map((level) => h('option', { value: level }, dim.levels[level] ?? `Level ${level}`))) : null,
-      Object.keys(dim.subsets ?? {}).length ? h('select', {
-        class: 'select',
-        'aria-label': 'Choose a subset',
-        onchange: (event) => {
-          if (event.target.value) choose(dim.subsets[event.target.value]);
-          event.target.value = '';
-        },
-      }, h('option', { value: '' }, 'A subset…'), Object.keys(dim.subsets).map((subset) => h('option', { value: subset }, subset))) : null,
-      h('button', { class: 'button small quiet', type: 'button', onclick: () => choose([]) }, 'Clear'),
-      h('div', { class: 'grow' }),
-      count);
+        row.kids
+          ? h('button', {
+            class: 'twisty',
+            type: 'button',
+            tabindex: '-1',
+            'aria-label': row.open ? `Close ${row.name}` : `Open ${row.name}`,
+            onclick: (event) => {
+              event.stopPropagation();
+              const into = found ?? open;
+              if (row.open) into.delete(row.name);
+              else into.add(row.name);
+              draw(row.name);
+            },
+          }, icon(row.open ? 'down' : 'chevron', 14))
+          : h('span', { class: 'twisty' }),
+        h('span', { class: 'choice', 'aria-hidden': 'true' }),
+        icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
+        h('span', { class: 'grow' }, row.match ? marked(row.name, words) : row.name),
+        row.kids ? h('span', { class: 'muted' }, String(row.kids)) : null);
+      });
+      if (cut) drawn.push(h('p', { class: 'hint' }, `Showing the first ${ROW_LIMIT.toLocaleString()} rows. Search to find the rest.`));
+      mount(tree, drawn.length ? drawn : h('p', { class: 'muted' }, 'Nothing matches.'));
+      search.found(matches?.size ?? 0, Boolean(matches));
+      if (focus) tree.querySelector('[tabindex="0"]')?.focus();
+    };
+    const search = searchBox({
+      label: `Find in ${name}`,
+      onsearch: (next) => {
+        words = next;
+        found = words ? reveal({ roots, children, matches: new Set(dim.elements.filter((element) => element.name.toLowerCase().includes(words)).map((element) => element.name)) }) : null;
+        draw();
+      },
+      // Down goes to the first member found, or, with no search, to the one chosen.
+      ondown: () => {
+        const first = words ? tree.querySelector('.picker-row:not(.context)') : null;
+        if (first) chosen = first.dataset.name;
+        draw(chosen);
+      },
+    });
+    const levels = [...new Set(dim.elements.map((element) => element.level))].sort((a, b) => b - a);
+    const opening = openButtons({
+      all: () => {
+        const every = new Set(dim.elements.filter((element) => element.children.length).map((element) => element.name));
+        if (found) found = every;
+        else open = every;
+        draw();
+      },
+      none: () => {
+        if (found) found = new Set();
+        else open = new Set();
+        draw();
+      },
+      levels: levels.map((level) => [level, dim.levels?.[level] || (level === 0 ? 'Leaves' : `Level ${level}`)]),
+      to: (level) => {
+        const down = new Set(dim.elements.filter((element) => element.level > level).map((element) => element.name));
+        if (found) found = down;
+        else open = down;
+        draw();
+      },
+    });
     draw();
     await dialog({
-      title: single ? `Filter by ${name}` : `Members of ${name}`,
+      title: `Filter by ${name}`,
       confirm: 'Apply',
-      body: h('div', { class: 'picker' }, h('div', { class: 'search' }, icon('search', 16), search), quick, tree),
+      body: h('div', { class: 'picker' },
+        h('div', { class: 'picker-tools' }, search.box, opening),
+        tree,
+        h('p', { class: 'hint' }, 'Double-click a member, or press Enter on it, to filter by it at once.')),
       onsubmit: () => {
-        if (!chosen.size) throw new Error('Choose at least one member.');
-        // In the dimension's own order, so that totals sit where they belong.
-        const ordered = dim.elements.map((element) => element.name).filter((element) => chosen.has(element));
         this.change((layout) => {
-          if (single) {
-            layout.filters.find((filter) => filter.dimension === name).member = ordered[0];
-          } else {
-            const target = layout[place].find((candidate) => candidate.dimension === name);
-            target.members = ordered;
-            target.expanded = target.expanded.filter((element) => chosen.has(element));
-          }
+          layout.filters.find((filter) => filter.dimension === name).member = chosen;
           layout.sort = null;
         });
         return true;
       },
     });
   }
-
   /* ---- Running the query ---- */
 
   async run() {
@@ -837,8 +1000,13 @@ class Explorer {
       // Each heading knows the columns beneath it, to choose them when it is clicked.
       const across = (span, index) => ({ c1: index, c2: index + span - 1 });
       for (const [m, span, index] of groups) {
-        tr.append(h('th', { scope: 'col', colspan: span, class: `col-head ${m.type === 'consolidated' ? 'total' : ''}`, dataset: across(span, index) },
-          this.memberLabel('columns', m)));
+        tr.append(h('th', {
+          scope: 'col',
+          colspan: span,
+          tabindex: '-1',
+          class: `col-head ${m.type === 'consolidated' ? 'total' : ''}`,
+          dataset: { ...across(span, index), ...this.headingOf('columns', m) },
+        }, this.memberLabel('columns', m)));
       }
       head.append(tr);
       for (const attribute of columnAttributes[level]) {
@@ -863,9 +1031,14 @@ class Explorer {
         let last = r;
         while (!same && shares(shownRows[last + 1])) last += 1;
         const down = { r1: r, r2: last };
-        tr.append(h('th', { scope: 'row', class: `row-head ${m.type === 'consolidated' ? 'total' : ''}`, dataset: down }, same ? '' : this.memberLabel('rows', m)));
+        tr.append(h('th', {
+          scope: 'row',
+          tabindex: '-1',
+          class: `row-head ${m.type === 'consolidated' ? 'total' : ''}`,
+          dataset: same ? down : { ...down, ...this.headingOf('rows', m) },
+        }, same ? '' : this.memberLabel('rows', m)));
         for (const attribute of rowAttributes[level] ?? []) {
-          tr.append(h('th', { scope: 'row', class: 'row-attribute', title: attribute, dataset: down }, same ? '' : this.attributeValue(m, attribute)));
+          tr.append(h('th', { scope: 'row', tabindex: '-1', class: 'row-attribute', title: attribute, dataset: down }, same ? '' : this.attributeValue(m, attribute)));
         }
       });
       for (let c = 0; c < columnCount; c += 1) {
@@ -896,6 +1069,12 @@ class Explorer {
       changed: (chosen) => mount(summary, ...this.summarize(chosen)),
     });
     table.addEventListener('contextmenu', (event) => {
+      const heading = event.target.closest('th[data-member]');
+      if (heading) {
+        event.preventDefault();
+        this.headingMenu(heading, { x: event.clientX, y: event.clientY });
+        return;
+      }
       const cell = event.target.closest('td');
       if (!cell) return;
       event.preventDefault();
@@ -903,8 +1082,23 @@ class Explorer {
       if (!this.selection.has(r, c)) this.selection.choose({ r1: r, r2: r, c1: c, c2: c });
       this.cellMenu(r, c, { x: event.clientX, y: event.clientY });
     });
-    table.addEventListener('keydown', (event) => this.moveFocus(event, table));
+    table.addEventListener('keydown', (event) => {
+      if (event.target.closest('th')) this.headingKey(event, table);
+      else this.moveFocus(event, table);
+    });
+    table.addEventListener('paste', (event) => {
+      const text = event.clipboardData?.getData('text/plain');
+      if (!text || event.target.closest('input, textarea')) return;
+      event.preventDefault();
+      this.paste(text);
+    });
     table.addEventListener('dblclick', (event) => {
+      // A heading opens or closes; a cell that may be written is edited.
+      const heading = event.target.closest('th[data-member]');
+      if (heading && !event.target.closest('button')) {
+        this.openHeading(heading);
+        return;
+      }
       const cell = event.target.closest('td.editable');
       if (cell) this.edit(cell);
     });
@@ -913,6 +1107,8 @@ class Explorer {
     this.size(table);
     this.pinHeads(table);
     this.focusCell();
+    this.refocusHeading(table);
+    this.markFound();
     const cells = rowTuples.length * columnCount;
     mount(this.statusLine,
       h('span', {}, `${rowTuples.length.toLocaleString()} rows × ${columnCount.toLocaleString()} columns`),
@@ -946,8 +1142,10 @@ class Explorer {
     const label = h('span', { class: 'member-label', dataset: { depth } });
     if (entry && element?.children.length) {
       const opened = entry.expanded.includes(m.name);
+      // Not a stop for Tab: the heading itself takes the keys that open and close it.
       label.append(h('button', {
         class: 'twisty',
+        tabindex: '-1',
         'aria-expanded': String(opened),
         'aria-label': `${opened ? 'Close' : 'Open'} ${m.name}`,
         onclick: () => this.toggle(place, m.dimension, m.name),
@@ -1172,12 +1370,171 @@ class Explorer {
     }
     const move = moves[event.key];
     if (!move) return;
-    const next = table.querySelector(`td[data-r="${r + move[0]}"][data-c="${c + move[1]}"]`);
-    if (!next) return;
+    const next = this.selection.cell(r + move[0], c + move[1]);
+    // Past the first column or row, the keys go on into the headings.
+    const heading = next ? null
+      : event.key === 'ArrowLeft' ? [...cell.parentElement.cells].filter((other) => other.tagName === 'TH').pop()
+        : event.key === 'ArrowUp' ? this.columnHeading(table, table.tHead.rows.length - 1, c) : null;
+    const target = next ?? heading;
+    if (!target) return;
     event.preventDefault();
-    cell.tabIndex = -1;
-    next.tabIndex = 0;
-    next.focus();
+    if (next) {
+      cell.tabIndex = -1;
+      next.tabIndex = 0;
+    }
+    target.focus();
+  }
+
+  /** The heading, in one of the heading rows, over a column of cells. */
+  columnHeading(table, row, c) {
+    return [...(table.tHead.rows[row]?.cells ?? [])].find((cell) => cell.dataset.c1 !== undefined && Number(cell.dataset.c1) <= c && Number(cell.dataset.c2) >= c);
+  }
+
+  /** What a heading stands for, kept on it to act on: its member, dimension and axis. */
+  headingOf(place, m) {
+    return { member: m.name, dimension: m.dimension, place };
+  }
+
+  /**
+   * The keys of a heading. The arrows move among the headings and back into the cells;
+   * Enter, Space, + and - open and close its member, * opens everything beneath it, and the
+   * menu key or Shift F10 opens its menu.
+   */
+  headingKey(event, table) {
+    const heading = event.target.closest('th');
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const member = heading.dataset.member;
+    const row = heading.parentElement;
+    const inHead = row.parentElement === table.tHead;
+    const opened = () => this.entryOf(heading.dataset.place, heading.dataset.dimension)?.expanded.includes(member);
+    let target = null;
+    switch (event.key) {
+      case 'ArrowLeft':
+      case 'ArrowRight': {
+        const step = event.key === 'ArrowRight' ? 1 : -1;
+        const sibling = row.cells[heading.cellIndex + step];
+        if (sibling?.tagName === 'TH' && !sibling.classList.contains('corner')) target = sibling;
+        else if (!inHead && step > 0) target = this.selection.cell(Number(row.querySelector('td')?.dataset.r), 0);
+        break;
+      }
+      case 'ArrowUp':
+      case 'ArrowDown': {
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        if (inHead) {
+          const c = Number(heading.dataset.c1);
+          const level = row.sectionRowIndex + step;
+          target = level < table.tHead.rows.length ? this.columnHeading(table, level, c) : this.selection.cell(0, c);
+        } else {
+          const other = table.tBodies[0].rows[row.sectionRowIndex + step];
+          target = other?.cells[heading.cellIndex];
+        }
+        break;
+      }
+      case 'Enter':
+      case ' ':
+        if (member) this.openHeading(heading);
+        break;
+      case '+':
+        if (member && !opened()) this.openHeading(heading);
+        break;
+      case '-':
+        if (member && opened()) this.openHeading(heading);
+        break;
+      case '*':
+        if (member) this.openBeneath(heading, true);
+        break;
+      case 'ContextMenu':
+      case 'F10':
+        if (event.key === 'F10' && !event.shiftKey) return;
+        if (member) this.headingMenu(heading, heading);
+        break;
+      default:
+        return;
+    }
+    event.preventDefault();
+    target?.focus();
+  }
+
+  /** Opens a heading's member, or closes it, keeping the keys on the heading. */
+  openHeading(heading) {
+    const { place, dimension, member } = heading.dataset;
+    if (!this.dims.get(dimension)?.byName.get(member)?.children.length || !this.entryOf(place, dimension)) return;
+    this.keepHeading(heading);
+    this.toggle(place, dimension, member);
+  }
+
+  /** Opens, or closes, a heading's member and everything beneath it. */
+  openBeneath(heading, open) {
+    const { place, dimension, member } = heading.dataset;
+    const dim = this.dims.get(dimension);
+    const within = [member, ...beneath([member], (name) => this.childrenOf(dim, name))].filter((name) => this.childrenOf(dim, name).length);
+    this.keepHeading(heading);
+    this.setOpen(place, dimension, (expanded) => (open ? [...new Set([...expanded, ...within])] : expanded.filter((name) => !within.includes(name))));
+  }
+
+  childrenOf(dim, name) {
+    return (dim.byName.get(name)?.children ?? []).map((child) => child.name).filter((child) => dim.byName.has(child));
+  }
+
+  /** Changes the members open of a dimension on an axis. */
+  setOpen(place, dimension, open) {
+    this.change((layout) => {
+      const entry = layout[place].find((candidate) => candidate.dimension === dimension);
+      entry.expanded = open(entry.expanded, entry);
+    });
+  }
+
+  /** Keeps the keys on a heading through the grid being drawn again, if they were on it. */
+  keepHeading(heading) {
+    if (heading.contains(document.activeElement)) this.headingAfter = { ...heading.dataset };
+  }
+
+  refocusHeading(table) {
+    const kept = this.headingAfter;
+    this.headingAfter = null;
+    if (!kept) return;
+    const same = [...table.querySelectorAll('th[data-member]')].find((th) => th.dataset.member === kept.member && th.dataset.dimension === kept.dimension && th.dataset.place === kept.place);
+    same?.focus();
+  }
+
+  /** The menu of a member's heading: opening and closing, keeping and removing, copying. */
+  headingMenu(heading, at) {
+    const { place, dimension, member: name } = heading.dataset;
+    const dim = this.dims.get(dimension);
+    const entry = this.entryOf(place, dimension);
+    const element = dim?.byName.get(name);
+    const kids = element ? this.childrenOf(dim, name).length : 0;
+    const opened = entry?.expanded.includes(name);
+    const chosen = entry?.members.includes(name);
+    menu([
+      { heading: name },
+      entry && kids ? { label: opened ? 'Close it' : 'Open it', icon: opened ? 'minus' : 'plus', action: () => this.openHeading(heading) } : null,
+      entry && kids ? { label: 'Open everything beneath it', icon: 'expand', action: () => this.openBeneath(heading, true) } : null,
+      entry && opened ? { label: 'Close everything beneath it', icon: 'collapse', action: () => this.openBeneath(heading, false) } : null,
+      entry && element ? '-' : null,
+      entry && element ? {
+        label: `Keep only ${name}`,
+        icon: 'filter',
+        action: () => this.change((layout) => {
+          layout[place].find((candidate) => candidate.dimension === dimension).members = [name];
+          layout.sort = null;
+        }),
+      } : null,
+      entry && element ? {
+        label: `Remove ${name}`,
+        icon: 'eyeOff',
+        // A member shown because its parent is open goes with its parent; one chosen can go.
+        disabled: !chosen || entry.members.length < 2,
+        action: () => this.change((layout) => {
+          const target = layout[place].find((candidate) => candidate.dimension === dimension);
+          target.members = target.members.filter((other) => other !== name);
+        }),
+      } : null,
+      '-',
+      { label: 'Copy the name', icon: 'copy', action: () => copied(name) },
+      { label: 'Copy its MDX name', icon: 'code', action: () => copied(member(dimension, name)) },
+      entry ? { label: `Choose members of ${dimension}…`, icon: 'check', action: () => this.pick(dimension) } : null,
+    ], at);
   }
 
   cellMenu(r, c, at) {
@@ -1204,13 +1561,26 @@ class Explorer {
         ? { label: 'Spread a value over its leaves…', icon: 'sigma', action: () => this.spread(r, c) }
         : null,
       { label: 'Explain this value', icon: 'info', action: () => this.explain(rowTuple, columnTuple) },
-      chosen > 1
-        ? { label: `Copy the ${chosen.toLocaleString()} cells chosen`, icon: 'save', action: () => navigator.clipboard?.writeText(this.selection.text()) }
-        : { label: 'Copy the value', icon: 'save', action: () => navigator.clipboard?.writeText(String(this.result.cells[r * columns.tuples.length + c] ?? '')) },
-      chosen > 1 && this.selection.cells().some(([row, column]) => this.writable.has(`${row},${column}`))
-        ? { label: 'Clear the cells chosen', icon: 'trash', action: () => this.clear(this.selection.cells()) }
+      '-',
+      { label: chosen > 1 ? `Copy the ${chosen.toLocaleString()} cells` : 'Copy the value', icon: 'copy', action: () => copied(this.selection.text()) },
+      { label: 'Copy with headings', icon: 'grid', action: () => copied(this.textWithHeadings()) },
+      this.mayWrite() ? { label: 'Paste', icon: 'paste', action: () => this.pasteFromClipboard() } : null,
+      this.selection.cells().some(([row, column]) => this.writable.has(`${row},${column}`))
+        ? { label: chosen > 1 ? 'Clear the cells chosen' : 'Clear the value', icon: 'trash', action: () => this.clear(this.selection.cells()) }
         : null,
     ], at);
+  }
+
+  /** Pastes what the clipboard holds, where the browser lets the page read it. */
+  async pasteFromClipboard() {
+    let text;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch {
+      notify('The browser keeps the clipboard from the page. Press Ctrl V to paste instead.');
+      return;
+    }
+    await this.paste(text);
   }
 
   /* ---- Writing back ---- */
@@ -1303,14 +1673,10 @@ class Explorer {
 
   /** Writes a value typed into a cell, within the transaction the edits are held in. */
   async write(r, c, before, text, move) {
-    const at = this.coordinate(r, c);
-    let value;
-    if (typeof before === 'string') {
-      value = text;
-    } else {
-      const cleaned = String(text).trim().replace(/[\s,]/g, '');
-      value = cleaned === '' ? 0 : Number(cleaned);
-      if (!Number.isFinite(value)) {
+    let value = text;
+    if (typeof before !== 'string') {
+      value = String(text).trim() === '' ? 0 : parseNumber(text);
+      if (value === null) {
         notify(`“${text}” is not a number.`, 'bad');
         return;
       }
@@ -1320,46 +1686,92 @@ class Explorer {
       this.focusCell();
       return;
     }
-    try {
-      await this.ensureTransaction();
-      await post('/cells/write', { transaction: this.tx, cells: [{ cube: this.cube.name, at, value }] });
-    } catch (problem) {
-      this.refused(problem);
-      return;
-    }
-    this.edits.set(JSON.stringify(at), value);
-    this.changes = (this.changes ?? 0) + 1;
-    await this.run();
+    await this.writeCells([{ r, c, value }]);
   }
 
   /**
-   * Empties the cells given that may be written, in one write: numbers to zero and text to
-   * nothing, within the transaction the edits are held in.
+   * Writes values into cells of the grid, `{ r, c, value }` each, in one write within the
+   * transaction the edits are held in, then runs the query again. Says `done` once written.
    */
-  async clear(cells) {
-    const columnCount = this.result.axes[0].tuples.length;
-    const cleared = cells
-      .filter(([r, c]) => this.writable.has(`${r},${c}`))
-      .map(([r, c]) => {
-        const before = this.result.cells[r * columnCount + c];
-        return { at: this.coordinate(r, c), value: typeof before === 'string' ? '' : 0, before };
-      })
-      .filter(({ before }) => before !== null && before !== undefined && before !== 0 && before !== '');
-    if (!cleared.length) return;
-    const [r, c] = cells[0];
-    this.focusAfter = [r, c];
+  async writeCells(cells, done) {
+    const written = cells.map(({ r, c, value }) => ({ at: this.coordinate(r, c), value }));
+    this.focusAfter ??= [cells[0].r, cells[0].c];
     try {
       await this.ensureTransaction();
-      await post('/cells/write', { transaction: this.tx, cells: cleared.map(({ at, value }) => ({ cube: this.cube.name, at, value })) });
+      await post('/cells/write', { transaction: this.tx, cells: written.map(({ at, value }) => ({ cube: this.cube.name, at, value })) });
     } catch (problem) {
       this.refused(problem);
       return;
     }
-    for (const { at, value } of cleared) this.edits.set(JSON.stringify(at), value);
-    this.changes = (this.changes ?? 0) + cleared.length;
+    for (const { at, value } of written) this.edits.set(JSON.stringify(at), value);
+    this.changes = (this.changes ?? 0) + written.length;
+    if (done) notify(done, 'good');
     await this.run();
   }
 
+  /** The value a cell of the result holds. */
+  valueAt(r, c) {
+    return this.result.cells[r * this.result.axes[0].tuples.length + c];
+  }
+
+  /** Empties the cells given that may be written and hold something: numbers to zero, text to nothing. */
+  async clear(cells) {
+    const cleared = cells
+      .filter(([r, c]) => this.writable.has(`${r},${c}`))
+      .map(([r, c]) => ({ r, c, before: this.valueAt(r, c) }))
+      .filter(({ before }) => before !== null && before !== undefined && before !== 0 && before !== '')
+      .map(({ r, c, before }) => ({ r, c, value: typeof before === 'string' ? '' : 0 }));
+    if (!cleared.length) return;
+    this.focusAfter = cells[0];
+    await this.writeCells(cleared, cleared.length > 1 ? `Cleared ${cleared.length.toLocaleString()} cells.` : null);
+  }
+
+  /**
+   * Writes pasted text into the grid, as a spreadsheet does: one value into every cell
+   * chosen, or a block of tab-separated values from the top left of what is chosen, across
+   * and down. Cells that may not be written, empty values, and text where a number belongs
+   * are left out, and the notice says how many.
+   */
+  async paste(text) {
+    if (!this.mayWrite()) {
+      notify(`You may read ${this.cube.name}, not write to it.`, 'bad');
+      return;
+    }
+    const lines = text.replace(/\r\n?/g, '\n').replace(/\n$/, '').split('\n').map((line) => line.split('\t'));
+    const chosen = this.selection.cells();
+    const last = this.selection.ranges[this.selection.ranges.length - 1];
+    const [top, left] = last ? [last.r1, last.c1] : chosen[0] ?? [0, 0];
+    const one = lines.length === 1 && lines[0].length === 1;
+    const targets = one && chosen.length > 1
+      ? chosen.map(([r, c]) => [r, c, lines[0][0]])
+      : lines.flatMap((line, down) => line.map((raw, across) => [top + down, left + across, raw]));
+    const cells = [];
+    let leftOut = 0;
+    for (const [r, c, raw] of targets) {
+      if (raw.trim() === '') continue;
+      if (!this.writable.has(`${r},${c}`)) {
+        leftOut += 1;
+        continue;
+      }
+      const value = typeof this.valueAt(r, c) === 'string' ? raw : parseNumber(raw);
+      if (value === null) leftOut += 1;
+      else cells.push({ r, c, value });
+    }
+    if (!cells.length) {
+      notify(leftOut ? 'None of the cells it would go into can be written.' : 'There is nothing to paste.', 'bad');
+      return;
+    }
+    this.focusAfter = [top, left];
+    const pasted = `Pasted ${cells.length.toLocaleString()} value${cells.length === 1 ? '' : 's'}.`;
+    await this.writeCells(cells, leftOut ? `${pasted} ${leftOut.toLocaleString()} left out: cells that cannot be written, or text where a number belongs.` : pasted);
+  }
+
+  /** The cells chosen, with the headings of their rows and columns, as tab-separated text. */
+  textWithHeadings() {
+    if (!this.selection.ranges.length) return '';
+    const box = this.selection.ranges.reduce((a, b) => ({ r1: Math.min(a.r1, b.r1), r2: Math.max(a.r2, b.r2), c1: Math.min(a.c1, b.c1), c2: Math.max(a.c2, b.c2) }));
+    return this.tableOf([box.r1, box.r2], [box.c1, box.c2]).map((cells) => cells.map(cellText).join('\t')).join('\n');
+  }
   /** Shares a value out among the leaves beneath a total. */
   async spread(r, c) {
     const at = this.coordinate(r, c);
@@ -1603,15 +2015,27 @@ class Explorer {
   /* ---- Export ---- */
 
   exportCsv() {
-    const result = this.result;
-    const [columns, rows] = result.axes;
     const field = (value) => {
       const text = value === null || value === undefined ? '' : String(value);
       return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
     };
-    const rowTuples = rows?.tuples ?? [[]];
-    const lines = [];
-    // As the grid shows them: by alias where one is chosen, with the attributes shown.
+    const lines = this.tableOf().map((cells) => cells.map(field).join(','));
+    download(`${this.cube.name}.csv`, `${lines.join('\r\n')}\r\n`, 'text/csv');
+  }
+
+  /**
+   * The grid as rows of cells, as it shows them: headings first, names by alias where one
+   * is chosen, with the attributes shown. `rows` and `columns`, each `[first, last]`, take
+   * part of it; all of it otherwise.
+   */
+  tableOf(rows = null, columns = null) {
+    const result = this.result;
+    const [columnAxis, rowAxis] = result.axes;
+    const columnCount = columnAxis.tuples.length;
+    const rowTuples = rowAxis?.tuples ?? [[]];
+    const [r1, r2] = rows ?? [0, rowTuples.length - 1];
+    const [c1, c2] = columns ?? [0, columnCount - 1];
+    const columnTuples = columnAxis.tuples.slice(c1, c2 + 1);
     const label = (place, m) => {
       const entry = this.entryOf(place, m.dimension);
       const alias = entry?.alias ? this.dims.get(m.dimension)?.byName.get(m.name)?.attributes?.[entry.alias] : null;
@@ -1622,22 +2046,21 @@ class Explorer {
     const rowCells = (tuple) => tuple.flatMap((m) => [label('rows', m), ...attributesOf('rows', m).map((attribute) => this.attributeValue(m, attribute))]);
     const width = rowCells(rowHeading).length;
     const heading = rowHeading.flatMap((m) => [m.dimension, ...attributesOf('rows', m)]);
-    for (let level = 0; level < (columns.tuples[0]?.length ?? 0); level += 1) {
-      const first = columns.tuples[0][level];
-      const lead = level === (columns.tuples[0].length - 1) ? heading : Array(width).fill('');
-      lines.push([...lead, ...columns.tuples.map((tuple) => label('columns', tuple[level]))].map(field).join(','));
-      for (const attribute of attributesOf('columns', first)) {
-        lines.push([...Array(Math.max(width - 1, 0)).fill(''), width ? attribute : null, ...columns.tuples.map((tuple) => this.attributeValue(tuple[level], attribute))]
-          .filter((cell) => cell !== null).map(field).join(','));
+    const depth = columnAxis.tuples[0]?.length ?? 0;
+    const table = [];
+    for (let level = 0; level < depth; level += 1) {
+      const lead = level === depth - 1 ? heading : Array(width).fill('');
+      table.push([...lead, ...columnTuples.map((tuple) => label('columns', tuple[level]))]);
+      for (const attribute of attributesOf('columns', columnAxis.tuples[0][level])) {
+        const named = width ? [...Array(width - 1).fill(''), attribute] : [];
+        table.push([...named, ...columnTuples.map((tuple) => this.attributeValue(tuple[level], attribute))]);
       }
     }
-    rowTuples.forEach((tuple, r) => {
-      const values = columns.tuples.map((_, c) => result.cells[r * columns.tuples.length + c]);
-      lines.push([...rowCells(tuple), ...values].map(field).join(','));
-    });
-    download(`${this.cube.name}.csv`, `${lines.join('\r\n')}\r\n`, 'text/csv');
+    for (let r = r1; r <= r2; r += 1) {
+      table.push([...rowCells(rowTuples[r]), ...columnTuples.map((_, index) => result.cells[r * columnCount + c1 + index])]);
+    }
+    return table;
   }
 }
-
 /* An unhandled refusal is reported, not lost. */
 export { ApiError };

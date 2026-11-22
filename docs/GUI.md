@@ -31,6 +31,11 @@ their practices, not their looks.
 | Expandable members, totals set apart, numbers right-aligned in tabular figures, headers that stay in view | The pivot grid |
 | Columns fitted to their content, widths and row height dragged by hand and kept with a view | The grid's geometry, with Reset sizes |
 | Choosing cells as in a spreadsheet: ranges, whole rows and columns from their headings, Ctrl to add, Shift to stretch, with count, sum, average, min and max beneath | The grid's selection, which copies as tab-separated text and clears writable cells in one write |
+| Copy and paste between the grid and a spreadsheet: a block pasted from the active cell, one value into every cell chosen, numbers read as the reader's locale writes them | Grid paste, in one write within the edit transaction; Copy with headings |
+| Opening and closing a hierarchy by member, by level and all at once, from the mouse, a menu or the keys | Twisties, the dimension menu (a level more, every level, down to a named level, none), a heading's menu, and Enter, + , - and * on a heading |
+| Searching a tree shows each match where it sits, its ancestors dimmed, the words marked, with a count | One tree module for the set editor, the filter picker and the dimension editor, with the WAI-ARIA tree keys and typing to jump |
+| Lists in and out: names copied out, names or aliases pasted in, outlines pasted to build a hierarchy | The set editor (Ctrl C, Ctrl V, Paste) and the dimension editor (an element and all beneath it as an outline) |
+| Finding a member in a large grid | The grid's find box: n of m, Enter and Shift Enter, and Enter again to open the grid to one not shown |
 | Show or hide empty rows, swap axes, export, undo and redo, defer updates | The grid's toolbar |
 | A menu on a cell: sort, drill, show as a share of the row or column | The cell menu |
 | Moving between the visual builder and MDX | An MDX view of the same query, editable |
