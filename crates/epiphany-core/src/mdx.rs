@@ -122,6 +122,12 @@ pub struct QueryResult {
     /// nor on an axis stands at its first top element.
     pub slicer: Vec<MemberResult>,
     pub cells: Vec<Option<Scalar>>,
+    /// The cells written out, one for each of `cells`, where a calculated member that
+    /// decides them has a `FORMAT_STRING`: as its pattern says, the way `Format` writes a
+    /// number or a date, and null for the others. Left out where no calculated member of the
+    /// query has a format.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub formatted: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

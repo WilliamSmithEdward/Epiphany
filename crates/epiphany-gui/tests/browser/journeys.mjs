@@ -539,6 +539,22 @@ async function exploring() {
     await page.audit('A cell\'s detail');
     await page.click('button', 'Close the panel');
   });
+  await step('A calculated member\'s format is what its cells show', async () => {
+    // Rent as a share of salaries in the budget: -200 of 1,000 in January, 250 of 1,100.5 in February.
+    const mdx = "WITH MEMBER [Account].[Share] AS [Account].[Rent] / [Account].[Salaries], FORMAT_STRING = '0.0%' SELECT {[Period].[Jan], [Period].[Feb]} ON COLUMNS, {[Account].[Salaries], [Account].[Share]} ON ROWS FROM [General Ledger] WHERE ([Entity].[US], [Version].[Budget])";
+    await page.click('[role="tab"]', 'MDX');
+    await page.fill('textarea.mdx-editor', mdx);
+    await page.click('button', 'Run');
+    await page.waitFor(`[...document.querySelectorAll('th.row-head[data-r1]')].map((th) => th.textContent.trim()).join() === 'Salaries,Share'`, 'the rows the query asks for');
+    await page.settled();
+    const shown = await page.evaluate(GRID);
+    const { data } = await page.api('POST', '/mdx', { mdx });
+    expect(quoted(data.formatted) === quoted([null, null, '-20.0%', '22.7%']), `The API writes the cells out as ${quoted(data.formatted)}.`);
+    const shares = [shown.cells['1,0'], shown.cells['1,1']];
+    expect(quoted(shares) === quoted(['-20.0%', '22.7%']), `The grid shows the shares as ${quoted(shares)}.`);
+    expect(shownNumber(shown.cells['0,1']) === 1100.5, `The grid shows February's salaries as ${quoted(shown.cells['0,1'])}.`);
+    await page.audit('Cells a calculated member formats');
+  });
 }
 
 async function changingTheModel() {

@@ -6,7 +6,7 @@ import { empty } from './app.js';
 import { member, saved } from './layout.js';
 import { cellText, Selection } from './selection.js';
 import { beneath } from './tree.js';
-import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, SCALES, working } from './ui.js';
+import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, SCALES, shownText, working } from './ui.js';
 
 /**
  * What a spreading code typed into a total asks for: `{ method, value }`, the value being
@@ -141,6 +141,8 @@ export const grid = {
       rowAttributes,
       total,
       value,
+      // What a cell shows, as a calculated member's format writes it or as the view's does.
+      text: (r, c) => shownText(result, r * columnCount + c, this.layout.format),
       // Totals take a value to spread where the user may write and nothing in the slicer is calculated.
       spreads: this.mayWrite() && !(result.slicer ?? []).some((m) => m.type === 'calculated'),
       highlight: highlighter(this.layout.highlights, rowTuples, columnTuples, value, total),
@@ -366,9 +368,9 @@ export const grid = {
     return tr;
   },
 
-  /** A cell of the grid: its value as the view formats it, highlighted, and marked for writing and comments. */
+  /** A cell of the grid: its value as the query or the view formats it, highlighted, and marked for writing and comments. */
   buildCell(r, c) {
-    const { value, total, rowTuples, columnTuples, highlight } = this.grid;
+    const { value, text, total, rowTuples, columnTuples, highlight } = this.grid;
     const shown = value(r, c);
     const number = typeof shown === 'number';
     const current = this.selection?.current ?? { r: 0, c: 0 };
@@ -376,7 +378,7 @@ export const grid = {
       class: `${total(rowTuples[r]) || total(columnTuples[c]) ? 'total' : ''} ${number ? 'n' : 's'} ${number && shown < 0 ? 'negative' : ''}`,
       tabindex: current.r === r && current.c === c ? '0' : '-1',
       dataset: { r, c },
-    }, formatValue(shown, this.layout.format));
+    }, text(r, c));
     this.markWriting(td, r, c);
     // Compared with the stored values, a value a sandbox changes has the stored one before it.
     const stored = this.compare ? this.storedText(r, c) : null;
@@ -429,7 +431,7 @@ export const grid = {
           [long, longest] = [r, String(each).length];
         }
       });
-      const own = (row) => String(formatValue(value(row, c), this.layout.format));
+      const own = (row) => String(this.grid.text(row, c));
       const [r, text] = [large, low, long]
         .map((row) => [row, own(row)])
         .reduce((a, b) => (b[1].length > a[1].length ? b : a));

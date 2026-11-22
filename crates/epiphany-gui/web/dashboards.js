@@ -7,7 +7,7 @@ import { del, modelVersion, part, post, put } from './api.js';
 import { chart, shape, sparkline } from './chart.js';
 import { empty, failure, go, model, state } from './app.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, formatValue, h, icon, menu, mount, notify, working } from './ui.js';
+import { dialog, h, icon, menu, mount, notify, shownText, working } from './ui.js';
 
 /** The ways a tile shows its view. */
 const SHOWS = { figure: 'Key figure', bars: 'Bars', stacked: 'Stacked bars', lines: 'Lines', grid: 'Grid' };
@@ -480,7 +480,7 @@ function figure(result, format) {
   const trend = row.filter((each) => each !== null).length > 1;
   const last = columns?.tuples[columns.tuples.length - 1]?.map((m) => m.name).join(' · ');
   return h('div', { class: 'figure' },
-    h('div', { class: `figure-value${typeof value === 'number' && value < 0 ? ' negative' : ''}` }, value === null || value === undefined ? '–' : formatValue(value, format)),
+    h('div', { class: `figure-value${typeof value === 'number' && value < 0 ? ' negative' : ''}` }, value === null || value === undefined ? '–' : shownText(result, 0, format)),
     h('div', { class: 'muted' }, name),
     trend ? h('div', { class: 'figure-trend' }, sparkline(row), h('span', { class: 'muted' }, `${columns.tuples[0].map((m) => m.name).join(' · ')} to ${last}`)) : null);
 }
@@ -491,12 +491,15 @@ function grid(result, format) {
   const label = (tuple) => tuple.map((m) => m.name).join(' · ');
   const rowTuples = rows?.tuples ?? [[]];
   const count = columns?.tuples.length ?? 0;
-  const cell = (value) => h('td', { class: typeof value === 'number' ? `n${value < 0 ? ' negative' : ''}` : '' }, formatValue(value, format));
+  const cell = (index) => {
+    const value = result.cells[index];
+    return h('td', { class: typeof value === 'number' ? `n${value < 0 ? ' negative' : ''}` : '' }, shownText(result, index, format));
+  };
   return h('div', { class: 'tile-grid' },
     h('table', { class: 'table compact' },
       h('thead', {}, h('tr', {}, h('th', {}), (columns?.tuples ?? []).map((tuple) => h('th', { class: 'n' }, label(tuple))))),
       h('tbody', {}, rowTuples.slice(0, GRID_ROWS).map((tuple, r) => h('tr', {},
         h('th', { scope: 'row' }, label(tuple)),
-        Array.from({ length: count }, (_, c) => cell(result.cells[r * count + c])))))),
+        Array.from({ length: count }, (_, c) => cell(r * count + c)))))),
     rowTuples.length > GRID_ROWS ? h('p', { class: 'hint' }, `The first ${GRID_ROWS} of ${rowTuples.length.toLocaleString()} rows. Open it in Explore to see them all.`) : null);
 }

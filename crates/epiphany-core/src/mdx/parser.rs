@@ -48,6 +48,9 @@ pub(super) struct MemberDef {
     /// Where a cell has several calculated members, the highest is calculated last, over
     /// the results of the others.
     pub(super) solve_order: f64,
+    /// The pattern, as `Format` takes one, that the cells the member decides are written out
+    /// by.
+    pub(super) format: Option<Expr>,
 }
 
 #[derive(Debug)]
@@ -136,9 +139,9 @@ impl Parser {
                     };
                     self.expect_word("AS")?;
                     let expression = self.definition()?;
-                    // Properties follow as `, NAME = value`. Only the solve order matters
-                    // here; the others, such as a format, are accepted and ignored.
-                    let mut solve_order = 0.0;
+                    // Properties follow as `, NAME = value`. The solve order and the format
+                    // matter here; the others, such as a colour, are accepted and ignored.
+                    let (mut solve_order, mut format) = (0.0, None);
                     while self.symbol(",") {
                         let Token::Word(property) = self.advance() else {
                             return Err(self.error("expected a property name"));
@@ -150,12 +153,15 @@ impl Parser {
                                 Expr::Number(number) => number,
                                 _ => return Err(self.error("SOLVE_ORDER takes a number")),
                             };
+                        } else if property.eq_ignore_ascii_case("FORMAT_STRING") {
+                            format = Some(value);
                         }
                     }
                     members.push(MemberDef {
                         name,
                         expression,
                         solve_order,
+                        format,
                     });
                 } else if self.word("SET") {
                     let Expr::Name(name) = self.name()? else {

@@ -410,6 +410,14 @@ export function formatValue(value, format) {
   return format.parentheses ? `(${text})` : `-${text}`;
 }
 
+/**
+ * What a cell of a query's answer shows: as the calculated member that decides it writes it
+ * out, where that member has a FORMAT_STRING; otherwise its value as the view's format shows it.
+ */
+export function shownText(result, index, format) {
+  return result.formatted?.[index] ?? formatValue(result.cells[index], format);
+}
+
 /** The reader's decimal sign, a point or a comma. */
 const DECIMAL = (1.5).toLocaleString().replace(/\d/g, '') || '.';
 

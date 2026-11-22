@@ -284,7 +284,7 @@ practice that means:
     date `yyyy`, `mmm`, `dd`, `hh:nn`, `AM/PM` and the rest; for a number `0`, `#`, `.`,
     `,` and `%`, in up to three sections for positive, negative and zero values.
   - `WITH MEMBER` (calculated members, which may refer to one another, with
-    `SOLVE_ORDER`) and `WITH SET`.
+    `SOLVE_ORDER` and `FORMAT_STRING`) and `WITH SET`.
   - Numeric and text cells.
   - A query may run inside a transaction and then sees its pending writes.
 - **Decisions:**
@@ -298,6 +298,14 @@ practice that means:
     `Min` and `Max` are taken over the cells that hold something.
   - Where a cell has several calculated members and no `SOLVE_ORDER` separates them, the
     one in the cube's earlier dimension is applied last.
+  - The calculated member applied last at a cell decides how it is written out: by its
+    `FORMAT_STRING`, a pattern as `Format` takes one, worked out at the cell. The answer
+    then has `formatted` beside `cells`, the text of each cell such a member decides, and
+    null for the others; a query with no format has none, and its answer is as before. A
+    pattern written out in full is checked before any cell is worked out, and one that
+    could write nothing out is refused; a number a pattern cannot write out, such as a date
+    past the year 9999, is left as it is. The GUI's grids and tiles show what is written
+    out in place of the view's number format.
   - A range runs over elements in the order they are declared in the dimension.
   - `.PrevMember`, `.NextMember`, `.Lag` and `.Lead` move among the elements of the
     member's level, in the order they are declared. Past either end there is no member,
@@ -377,9 +385,8 @@ practice that means:
     at most 20 decimals; an empty cell is zero to it, as everywhere, and `NULL` is written
     as nothing.
 - Not done: functions outside the lists above; numbers written in scientific notation by
-  `Format` (a query may write them so, as `1.5E3`); the formats VBA names, such as
-  `Currency` and `Short Date`, which follow the reader's locale; and the `FORMAT_STRING`
-  of a calculated member.
+  `Format` (a query may write them so, as `1.5E3`); and the formats VBA names, such as
+  `Currency` and `Short Date`, which follow the reader's locale.
 
 ### 2.8 Spreading
 

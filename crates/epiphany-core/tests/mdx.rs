@@ -1198,6 +1198,66 @@ fn numbers_and_dates_are_written_out_as_a_pattern_says() {
 }
 
 #[test]
+fn a_calculated_member_may_say_how_its_cells_are_written_out() {
+    let written = |mdx: &str| run(mdx).formatted;
+    let owned = |texts: &[Option<&str>]| -> Vec<Option<String>> {
+        texts.iter().map(|text| text.map(str::to_owned)).collect()
+    };
+    // Revenue at US, January is 130, of which 100 is product revenue.
+    let share = written(
+        "WITH MEMBER [Account].[Share] AS [Account].[Product Revenue] / [Account].[Revenue],
+                 FORMAT_STRING = '0.0%'
+              MEMBER [Account].[Plain] AS 1234.5
+         SELECT {[Account].[Product Revenue], [Account].[Share], [Account].[Plain]} ON COLUMNS
+         FROM [General Ledger] WHERE ([Entity].[US], [Period].[Jan], [Version].[Actual])",
+    );
+    assert_eq!(share, owned(&[None, Some("76.9%"), None]));
+    // Of two calculated members at a cell, the one worked out last decides.
+    let half = written(
+        "WITH MEMBER [Account].[Double] AS [Account].[Product Revenue] * 2, FORMAT_STRING = '0.00'
+              MEMBER [Version].[Half] AS [Version].[Actual] / 2,
+                 FORMAT_STRING = '#,##0 \"half\"', SOLVE_ORDER = 1
+         SELECT {[Account].[Double]} ON COLUMNS, {[Version].[Actual], [Version].[Half]} ON ROWS
+         FROM [General Ledger] WHERE ([Entity].[US], [Period].[Jan])",
+    );
+    assert_eq!(half, owned(&[Some("200.00"), Some("100 half")]));
+    // A pattern may be worked out at each cell, and cells NON EMPTY drops go with theirs.
+    let thirds = written(
+        "WITH MEMBER [Account].[Third] AS [Account].[Product Revenue] / 3,
+                 FORMAT_STRING = IIF([Period].CurrentMember.Name = 'Jan', '0', '0.0')
+         SELECT {[Account].[Third]} ON COLUMNS,
+                NON EMPTY {[Period].[Jan], [Period].[Mar], [Period].[Feb]} ON ROWS
+         FROM [General Ledger] WHERE ([Entity].[US], [Version].[Actual])",
+    );
+    assert_eq!(thirds, owned(&[Some("33"), Some("6.7")]));
+    // A date is written out as one; a number its pattern cannot write out is left as it is.
+    let days = written(
+        "WITH MEMBER [Account].[Day] AS DateSerial(2026, 11, 22), FORMAT_STRING = 'dddd'
+              MEMBER [Account].[Far] AS 10000000, FORMAT_STRING = 'yyyy'
+         SELECT {[Account].[Day], [Account].[Far]} ON COLUMNS FROM [General Ledger]",
+    );
+    assert_eq!(days, owned(&[Some("Sunday"), None]));
+    // Without a format, nothing is written out, and the answer says nothing of it.
+    let plain = run("SELECT {[Account].[Rent]} ON COLUMNS FROM [General Ledger]");
+    assert!(plain.formatted.is_empty());
+    assert!(
+        serde_json::to_value(&plain)
+            .unwrap()
+            .get("formatted")
+            .is_none()
+    );
+    // A pattern that could write nothing out is refused before any cell is worked out.
+    assert_eq!(
+        failure(
+            "WITH MEMBER [Account].[Bad] AS 1, FORMAT_STRING = '0 x 0'
+             SELECT {[Account].[Bad]} ON COLUMNS FROM [General Ledger]"
+        ),
+        "the FORMAT_STRING of [Account].[Bad]: a number pattern has its text before or after \
+         its digits, not among them"
+    );
+}
+
+#[test]
 fn levels_count_up_from_the_leaves() {
     let columns = |set: &str| {
         let mdx = format!("SELECT {set} ON COLUMNS FROM [General Ledger]");

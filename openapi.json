@@ -5021,6 +5021,16 @@
           "cube": {
             "type": "string"
           },
+          "formatted": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "The cells written out, one for each of `cells`, where a calculated member that\ndecides them has a `FORMAT_STRING`: as its pattern says, the way `Format` writes a\nnumber or a date, and null for the others. Left out where no calculated member of the\nquery has a format."
+          },
           "slicer": {
             "type": "array",
             "items": {

@@ -103,6 +103,8 @@ struct Calculated<'a> {
     name: &'a str,
     expression: Expr,
     solve_order: f64,
+    /// The pattern the cells it decides are written out by, as `Format` writes them.
+    format: Option<Expr>,
     /// The members and tuples the expression names outright, where they are the same at
     /// every cell and so need finding only once.
     named: Option<Vec<Tuple>>,
@@ -228,11 +230,22 @@ impl Query {
             let [dimension, .., name] = member.name.as_slice() else {
                 return fail("a calculated member is named [Dimension].[Name]");
             };
+            // A pattern written out in full is checked before any cell is worked out.
+            if let Some(Expr::Text(pattern)) = &member.format {
+                format::write(0.0, pattern).map_err(|error| {
+                    let message = format!(
+                        "the FORMAT_STRING of [{dimension}].[{name}]: {}",
+                        error.message
+                    );
+                    MdxError::new(message)
+                })?;
+            }
             evaluator.calculated.push(Calculated {
                 position: evaluator.position(dimension)?,
                 name,
                 expression: member.expression.clone(),
                 solve_order: member.solve_order,
+                format: member.format.clone(),
                 named: None,
             });
         }
@@ -254,6 +267,8 @@ impl Query {
                 evaluator.calculated[index].named = Some(named);
             }
             evaluator.calculated[index].expression = settled;
+            let format = evaluator.calculated[index].format.as_ref();
+            evaluator.calculated[index].format = format.map(|format| evaluator.settled(format));
         }
         let mut used = HashSet::new();
         let mut claim = |tuple: &Tuple| match tuple.iter().all(|m| used.insert(m.position)) {
@@ -350,6 +365,17 @@ impl Query {
             .iter()
             .map(|context| evaluator.cell(context))
             .collect::<Evaluated<Vec<Datum>>>()?;
+        // Written out as well, where a calculated member that decides a cell has a format.
+        let mut formatted = Vec::new();
+        if evaluator
+            .calculated
+            .iter()
+            .any(|member| member.format.is_some())
+        {
+            for (context, cell) in contexts.iter().zip(&cells) {
+                formatted.push(evaluator.formatted(context, cell)?);
+            }
+        }
 
         // NON EMPTY drops the tuples of an axis whose cells are all empty.
         let mut filled: Vec<Vec<bool>> = sizes.iter().map(|&size| vec![false; size]).collect();
@@ -373,11 +399,22 @@ impl Query {
             _ => None,
         };
         let kept_places = Places::new(&kept.iter().map(Vec::len).collect::<Vec<_>>())?;
-        let kept_cells = (0..kept_places.count).map(|index| {
-            let original = kept.iter().zip(kept_places.of(index)).zip(&places.strides);
-            let original = original.map(|((kept, place), stride)| kept[place] * stride);
-            value(&cells[original.sum::<usize>()])
-        });
+        let originals: Vec<usize> = (0..kept_places.count)
+            .map(|index| {
+                let original = kept.iter().zip(kept_places.of(index)).zip(&places.strides);
+                original
+                    .map(|((kept, place), stride)| kept[place] * stride)
+                    .sum()
+            })
+            .collect();
+        let kept_cells = originals.iter().map(|&original| value(&cells[original]));
+        let kept_formatted = match formatted.is_empty() {
+            true => Vec::new(),
+            false => originals
+                .iter()
+                .map(|&original| formatted[original].take())
+                .collect(),
+        };
         let axes = axes
             .iter()
             .zip(&sets)
@@ -402,6 +439,7 @@ impl Query {
         Ok(QueryResult {
             cube: cube.name.clone(),
             cells: kept_cells.collect(),
+            formatted: kept_formatted,
             axes: axes.collect(),
             // A member stood at whose dimension an axis places is not where the cells are.
             slicer: slicer
@@ -2697,6 +2735,20 @@ impl<'a> Evaluator<'a> {
                 false => chosen,
             },
         )
+    }
+
+    /// A cell written out as the calculated member that decides it says, where that member
+    /// has a format and the cell holds a number. A number its pattern cannot write out, such
+    /// as a date past the year 9999, is left as it is.
+    fn formatted(&self, context: &Context, cell: &Datum) -> Evaluated<Option<String>> {
+        let format = self
+            .calculated_at(context)
+            .and_then(|member| member.format.as_ref());
+        let (Some(format), Datum::Number(number)) = (format, cell) else {
+            return Ok(None);
+        };
+        let pattern = self.text(format, context)?;
+        Ok(format::write(*number, &pattern).ok())
     }
 
     /// The value of the cell at a context. A calculated member there is evaluated first.

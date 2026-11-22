@@ -42,7 +42,7 @@ their practices, not their looks.
 | One query seen as grid or chart | Grid and chart views |
 | KPI cards with sparklines, time presets, readable legends | Dashboards: tiles of saved views as key figures with their trend, bar, stacked and line charts, or small grids, each opening in Explore |
 | A page's selectors that every widget follows (PAW books, Anaplan pages, Power BI slicers) | Dashboard filters: a member chosen above the tiles, which each tile whose cube has the dimension stands at, through the query's `context` |
-| Numbers in the units a reader thinks in: decimals, thousands or millions, negatives in parentheses, zeros as a dash (PAW's Format, Power BI's display units) | A view's number format, set from the toolbar, saved with the view and used by its dashboard tiles |
+| Numbers in the units a reader thinks in: decimals, thousands or millions, negatives in parentheses, zeros as a dash (PAW's Format, Power BI's display units) | A view's number format, set from the toolbar, saved with the view and used by its dashboard tiles; a calculated member's `FORMAT_STRING`, such as a percentage among sums of money, for the cells it decides |
 | Typing into a total spreads it, with TM1's codes (P, S or LS, R or LR, C, and + or ~), but a spread over many cells, or one that empties them, asks first | Typed spreading in the grid, within the edit transaction |
 | A cell that takes no value says why when typed into (a rule works it out, the role only reads) | The grid's notice, from the facts the server explains |
 | What lies behind a number (Excel's Show Details, PAW drill, OneStream's base members) | Show the leaves beneath: a total's consolidated members replaced by their non-empty leaves; Undo goes back |
