@@ -104,7 +104,9 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 | A value typed or pasted over a cell whose formula is one `DBRW` or `DBR` call | The value is written to the cube cell the formula reads, and the formula is put back, showing the new value | Same, unverified |
 | A formula whose arguments are cells, on this sheet or another, whatever the other sheet is called | The value goes to the cube cell those cells name at that moment. A sheet's name in single quotes is read whole, its commas and brackets with it | Unverified |
 | A number over a consolidated or calculated cell | Nothing is written, the formula is put back, and the status bar says so | Unverified |
-| `P`, `S` or `R` and a number over a consolidated cell, `P1200` say | The number is spread over the leaves beneath: `P` in proportion to what they hold, `S` in equal shares, `R` the number itself to each | TM1's spreading shortcuts, of which these are three; unverified |
+| `P`, `S` or `LS`, `R` or `LR` and a number over a consolidated cell, `P1200` say | The number is spread over the leaves beneath: `P` in proportion to what they hold, `S` or `LS` in equal shares, `R` or `LR` the number itself to each | TM1's spreading shortcuts, of which these are some; unverified |
+| `+` or `~` between `P` or `S` and the number, `P+100` say | The cell's value is read, and it comes to that with the number added, or taken away, spread as `P` or `S` spreads | TM1's relative spreads; unverified |
+| `C` alone over a consolidated cell | The leaves beneath are cleared | TM1's clearing shortcut; unverified |
 | The same over a leaf | The number is written | Unverified |
 | The same over a string cell | It is text, and written as typed | Unverified |
 | A number over a string cell | Written as text | Unverified |
@@ -154,5 +156,6 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 
 - `DBS` to a consolidated cell as a spread. A value is spread by typing it with its letter
   over a `DBRW`, not by a worksheet function.
-- TM1's other spreading shortcuts: directions, relative and percentage changes, holds.
+- TM1's other spreading shortcuts: directions, percentage changes, holds. The add-in takes
+  the codes the GUI's grid takes, no more.
 - `VIEW`, `TM1RPTROW` and the other functions of PAfE's reports.

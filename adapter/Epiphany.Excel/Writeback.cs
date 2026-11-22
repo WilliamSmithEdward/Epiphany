@@ -154,44 +154,37 @@ namespace Epiphany.Excel
             }
         }
 
-        // What may be typed to spread a value over a consolidation, as TM1's clients have it:
-        // a letter for the method and then the value, "P1200" say.
-        private static readonly Dictionary<char, string> Methods = new Dictionary<char, string>
-        {
-            ['P'] = "proportional", ['S'] = "equal", ['R'] = "repeat",
-        };
-
-        /// <summary>The method and value of a typed spread, or null for anything else.</summary>
-        internal static KeyValuePair<string, double>? Spreading(object typed)
-        {
-            var text = (typed as string ?? "").Trim().ToUpperInvariant();
-            if (text.Length < 2 || !Methods.TryGetValue(text[0], out var method)
-                || !double.TryParse(text.Substring(1), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
-                return null;
-            return new KeyValuePair<string, double>(method, value);
-        }
-
         /// <summary>Writes a typed value. A number typed into a string cell is written as text,
-        /// and a letter and a number typed over a consolidation spread the number.</summary>
+        /// and a spreading code typed over a consolidation spreads its number.</summary>
         private static async Task<object> Write(Source source, object value)
         {
             // What was typed can be meant in more than one way, and only the server knows which
             // fits the cell. Each is tried in turn until one is taken: a spread, where it has
             // the form of one; the value as typed; and then the number of a spread written to
             // a leaf, or a number written to a string cell as text.
-            var spread = Spreading(value);
+            var spread = SpreadCode.Parse(value);
+            double? comesTo = null;
+            if (spread != null && spread.Change != 0)
+            {
+                // Added to or taken from what the cell holds, which is asked for first.
+                var before = await source.Connection.Read(source.Cube, source.At).ConfigureAwait(false);
+                if (before is double held)
+                    comesTo = spread.ComesTo(held);
+            }
+            else if (spread != null)
+                comesTo = spread.Value;
             var answer = (object)Connection.KeyError;
-            if (spread.HasValue)
+            if (comesTo.HasValue)
                 answer = await source.Connection
-                    .Spread(source.Cube, source.At, spread.Value.Value, spread.Value.Key)
+                    .Spread(source.Cube, source.At, comesTo.Value, spread.Method)
                     .ConfigureAwait(false);
             if (Equals(answer, Connection.KeyError))
                 answer = await source.Connection.Write(source.Cube, source.At, value).ConfigureAwait(false);
             if (!Equals(answer, Connection.KeyError))
                 return answer;
             object other = null;
-            if (spread.HasValue)
-                other = spread.Value.Value;
+            if (comesTo.HasValue)
+                other = comesTo.Value;
             else if (value is double number)
                 other = number.ToString("R", CultureInfo.InvariantCulture);
             return other == null

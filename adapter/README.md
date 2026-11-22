@@ -57,8 +57,10 @@ its subset; type to narrow the list, and the one you choose is written into the 
 Typing a value over a `DBRW` or `DBR` cell writes it to the cube and keeps the formula. If
 the server refuses the value, because the cell is a consolidation, say, the status bar says so.
 Once a value is written, every formula asks the server again, so totals over it follow.
-Over a consolidation, type a letter before the number to spread it over the leaves beneath:
-`P1200` in proportion to what they hold, `S1200` in equal shares, `R100` to give each 100.
+Over a consolidation, type a code before the number to spread it over the leaves beneath, as
+in the GUI's grid: `P1200` in proportion to what they hold, `S1200` (or `LS1200`) in equal
+shares, `R100` (or `LR100`) to give each 100. `P+100` or `S~100` adds 100 to what the cell
+holds, or takes it away, and spreads that; `C` alone clears the leaves.
 
 While a value is on its way a cell shows the value it had last, or `#GETTING_DATA` the first
 time. It shows `#N/A` when the server cannot be reached or wants a sign-in, and `*KEY_ERR`

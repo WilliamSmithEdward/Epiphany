@@ -70,7 +70,11 @@ only way to do something, and modal dialogs where a side panel would keep the da
 - **Numbers read well.** Tabular figures, right-aligned, with formats that follow the
   browser's locale, and negatives and missing values clearly told apart.
 - **Fast with large results.** Only the rows and columns in view are drawn, so a grid of
-  100,000 cells scrolls as smoothly as one of a hundred.
+  100,000 cells scrolls as smoothly as one of a hundred. Pages ask for the model in outline,
+  without its elements; a dimension is fetched whole the first time a page shows it. On a
+  release build that takes about 0.7 s for half a million elements and 2 s for a million,
+  fetched, read and made ready (2026-11-22). Members fetched only as a tree is opened would
+  take that time away, but every page now reads a dimension as held whole.
 - **Every state designed.** Loading, empty, error with a retry, and refused for want of
   rights. Moving to another page leaves the one shown, still, until the next is drawn: a
   quick load shows no gap, and a slow one the outline of what is coming. Choosing another
