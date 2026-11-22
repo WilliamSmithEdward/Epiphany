@@ -180,13 +180,80 @@ class Explorer {
     }
   }
 
-  /** Changes the layout, keeping the old one to go back to, and runs the query again. */
-  change(edit) {
+  /**
+   * Changes the layout, keeping the old one to go back to, and runs the query again. A
+   * change to the layout replaces a query written in MDX with the layout's own; `written`
+   * says the change is to the written query itself.
+   */
+  change(edit, written = false) {
     this.past.push(JSON.stringify(this.layout));
     if (this.past.length > 100) this.past.shift();
     this.future = [];
     edit(this.layout);
+    if (!written) this.layout.mdx = null;
     this.after();
+  }
+
+  /**
+   * Reads a result back into the layout: the dimensions on each axis with the members it
+   * shows, and the slicer's members as filters. Where the layout makes the very same
+   * query, it takes the written one's place; where it cannot, a calculated member or a
+   * filtered or reordered set, the written query stays, and the layout shows its parts.
+   */
+  adopt(result) {
+    const [columns, rows] = result.axes;
+    const previous = new Map([...this.layout.rows, ...this.layout.columns].map((entry) => [entry.dimension, entry]));
+    let exact = true;
+    const axis = (tuples) => {
+      if (!tuples?.length) return [];
+      const width = tuples[0].length;
+      const entries = Array.from({ length: width }, (_, position) => {
+        const dimension = tuples[0][position].dimension;
+        const members = [];
+        for (const tuple of tuples) {
+          const m = tuple[position];
+          if (m.type === 'calculated' || !this.dims.get(dimension)?.byName.has(m.name)) exact = false;
+          else if (!members.includes(m.name)) members.push(m.name);
+        }
+        const before = previous.get(dimension);
+        return { dimension, members, expanded: [], attributes: before?.attributes ?? [], alias: before?.alias ?? null };
+      });
+      // The layout crosses its members in full, the first dimension turning slowest.
+      const product = entries.reduce((count, entry) => count * entry.members.length, 1);
+      if (product !== tuples.length) exact = false;
+      else {
+        tuples.forEach((tuple, index) => {
+          let rest = index;
+          for (let position = width - 1; position >= 0; position -= 1) {
+            const members = entries[position].members;
+            if (tuple[position].name !== members[rest % members.length]) exact = false;
+            rest = Math.floor(rest / members.length);
+          }
+        });
+      }
+      return entries.filter((entry) => entry.members.length);
+    };
+    const placed = {
+      columns: axis(columns?.tuples),
+      rows: axis(rows?.tuples),
+    };
+    if (!placed.columns.length || result.axes.length < 2) exact = false;
+    const filters = (result.slicer ?? [])
+      .filter((m) => m.type !== 'calculated' && this.dims.get(m.dimension)?.byName.has(m.name))
+      .map((m) => ({ dimension: m.dimension, member: m.name }));
+    if ((result.slicer ?? []).some((m) => m.type === 'calculated')) exact = false;
+    const text = this.layout.mdx;
+    Object.assign(this.layout, {
+      columns: placed.columns,
+      rows: placed.rows,
+      filters,
+      sort: null,
+      nonEmpty: /\bNON\s+EMPTY\b/i.test(text),
+      mdx: exact ? null : text,
+    });
+    localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
+    this.drawLayout();
+    this.drawFieldList?.();
   }
 
   after() {
@@ -237,7 +304,7 @@ class Explorer {
             icon: 'grid',
             action: () => this.change((layout) => {
               layout.mdx = this.cube.views[name].mdx;
-            }),
+            }, true),
           })),
           admin ? '-' : null,
           admin ? { label: 'Save this query as a view…', icon: 'save', disabled: !this.text, action: () => this.saveView() } : null,
@@ -301,7 +368,7 @@ class Explorer {
   drawToolbar() {
     this.drawPending();
     const layout = this.layout;
-    const written = Boolean(layout.mdx);
+    const written = false;
     const button = (label, iconName, action, props = {}) => h('button', { class: 'button small quiet', onclick: action, ...props }, icon(iconName, 16), h('span', {}, label));
     mount(this.toolbar,
       button('Undo', 'undo', () => this.undo(), { disabled: !this.past.length, title: 'Undo (Ctrl Z)' }),
@@ -319,6 +386,10 @@ class Explorer {
         l.sort = null;
       })) : null,
       h('div', { class: 'grow' }),
+      layout.mdx ? h('span', {
+        class: 'badge accent',
+        title: 'The query is as written in the MDX tab. The layout shows its parts; changing the layout replaces it with the layout\'s own query.',
+      }, icon('code', 12), 'Written in MDX') : null,
       button('Refresh', 'refresh', () => this.run()),
       button('Export CSV', 'download', () => this.exportCsv(), { disabled: !this.result }),
       button('Reset layout', 'trash', () => this.change((l) => Object.assign(l, defaultLayout(this.cube, this.dims)))));
@@ -406,18 +477,18 @@ class Explorer {
     const place = this.placeOf(name);
     menu([
       { heading: name },
-      { label: 'Put on rows', icon: 'rows', disabled: place === 'rows' || Boolean(this.layout.mdx), action: () => this.move(name, 'rows') },
-      { label: 'Put on columns', icon: 'columns', disabled: place === 'columns' || Boolean(this.layout.mdx), action: () => this.move(name, 'columns') },
-      { label: 'Use as a filter', icon: 'filter', disabled: place === 'filters' || Boolean(this.layout.mdx), action: () => this.move(name, 'filters') },
-      { label: 'Leave out of the query', icon: 'eyeOff', disabled: place === 'unused' || Boolean(this.layout.mdx), action: () => this.move(name, 'unused') },
+      { label: 'Put on rows', icon: 'rows', disabled: place === 'rows', action: () => this.move(name, 'rows') },
+      { label: 'Put on columns', icon: 'columns', disabled: place === 'columns', action: () => this.move(name, 'columns') },
+      { label: 'Use as a filter', icon: 'filter', disabled: place === 'filters', action: () => this.move(name, 'filters') },
+      { label: 'Leave out of the query', icon: 'eyeOff', disabled: place === 'unused', action: () => this.move(name, 'unused') },
       {
         label: 'Attributes and aliases…',
         icon: 'eye',
-        disabled: (place !== 'rows' && place !== 'columns') || Boolean(this.layout.mdx) || !Object.keys(this.dims.get(name).attributes ?? {}).length,
+        disabled: (place !== 'rows' && place !== 'columns') || !Object.keys(this.dims.get(name).attributes ?? {}).length,
         action: () => this.chooseAttributes(name),
       },
       '-',
-      { label: 'Choose members…', icon: 'check', disabled: place === 'unused' || Boolean(this.layout.mdx), action: () => this.pick(name) },
+      { label: 'Choose members…', icon: 'check', disabled: place === 'unused', action: () => this.pick(name) },
     ], at);
   }
 
@@ -477,12 +548,7 @@ class Explorer {
 
   drawLayout() {
     const layout = this.layout;
-    if (layout.mdx) {
-      mount(this.layoutBar, h('div', { class: 'banner' }, icon('code', 18),
-        h('span', { class: 'grow' }, 'This query was written in MDX, so the layout does not apply to it.'),
-        h('button', { class: 'button small', onclick: () => this.change((l) => { l.mdx = null; }) }, 'Back to the layout')));
-      return;
-    }
+
     const zone = (place, label, iconName, entries) => {
       const chips = entries.map((entry, index) => this.chip(place, entry, index));
       const element = h('div', {
@@ -682,6 +748,7 @@ class Explorer {
       this.result = result;
       this.error = null;
       this.took = performance.now() - started;
+      if (this.layout.mdx) this.adopt(result);
       this.writable = await this.findWritable(result);
       if (ticket !== this.ticket) return;
     } catch (problem) {
@@ -730,7 +797,7 @@ class Explorer {
     const shownRows = rowTuples.slice(0, limit);
     const total = (tuple) => tuple.some((m) => m.type === 'consolidated');
     // The attributes shown beside each dimension's members, where the layout asks for them.
-    const shownAttributes = (place, tuple) => (tuple ?? []).map((m) => (this.layout.mdx ? [] : this.entryOf(place, m.dimension)?.attributes ?? []));
+    const shownAttributes = (place, tuple) => (tuple ?? []).map((m) => this.entryOf(place, m.dimension)?.attributes ?? []);
     const rowAttributes = shownAttributes('rows', rowTuples[0]);
     const columnAttributes = shownAttributes('columns', columnTuples[0]);
     const rowWidth = rowAttributes.reduce((sum, attributes) => sum + 1 + attributes.length, 0);
@@ -827,7 +894,7 @@ class Explorer {
     const element = dim?.byName.get(m.name);
     const depth = entry ? this.depthOf(entry, dim, m.name) : 0;
     const label = h('span', { class: 'member-label', dataset: { depth } });
-    if (entry && !this.layout.mdx && element?.children.length) {
+    if (entry && element?.children.length) {
       const opened = entry.expanded.includes(m.name);
       label.append(h('button', {
         class: 'twisty',
@@ -838,7 +905,7 @@ class Explorer {
     } else if (depth) {
       label.append(h('span', { class: 'twisty' }));
     }
-    const alias = entry?.alias && !this.layout.mdx ? element?.attributes?.[entry.alias] : null;
+    const alias = entry?.alias ? element?.attributes?.[entry.alias] : null;
     label.append(h('span', { title: alias ? m.name : null }, alias || m.name));
     return label;
   }
@@ -979,7 +1046,7 @@ class Explorer {
     const [columns, rows] = this.result.axes;
     const rowTuple = rows?.tuples[r] ?? [];
     const columnTuple = columns.tuples[c] ?? [];
-    const written = Boolean(this.layout.mdx);
+    const written = false;
     const openable = (place, tuple) => tuple.filter((m) => this.dims.get(m.dimension)?.byName.get(m.name)?.children.length);
     const rowOpen = written ? [] : openable('rows', rowTuple);
     menu([
@@ -1331,7 +1398,7 @@ class Explorer {
       if (!text) return;
       this.change((layout) => {
         layout.mdx = text;
-      });
+      }, true);
       this.view = 'grid';
       this.drawTabs();
     };
@@ -1371,11 +1438,11 @@ class Explorer {
     const lines = [];
     // As the grid shows them: by alias where one is chosen, with the attributes shown.
     const label = (place, m) => {
-      const entry = this.layout.mdx ? null : this.entryOf(place, m.dimension);
+      const entry = this.entryOf(place, m.dimension);
       const alias = entry?.alias ? this.dims.get(m.dimension)?.byName.get(m.name)?.attributes?.[entry.alias] : null;
       return alias || m.name;
     };
-    const attributesOf = (place, m) => (this.layout.mdx ? [] : this.entryOf(place, m.dimension)?.attributes ?? []);
+    const attributesOf = (place, m) => this.entryOf(place, m.dimension)?.attributes ?? [];
     const rowHeading = rowTuples[0] ?? [];
     const rowCells = (tuple) => tuple.flatMap((m) => [label('rows', m), ...attributesOf('rows', m).map((attribute) => this.attributeValue(m, attribute))]);
     const width = rowCells(rowHeading).length;
