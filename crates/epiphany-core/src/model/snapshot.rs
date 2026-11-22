@@ -119,6 +119,9 @@ impl Model {
         )?;
         for dashboard in &def.dashboards {
             let within = format!("dashboard '{}'", dashboard.name);
+            for filter in &dashboard.filters {
+                resolve(&model.dimension_ids, "dimension", &within, filter)?;
+            }
             for tile in &dashboard.tiles {
                 let cube = resolve(&model.cube_ids, "cube", &within, &tile.cube)?;
                 let views = def.cubes[cube as usize].views.keys().map(String::as_str);

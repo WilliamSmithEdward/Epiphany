@@ -4,7 +4,8 @@
 import { ApiError, get, modelVersion, part, post, put } from './api.js';
 import { chart, shape } from './chart.js';
 import { cellText, Selection } from './selection.js';
-import { beneath, marked, openButtons, reveal, ROW_LIMIT, searchBox, treeKey, treeRows } from './tree.js';
+import { chooseMember, dimension } from './picker.js';
+import { beneath } from './tree.js';
 import { editSet } from './sets.js';
 import { empty, failure, go, model, state } from './app.js';
 import { dialog, download, formatNumber, h, icon, menu, mount, notify, parseNumber } from './ui.js';
@@ -14,19 +15,6 @@ import { dialog, download, formatNumber, h, icon, menu, mount, notify, parseNumb
 const quote = (name) => `[${String(name).replaceAll(']', ']]')}]`;
 const member = (dimension, name) => `${quote(dimension)}.${quote(name)}`;
 
-/* ---- Dimensions, fetched once for each model version ---- */
-
-const dimensions = new Map();
-
-async function dimension(name) {
-  if (!dimensions.has(name)) {
-    const view = await get(`/dimensions/${part(name)}`);
-    const byName = new Map(view.elements.map((element) => [element.name, element]));
-    const roots = view.elements.filter((element) => element.parents.length === 0).map((element) => element.name);
-    dimensions.set(name, { ...view, byName, roots });
-  }
-  return dimensions.get(name);
-}
 
 /* ---- The layout ---- */
 
@@ -112,7 +100,6 @@ export async function render(target, { params }) {
       h('a', { class: 'button', href: '/explore', 'data-link': '' }, 'Explore another cube'))));
     return;
   }
-  dimensions.clear();
   const dims = new Map(await Promise.all(cube.dimensions.map(async (dim) => [dim, await dimension(dim)])));
   return new Explorer(target, definition, cube, dims, cube.views?.[params.get('view')]);
 }
@@ -775,137 +762,16 @@ class Explorer {
       return;
     }
     // A filter stands at one member, chosen from the dimension's tree.
-    let chosen = this.layout.filters.find((filter) => filter.dimension === name).member;
-    const children = (element) => (dim.byName.get(element)?.children ?? []).map((child) => child.name).filter((child) => dim.byName.has(child));
-    const roots = dim.roots;
-    let open = reveal({ roots, children, matches: new Set([chosen]) });
-    let found = null;
-    let words = '';
-    const tree = h('div', { class: 'picker-tree', role: 'tree', 'aria-label': `Members of ${name}` });
-    // Choosing a member and applying it at once: the dialog's form is the tree's.
-    const apply = () => tree.closest('form')?.requestSubmit();
-    const draw = (focus) => {
-      const matches = words ? new Set(dim.elements.filter((element) => element.name.toLowerCase().includes(words)).map((element) => element.name)) : null;
-      const { rows, cut } = treeRows({ roots, children, open: found ?? open, matches });
-      const current = rows.find((row) => row.name === (focus ?? chosen)) ?? rows.find((row) => row.match) ?? rows[0];
-      const choose = (element) => {
-        chosen = element;
-        draw(element);
-      };
-      const drawn = rows.map((row) => {
-        const element = dim.byName.get(row.name);
-        return h('div', {
-          class: `picker-row${row.context ? ' context' : ''}`,
-          role: 'treeitem',
-          'aria-level': row.depth + 1,
-          'aria-selected': String(row.name === chosen),
-          'aria-expanded': row.kids ? String(row.open) : null,
-          tabindex: row === current ? '0' : '-1',
-          dataset: { depth: Math.min(row.depth, 8), name: row.name },
-          onclick: () => choose(row.name),
-          ondblclick: () => {
-            chosen = row.name;
-            apply();
-          },
-          onkeydown: (event) => {
-            if (event.key === ' ') {
-              event.preventDefault();
-              choose(row.name);
-              return;
-            }
-            // One member is chosen, so the choice follows the keys.
-            treeKey(event, {
-              go: (target) => choose(target),
-              open: (names, opened) => {
-                const into = found ?? open;
-                for (const each of names) {
-                  if (opened) into.add(each);
-                  else into.delete(each);
-                }
-                draw(row.name);
-              },
-              act: (target) => {
-                chosen = target;
-                apply();
-              },
-            });
-          },
-        },
-        row.kids
-          ? h('button', {
-            class: 'twisty',
-            type: 'button',
-            tabindex: '-1',
-            'aria-label': row.open ? `Close ${row.name}` : `Open ${row.name}`,
-            onclick: (event) => {
-              event.stopPropagation();
-              const into = found ?? open;
-              if (row.open) into.delete(row.name);
-              else into.add(row.name);
-              draw(row.name);
-            },
-          }, icon(row.open ? 'down' : 'chevron', 14))
-          : h('span', { class: 'twisty' }),
-        h('span', { class: 'choice', 'aria-hidden': 'true' }),
-        icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
-        h('span', { class: 'grow' }, row.match ? marked(row.name, words) : row.name),
-        row.kids ? h('span', { class: 'muted' }, String(row.kids)) : null);
-      });
-      if (cut) drawn.push(h('p', { class: 'hint' }, `Showing the first ${ROW_LIMIT.toLocaleString()} rows. Search to find the rest.`));
-      mount(tree, drawn.length ? drawn : h('p', { class: 'muted' }, 'Nothing matches.'));
-      search.found(matches?.size ?? 0, Boolean(matches));
-      if (focus) tree.querySelector('[tabindex="0"]')?.focus();
-    };
-    const search = searchBox({
-      label: `Find in ${name}`,
-      onsearch: (next) => {
-        words = next;
-        found = words ? reveal({ roots, children, matches: new Set(dim.elements.filter((element) => element.name.toLowerCase().includes(words)).map((element) => element.name)) }) : null;
-        draw();
-      },
-      // Down goes to the first member found, or, with no search, to the one chosen.
-      ondown: () => {
-        const first = words ? tree.querySelector('.picker-row:not(.context)') : null;
-        if (first) chosen = first.dataset.name;
-        draw(chosen);
-      },
-    });
-    const levels = [...new Set(dim.elements.map((element) => element.level))].sort((a, b) => b - a);
-    const opening = openButtons({
-      all: () => {
-        const every = new Set(dim.elements.filter((element) => element.children.length).map((element) => element.name));
-        if (found) found = every;
-        else open = every;
-        draw();
-      },
-      none: () => {
-        if (found) found = new Set();
-        else open = new Set();
-        draw();
-      },
-      levels: levels.map((level) => [level, dim.levels?.[level] || (level === 0 ? 'Leaves' : `Level ${level}`)]),
-      to: (level) => {
-        const down = new Set(dim.elements.filter((element) => element.level > level).map((element) => element.name));
-        if (found) found = down;
-        else open = down;
-        draw();
-      },
-    });
-    draw();
-    await dialog({
+    const filter = this.layout.filters.find((candidate) => candidate.dimension === name);
+    const member = await chooseMember({ ...dim, name }, {
       title: `Filter by ${name}`,
-      confirm: 'Apply',
-      body: h('div', { class: 'picker' },
-        h('div', { class: 'picker-tools' }, search.box, opening),
-        tree,
-        h('p', { class: 'hint' }, 'Double-click a member, or press Enter on it, to filter by it at once.')),
-      onsubmit: () => {
-        this.change((layout) => {
-          layout.filters.find((filter) => filter.dimension === name).member = chosen;
-          layout.sort = null;
-        });
-        return true;
-      },
+      current: filter.member,
+      hint: 'Double-click a member, or press Enter on it, to filter by it at once.',
+    });
+    if (member === null) return;
+    this.change((layout) => {
+      layout.filters.find((candidate) => candidate.dimension === name).member = member;
+      layout.sort = null;
     });
   }
   /* ---- Running the query ---- */
@@ -1116,6 +982,7 @@ class Explorer {
       h('span', {}, `${rowTuples.length.toLocaleString()} rows × ${columnCount.toLocaleString()} columns`),
       h('span', { class: 'muted' }, `${cells.toLocaleString()} cells in ${Math.round(this.took)} ms`),
       rowTuples.length > limit ? h('span', { class: 'badge warn' }, `Showing the first ${limit.toLocaleString()} rows`) : null,
+      this.writable.size ? h('span', { class: 'legend-input muted', title: 'Tinted cells take a value: type into one, or paste' }, 'Can be written') : null,
       this.layout.sort ? h('span', { class: 'badge accent' }, `Sorted ${this.layout.sort.descending ? 'largest' : 'smallest'} first`) : null,
       summary);
   }

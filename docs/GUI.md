@@ -41,6 +41,8 @@ their practices, not their looks.
 | Moving between the visual builder and MDX | An MDX view of the same query, editable |
 | One query seen as grid or chart | Grid and chart views |
 | KPI cards with sparklines, time presets, readable legends | Dashboards: tiles of saved views as key figures with their trend, bar, stacked and line charts, or small grids, each opening in Explore |
+| A page's selectors that every widget follows (PAW books, Anaplan pages, Power BI slicers) | Dashboard filters: a member chosen above the tiles, which each tile whose cube has the dimension stands at, through the query's `context` |
+| Input cells told apart from calculated ones at a glance (PAW's green, Oracle's white on grey) | Writable cells tinted, with a key in the status line |
 
 What they get wrong is avoided as well: crowded ribbons, low contrast, drag and drop as the
 only way to do something, and modal dialogs where a side panel would keep the data in view.

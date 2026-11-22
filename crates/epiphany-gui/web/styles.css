@@ -749,3 +749,15 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .dash-names .input { max-width: 520px; }
 .dash-name { font-size: var(--text-xl); font-weight: 650; height: 42px; }
 @media (max-width: 1000px) { .dash-grid { grid-template-columns: 1fr; } .dash-tile.wide { grid-column: auto; } }
+
+/* ---- Cells that may be written, marked as such ---- */
+
+.pivot td.editable:not(.edited) { background: color-mix(in oklab, var(--good) 8%, var(--surface)); }
+.pivot tbody tr:hover td.editable:not(.edited) { background-color: color-mix(in oklab, var(--good) 10%, var(--accent-soft)); }
+.legend-input::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; background: color-mix(in oklab, var(--good) 22%, var(--surface)); border: 1px solid color-mix(in oklab, var(--good) 45%, transparent); }
+
+/* ---- A dashboard's filters ---- */
+
+.dash-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); margin: calc(var(--s2) * -1) 0 var(--s4); color: var(--text-3); }
+.dash-filter { cursor: default; }
+.dash-filter .chip-summary { color: var(--text); }

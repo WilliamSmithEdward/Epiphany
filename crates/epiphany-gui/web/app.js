@@ -167,6 +167,8 @@ async function reauthenticate() {
     return;
   }
   notify('Signed in again. Carry on where you were.', 'good');
+  // A page that could not be drawn for want of a session is drawn now.
+  if (!active) route();
 }
 
 events.addEventListener('model-changed', () => {

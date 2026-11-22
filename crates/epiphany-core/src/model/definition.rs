@@ -28,6 +28,11 @@ pub struct DashboardDef {
     /// What the dashboard is for, shown beneath its name.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
+    /// Dimensions the page offers a choice of member for. Every tile whose cube has one
+    /// stands at the member chosen, in place of the one its view names, unless the view
+    /// places the dimension on an axis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filters: Vec<String>,
     /// The tiles, in the order they are laid out.
     #[serde(default)]
     pub tiles: Vec<TileDef>,

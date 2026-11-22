@@ -6,7 +6,8 @@
 import { del, modelVersion, part, post, put } from './api.js';
 import { chart, shape, sparkline } from './chart.js';
 import { empty, failure, go, model, state } from './app.js';
-import { dialog, formatNumber, h, icon, mount, notify } from './ui.js';
+import { chooseMember, dimension } from './picker.js';
+import { dialog, formatNumber, h, icon, menu, mount, notify } from './ui.js';
 
 /** The ways a tile shows its view. */
 const SHOWS = { figure: 'Key figure', bars: 'Bars', stacked: 'Stacked bars', lines: 'Lines', grid: 'Grid' };
@@ -37,6 +38,81 @@ class Dashboards {
 
   current() {
     return this.list().find((dashboard) => dashboard.name === this.name) ?? null;
+  }
+
+  /** The members chosen for the page's filters, by dimension, kept in this browser. */
+  chosen() {
+    try {
+      return JSON.parse(localStorage.getItem(`epiphany.dashboard.${this.name}`)) ?? {};
+    } catch {
+      return {};
+    }
+  }
+
+  choose(dimensionName, member) {
+    const chosen = { ...this.chosen(), [dimensionName]: member };
+    if (member === null) delete chosen[dimensionName];
+    localStorage.setItem(`epiphany.dashboard.${this.name}`, JSON.stringify(chosen));
+    this.draw();
+  }
+
+  /** The members the page's filters have a tile stand at: those chosen, of its cube's dimensions. */
+  standing(tile) {
+    const chosen = this.chosen();
+    return ((this.editing ?? this.current())?.filters ?? [])
+      .filter((dimensionName) => chosen[dimensionName] && this.cubeHas(tile.cube, dimensionName))
+      .map((dimensionName) => ({ dimension: dimensionName, member: chosen[dimensionName] }));
+  }
+
+  cubeHas(cubeName, dimensionName) {
+    return Boolean(this.definition.cubes.find((cube) => cube.name.toLowerCase() === cubeName.toLowerCase())?.dimensions.includes(dimensionName));
+  }
+
+  /** The filters above the tiles: a member chosen for each, which every tile that can stands at. */
+  drawFilters(shown) {
+    const filters = shown.filters ?? [];
+    const chosen = this.chosen();
+    if (!filters.length && !this.editing) return null;
+    const chip = (dimensionName) => h('div', { class: 'chip dash-filter' },
+      h('button', {
+        class: 'chip-main',
+        title: `Show every tile at a member of ${dimensionName}`,
+        onclick: async () => {
+          const member = await chooseMember(await dimension(dimensionName), { title: `Show every tile at a member of ${dimensionName}`, current: chosen[dimensionName] });
+          if (member !== null) this.choose(dimensionName, member);
+        },
+      }, h('strong', {}, dimensionName), h('span', { class: 'chip-summary' }, chosen[dimensionName] ?? 'As each view has it')),
+      this.editing
+        ? h('button', {
+          class: 'chip-more',
+          'aria-label': `Take the filter by ${dimensionName} off the dashboard`,
+          onclick: () => {
+            this.editing.filters = filters.filter((other) => other !== dimensionName);
+            this.draw();
+          },
+        }, icon('close', 14))
+        : chosen[dimensionName] ? h('button', { class: 'chip-more', 'aria-label': `Show the tiles as their views have ${dimensionName}`, title: 'As each view has it', onclick: () => this.choose(dimensionName, null) }, icon('close', 14)) : null);
+    const offered = [...new Set(shown.tiles.flatMap((tile) => this.definition.cubes.find((cube) => cube.name.toLowerCase() === tile.cube.toLowerCase())?.dimensions ?? []))]
+      .filter((dimensionName) => !filters.includes(dimensionName));
+    return h('div', { class: 'dash-filters', role: 'group', 'aria-label': 'Filters for every tile' },
+      icon('filter', 16),
+      filters.map(chip),
+      this.editing ? h('button', {
+        class: 'button small quiet',
+        disabled: !offered.length,
+        title: offered.length ? 'Offer a choice of member that every tile stands at' : 'Add tiles first: a filter is a dimension of their cubes',
+        onclick: (event) => menu([
+          { heading: 'Filter every tile by' },
+          ...offered.map((dimensionName) => ({
+            label: dimensionName,
+            icon: 'dimension',
+            action: () => {
+              this.editing.filters = [...filters, dimensionName];
+              this.draw();
+            },
+          })),
+        ], event.currentTarget),
+      }, icon('plus', 14), 'Add a filter') : null);
   }
 
   /** Asked before the page is left: unsaved edits are discarded only if the user agrees. */
@@ -93,6 +169,7 @@ class Dashboards {
     mount(this.target, h('div', { class: `page dashboard${editing ? ' editing' : ''}` },
       this.list().length > 1 && !editing ? tabs : null,
       h('div', { class: 'page-head' }, head, h('div', { class: 'toolbar' }, actions)),
+      this.drawFilters(shown),
       tiles.length
         ? h('div', { class: 'dash-grid' }, tiles)
         : h('div', { class: 'card' }, empty('dashboard', 'No tiles yet', editing ? 'Add a tile to show a saved view.' : 'An administrator adds tiles that show saved views.',
@@ -104,6 +181,7 @@ class Dashboards {
   tile(tile, index) {
     const view = this.definition.cubes.find((cube) => cube.name === tile.cube)?.views?.[tile.view];
     const title = tile.title || tile.view;
+    const standing = this.standing(tile).map((at) => at.member);
     const body = h('div', { class: 'tile-body', 'aria-busy': 'true' }, h('div', { class: 'skeleton' }));
     const open = `/explore?cube=${encodeURIComponent(tile.cube)}&view=${encodeURIComponent(tile.view)}`;
     const card = h('section', {
@@ -112,7 +190,8 @@ class Dashboards {
       dataset: { index },
     },
     h('div', { class: 'tile-head' },
-      h('div', { class: 'grow' }, h('h3', {}, title), h('p', { class: 'muted' }, `${tile.cube} · ${tile.view}`)),
+      h('div', { class: 'grow' }, h('h3', {}, title), h('p', { class: 'muted' }, `${tile.cube} · ${tile.view}`,
+        standing.length ? h('span', { class: 'tile-standing' }, ` · at ${standing.join(', ')}`) : null)),
       this.editing ? this.tileControls(tile, index) : h('a', { class: 'button small quiet icon', href: open, 'data-link': '', title: 'Open in Explore', 'aria-label': `Open ${title} in Explore` }, icon('explore', 16))),
     body);
     if (this.editing) this.draggable(card, index);
@@ -128,7 +207,7 @@ class Dashboards {
       return;
     }
     try {
-      const result = await post('/mdx', { mdx: view.mdx });
+      const result = await post('/mdx', { mdx: view.mdx, context: this.standing(tile) });
       mount(body, this.show(result, tile.show ?? 'bars'));
     } catch (problem) {
       mount(body, failure(problem, () => this.fill(body, tile, view)));
@@ -310,6 +389,7 @@ class Dashboards {
     const clean = {
       name: dashboard.name,
       ...(dashboard.description?.trim() ? { description: dashboard.description.trim() } : {}),
+      ...(dashboard.filters?.length ? { filters: dashboard.filters } : {}),
       tiles: dashboard.tiles.map((tile) => ({
         ...(tile.title?.trim() ? { title: tile.title.trim() } : {}),
         cube: tile.cube,

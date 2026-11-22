@@ -689,6 +689,19 @@ struct QueryRequest {
     transaction: Option<u64>,
     /// The query text, for example `SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]`.
     mdx: String,
+    /// Members to stand at, each in place of the member the query's WHERE names for its
+    /// dimension, or beside them. An axis that places one of their dimensions decides it.
+    /// A page's selectors use it to show one saved query at other members.
+    #[serde(default)]
+    context: Vec<ContextMember>,
+}
+
+/// A member to stand at, by its dimension and its name or alias.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct ContextMember {
+    dimension: String,
+    member: String,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1139,10 +1152,16 @@ async fn query(
 ) -> Result<Json<QueryResult>, ApiError> {
     let database = database.read().unwrap();
     let may_read = |cube: &str| grants.on(cube) >= Role::Read;
+    let standing: Vec<(&str, &str)> = request
+        .context
+        .iter()
+        .map(|at| (at.dimension.as_str(), at.member.as_str()))
+        .collect();
     Ok(Json(database.query_as(
         request.transaction,
         &request.mdx,
         &may_read,
+        &standing,
     )?))
 }
 

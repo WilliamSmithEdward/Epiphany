@@ -343,6 +343,31 @@ async fn an_mdx_query_is_answered_with_axes_and_cells() {
         body,
         json!({ "code": "invalid_mdx", "message": "dimension 'Entity' has no member 'Mars'" })
     );
+
+    // The same query stood at other members: the UK in place of the axis's own is ignored,
+    // and February in place of January, where nothing is stored, totals nothing.
+    let context = json!([{ "dimension": "Period", "member": "Feb" }, { "dimension": "Entity", "member": "UK" }]);
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/mdx",
+        Some(json!({ "mdx": mdx, "context": context })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cells"], json!([0.0, 0.0]));
+    let slicer: Vec<&str> = body["slicer"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["unique_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(slicer, ["[Period].[Feb]", "[Version].[Actual]"]);
+    let unknown = json!({ "mdx": mdx, "context": [{ "dimension": "Period", "member": "Smarch" }] });
+    assert_eq!(
+        call(&app, "POST", "/mdx", Some(unknown)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 #[tokio::test]
@@ -864,6 +889,7 @@ async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
 
     let dashboard = json!({
         "name": "Finance",
+        "filters": ["Version", "Period"],
         "tiles": [
             { "cube": "General Ledger", "view": "By entity", "show": "figure" },
             { "title": "Entities", "cube": "general ledger", "view": "by entity", "width": 2 }
@@ -881,14 +907,21 @@ async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
         served["model"]["dashboards"][0]["tiles"][0]["show"],
         "figure"
     );
+    assert_eq!(
+        served["model"]["dashboards"][0]["filters"],
+        json!(["Version", "Period"])
+    );
 
-    // A tile must show a view the cube has, one or two columns wide.
-    for tile in [
-        json!({ "cube": "General Ledger", "view": "Nowhere" }),
-        json!({ "cube": "Nowhere", "view": "By entity" }),
-        json!({ "cube": "General Ledger", "view": "By entity", "width": 3 }),
+    // A tile must show a view the cube has, one or two columns wide, and a filter must be
+    // a dimension of the model.
+    let tile = json!({ "cube": "General Ledger", "view": "By entity" });
+    for broken in [
+        json!({ "name": "Broken", "tiles": [{ "cube": "General Ledger", "view": "Nowhere" }] }),
+        json!({ "name": "Broken", "tiles": [{ "cube": "Nowhere", "view": "By entity" }] }),
+        json!({ "name": "Broken", "tiles": [{ "cube": "General Ledger", "view": "By entity", "width": 3 }] }),
+        json!({ "name": "Broken", "filters": ["Nowhere"], "tiles": [tile] }),
     ] {
-        let put = json!({ "based_on": 3, "dashboard": { "name": "Broken", "tiles": [tile] } });
+        let put = json!({ "based_on": 3, "dashboard": broken });
         let (status, body) = call(&app, "PUT", "/dashboards/Broken", Some(put)).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     }

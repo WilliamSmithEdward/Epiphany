@@ -648,17 +648,21 @@ impl Database {
         transaction: Option<TransactionId>,
         text: &str,
     ) -> Result<QueryResult, Error> {
-        self.query_as(transaction, text, &|_| true)
+        self.query_as(transaction, text, &|_| true, &[])
     }
 
     /// Answers an MDX query for someone who may read only some cubes: `may_read` says which,
     /// by name. The query's own cube and any it looks cells up in must be among them. What
-    /// the model's rules read is the model's business and is not asked about.
+    /// the model's rules read is the model's business and is not asked about. `standing`
+    /// names members, `(dimension, member)`, to stand at in place of those the query's WHERE
+    /// names for their dimensions, or beside them; an axis that places one of their
+    /// dimensions decides it.
     pub fn query_as(
         &self,
         transaction: Option<TransactionId>,
         text: &str,
         may_read: &dyn Fn(&str) -> bool,
+        standing: &[(&str, &str)],
     ) -> Result<QueryResult, Error> {
         let query = mdx::parse(text)?;
         let cube = self.cube_id(&query.cube)?;
@@ -681,7 +685,7 @@ impl Database {
         let expect = |cells: &[&[ElementId]]| reader.expect(cube, cells);
         let occupied =
             |most: usize, show: &mut dyn FnMut(&[ElementId])| reader.occupied(cube, most, show);
-        Ok(query.evaluate(&self.model, cube, &read, &expect, &occupied)?)
+        Ok(query.evaluate(&self.model, cube, &read, &expect, &occupied, standing)?)
     }
 
     /// Writes every cell, or none of them if any write is refused. Within a transaction the

@@ -109,6 +109,57 @@ fn columns_rows_and_a_slicer_address_cells() {
 }
 
 #[test]
+fn members_stood_at_take_the_slicers_place() {
+    let database = database();
+    let stood =
+        |mdx: &str, standing: &[(&str, &str)]| database.query_as(None, mdx, &|_| true, standing);
+    let unique = |result: &QueryResult| -> Vec<String> {
+        result
+            .slicer
+            .iter()
+            .map(|m| m.unique_name.clone())
+            .collect()
+    };
+    let budget = stood(
+        "SELECT {[Entity].[US]} ON COLUMNS, {[Account].[Product Revenue]} ON ROWS
+         FROM [General Ledger] WHERE ([Period].[Jan], [Version].[Actual])",
+        &[("Version", "Budget")],
+    )
+    .unwrap();
+    assert_eq!(unique(&budget), ["[Period].[Jan]", "[Version].[Budget]"]);
+    assert_eq!(numbers(&budget), some(&[90.0]));
+
+    // A dimension the WHERE leaves out is added, found by any spelling of its name; one an
+    // axis places stays as the axis has it, and is not reported among the slicer.
+    let added = stood(
+        "SELECT {[Entity].[US], [Entity].[UK]} ON COLUMNS FROM [General Ledger]
+         WHERE [Version].[Actual]",
+        &[
+            ("Period", "Jan"),
+            ("Entity", "UK"),
+            ("account", "product revenue"),
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        unique(&added),
+        [
+            "[Version].[Actual]",
+            "[Period].[Jan]",
+            "[Account].[Product Revenue]"
+        ]
+    );
+    assert_eq!(names(&added, 0), ["US", "UK"]);
+    assert_eq!(numbers(&added), some(&[100.0, 50.0]));
+
+    let unknown = stood(
+        "SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]",
+        &[("Version", "Forecast")],
+    );
+    assert!(matches!(unknown, Err(Error::Mdx(_))), "{unknown:?}");
+}
+
+#[test]
 fn rows_may_come_before_columns_and_axes_may_be_numbered() {
     let result = run("
         SELECT {[Account].[Revenue]} ON 1, {[Entity].[US], [Entity].[UK]} ON AXIS(0)

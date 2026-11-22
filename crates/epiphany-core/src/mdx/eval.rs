@@ -169,6 +169,9 @@ pub(super) fn elements(model: &Model, cube: &Cube, set: &Expr) -> Evaluated<Vec<
 impl Query {
     /// Runs the query against a cube, reading stored and consolidated cells through `read`,
     /// after saying through `expect` which cells of the cube the axes will ask for.
+    /// `standing` names members, `(dimension, member)`, that the query stands at in place of
+    /// those its WHERE names for their dimensions, or beside them; where an axis places one
+    /// of their dimensions, the axis decides it.
     pub(crate) fn evaluate(
         &self,
         model: &Model,
@@ -176,6 +179,7 @@ impl Query {
         read: Read,
         expect: Expect,
         occupied: Occupied,
+        standing: &[(&str, &str)],
     ) -> Evaluated<QueryResult> {
         let cube = &model.cubes()[cube_id];
         let mut evaluator = Evaluator::new(model, cube_id, cube, read);
@@ -225,8 +229,26 @@ impl Query {
                 _ => return fail("WHERE takes a member or a tuple"),
             };
             claim(&slicer)?;
-            context = with(&context, &slicer);
         }
+        // The members to stand at take the slicer's place for their dimensions. They claim no
+        // dimension: an axis that places one puts its own members in every cell.
+        for &(dimension, name) in standing {
+            let named = Expr::Name(vec![dimension.to_owned(), name.to_owned()]);
+            let Datum::Member(member) = evaluator.evaluate(&evaluator.settled(&named), &context)?
+            else {
+                return fail(format!(
+                    "[{dimension}].[{name}] is not a member to stand at"
+                ));
+            };
+            match slicer
+                .iter_mut()
+                .find(|other| other.position == member.position)
+            {
+                Some(other) => *other = member,
+                None => slicer.push(member),
+            }
+        }
+        context = with(&context, &slicer);
 
         let mut axes: Vec<&Axis> = self.axes.iter().collect();
         axes.sort_by_key(|axis| axis.ordinal);
@@ -238,6 +260,7 @@ impl Query {
             return fail("axes are numbered from COLUMNS without gaps or repeats");
         }
         let mut laid = Vec::new();
+        let mut placed = HashSet::new();
         for axis in &axes {
             let axis = evaluator.lay(&evaluator.settled(&axis.set), axis.non_empty, &context)?;
             let first: Option<Tuple> = match &axis {
@@ -246,6 +269,7 @@ impl Query {
             };
             if let Some(tuple) = first {
                 claim(&tuple)?;
+                placed.extend(tuple.iter().map(|member| member.position));
             }
             laid.push(axis);
         }
@@ -340,8 +364,10 @@ impl Query {
             cube: cube.name.clone(),
             cells: kept_cells.collect(),
             axes: axes.collect(),
+            // A member stood at whose dimension an axis places is not where the cells are.
             slicer: slicer
                 .iter()
+                .filter(|member| !placed.contains(&member.position))
                 .map(|&member| evaluator.describe(member, &[]))
                 .collect(),
         })
