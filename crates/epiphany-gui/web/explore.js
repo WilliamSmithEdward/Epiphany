@@ -410,6 +410,12 @@ class Explorer {
       { label: 'Put on columns', icon: 'columns', disabled: place === 'columns' || Boolean(this.layout.mdx), action: () => this.move(name, 'columns') },
       { label: 'Use as a filter', icon: 'filter', disabled: place === 'filters' || Boolean(this.layout.mdx), action: () => this.move(name, 'filters') },
       { label: 'Leave out of the query', icon: 'eyeOff', disabled: place === 'unused' || Boolean(this.layout.mdx), action: () => this.move(name, 'unused') },
+      {
+        label: 'Attributes and aliases…',
+        icon: 'eye',
+        disabled: (place !== 'rows' && place !== 'columns') || Boolean(this.layout.mdx) || !Object.keys(this.dims.get(name).attributes ?? {}).length,
+        action: () => this.chooseAttributes(name),
+      },
       '-',
       { label: 'Choose members…', icon: 'check', disabled: place === 'unused' || Boolean(this.layout.mdx), action: () => this.pick(name) },
     ], at);
@@ -723,25 +729,45 @@ class Explorer {
     const limit = 5000;
     const shownRows = rowTuples.slice(0, limit);
     const total = (tuple) => tuple.some((m) => m.type === 'consolidated');
-    const table = h('table', { class: 'pivot', role: 'grid', 'aria-rowcount': rowTuples.length + columnDepth, 'aria-colcount': columnTuples.length + rowDepth });
+    // The attributes shown beside each dimension's members, where the layout asks for them.
+    const shownAttributes = (place, tuple) => (tuple ?? []).map((m) => (this.layout.mdx ? [] : this.entryOf(place, m.dimension)?.attributes ?? []));
+    const rowAttributes = shownAttributes('rows', rowTuples[0]);
+    const columnAttributes = shownAttributes('columns', columnTuples[0]);
+    const rowWidth = rowAttributes.reduce((sum, attributes) => sum + 1 + attributes.length, 0);
+    const headRows = columnAttributes.reduce((sum, attributes) => sum + 1 + attributes.length, 0);
+    const table = h('table', { class: 'pivot', role: 'grid', 'aria-rowcount': rowTuples.length + headRows, 'aria-colcount': columnTuples.length + rowWidth });
     const head = h('thead');
     for (let level = 0; level < columnDepth; level += 1) {
-      const tr = h('tr');
-      if (level === 0) {
-        tr.append(h('th', { class: 'corner', colspan: Math.max(rowDepth, 1), rowspan: columnDepth, scope: 'col' },
-          rowTuples[0]?.map((m) => m.dimension).join(' · ') ?? ''));
-      }
+      const groups = [];
       // Neighbouring columns that share this member and those above it share one heading.
       for (let index = 0; index < columnTuples.length;) {
         const key = (i) => columnTuples[i].slice(0, level + 1).map((m) => m.unique_name).join('|');
         let span = 1;
         while (index + span < columnTuples.length && key(index + span) === key(index)) span += 1;
-        const m = columnTuples[index][level];
-        tr.append(h('th', { scope: 'col', colspan: span, class: `col-head ${m.type === 'consolidated' ? 'total' : ''}` },
-          this.memberLabel('columns', m)));
+        groups.push([columnTuples[index][level], span]);
         index += span;
       }
+      const tr = h('tr');
+      if (level === 0) {
+        tr.append(h('th', { class: 'corner', colspan: Math.max(rowWidth, 1), rowspan: headRows, scope: 'col' },
+          h('div', { class: 'corner-labels' }, rowTuples[0]?.flatMap((m, index) => [
+            h('span', {}, m.dimension),
+            ...rowAttributes[index].map((attribute) => h('span', { class: 'muted' }, attribute)),
+          ]) ?? '')));
+      }
+      for (const [m, span] of groups) {
+        tr.append(h('th', { scope: 'col', colspan: span, class: `col-head ${m.type === 'consolidated' ? 'total' : ''}` },
+          this.memberLabel('columns', m)));
+      }
       head.append(tr);
+      for (const attribute of columnAttributes[level]) {
+        head.append(h('tr', { class: 'attribute-row-head' }, groups.map(([m, span]) => h('th', {
+          scope: 'col',
+          colspan: span,
+          class: 'col-attribute',
+          title: attribute,
+        }, this.attributeValue(m, attribute)))));
+      }
     }
     const body = h('tbody');
     const columnCount = columnTuples.length;
@@ -751,6 +777,9 @@ class Explorer {
         // A member repeated from the row above is left blank, so groups read clearly.
         const same = r > 0 && shownRows[r - 1].slice(0, level + 1).every((other, i) => other.unique_name === tuple[i].unique_name);
         tr.append(h('th', { scope: 'row', class: `row-head ${m.type === 'consolidated' ? 'total' : ''}` }, same ? '' : this.memberLabel('rows', m)));
+        for (const attribute of rowAttributes[level] ?? []) {
+          tr.append(h('th', { scope: 'row', class: 'row-attribute', title: attribute }, same ? '' : this.attributeValue(m, attribute)));
+        }
       });
       for (let c = 0; c < columnCount; c += 1) {
         const value = result.cells[r * columnCount + c];
@@ -781,6 +810,7 @@ class Explorer {
     });
     const scroller = h('div', { class: 'pivot-scroll' }, table);
     mount(this.output, scroller);
+    this.pinHeads(table);
     this.focusCell();
     const cells = rowTuples.length * columnCount;
     mount(this.statusLine,
@@ -808,8 +838,82 @@ class Explorer {
     } else if (depth) {
       label.append(h('span', { class: 'twisty' }));
     }
-    label.append(h('span', {}, m.name));
+    const alias = entry?.alias && !this.layout.mdx ? element?.attributes?.[entry.alias] : null;
+    label.append(h('span', { title: alias ? m.name : null }, alias || m.name));
     return label;
+  }
+
+  entryOf(place, dimension) {
+    return this.layout[place]?.find((candidate) => candidate.dimension === dimension);
+  }
+
+  /** An attribute of a member, as text. */
+  attributeValue(m, attribute) {
+    const value = this.dims.get(m.dimension)?.byName.get(m.name)?.attributes?.[attribute];
+    if (value === undefined || value === null) return '';
+    return typeof value === 'number' ? formatNumber(value) : String(value);
+  }
+
+  /**
+   * Keeps the heading rows and the row headings in view as the grid scrolls: each heading
+   * row below the one above it, and each row heading column beside those before it.
+   */
+  pinHeads(table) {
+    let top = 0;
+    for (const row of table.tHead.rows) {
+      for (const cell of row.cells) {
+        if (!cell.classList.contains('corner')) cell.style.top = `${top}px`;
+      }
+      top += row.offsetHeight;
+    }
+    const first = table.tBodies[0]?.rows[0];
+    if (!first) return;
+    const lefts = [];
+    let left = 0;
+    for (const cell of first.cells) {
+      if (cell.tagName !== 'TH') break;
+      lefts.push(left);
+      left += cell.offsetWidth;
+    }
+    for (const row of table.tBodies[0].rows) {
+      [...row.cells].slice(0, lefts.length).forEach((cell, index) => {
+        cell.style.left = `${lefts[index]}px`;
+        cell.classList.add('pinned');
+      });
+    }
+  }
+
+  /** Chooses the attributes shown beside a dimension's members, and an alias for its names. */
+  async chooseAttributes(name) {
+    const place = this.placeOf(name);
+    const dim = this.dims.get(name);
+    const entry = this.entryOf(place, name);
+    const declared = Object.entries(dim.attributes ?? {});
+    const shown = new Set(entry.attributes ?? []);
+    const boxes = declared.map(([attribute, kind]) => h('label', { class: 'check' },
+      h('input', { type: 'checkbox', value: attribute, checked: shown.has(attribute) }),
+      attribute, kind === 'alias' ? h('span', { class: 'muted' }, ' alias') : null));
+    const aliases = declared.filter(([, kind]) => kind === 'alias');
+    const alias = h('select', { class: 'select', id: 'alias' },
+      h('option', { value: '' }, 'Their names'),
+      aliases.map(([attribute]) => h('option', { value: attribute, selected: entry.alias === attribute }, attribute)));
+    const chosen = await dialog({
+      title: `Attributes of ${name}`,
+      confirm: 'Show',
+      body: h('div', { class: 'facts' },
+        h('fieldset', { class: 'field' }, h('legend', {}, place === 'rows' ? 'Shown in columns beside the members' : 'Shown in rows beneath the members'), h('div', { class: 'checks' }, boxes)),
+        aliases.length ? h('div', { class: 'field' }, h('label', { for: 'alias' }, 'Show the members by'), alias) : null),
+      onsubmit: (form) => ({
+        attributes: [...form.querySelectorAll('input[type=checkbox]:checked')].map((box) => box.value),
+        alias: alias.value || null,
+      }),
+    });
+    if (!chosen) return;
+    this.change((layout) => {
+      const target = layout[place].find((candidate) => candidate.dimension === name);
+      target.attributes = chosen.attributes;
+      target.alias = chosen.alias;
+    });
   }
 
   depthOf(entry, dim, name) {

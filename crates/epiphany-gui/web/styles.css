@@ -424,13 +424,10 @@ a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transfo
 .pivot { border-collapse: separate; border-spacing: 0; font-size: var(--text-s); font-variant-numeric: tabular-nums; min-width: 100%; background: var(--surface); }
 .pivot th, .pivot td { padding: 0 var(--s3); height: 32px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); white-space: nowrap; }
 .pivot thead th { position: sticky; top: 0; z-index: 2; background: var(--surface-2); font-weight: 600; color: var(--text); text-align: right; }
-.pivot thead tr:nth-child(2) th { top: 32px; }
-.pivot thead tr:nth-child(3) th { top: 64px; }
 .pivot thead th.col-head { text-align: center; }
 .pivot thead th.total { background: var(--total-strong); }
 .pivot th.corner { left: 0; z-index: 3; text-align: left; color: var(--text-3); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .05em; vertical-align: bottom; padding-bottom: var(--s2); }
 .pivot tbody th { position: sticky; left: 0; z-index: 1; background: var(--surface); text-align: left; font-weight: 500; }
-.pivot tbody th + th { left: auto; position: static; }
 .pivot tbody th.total { font-weight: 650; }
 .pivot td { text-align: right; min-width: 104px; color: var(--text); }
 .pivot td.s { text-align: left; }
@@ -657,3 +654,10 @@ dialog.wide .dialog-body { max-height: none; }
 .filter-panel .segmented button { height: 26px; }
 .input[readonly] { background: var(--surface-2); color: var(--text-2); }
 .input[readonly]:focus { border-color: var(--line-strong); box-shadow: none; }
+
+/* ---- Attributes in the grid ---- */
+
+.pivot th.row-attribute { font-weight: 400; color: var(--text-2); background: var(--surface); border-left: 1px dashed var(--line); }
+.pivot th.col-attribute { font-weight: 400; color: var(--text-2); font-size: var(--text-xs); background: var(--surface-2); }
+.pivot thead tr.attribute-row-head th { height: 26px; }
+.corner-labels { display: flex; flex-wrap: wrap; gap: 4px var(--s4); }
