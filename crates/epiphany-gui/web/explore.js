@@ -4,7 +4,7 @@
 import { ApiError, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, model, state } from './app.js';
 import { chart, shape } from './chart.js';
-import { defaultLayout, mdx, saved, shown } from './layout.js';
+import { CALCULATIONS, defaultLayout, mdx, saved, shown } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
@@ -117,6 +117,9 @@ class Explorer {
       for (const filter of layout.filters) {
         if (!this.dims.get(filter.dimension).byName.has(filter.member)) filter.member = this.dims.get(filter.dimension).roots[0];
       }
+      // A calculation over members that are gone goes with them.
+      const fits = (each) => CALCULATIONS[each.kind] && [each.a, each.b].every((name) => name === undefined || this.dims.get(each.dimension)?.byName.has(name));
+      layout.calculations = (layout.calculations ?? []).filter(fits);
       return layout;
     } catch {
       return null;
@@ -834,6 +837,60 @@ class Explorer {
       plotted
         ? chart(data, settings.kind)
         : empty('chart', 'Nothing to chart', 'The result has no numbers. Choose other members, or show empty rows.')));
+  }
+
+  /** Whether a member of a dimension is one of the layout's calculations. */
+  calculated(dimension, name) {
+    return (this.layout.calculations ?? []).some((each) => each.dimension === dimension && each.name === name);
+  }
+
+  /**
+   * Asks which calculation to add beside a member of a dimension on an axis: its
+   * difference from another member, its ratio or change against one, or its share of its
+   * parent. It stands after the dimension's members, worked out by the query.
+   */
+  async addCalculation(place, dimension, name) {
+    const dim = this.dims.get(dimension);
+    const others = shown(this.entryOf(place, dimension), dim).map((each) => each.name).filter((other) => other !== name);
+    const parented = dim.byName.get(name)?.parents.length > 0;
+    const kinds = Object.entries(CALCULATIONS).filter(([kind]) => (kind === 'share' ? parented : others.length > 0));
+    if (!kinds.length) {
+      notify(`Show another member of ${dimension} beside ${name} to calculate with it.`);
+      return;
+    }
+    const kind = h('select', { class: 'select', id: 'calc-kind' }, kinds.map(([value, [label]]) => h('option', { value }, label)));
+    const other = h('select', { class: 'select', id: 'calc-other' }, others.map((each) => h('option', { value: each }, each)));
+    const otherField = h('div', { class: 'field' }, h('label', { for: 'calc-other' }, 'The other member'), other);
+    const named = h('input', { class: 'input', id: 'calc-name', required: true, maxlength: 120 });
+    let typed = false;
+    named.addEventListener('input', () => { typed = true; });
+    const suggest = () => {
+      otherField.hidden = kind.value === 'share';
+      const b = other.value;
+      if (!typed) named.value = { difference: `${name} - ${b}`, ratio: `${name} / ${b}`, change: `${name} vs ${b} %`, share: `${name} % of parent` }[kind.value];
+    };
+    kind.addEventListener('change', suggest);
+    other.addEventListener('change', suggest);
+    suggest();
+    const added = await dialog({
+      title: `A calculation beside ${name}`,
+      confirm: 'Add it',
+      body: h('div', { class: 'facts' },
+        h('div', { class: 'field' }, h('label', { for: 'calc-kind' }, 'Show'), kind),
+        otherField,
+        h('div', { class: 'field' }, h('label', { for: 'calc-name' }, 'Called'), named),
+        h('p', { class: 'hint' }, `It stands after the members of ${dimension}, worked out by the query for every cell; it is kept with the layout and any view saved from it.`)),
+      onsubmit: () => {
+        const label = named.value.trim();
+        if (!label) throw new Error('Give the calculation a name.');
+        if (dim.byName.has(label) || this.calculated(dimension, label)) throw new Error(`${dimension} has a member called ${label} already.`);
+        return { dimension, name: label, kind: kind.value, a: name, ...(kind.value === 'share' ? {} : { b: other.value }) };
+      },
+    });
+    if (!added) return;
+    this.change((layout) => {
+      layout.calculations = [...(layout.calculations ?? []), added];
+    });
   }
 
   /** Asks how the grid shows its numbers: decimals, the unit, negatives and zeros. */

@@ -591,6 +591,14 @@ export const grid = {
           target.members = target.members.filter((other) => other !== name);
         }),
       } : null,
+      entry && element ? { label: 'Add a calculation…', icon: 'sigma', action: () => this.addCalculation(place, dimension, name) } : null,
+      this.calculated(dimension, name) ? {
+        label: 'Remove the calculation',
+        icon: 'trash',
+        action: () => this.change((layout) => {
+          layout.calculations = layout.calculations.filter((each) => !(each.dimension === dimension && each.name === name));
+        }),
+      } : null,
       '-',
       { label: 'Copy the name', icon: 'copy', action: () => copyText(name) },
       { label: 'Copy its MDX name', icon: 'code', action: () => copyText(member(dimension, name)) },
