@@ -479,3 +479,21 @@ export function copyText(text) {
     () => notify('The browser kept the page from the clipboard. Press Ctrl C instead.', 'bad'),
   );
 }
+
+/** What draws only the part of itself in view, by its element: how to draw it for paper, and back. */
+const printed = new WeakMap();
+
+/**
+ * Paper has no scrolling: while the page is printed, `element`, drawn only in part where it
+ * can be seen, is drawn whole by `whole()`, and afterwards as it was by `after()`.
+ */
+export function printsWhole(element, whole, after) {
+  printed.set(element, { whole, after });
+  element.dataset.printsWhole = '';
+}
+
+for (const [event, then] of [['beforeprint', 'whole'], ['afterprint', 'after']]) {
+  addEventListener(event, () => {
+    for (const element of document.querySelectorAll('[data-prints-whole]')) printed.get(element)?.[then]();
+  });
+}

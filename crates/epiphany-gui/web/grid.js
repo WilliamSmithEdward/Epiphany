@@ -6,7 +6,10 @@ import { empty } from './app.js';
 import { member, saved } from './layout.js';
 import { cellText, Selection } from './selection.js';
 import { beneath } from './tree.js';
-import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, SCALES, shownText, working } from './ui.js';
+import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, printsWhole, SCALES, shownText, working } from './ui.js';
+
+/** The most cells a grid draws whole for printing: every row draws all its columns. */
+const PRINTED = 200_000;
 
 /**
  * What a view's highlights do to a cell of its grid, or null when it has none: a bar as
@@ -223,6 +226,7 @@ export const grid = {
       });
     });
     new ResizeObserver(() => this.updateRows()).observe(scroller);
+    printsWhole(scroller, () => this.drawWhole(), () => this.updateRows(true));
     grid.scroller = scroller;
     // Drawn again, the grid stays where it was scrolled to.
     const before = this.output.querySelector(':scope > .pivot-scroll');
@@ -245,6 +249,18 @@ export const grid = {
     this.markFound();
     this.drawStatus(summary);
     this.explainRows(this.drawnRows());
+  },
+
+  /**
+   * Every row, for paper, which has no scrolling: up to PRINTED cells, past which drawing
+   * them would hold the page up, and the printout says that only the rows in view are on it.
+   */
+  drawWhole() {
+    const grid = this.grid;
+    const whole = grid.rowTuples.length * grid.columnCount <= PRINTED;
+    grid.scroller.toggleAttribute('data-part', !whole);
+    grid.scroller.dataset.rows = grid.rowTuples.length.toLocaleString();
+    if (whole) this.drawRows(0, grid.rowTuples.length);
   },
 
   /** The places of the rows drawn. */

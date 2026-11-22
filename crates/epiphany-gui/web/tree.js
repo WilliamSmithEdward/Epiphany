@@ -3,7 +3,7 @@
 // show what was found; long lists drawn only where they can be seen; the keys that move
 // about a tree; the buttons that open and close it; and the words found, marked.
 
-import { h, icon } from './ui.js';
+import { h, icon, printsWhole } from './ui.js';
 
 /** How tall a row of a list or tree is, in pixels: every row the same, to draw only those in view. */
 export const ROW = 28;
@@ -110,6 +110,9 @@ export function marked(text, words) {
   return parts;
 }
 
+/** The most rows a list draws whole for printing. */
+const PRINTED = 10_000;
+
 /**
  * The rows of a long list, drawn only where they can be seen in `scroller`, so that a list of
  * any length shows at once and scrolls smoothly. Every row is `ROW` pixels tall; `draw(index)`
@@ -125,6 +128,7 @@ export class Rows {
     this.count = 0;
     this.drawn = new Map();
     this.element = h('div', { class: 'rows' });
+    printsWhole(this.element, () => this.drawWhole(), () => this.update());
     let queued = false;
     scroller.addEventListener('scroll', () => {
       if (queued) return;
@@ -172,6 +176,30 @@ export class Rows {
       }
     }
     for (let index = first; index < last; index += 1) if (!this.drawn.has(index)) this.place(index);
+  }
+
+  /**
+   * Every row, for paper, which has no scrolling: up to PRINTED of them, past which drawing
+   * them would hold the page up, and the printout says that only the rows in view are on it.
+   * Those drawn stay where they are, the focus with them.
+   */
+  drawWhole() {
+    const whole = this.count <= PRINTED;
+    this.element.toggleAttribute('data-part', !whole);
+    this.element.dataset.rows = this.count.toLocaleString();
+    if (!whole) return;
+    let next = this.element.firstElementChild;
+    for (let index = 0; index < this.count; index += 1) {
+      const drawn = this.drawn.get(index);
+      if (drawn) {
+        next = drawn.nextElementSibling;
+        continue;
+      }
+      const element = this.draw(index);
+      element.style.top = `${index * ROW}px`;
+      this.element.insertBefore(element, next);
+      this.drawn.set(index, element);
+    }
   }
 
   /** Draws a row in its place, among the others in order, so that the page reads in order. */

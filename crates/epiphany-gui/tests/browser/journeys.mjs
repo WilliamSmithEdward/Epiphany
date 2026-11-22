@@ -1,7 +1,8 @@
 // The GUI's main journeys, taken in a browser as a person takes them: signing in, and again
 // when the session ends; exploring a cube, an MDX query and writing a value back; changing
-// the model; administering users and viewing the server as one of them; and scrolling a grid
-// of 100,000 cells. Each page is checked as it stands by audit.js, in both themes.
+// the model; administering users and viewing the server as one of them; and scrolling and
+// printing a grid of 100,000 cells. Each page is checked as it stands by audit.js, in both
+// themes.
 //
 //   cargo build -p epiphany-server -p epiphany-gui
 //   node crates/epiphany-gui/tests/browser/journeys.mjs [--headed] [--keep]
@@ -773,6 +774,33 @@ async function aLargeGrid() {
     expect(scrolled.last === 'R2000' && scrolled.value === '199,949', `The last row reads ${quoted(scrolled.last)}, ${quoted(scrolled.value)}.`);
     expect(scrolled.median < scrolled.rest * 1.5, `Scrolling, frames come ${scrolled.median.toFixed(0)} ms apart as a rule, against ${scrolled.rest.toFixed(0)} ms at rest.`);
     expect(scrolled.slowest < 500, `Scrolling stood still for ${scrolled.slowest.toFixed(0)} ms.`);
+  });
+  await step('Printing a grid draws all of it, and afterwards only what is in view again', async () => {
+    const drawn = `document.querySelectorAll('td[data-r]').length`;
+    const printed = await page.evaluate(`(() => {
+      const began = performance.now();
+      dispatchEvent(new Event('beforeprint'));
+      return { cells: ${drawn}, took: performance.now() - began };
+    })()`);
+    console.log(`    ${printed.cells.toLocaleString('en-US')} cells drawn for paper in ${printed.took.toFixed(0)} ms`);
+    expect(printed.cells === 100_000, `${printed.cells} cells are drawn for paper, of 100,000.`);
+    await page.evaluate(`dispatchEvent(new Event('afterprint'))`);
+    const after = await page.evaluate(drawn);
+    expect(after < 10_000, `${after} cells are still drawn after printing.`);
+  });
+  await step('Printing a long list of elements draws all of it, in order, and afterwards only what is in view', async () => {
+    await page.goto('/model?dimension=Row');
+    await page.waitFor(`document.querySelector('.element-tree .tree-row')`, 'the elements');
+    const drawn = `document.querySelectorAll('.element-tree .rows > *').length`;
+    await page.evaluate(`dispatchEvent(new Event('beforeprint'))`);
+    const printed = await page.evaluate(`(() => {
+      const rows = [...document.querySelectorAll('.element-tree .rows > *')];
+      return { count: rows.length, ordered: rows.every((row, index) => !index || parseFloat(row.style.top) > parseFloat(rows[index - 1].style.top)) };
+    })()`);
+    expect(printed.count === 2000 && printed.ordered, `${printed.count} elements are drawn for paper, of 2,000${printed.ordered ? '' : ', out of order'}.`);
+    await page.evaluate(`dispatchEvent(new Event('afterprint'))`);
+    const after = await page.evaluate(drawn);
+    expect(after < 200, `${after} elements are still drawn after printing.`);
   });
 }
 

@@ -77,6 +77,11 @@ only way to do something, and modal dialogs where a side panel would keep the da
   release build that takes about 0.7 s for half a million elements and 2 s for a million,
   fetched, read and made ready (2026-11-22). Members fetched only as a tree is opened would
   take that time away, but every page now reads a dimension as held whole.
+- **Printable.** A page prints as it reads, without the bar, the list of pages or what only
+  controls it: in the light palette whatever the screen's, at its full length, the grid's
+  headings repeated on every sheet and its shading, highlights and chart colours kept. A grid
+  of up to 200,000 cells and a list of up to 10,000 rows are drawn whole for paper; past that,
+  the printout says that only the rows in view are on it.
 - **Every state designed.** Loading, empty, error with a retry, and refused for want of
   rights. Moving to another page leaves the one shown, still, until the next is drawn: a
   quick load shows no gap, and a slow one the outline of what is coming. Choosing another
@@ -135,7 +140,7 @@ the run.
 | Exploring and writing back | An MDX query typed in shows what the API answers to it; a value typed into a cell is saved and read back through the API; the tabs over the grid gone along by the arrow keys; a cell's comments, history and detail |
 | Changing the model | An element added in the editor is the one the API gives back |
 | Administering | The users; an element hidden from a reader, chosen from its dimension's tree; viewing the server as that reader, who is shown no administration, not the element, and whose writes are refused; back to the administrator, the view kept in the audit |
-| A large grid | 100,000 cells: only those in view drawn, and scrolled to the end at the pace the page keeps at rest |
+| A large grid | 100,000 cells: only those in view drawn, and scrolled to the end at the pace the page keeps at rest; printed, all of them drawn, and the 2,000 elements of its rows' dimension too |
 
 At each step `audit.js` checks the page as it stands, in the light theme and the dark: a
 control without a name, a field named only by its placeholder, a tab order of its own, the keys

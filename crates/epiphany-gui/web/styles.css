@@ -1014,6 +1014,63 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
 .shortcuts dd { margin: 0; color: var(--text-2); text-wrap: pretty; }
 .keys { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; color: var(--text-3); }
 
+/* ---- Printing ---- */
+
+/* On paper the light palette, whatever the screen's, as paper is white. The page alone,
+   without the bar, the list of pages or what only controls it; and everything at its full
+   length, as paper does not scroll. */
+@media print {
+  :root, :root[data-theme="dark"] {
+    color-scheme: light;
+    --bg: #fff; --surface: #fff; --surface-2: #f3f4f6; --surface-3: #e8ebf0;
+    --line: #cdd3dc; --line-strong: #9aa3b2;
+    --text: #000; --text-2: #333; --text-3: #555;
+    --accent: #3730a3; --accent-soft: #eef0ff; --accent-text: #3730a3; --on-accent: #fff;
+    --good: #0f7b4a; --good-soft: #e4f6ec; --warn: #9a5b00; --warn-soft: #fff4dc; --bad: #c0262d; --bad-soft: #fdecec;
+    --total: #f3f5fb; --total-strong: #e9edf9;
+    --shadow-1: none; --shadow-2: none; --shadow-3: none;
+  }
+  .skip, .bar, .nav, .notices, .fields, .model-list, .work-head > .toolbar, .comment-panel, .pending,
+  .splitter, .dash-tabs, .page-head .toolbar, .tile-controls, .dash-filters button, .tile-head > a,
+  .zone:not(:has(.chip)), .chip-more, .pivot .twisty, .card-head > .button, .editor-head > .button,
+  .editor-head .segmented, .tree-tools, .table .actions { display: none !important; }
+  html, body, .shell, .main, .explorer, .work, .output-row, .output { display: block; }
+  html, body, .shell, .main, .page, .explorer, .work, .output-row, .output, .pivot-scroll, .tile-grid,
+  .mdx-pane, .chart-pane, .editor-body, .element-tree, .element-detail, .card.fit {
+    height: auto !important; max-height: none !important; overflow: visible !important;
+  }
+  .work-head { border: 0; padding: 0 0 var(--s3); }
+  /* The page's name, to a screen reader alone on screen, heads the paper. */
+  .explorer h1.visually-hidden { position: static !important; width: auto; height: auto; clip: auto; margin-bottom: var(--s3); }
+  /* Where the grid stands and how it is laid out, said in a line. */
+  .layout-bar { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s5); margin-bottom: var(--s3); }
+  .zone { min-height: 0; padding: 0; border: 0; background: none; gap: var(--s1) var(--s3); }
+  .zone-label { width: auto; }
+  .chip { border: 0; background: none; box-shadow: none; }
+  .chip-main { flex-direction: row; align-items: baseline; gap: 4px; padding: 0; }
+  .chip-main strong::after { content: ":"; }
+  .chip-summary { max-width: none; font-size: var(--text-s); color: var(--text); }
+  /* Headings pinned for scrolling stand in their places, and repeat on every sheet. */
+  .pivot th, .table th { position: static !important; }
+  .pivot thead, .table thead { display: table-header-group; }
+  .pivot tr, .table tr, .tile, .dash-tile { break-inside: avoid; }
+  /* Rows drawn in their places for scrolling, or standing for those not drawn, follow on. */
+  .pivot tr.spacer { display: none; }
+  .rows { height: auto !important; }
+  .rows > * { position: static !important; }
+  /* Shading, highlights and the colours of a chart's series say something, where browsers
+     leave backgrounds out; charts drawn wider than the paper fit it. */
+  .pivot, .chart { print-color-adjust: exact; }
+  .chart svg { max-width: 100%; height: auto; }
+  /* What is chosen or found is for the screen. */
+  .pivot td.selected::before, .pivot th:is(.found, .found-current)::before { display: none; }
+  [data-part]::before {
+    content: "Only the rows in view are printed, of " attr(data-rows) ".";
+    display: block; margin-bottom: var(--s3); color: var(--text-2);
+  }
+  .pivot-scroll[data-part]::before { content: "Only the rows in view are printed, of " attr(data-rows) ". Export the grid to have them all."; }
+}
+
 /* ---- High contrast ---- */
 
 /* In Windows' high contrast the system gives every colour, and backgrounds and shadows go.
