@@ -205,6 +205,28 @@ Both give the same values. Without feeders a consolidation that a leaf rule can 
 every leaf beneath it; with them it visits only the stored and fed cells. What is fed is
 worked out once after each change to the data, which is the extra time on the first read.
 
+Without feeders, such a consolidation kept every leaf it visited with the cells that rules
+work out, for whatever read them next: a million for the grand total, though only one leaf
+in a hundred is calculated. It now looks up a leaf that no rule covers as it is stored, and
+keeps only those a rule works out. Totals of that kind read together, which each walked the
+leaves beneath them, now walk every combination of those leaves once, each leaf shared out
+among the totals it counts towards, where that is no more than the totals would visit one
+by one. The grid is every consolidation of the first two dimensions by every other, at the
+calculated element and at the total of the last: totals nested in one another. Rerun the
+same day, before and after (2026-11-22):
+
+| Read, without feeders | Before | After |
+| --- | --- | --- |
+| Total of the calculated element | 4.1 ms | 4.0 ms |
+| Grand total | 308 ms | 11 ms |
+| 113 totals of the calculated element, one at a time | 12.8 ms | 12.4 ms |
+| The same 113 totals read together | 5.2 ms | 5.1 ms |
+| A grid of 338 totals, one at a time | 1,450 ms | 94 ms |
+| The same grid read together | 1,040 ms | 37 ms |
+
+With feeders, whose reading did not change, the grid takes 107 ms one at a time and 12 ms
+together.
+
 Read one at a time, each total of a fed cube passes over every stored and fed cell. Read
 together, as the cells of a query or of one `/cells/read` are, each of those cells that counts
 towards one of the totals is worked out once and shared out among them; a rule is not asked

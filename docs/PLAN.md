@@ -75,10 +75,14 @@ practice that means:
   members outright.
 - In a cube with rules the one pass takes the totals that are sums of stored cells and
   nothing else: those no rule covers and no leaf rule reaches beneath.
-- In a fed cube the totals a leaf rule reaches are added up together too: each stored or
-  fed leaf is worked out once and shared out among the totals it counts towards.
-- Not done: the one pass for such totals in a cube that is not fed, where each total
-  visits every leaf beneath it. What is kept is not adjusted by a write but dropped, so a workload that alternates writes
+- The totals a leaf rule reaches are added up together too, each leaf worked out once and
+  shared out among the totals it counts towards: in a fed cube every stored or fed leaf,
+  and in one that is not every combination of the leaves beneath them, where that is no
+  more than the totals would visit one by one.
+- Without feeders such a total visits every leaf beneath it. A leaf no rule covers is
+  looked up as it is stored; only those a rule works out are kept for the reads that
+  follow, so that a total over a million leaves does not keep a million cells.
+- What is kept is not adjusted by a write but dropped, so a workload that alternates writes
   and reads of totals gains only from the one pass.
 
 ### 2.3 Transactions and locks
@@ -495,8 +499,9 @@ practice that means:
     whose role everywhere is `admin`.
 - Not done: permissions by cell or by element, TLS (put the server behind a proxy that
   provides it before using it across a network), and tying a transaction to the session
-  that began it. Transaction ids are fifty-three random bits, so the last adds little. Anyone who knows a name can keep its user out by giving wrong passwords;
-  the pause is short so that this is a nuisance and no more.
+  that began it. Transaction ids are fifty-three random bits, so the last adds little.
+  Anyone who knows a name can keep its user out by giving wrong passwords; the pause is
+  short so that this is a nuisance and no more.
 
 ## 4. PAfE adapter
 
@@ -533,8 +538,7 @@ practice that means:
   - `adapter/check-excel.ps1` enters a formula for each row of the table in a real Excel
     and all of them pass, as does Refresh. `adapter/check-excel-windows.ps1` drives the
     Connect window, a refused and an accepted sign-in, the window that chooses a `SUBNM`'s
-    element, and Disconnect. Neither runs in CI,
-    which has no Excel.
+    element, and Disconnect. Neither runs in CI, which has no Excel.
   - A value typed over a `DBRW` or `DBR` cell is written to the cube and the formula put
     back. The add-in notes the formulas of the selected cells before they can be typed
     over, and works out which cube cell a formula reads, from the formula, when it is. It

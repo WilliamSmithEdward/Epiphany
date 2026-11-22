@@ -201,31 +201,58 @@ impl<'a> Reader<'a> {
             );
         }
 
-        // In a fed cube such a total counts each stored cell as it is, or as its rule makes
-        // it, and each fed cell that a rule covers. Read by itself, every total passes over
-        // all of them; here each is worked out once and shared out among the totals.
-        let (Some(fed), true) = (&self.fed[cube], reached.len() > 1) else {
+        // Such a total counts the leaves beneath it, each as its rule makes it or as it is:
+        // in a fed cube the stored and the fed ones, in one that is not every one. Read by
+        // itself, every total passes over all of them; here each is worked out once and
+        // shared out among the totals.
+        if reached.len() < 2 {
             return;
-        };
+        }
         let leaf_rules = || definition.rules.iter().filter(|rule| rule.decides_leaves());
         let ruled = |leaf: &[ElementId]| leaf_rules().any(|rule| matches(&rule.area, leaf));
-        // The stored cells with what they hold, then the fed cells that hold nothing.
-        let leaves = |visit: &mut dyn FnMut(&[ElementId], Option<f64>)| {
-            stored.each_number(pending, |leaf, held| visit(leaf, Some(held)));
-            for leaf in fed {
-                if stored.number_with(leaf, pending) == 0.0 {
-                    visit(leaf, None);
-                }
-            }
-        };
-        // A leaf a rule covers is what the rule makes it; any other is what it holds. A rule
-        // is only asked about a leaf beneath one of the totals, and one that fails is left to
-        // fail where its cell is read: nothing is kept then.
+        // A leaf a rule covers is what the rule makes it; any other is what it holds, looked
+        // up where that is not known yet. A rule is only asked about a leaf beneath one of
+        // the totals, and one that fails is left to fail where its cell is read: nothing is
+        // kept then.
         let value = |leaf: &[ElementId], held: Option<f64>| match ruled(leaf) {
             true => self.number(cube, leaf).ok(),
-            false => Some(held.unwrap_or(0.0)),
+            false => Some(held.unwrap_or_else(|| stored.number_with(leaf, pending))),
         };
-        let sums = Cells::share(self.model, definition, &reached, leaves, value);
+        let sums = match &self.fed[cube] {
+            Some(fed) => {
+                // The stored cells with what they hold, then the fed cells that hold nothing.
+                let leaves = |visit: &mut dyn FnMut(&[ElementId], Option<f64>)| {
+                    stored.each_number(pending, |leaf, held| visit(leaf, Some(held)));
+                    for leaf in fed {
+                        if stored.number_with(leaf, pending) == 0.0 {
+                            visit(leaf, Some(0.0));
+                        }
+                    }
+                };
+                Cells::share(self.model, definition, &reached, leaves, value)
+            }
+            None => {
+                let Some(beneath) = self.beneath(definition, &reached) else {
+                    return;
+                };
+                // Every combination of the leaves beneath the totals.
+                let leaves = |visit: &mut dyn FnMut(&[ElementId], Option<f64>)| {
+                    let lists: Vec<Leaves> = beneath.iter().map(Vec::as_slice).collect();
+                    if lists.iter().any(|list| list.is_empty()) {
+                        return;
+                    }
+                    let mut positions = vec![0; lists.len()];
+                    let mut leaf: Vec<ElementId> = lists.iter().map(|l| l[0].0).collect();
+                    loop {
+                        visit(&leaf, None);
+                        if !advance(&lists, &mut positions, &mut leaf) {
+                            break;
+                        }
+                    }
+                };
+                Cells::share(self.model, definition, &reached, leaves, value)
+            }
+        };
         keep(&reached, sums);
     }
 
@@ -516,16 +543,50 @@ impl<'a> Reader<'a> {
                 }
             }
         } else if let Some(mut positions) = self.start(&leaves)? {
+            // A leaf no rule covers is what it holds, looked up without being kept.
             let mut leaf: Vec<ElementId> = leaves.iter().map(|l| l[0].0).collect();
             loop {
                 let weights = positions.iter().zip(&leaves).map(|(&p, l)| l[p].1);
-                total += weights.product::<f64>() * self.number(cube, &leaf)?;
+                let number = match ruled(&leaf) {
+                    true => self.number(cube, &leaf)?,
+                    false => self.cells[cube].number_with(&leaf, pending),
+                };
+                total += weights.product::<f64>() * number;
                 if !advance(&leaves, &mut positions, &mut leaf) {
                     break;
                 }
             }
         }
         Ok(Scalar::Number(total))
+    }
+
+    /// The leaves beneath any of some consolidated cells, in each dimension, for one walk over
+    /// every combination of them to add the cells up together. Nothing where that walk would
+    /// visit more leaves than adding them up one by one, or more than one consolidation may.
+    fn beneath(&self, cube: &Cube, cells: &[&[ElementId]]) -> Option<Vec<Vec<(ElementId, f64)>>> {
+        let mut one_by_one = 0usize;
+        for &at in cells {
+            let mut leaves = self.elements(cube, at).map(|e| e.leaves.len());
+            let visits = leaves.try_fold(1usize, usize::checked_mul);
+            one_by_one = one_by_one.saturating_add(visits.unwrap_or(usize::MAX));
+        }
+        let mut beneath = Vec::with_capacity(cube.dimensions.len());
+        for position in 0..cube.dimensions.len() {
+            let dimension = self.dimension(cube, position);
+            let elements: FxHashSet<ElementId> = cells.iter().map(|at| at[position]).collect();
+            let mut leaves: Vec<(ElementId, f64)> = elements
+                .into_iter()
+                .flat_map(|element| &dimension[element as usize].leaves)
+                .map(|&(leaf, _)| (leaf, 1.0))
+                .collect();
+            leaves.sort_unstable_by_key(|&(leaf, _)| leaf);
+            leaves.dedup_by_key(|&mut (leaf, _)| leaf);
+            beneath.push(leaves);
+        }
+        let visits = beneath
+            .iter()
+            .try_fold(1usize, |n, l| n.checked_mul(l.len()))?;
+        (visits <= one_by_one.min(MOST_VISITED)).then_some(beneath)
     }
 
     /// Where a walk over every combination of leaves starts, or nothing if there are none.

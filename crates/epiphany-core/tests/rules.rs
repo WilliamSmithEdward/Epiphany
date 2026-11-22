@@ -574,7 +574,7 @@ fn feeders_reach_consolidations_other_cubes_and_further_feeders() {
 }
 
 /// On random cubes with a rule over a random leaf, a fully fed cube and an unfed one agree on
-/// every cell, and both agree with working the rule out by hand.
+/// every cell, read one by one or all together.
 #[test]
 fn fed_and_unfed_cubes_agree_on_random_data() {
     for seed in 0..12 {
@@ -593,9 +593,13 @@ fn fed_and_unfed_cubes_agree_on_random_data() {
             model["cubes"][0]["feeders"] = feeders;
             Database::new(serde_json::from_value(model).unwrap()).unwrap()
         };
+        // Unfed and fed, each twice: once to read cells one by one, once to read them together.
+        let fed = json!(["[d2].[e1] => [d2].[e0]", "[d2].[e2] => [d2].[e0]"]);
         let mut databases = [
             with(json!([])),
-            with(json!(["[d2].[e1] => [d2].[e0]", "[d2].[e2] => [d2].[e0]"])),
+            with(fed.clone()),
+            with(json!([])),
+            with(fed),
         ];
         let mut writes = Vec::new();
         for _ in 0..30 {
@@ -617,20 +621,40 @@ fn fed_and_unfed_cubes_agree_on_random_data() {
             .map(|id| format!("e{id}"))
             .chain(["all".to_owned()])
             .collect();
+        let mut cells = Vec::new();
         for first in &names {
             for second in &names {
                 for third in &names {
-                    let cell = CellRef {
+                    cells.push(CellRef {
                         cube: "C".to_owned(),
                         at: vec![first.clone(), second.clone(), third.clone()],
-                    };
-                    let [unfed, fed] = databases
-                        .each_ref()
-                        .map(|database| database.read(None, &cell));
-                    assert_eq!(fed, unfed, "seed {seed} at {:?}", cell.at);
+                    });
                 }
             }
         }
-        assert_eq!(databases[1].unfed("C", 5), Ok(Vec::new()), "seed {seed}");
+        let [unfed, fed, unfed_together, fed_together] = &databases;
+        let one_by_one = |database: &Database| -> Vec<_> {
+            cells.iter().map(|cell| database.read(None, cell)).collect()
+        };
+        let expected = one_by_one(unfed);
+        for (index, cell) in cells.iter().enumerate() {
+            assert_eq!(
+                fed.read(None, cell),
+                expected[index],
+                "seed {seed} at {:?}",
+                cell.at
+            );
+        }
+        assert_eq!(
+            unfed_together.read_many(None, &cells),
+            expected,
+            "seed {seed}"
+        );
+        assert_eq!(
+            fed_together.read_many(None, &cells),
+            expected,
+            "seed {seed}"
+        );
+        assert_eq!(fed.unfed("C", 5), Ok(Vec::new()), "seed {seed}");
     }
 }
