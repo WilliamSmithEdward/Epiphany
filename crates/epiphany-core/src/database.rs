@@ -270,7 +270,11 @@ impl Database {
     pub fn restore(definition: ModelDef, model_version: u64) -> Result<Self, ModelError> {
         let model = Model::compile(&definition)?;
         Ok(Self {
-            cells: vec![Cells::default(); model.cubes().len()],
+            cells: model
+                .cubes()
+                .iter()
+                .map(|cube| Cells::for_cube(&model, cube))
+                .collect(),
             definition,
             model,
             model_version,

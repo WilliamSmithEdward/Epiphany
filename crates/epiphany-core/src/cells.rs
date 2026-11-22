@@ -230,6 +230,18 @@ fn bits(element: ElementId) -> u32 {
 }
 
 impl<V> Table<V> {
+    /// A table laid out for elements needing at most these bits, so that it need never be
+    /// packed again as cells are stored.
+    fn laid_out(widths: &[u32]) -> Self {
+        match widths.len() <= FEW && widths.iter().sum::<u32>() <= u64::BITS {
+            true => Self::Packed {
+                layout: Layout::new(widths),
+                cells: FxHashMap::default(),
+            },
+            false => Self::Plain(FxHashMap::default()),
+        }
+    }
+
     fn get(&self, at: &[ElementId]) -> Option<&V> {
         match self {
             Self::Packed { layout, cells } => cells.get(&layout.pack(at)?),
@@ -379,6 +391,23 @@ pub struct Cells {
 }
 
 impl Cells {
+    /// The cells of a cube, laid out for every element its dimensions have: storing them
+    /// never packs them again, which with millions stored holds up whoever writes.
+    pub fn for_cube(model: &Model, cube: &Cube) -> Self {
+        let widths: Vec<u32> = cube
+            .dimensions
+            .iter()
+            .map(|&d| {
+                let elements = model.dimensions()[d as usize].elements.len();
+                bits(ElementId::try_from(elements.saturating_sub(1)).unwrap_or(ElementId::MAX))
+            })
+            .collect();
+        Self {
+            numbers: Table::laid_out(&widths),
+            texts: Table::laid_out(&widths),
+        }
+    }
+
     pub fn read(&self, model: &Model, cube: &Cube, at: &[ElementId]) -> Scalar {
         let elements = elements(model, cube, at);
         if is_text(elements.clone()) {
@@ -916,5 +945,29 @@ mod tests {
             );
             assert_eq!(matches!(table, Table::Packed { .. }), !wide);
         }
+    }
+
+    #[test]
+    fn a_table_laid_out_for_its_elements_is_never_packed_again() {
+        let mut table = Table::laid_out(&[7, 7, 1]);
+        let Table::Packed { layout, .. } = &table else {
+            panic!("packed");
+        };
+        let before = layout.widths();
+        for at in [[0, 0, 0], [127, 127, 1], [5, 100, 0]] {
+            table.insert(&at, 1.0);
+        }
+        let Table::Packed { layout, .. } = &table else {
+            panic!("still packed");
+        };
+        assert_eq!((layout.widths(), table.len()), (before, 3));
+        // An element beyond what it was laid out for is still stored.
+        table.insert(&[128, 0, 0], 2.0);
+        assert_eq!(table.get(&[128, 0, 0]), Some(&2.0));
+        assert!(matches!(
+            Table::<f64>::laid_out(&[32, 32, 1]),
+            Table::Plain(_)
+        ));
+        assert!(matches!(Table::<f64>::laid_out(&[1; 9]), Table::Plain(_)));
     }
 }

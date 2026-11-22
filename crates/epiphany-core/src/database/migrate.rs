@@ -8,7 +8,11 @@ use crate::model::{Cube, ElementId, Model};
 /// cube is gone or has different dimensions, one of their elements is gone, or the cell is
 /// no longer a leaf of the right type.
 pub(super) fn migrate(old: &Model, new: &Model, cells: &[Cells]) -> (Vec<Cells>, usize) {
-    let mut migrated = vec![Cells::default(); new.cubes().len()];
+    let mut migrated: Vec<Cells> = new
+        .cubes()
+        .iter()
+        .map(|cube| Cells::for_cube(new, cube))
+        .collect();
     let mut dropped = 0;
     for (source, cells) in old.cubes().iter().zip(cells) {
         let target = new.cube_id(&source.name).and_then(|id| {
