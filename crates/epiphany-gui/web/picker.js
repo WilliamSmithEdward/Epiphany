@@ -22,14 +22,17 @@ export async function dimension(name) {
   const key = `${modelVersion}\u0000${name}`;
   if (!loaded.has(key)) {
     const view = await get(`/dimensions/${part(name)}`);
-    // The server leaves out what an element has none of; the pages find it empty.
+    // In one pass, as a dimension may hold a million: what the server leaves out of an
+    // element, it having none, filled in empty; each by name; and those at the top.
+    const byName = new Map();
+    const roots = [];
     for (const element of view.elements) {
       element.parents ??= NONE;
       element.children ??= NONE;
       element.attributes ??= NOTHING;
+      byName.set(element.name, element);
+      if (!element.parents.length) roots.push(element.name);
     }
-    const byName = new Map(view.elements.map((element) => [element.name, element]));
-    const roots = view.elements.filter((element) => element.parents.length === 0).map((element) => element.name);
     loaded.set(key, { ...view, byName, roots });
   }
   return loaded.get(key);
