@@ -342,6 +342,13 @@ const GRID = `(() => {
   return { cells, rows: headings('th.row-head[data-r1]', 'r1'), columns: headings('th.col-head[data-c1]', 'c1') };
 })()`;
 
+/** Whether the page, about to be closed, would have the browser ask first. */
+const ASKS_TO_CLOSE = `(() => {
+  const closing = new Event('beforeunload', { cancelable: true });
+  dispatchEvent(closing);
+  return closing.defaultPrevented;
+})()`;
+
 /** A number as the grid shows it, or null for an empty cell. */
 const shownNumber = (text) => (text === '' ? null : Number(text.replace(/,/g, '').replace(/−/g, '-')));
 
@@ -427,6 +434,8 @@ async function exploring() {
     await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
     await page.settled();
     await page.audit('Explore');
+    const title = await page.evaluate('document.title');
+    expect(title === 'General Ledger · Explore · Epiphany', `The browser's title is ${quoted(title)}.`);
   });
   await step('An MDX query typed in shows what the API answers to it', async () => {
     await page.click('[role="tab"]', 'MDX');
@@ -456,8 +465,11 @@ async function exploring() {
     await page.press('Enter');
     await page.waitFor(`document.querySelector('.pending:not([hidden])')?.textContent.includes('1 unsaved change')`, 'the change, waiting');
     await page.audit('A change waiting to be saved');
+    expect(await page.evaluate(ASKS_TO_CLOSE), 'The browser would close the page, its change unsaved, without asking.');
+    expect(await page.evaluate('document.title') === '• General Ledger · Explore · Epiphany', 'The browser\'s title does not mark the change unsaved.');
     await page.click('.pending button', 'Save changes');
-    await page.waitFor(`document.querySelector('.pending')?.hidden`, 'the change, saved');
+    await page.waitFor(`document.querySelector('.pending')?.hidden && document.title === 'General Ledger · Explore · Epiphany'`, 'the change, saved');
+    expect(!(await page.evaluate(ASKS_TO_CLOSE)), 'The browser would ask before closing the page, with nothing unsaved.');
     const { data } = await page.api('POST', '/cells/read', { cells: [{ cube: 'General Ledger', at: at('Rent', 'Feb') }] });
     expect(data.cells[0].value === 250, `The API reads ${quoted(data.cells[0])} where 250 was saved.`);
   });
@@ -640,6 +652,8 @@ async function changingTheModel() {
     await page.fill('#element-new', 'FR');
     await page.press('Enter');
     await page.waitFor(`document.querySelector('[role="treeitem"][data-name="FR"]') && !document.querySelector('dialog[open]')`, 'FR in the tree');
+    expect(await page.evaluate('document.title') === '• Entity · Model · Epiphany', 'The browser\'s title does not mark the dimension unsaved.');
+    expect(await page.evaluate(ASKS_TO_CLOSE), 'The browser would close the page, the dimension unsaved, without asking.');
     await page.click('.pending button', 'Save');
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Saved'))`, 'the model, saved');
     const { data } = await page.api('GET', '/model');

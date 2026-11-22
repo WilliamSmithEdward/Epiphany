@@ -19,7 +19,19 @@ const said = (entry) => (entry === undefined ? '' : typeof entry === 'string' ? 
 
 /* ---- The page ---- */
 
-export async function render(target, { params }) {
+/** The explorer made last, whose transaction is let go when the page is closed. */
+let onPage = null;
+
+// A page closed with changes unsaved lets them go at once, rather than leaving them to hold
+// their cells until the server gives up on them. A sandbox keeps its changes.
+addEventListener('pagehide', () => {
+  const explorer = onPage?.page?.isConnected ? onPage : null;
+  if (explorer?.tx && !explorer.sandbox) {
+    fetch(`/api/transactions/${explorer.tx}/rollback`, { method: 'POST', keepalive: true, headers: { 'x-requested-by': 'epiphany-gui' } });
+  }
+});
+
+export async function render(target, { params, titled }) {
   const definition = await model();
   if (!definition.cubes.length) {
     mount(target, h('div', { class: 'page' }, empty('cube', 'No cubes yet', 'An administrator adds cubes to the model.')));
@@ -41,15 +53,17 @@ export async function render(target, { params }) {
   // A query left for this cube, from another cube's page or another page, is run here.
   const handed = takeOver(cube.name);
   const view = handed ? { mdx: handed } : cube.views?.[params.get('view')];
-  return new Explorer(target, definition, cube, dims, view, kept);
+  return new Explorer(target, definition, cube, dims, view, kept, titled);
 }
 
 class Explorer {
   /**
    * `view`, where one is given, is a saved view to open in place of the last layout; `kept`
-   * the user's sandboxes, one of which the values may be worked on in.
+   * the user's sandboxes, one of which the values may be worked on in; `titled` names the
+   * page in the browser's title.
    */
-  constructor(target, definition, cube, dims, view, kept) {
+  constructor(target, definition, cube, dims, view, kept, titled) {
+    this.titled = titled;
     this.definition = definition;
     this.cube = cube;
     this.dims = dims;
@@ -74,20 +88,14 @@ class Explorer {
       return at.length === cube.dimensions.length && at.every((name, index) => dims.get(cube.dimensions[index])?.byName.has(name));
     };
     this.holds = new Set(JSON.parse(localStorage.getItem(`epiphany.holds.${cube.name}`) ?? '[]').filter(fits));
-    // A sandbox keeps its changes whatever becomes of the page; only unsaved changes to the
-    // stored values are asked about, or let go.
-    addEventListener('beforeunload', (event) => {
-      if (this.tx && !this.sandbox && this.changes && this.page.isConnected) event.preventDefault();
-    });
-    // A page closed with changes unsaved lets them go at once, rather than leaving them to
-    // hold their cells until the server gives up on them.
-    addEventListener('pagehide', () => {
-      if (this.tx && !this.sandbox) {
-        fetch(`/api/transactions/${this.tx}/rollback`, { method: 'POST', keepalive: true, headers: { 'x-requested-by': 'epiphany-gui' } });
-      }
-    });
+    onPage = this;
     this.build(target);
     this.run();
+  }
+
+  /** Whether changes to the stored values are held, not saved; a sandbox keeps its own. */
+  unsaved() {
+    return Boolean(this.tx && !this.sandbox && this.changes);
   }
 
   /** Asked before the page is left: unsaved changes are discarded only if the user agrees. */
@@ -364,6 +372,7 @@ class Explorer {
    */
   drawPending() {
     const sandbox = this.sandbox;
+    this.titled(this.cube.name, this.unsaved());
     this.pendingBar.classList.toggle('sandbox', Boolean(sandbox));
     this.pendingBar.hidden = sandbox ? !sandbox.pending : !this.tx || !this.changes;
     if (this.pendingBar.hidden) return;

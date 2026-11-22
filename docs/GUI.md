@@ -89,7 +89,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
 - **One command palette** (Ctrl+K) reaching every screen and action.
 - **Nothing lost to a session ending.** When the session ends, a sign-in dialog opens over
   the page, and the page, its unsaved changes with it, stays as it was. Signing out asks
-  first about changes not saved.
+  first about changes not saved, as do closing the page and loading it afresh.
+- **Tabs told apart.** The browser's title names what the page shows before the page itself,
+  as "General Ledger · Explore · Epiphany", marked with • while it holds changes not saved.
 
 ## Security
 

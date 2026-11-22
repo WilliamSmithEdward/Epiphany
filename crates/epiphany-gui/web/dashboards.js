@@ -15,13 +15,15 @@ const SHOWS = { figure: 'Key figure', bars: 'Bars', stacked: 'Stacked bars', lin
 /** How many rows a grid tile shows before it says there are more. */
 const GRID_ROWS = 60;
 
-export async function render(target, { params }) {
+export async function render(target, { params, titled }) {
   const definition = await model();
-  return new Dashboards(target, definition, params);
+  return new Dashboards(target, definition, params, titled);
 }
 
 class Dashboards {
-  constructor(target, definition, params) {
+  /** `titled` names the page in the browser's title. */
+  constructor(target, definition, params, titled) {
+    this.titled = titled;
     this.target = target;
     this.definition = definition;
     this.admin = state.user?.role === 'admin';
@@ -125,7 +127,7 @@ class Dashboards {
 
   /** Asked before the page is left: unsaved edits are discarded only if the user agrees. */
   async leave() {
-    if (!this.changed()) return true;
+    if (!this.unsaved()) return true;
     return Boolean(await dialog({
       title: 'Discard your changes?',
       body: h('p', {}, `Your changes to ${this.editing.name} are not saved. Leaving discards them.`),
@@ -135,12 +137,18 @@ class Dashboards {
     }));
   }
 
-  changed() {
+  unsaved() {
     return Boolean(this.editing) && (this.fresh || JSON.stringify(this.editing) !== JSON.stringify(this.current()));
+  }
+
+  /** Names the dashboard shown in the browser's title, marked while changes to it are not saved. */
+  retitle() {
+    this.titled((this.editing ?? this.current())?.name, this.unsaved());
   }
 
   draw() {
     const shown = this.editing ?? this.current();
+    this.retitle();
     if (!shown) {
       mount(this.target, h('div', { class: 'page' },
         h('div', { class: 'page-head' }, h('div', { class: 'grow' }, h('h1', {}, 'Dashboards'))),
@@ -176,8 +184,8 @@ class Dashboards {
       ? h('div', { class: 'grow dash-names' },
         // The name is in a field while it is edited, so the page is headed for a screen reader.
         h('h1', { class: 'visually-hidden' }, 'Editing a dashboard'),
-        h('input', { class: 'input dash-name', 'aria-label': 'Name of the dashboard', value: shown.name, oninput: (event) => { this.editing.name = event.target.value; } }),
-        h('input', { class: 'input', 'aria-label': 'What the dashboard is for', placeholder: 'What it is for, in a line', value: shown.description ?? '', oninput: (event) => { this.editing.description = event.target.value; } }))
+        h('input', { class: 'input dash-name', 'aria-label': 'Name of the dashboard', value: shown.name, oninput: (event) => { this.editing.name = event.target.value; this.retitle(); } }),
+        h('input', { class: 'input', 'aria-label': 'What the dashboard is for', placeholder: 'What it is for, in a line', value: shown.description ?? '', oninput: (event) => { this.editing.description = event.target.value; this.retitle(); } }))
       : h('div', { class: 'grow' }, h('h1', {}, shown.name), shown.description ? h('p', {}, shown.description) : null);
     // How to run each tile again, for Refresh.
     this.filling = [];

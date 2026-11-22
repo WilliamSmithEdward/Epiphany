@@ -9,14 +9,16 @@ import { choices, dialog, h, icon, menu, mount, notify, parseNumber, splitter, t
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 
-export async function render(target, { params }) {
+export async function render(target, { params, titled }) {
   const view = await get('/model');
-  const page = new ModelPage(target, view, params);
+  const page = new ModelPage(target, view, params, titled);
   return page;
 }
 
 class ModelPage {
-  constructor(target, view, params) {
+  /** `titled` names the page in the browser's title. */
+  constructor(target, view, params, titled) {
+    this.titled = titled;
     this.target = target;
     this.version = view.version;
     this.definition = view.model;
@@ -41,6 +43,7 @@ class ModelPage {
     const dimension = params.get('dimension');
     const cube = params.get('cube');
     this.chosen = dimension ? ['dimension', dimension] : cube ? ['cube', cube] : null;
+    this.titled(this.chosen?.[1]);
     this.drawItems();
     this.editor = null;
     if (this.chosen) this.open(...this.chosen);
@@ -50,6 +53,10 @@ class ModelPage {
   /** Asked before the page is left: unsaved edits are discarded only if the user agrees. */
   async leave() {
     return this.editor ? this.editor.leave() : true;
+  }
+
+  unsaved() {
+    return Boolean(this.editor?.dirty);
   }
 
   drawList() {
@@ -311,6 +318,7 @@ class Editor {
   }
 
   drawStrip() {
+    this.page.titled(this.working.name, this.dirty);
     this.strip.hidden = !this.dirty;
     if (!this.dirty) return;
     mount(this.strip,

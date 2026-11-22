@@ -65,8 +65,13 @@ function brand() {
   return h('a', { class: 'brand', href: '/', 'data-link': '' }, h('img', { src: '/icon.svg', alt: '' }), 'Epiphany');
 }
 
+/** The browser's title for what is shown: its names, from the most particular, then the application's. */
+function setTitle(...names) {
+  document.title = [...names.filter(Boolean), 'Epiphany'].join(' · ');
+}
+
 function signIn(reason) {
-  document.title = 'Sign in · Epiphany';
+  setTitle('Sign in');
   const name = h('input', { class: 'input', id: 'name', name: 'name', autocomplete: 'username', required: true, autofocus: true });
   const password = h('input', { class: 'input', id: 'password', name: 'password', type: 'password', autocomplete: 'current-password', required: true });
   const error = h('p', { class: 'error-text', role: 'alert', hidden: !reason }, reason ?? '');
@@ -287,12 +292,18 @@ function roleName(role) {
 
 let rendering = 0;
 /**
- * The page shown, which may ask to stay when it is left, and may move to other parameters
- * in place, by its `update`; and its path, without them.
+ * The page shown, which may ask to stay when it is left, by its `leave`, say it holds changes
+ * not saved, by its `unsaved`, and move to other parameters in place, by its `update`; and its
+ * path, without them.
  */
 let active = null;
 let activePath = null;
 let shownPath = location.pathname + location.search;
+
+// The browser asks before the page is closed or loaded afresh while it holds changes not saved.
+addEventListener('beforeunload', (event) => {
+  if (active?.unsaved?.()) event.preventDefault();
+});
 
 async function route() {
   if (!state.user) return;
@@ -318,16 +329,19 @@ async function route() {
   }
   const ticket = ++rendering;
   if (!entry) {
-    document.title = 'Not found · Epiphany';
+    setTitle('Not found');
     mount(page, h('div', { class: 'page' }, empty('search', 'There is no such page', 'Check the address, or choose a page from the navigation.')));
     return;
   }
-  document.title = `${entry.title} · Epiphany`;
+  // The page names what it shows before its own name, for tabs and history to tell apart,
+  // marked while it holds changes not saved, for as long as it is the page shown.
+  const titled = (name, unsaved = false) => ticket === rendering && setTitle(name && `${unsaved ? '• ' : ''}${name}`, entry.title);
+  titled();
   awaitNext(entry.shape);
   try {
     const module = await entry.load();
     if (ticket !== rendering) return;
-    const shown = await module.render(page, { state, params: new URLSearchParams(location.search), path, title: entry.title });
+    const shown = await module.render(page, { state, params: new URLSearchParams(location.search), path, title: entry.title, titled });
     // A page another move has passed by is not the one shown, to be asked before leaving.
     if (ticket === rendering) active = shown;
   } catch (problem) {
