@@ -7,7 +7,7 @@ import { del, modelVersion, part, post, put } from './api.js';
 import { chart, shape, sparkline } from './chart.js';
 import { empty, failure, go, model, state } from './app.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, formatNumber, h, icon, menu, mount, notify } from './ui.js';
+import { dialog, formatValue, h, icon, menu, mount, notify } from './ui.js';
 
 /** The ways a tile shows its view. */
 const SHOWS = { figure: 'Key figure', bars: 'Bars', stacked: 'Stacked bars', lines: 'Lines', grid: 'Grid' };
@@ -208,16 +208,17 @@ class Dashboards {
     }
     try {
       const result = await post('/mdx', { mdx: view.mdx, context: this.standing(tile) });
-      mount(body, this.show(result, tile.show ?? 'bars'));
+      mount(body, this.show(result, tile.show ?? 'bars', view.format));
     } catch (problem) {
       mount(body, failure(problem, () => this.fill(body, tile, view)));
     }
     body.removeAttribute('aria-busy');
   }
 
-  show(result, how) {
-    if (how === 'figure') return figure(result);
-    if (how === 'grid') return grid(result);
+  /** A result as a tile shows it, its numbers as the view's format has them. */
+  show(result, how, format) {
+    if (how === 'figure') return figure(result, format);
+    if (how === 'grid') return grid(result, format);
     const data = shape(result, false);
     if (!data.series.some((entry) => entry.values.some((value) => value !== null))) {
       return empty('chart', 'Nothing to chart', 'The view has no numbers.');
@@ -445,7 +446,7 @@ class Dashboards {
 /* ---- How a tile shows a result ---- */
 
 /** The first value, large, named by its row and column, with the trend of its row beneath. */
-function figure(result) {
+function figure(result, format) {
   const [columns, rows] = result.axes;
   const value = result.cells[0];
   const name = [...(rows?.tuples[0] ?? []), ...(columns?.tuples[0] ?? [])].map((m) => m.name).join(' · ');
@@ -453,18 +454,18 @@ function figure(result) {
   const trend = row.filter((each) => each !== null).length > 1;
   const last = columns?.tuples[columns.tuples.length - 1]?.map((m) => m.name).join(' · ');
   return h('div', { class: 'figure' },
-    h('div', { class: `figure-value${typeof value === 'number' && value < 0 ? ' negative' : ''}` }, value === null || value === undefined ? '–' : typeof value === 'number' ? formatNumber(value) : value),
+    h('div', { class: `figure-value${typeof value === 'number' && value < 0 ? ' negative' : ''}` }, value === null || value === undefined ? '–' : formatValue(value, format)),
     h('div', { class: 'muted' }, name),
     trend ? h('div', { class: 'figure-trend' }, sparkline(row), h('span', { class: 'muted' }, `${columns.tuples[0].map((m) => m.name).join(' · ')} to ${last}`)) : null);
 }
 
 /** The result as a small table, its first rows only. */
-function grid(result) {
+function grid(result, format) {
   const [columns, rows] = result.axes;
   const label = (tuple) => tuple.map((m) => m.name).join(' · ');
   const rowTuples = rows?.tuples ?? [[]];
   const count = columns?.tuples.length ?? 0;
-  const cell = (value) => h('td', { class: typeof value === 'number' ? `n${value < 0 ? ' negative' : ''}` : '' }, value === null || value === undefined ? '' : typeof value === 'number' ? formatNumber(value) : value);
+  const cell = (value) => h('td', { class: typeof value === 'number' ? `n${value < 0 ? ' negative' : ''}` : '' }, formatValue(value, format));
   return h('div', { class: 'tile-grid' },
     h('table', { class: 'table compact' },
       h('thead', {}, h('tr', {}, h('th', {}), (columns?.tuples ?? []).map((tuple) => h('th', { class: 'n' }, label(tuple))))),

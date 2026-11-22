@@ -761,3 +761,7 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .dash-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); margin: calc(var(--s2) * -1) 0 var(--s4); color: var(--text-3); }
 .dash-filter { cursor: default; }
 .dash-filter .chip-summary { color: var(--text); }
+
+/* ---- Number formats ---- */
+
+.format-sample { display: flex; gap: var(--s5); padding: var(--s3) var(--s4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); font-variant-numeric: tabular-nums; }

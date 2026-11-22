@@ -2891,6 +2891,41 @@
           }
         }
       },
+      "NumberFormat": {
+        "type": "object",
+        "description": "How numbers are shown. Only the showing changes: values are read, written and copied in\nfull.",
+        "properties": {
+          "dash_zeros": {
+            "type": "boolean",
+            "description": "Zeros shown as a dash."
+          },
+          "decimals": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Digits after the decimal sign, always shown.",
+            "minimum": 0
+          },
+          "parentheses": {
+            "type": "boolean",
+            "description": "Negative numbers in parentheses, as accounts show them, rather than after a minus."
+          },
+          "scale": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scale",
+                "description": "The unit numbers are shown in."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "QueryRequest": {
         "type": "object",
         "required": [
@@ -3020,6 +3055,15 @@
           {
             "type": "string"
           }
+        ]
+      },
+      "Scale": {
+        "type": "string",
+        "description": "A unit numbers are shown in.",
+        "enum": [
+          "thousands",
+          "millions",
+          "billions"
         ]
       },
       "ServerStatus": {
@@ -3465,6 +3509,17 @@
           "mdx"
         ],
         "properties": {
+          "format": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NumberFormat",
+                "description": "How the view shows its numbers; as the reader's locale writes them unless given."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "geometry": {
             "oneOf": [
               {

@@ -418,6 +418,38 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
         body,
         json!({ "code": "not_found", "message": "cube 'General Ledger' has no view 'Nope'" })
     );
+
+    // A view keeps the sizes of its grid and how it shows its numbers; a unit not known is
+    // refused.
+    let (_, mut cube) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
+    let shown = json!({
+        "geometry": { "row_height": 40, "widths": { "col:[Period].[Jan]": 120 } },
+        "format": { "decimals": 1, "scale": "thousands", "parentheses": true, "dash_zeros": true }
+    });
+    let mut view = shown.clone();
+    view["mdx"] = cube["views"]["Winter rent"]["mdx"].clone();
+    cube["views"]["Winter rent"] = view;
+    let put = json!({ "based_on": 2, "cube": cube.clone() });
+    assert_eq!(
+        call(&app, "PUT", "/cubes/General%20Ledger", Some(put))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (_, served) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
+    assert_eq!(served["views"]["Winter rent"]["format"], shown["format"]);
+    assert_eq!(
+        served["views"]["Winter rent"]["geometry"],
+        shown["geometry"]
+    );
+    cube["views"]["Winter rent"]["format"]["scale"] = json!("dozens");
+    let put = json!({ "based_on": 3, "cube": cube });
+    assert_eq!(
+        call(&app, "PUT", "/cubes/General%20Ledger", Some(put))
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 #[tokio::test]

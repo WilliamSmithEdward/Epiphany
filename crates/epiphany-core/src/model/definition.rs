@@ -122,6 +122,43 @@ pub struct ViewDef {
     /// The sizes the grid of the view was given, kept with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<Geometry>,
+    /// How the view shows its numbers; as the reader's locale writes them unless given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<NumberFormat>,
+}
+
+/// How numbers are shown. Only the showing changes: values are read, written and copied in
+/// full.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct NumberFormat {
+    /// Digits after the decimal sign, always shown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decimals: Option<u8>,
+    /// The unit numbers are shown in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale: Option<Scale>,
+    /// Negative numbers in parentheses, as accounts show them, rather than after a minus.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub parentheses: bool,
+    /// Zeros shown as a dash.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dash_zeros: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+/// A unit numbers are shown in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum Scale {
+    Thousands,
+    Millions,
+    Billions,
 }
 
 /// The sizes a grid was given by hand: the height of its rows and the widths of columns,

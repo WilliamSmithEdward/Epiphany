@@ -8,7 +8,7 @@ import { chooseMember, dimension } from './picker.js';
 import { beneath } from './tree.js';
 import { editSet } from './sets.js';
 import { empty, failure, go, model, state } from './app.js';
-import { dialog, download, formatNumber, h, icon, menu, mount, notify, parseNumber } from './ui.js';
+import { dialog, download, formatNumber, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES } from './ui.js';
 
 /* ---- Names in MDX ---- */
 
@@ -111,7 +111,7 @@ class Explorer {
     this.cube = cube;
     this.dims = dims;
     this.layout = this.restore() ?? defaultLayout(cube, dims);
-    if (view) Object.assign(this.layout, { mdx: view.mdx, geometry: view.geometry ?? null });
+    if (view) Object.assign(this.layout, { mdx: view.mdx, geometry: view.geometry ?? null, format: view.format ?? null });
     this.past = [];
     this.future = [];
     this.view = 'grid';
@@ -304,6 +304,7 @@ class Explorer {
             action: () => this.change((layout) => {
               layout.mdx = this.cube.views[name].mdx;
               layout.geometry = this.cube.views[name].geometry ?? null;
+              layout.format = this.cube.views[name].format ?? null;
             }, true),
           })),
           admin ? '-' : null,
@@ -474,6 +475,7 @@ class Explorer {
         title: 'The query is as written in the MDX tab. The layout shows its parts; changing the layout replaces it with the layout\'s own query.',
       }, icon('code', 12), 'Written in MDX') : null,
       button('Refresh', 'refresh', () => this.run()),
+      button('Format', 'hash', () => this.chooseFormat(), { 'aria-pressed': String(Boolean(layout.format)), title: 'Decimals, units, negatives and zeros' }),
       button('Export CSV', 'download', () => this.exportCsv(), { disabled: !this.result }),
       button('Reset', 'down', (event) => menu([
         {
@@ -920,7 +922,7 @@ class Explorer {
           tabindex: r === 0 && c === 0 ? '0' : '-1',
           title: edited ? 'Changed, not yet saved' : undefined,
           dataset: { r, c },
-        }, value === null || value === undefined ? '' : number ? formatNumber(value) : value));
+        }, formatValue(value, this.layout.format)));
       }
       body.append(tr);
     });
@@ -983,6 +985,7 @@ class Explorer {
       h('span', { class: 'muted' }, `${cells.toLocaleString()} cells in ${Math.round(this.took)} ms`),
       rowTuples.length > limit ? h('span', { class: 'badge warn' }, `Showing the first ${limit.toLocaleString()} rows`) : null,
       this.writable.size ? h('span', { class: 'legend-input muted', title: 'Tinted cells take a value: type into one, or paste' }, 'Can be written') : null,
+      this.layout.format?.scale ? h('span', { class: 'badge' }, SCALES[this.layout.format.scale][1]) : null,
       this.layout.sort ? h('span', { class: 'badge accent' }, `Sorted ${this.layout.sort.descending ? 'largest' : 'smallest'} first`) : null,
       summary);
   }
@@ -990,7 +993,7 @@ class Explorer {
   /** Says, for more than one cell chosen, how many there are and what their numbers add to. */
   summarize(chosen) {
     if (chosen.count < 2) return [];
-    const figure = (label, value) => h('span', {}, h('span', { class: 'muted' }, `${label} `), formatNumber(value));
+    const figure = (label, value) => h('span', {}, h('span', { class: 'muted' }, `${label} `), formatValue(value, this.layout.format));
     return [
       h('span', {}, h('span', { class: 'muted' }, 'Count '), chosen.count.toLocaleString()),
       ...(chosen.numbers ? [
@@ -1815,6 +1818,48 @@ class Explorer {
         : empty('chart', 'Nothing to chart', 'The result has no numbers. Choose other members, or show empty rows.')));
   }
 
+  /** Asks how the grid shows its numbers: decimals, the unit, negatives and zeros. */
+  async chooseFormat() {
+    const format = this.layout.format ?? {};
+    const select = (id, options, current) => h('select', { class: 'select', id },
+      options.map(([value, label]) => h('option', { value, selected: String(current ?? '') === value }, label)));
+    const decimals = select('format-decimals', [['', 'As needed'], ...['0', '1', '2', '3', '4'].map((digits) => [digits, digits])], format.decimals);
+    const scale = select('format-scale', [['', 'As stored'], ...Object.entries(SCALES).map(([value, [, said]]) => [value, said.replace('In ', '').replace(/^./, (c) => c.toUpperCase())])], format.scale);
+    const parentheses = h('input', { type: 'checkbox', id: 'format-parentheses', checked: Boolean(format.parentheses) });
+    const dash = h('input', { type: 'checkbox', id: 'format-dash', checked: Boolean(format.dash_zeros) });
+    const read = () => {
+      const next = {
+        ...(decimals.value !== '' ? { decimals: Number(decimals.value) } : {}),
+        ...(scale.value ? { scale: scale.value } : {}),
+        ...(parentheses.checked ? { parentheses: true } : {}),
+        ...(dash.checked ? { dash_zeros: true } : {}),
+      };
+      return Object.keys(next).length ? next : null;
+    };
+    const sample = h('div', { class: 'format-sample' });
+    const preview = () => mount(sample, [1234567.891, -98765.4, 0].map((value) => h('span', {}, formatValue(value, read()))));
+    for (const input of [decimals, scale, parentheses, dash]) input.addEventListener('change', preview);
+    preview();
+    const chosen = await dialog({
+      title: 'Number format',
+      confirm: 'Apply',
+      body: h('div', { class: 'facts' },
+        h('div', { class: 'field-pair' },
+          h('div', { class: 'field' }, h('label', { for: 'format-decimals' }, 'Decimals'), decimals),
+          h('div', { class: 'field' }, h('label', { for: 'format-scale' }, 'Show in'), scale)),
+        h('label', { class: 'check' }, parentheses, 'Negatives in parentheses'),
+        h('label', { class: 'check' }, dash, 'Zeros as a dash'),
+        h('div', { class: 'field' }, h('span', { class: 'muted' }, 'Looks like'), sample),
+        h('p', { class: 'hint' }, 'Only the showing changes: values are typed, copied and exported in full. A view saved keeps its format.')),
+      onsubmit: () => ({ format: read() }),
+    });
+    if (!chosen) return;
+    this.layout.format = chosen.format;
+    localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
+    this.drawToolbar();
+    this.draw();
+  }
+
   /* ---- Saving a view ---- */
 
   async saveView() {
@@ -1835,7 +1880,8 @@ class Explorer {
         const kept = geometry && (geometry.row_height || Object.keys(geometry.widths ?? {}).length)
           ? { geometry: { ...(geometry.row_height ? { row_height: geometry.row_height } : {}), widths: geometry.widths ?? {} } }
           : {};
-        const views = { ...(cube.views ?? {}), [view]: { mdx: this.text, ...kept } };
+        const format = this.layout.format ? { format: this.layout.format } : {};
+        const views = { ...(cube.views ?? {}), [view]: { mdx: this.text, ...kept, ...format } };
         await put(`/cubes/${part(this.cube.name)}`, { based_on: Number(modelVersion), cube: { ...cube, views } });
         this.cube.views = views;
         return view;

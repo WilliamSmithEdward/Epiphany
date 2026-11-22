@@ -95,6 +95,7 @@ const ICONS = {
   sigma: 'M18 7V4H6l6 8-6 8h12v-3',
   more: 'M12 12h.01 M19 12h.01 M5 12h.01',
   dashboard: 'M3 3h8v10H3z M13 3h8v6h-8z M13 11h8v10h-8z M3 15h8v6H3z',
+  hash: 'M4 9h16 M4 15h16 M10 3L8 21 M16 3l-2 18',
   copy: 'M9 9h11v11H9z M5 15H4V4h11v1',
   paste: 'M9 3h6v4H9z M8 5H5v16h14V5h-3',
   expand: 'M7 15l5 5 5-5 M7 9l5-5 5 5',
@@ -237,6 +238,25 @@ export function menu(items, at) {
 export function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return value ?? '';
   return value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits });
+}
+
+/** What each unit a view may show numbers in divides them by, and how it is said. */
+export const SCALES = { thousands: [1e3, 'In thousands'], millions: [1e6, 'In millions'], billions: [1e9, 'In billions'] };
+
+/**
+ * A value as a view's number format shows it: in its unit, to its decimals, a negative in
+ * parentheses and a zero as a dash where it asks. Text is shown as it is.
+ */
+export function formatValue(value, format) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return value ?? '';
+  if (!format) return formatNumber(value);
+  if (format.dash_zeros && value === 0) return '–';
+  const shown = value / (SCALES[format.scale]?.[0] ?? 1);
+  const digits = format.decimals ?? (format.scale ? 1 : 2);
+  const text = Math.abs(shown).toLocaleString(undefined, { minimumFractionDigits: format.decimals ?? 0, maximumFractionDigits: digits });
+  // A value that rounds to nothing has no sign.
+  if (shown >= 0 || /^[0.,\s]*$/.test(text)) return text;
+  return format.parentheses ? `(${text})` : `-${text}`;
 }
 
 /** The reader's decimal sign, a point or a comma. */
