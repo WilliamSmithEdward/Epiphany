@@ -310,27 +310,21 @@
           },
           {
             "name": "offset",
-            "in": "path",
+            "in": "query",
             "description": "How many stored cells to pass over first. Zero unless given.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "minimum": 0
             }
           },
           {
             "name": "limit",
-            "in": "path",
+            "in": "query",
             "description": "The most cells to return. Ten thousand unless given.",
-            "required": true,
+            "required": false,
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": "integer",
               "minimum": 0
             }
           }
@@ -673,7 +667,7 @@
           },
           {
             "name": "based_on",
-            "in": "path",
+            "in": "query",
             "description": "The model version the removal was decided from.",
             "required": true,
             "schema": {
@@ -917,7 +911,7 @@
           },
           {
             "name": "based_on",
-            "in": "path",
+            "in": "query",
             "description": "The model version the removal was decided from.",
             "required": true,
             "schema": {

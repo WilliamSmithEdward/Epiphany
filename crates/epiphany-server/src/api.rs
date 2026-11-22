@@ -809,6 +809,7 @@ struct CubePut {
 }
 
 #[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct Based {
     /// The model version the removal was decided from.
     based_on: u64,
@@ -1136,6 +1137,7 @@ async fn query(
 const PAGE: usize = 10_000;
 
 #[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
 struct Page {
     /// How many stored cells to pass over first. Zero unless given.
     offset: Option<usize>,
