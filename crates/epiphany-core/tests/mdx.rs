@@ -1178,6 +1178,23 @@ fn numbers_and_dates_are_written_out_as_a_pattern_says() {
     assert_eq!(written("[Account].[Product Revenue]", "$#,##0"), "$20");
     assert_eq!(text("Format(5)"), "5");
     assert_eq!(text("Format(5, '')"), "5");
+    // A power of ten after the digits: E+ writes its sign always, E- only when negative.
+    assert_eq!(written("1234.5", "0.00E+00"), "1.23E+03");
+    assert_eq!(written("0.000123", "0.0E-0"), "1.2E-4");
+    assert_eq!(written("123", "0.0E-0"), "1.2E2");
+    assert_eq!(written("9.99", "0.0e+0"), "1.0e+1");
+    assert_eq!(written("1234", "00.0E+0"), "12.3E+2");
+    assert_eq!(written("0", "0.00E+00"), "0.00E+00");
+    assert_eq!(written("-1234.5", "Scientific"), "-1.23E+03");
+    // VBA's formats by name that read the same in every country.
+    assert_eq!(written("1234.5", "Standard"), "1,234.50");
+    assert_eq!(written("2", "fixed"), "2.00");
+    assert_eq!(written("0.1234", "Percent"), "12.34%");
+    assert_eq!(written("1.5", "General Number"), "1.5");
+    assert_eq!(written("0", "Yes/No"), "No");
+    assert_eq!(written("-3", "Yes/No"), "Yes");
+    assert_eq!(written("1", "True/False"), "True");
+    assert_eq!(written("0", "On/Off"), "Off");
     // An empty cell is zero, as everywhere; only no value at all is written as nothing.
     assert_eq!(written("[Account].[Rent]", "0.00"), "0.00");
     assert_eq!(written("NULL", "0.00"), "");

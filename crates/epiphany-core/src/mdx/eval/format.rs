@@ -9,12 +9,18 @@
 //!
 //! Any other pattern writes a number: `0` for a digit always written and `#` for one written
 //! only where the number has it, `.` before the decimals, `,` among the digits for thousands
-//! written apart and at their end for thousands left off, and `%` for a percentage. Up to
-//! three sections, apart by `;`, are for positive, negative and zero values; a section left
-//! empty is the first.
+//! written apart and at their end for thousands left off, `%` for a percentage, and `E+` or
+//! `E-` after the digits for a power of ten, as many digits before the point as the pattern
+//! has places there and the power's own digits after it, `E+` writing its sign always and
+//! `E-` only when it is negative. Up to three sections, apart by `;`, are for positive,
+//! negative and zero values; a section left empty is the first.
 //!
 //! In either, text in quotes, a character after a backslash, and any character that means
 //! nothing else are written as they stand.
+//!
+//! VBA's formats by name that read the same in every country stand for patterns:
+//! `General Number`, `Fixed`, `Standard`, `Percent`, `Scientific`, `Yes/No`, `True/False` and
+//! `On/Off`. Those of dates, times and money follow the reader's country, and are not taken.
 
 use super::dates::{MONTHS, Parts, WEEKDAYS};
 use super::{Evaluated, fail};
@@ -33,11 +39,14 @@ enum Piece<'a> {
     Half(&'a str),
     /// One of the marks of a number pattern, or the `;` between its sections.
     Mark(char),
+    /// `E+` or `E-`, in either case, before the digits of a power of ten.
+    Exponent(&'a str),
 }
 
 /// A number written out as a pattern says: as a date where the pattern has letters for the
 /// parts of one, and as briefly as it can be where the pattern is empty.
 pub(super) fn write(number: f64, pattern: &str) -> Evaluated<String> {
+    let pattern = named(pattern).unwrap_or(pattern);
     let pieces = pieces(pattern);
     match (pattern.is_empty(), for_dates(&pieces)) {
         (true, _) => Ok(number.to_string()),
@@ -48,7 +57,23 @@ pub(super) fn write(number: f64, pattern: &str) -> Evaluated<String> {
 
 /// Whether a pattern writes out a date.
 pub(super) fn writes_dates(pattern: &str) -> bool {
-    for_dates(&pieces(pattern))
+    for_dates(&pieces(named(pattern).unwrap_or(pattern)))
+}
+
+/// The pattern one of VBA's formats by name stands for, of those that read the same in every
+/// country.
+fn named(pattern: &str) -> Option<&'static str> {
+    Some(match pattern.to_ascii_lowercase().as_str() {
+        "general number" => "",
+        "fixed" => "0.00",
+        "standard" => "#,##0.00",
+        "percent" => "0.00%",
+        "scientific" => "0.00E+00",
+        "yes/no" => r#""Yes";"Yes";"No""#,
+        "true/false" => r#""True";"True";"False""#,
+        "on/off" => r#""On";"On";"Off""#,
+        _ => return None,
+    })
 }
 
 fn for_dates(pieces: &[Piece]) -> bool {
@@ -75,6 +100,9 @@ fn pieces(pattern: &str) -> Vec<Piece<'_>> {
             }
             _ if starts("am/pm") => (Piece::Half(&rest[..5]), 5),
             _ if starts("a/p") => (Piece::Half(&rest[..3]), 3),
+            'E' | 'e' if matches!(rest.as_bytes().get(1), Some(b'+' | b'-')) => {
+                (Piece::Exponent(&rest[..2]), 2)
+            }
             _ if "ymdhnsqw".contains(first.to_ascii_lowercase()) => {
                 let run = rest
                     .chars()
@@ -101,7 +129,7 @@ fn date(parts: &Parts, pieces: &[Piece]) -> String {
     let mut after_hour = false;
     for &piece in pieces {
         let (letter, mut run) = match piece {
-            Piece::Text(text) => {
+            Piece::Text(text) | Piece::Exponent(text) => {
                 written.push_str(text);
                 continue;
             }
@@ -170,7 +198,19 @@ fn number(number: f64, pieces: &[Piece]) -> Evaluated<String> {
     };
     let layout = Layout::of(section.copied().unwrap_or_default())?;
     let scaled = number.abs() * 100f64.powi(layout.percents) / 1_000f64.powi(layout.thousands);
-    let units = (scaled * 10f64.powi(layout.decimals as i32)).round();
+    let decimals = 10f64.powi(layout.decimals as i32);
+    // With a power of ten, as many digits are shown before the point as the pattern has
+    // places there, and the power makes up the rest.
+    let mut power = 0;
+    if layout.exponent.is_some() && scaled > 0.0 && scaled.is_finite() {
+        let places = layout.places.max(1) as i32;
+        power = scaled.log10().floor() as i32 - (places - 1);
+        // Rounded to its decimals, what is shown may come to the next power of ten.
+        if (scaled / 10f64.powi(power) * decimals).round() >= 10f64.powi(places) * decimals {
+            power += 1;
+        }
+    }
+    let units = (scaled / 10f64.powi(power) * decimals).round();
     if !units.is_finite() {
         return fail("the number is too large to write out");
     }
@@ -197,6 +237,16 @@ fn number(number: f64, pieces: &[Piece]) -> Evaluated<String> {
         written.push('.');
         written.push_str(fraction);
     }
+    if let Some((letter, always)) = layout.exponent {
+        written.push(letter);
+        if power < 0 {
+            written.push('-');
+        } else if always {
+            written.push('+');
+        }
+        let digits = power.unsigned_abs();
+        written.push_str(&format!("{digits:0>width$}", width = layout.powers));
+    }
     written.push_str(&layout.after);
     Ok(written)
 }
@@ -221,7 +271,9 @@ struct Layout {
     after: String,
     /// Whether there are digits to write.
     digits: bool,
-    /// How many digits are written before the point at least.
+    /// How many places for digits there are before the point, and how many of them are
+    /// always written.
+    places: usize,
     zeros: usize,
     /// Whether thousands are written apart.
     grouped: bool,
@@ -233,6 +285,10 @@ struct Layout {
     least: usize,
     /// How many times the number is shown as a percentage.
     percents: i32,
+    /// The letter before a power of ten, and whether its sign is written when it is not
+    /// negative; and how many of the power's digits are always written.
+    exponent: Option<(char, bool)>,
+    powers: usize,
 }
 
 /// Where in a section of a number pattern a piece stands.
@@ -241,6 +297,7 @@ enum At {
     Before,
     Whole,
     Fraction,
+    Exponent,
     After,
 }
 
@@ -259,6 +316,7 @@ impl Layout {
                         At::Before | At::Whole => {
                             at = At::Whole;
                             layout.grouped |= std::mem::take(&mut commas) > 0;
+                            layout.places += 1;
                             layout.zeros += usize::from(digit == '0');
                         }
                         At::Fraction => {
@@ -267,6 +325,7 @@ impl Layout {
                                 layout.least = layout.decimals;
                             }
                         }
+                        At::Exponent => layout.powers += usize::from(digit == '0'),
                         At::After => {
                             let why = "a number pattern has its text before or after its \
                                        digits, not among them";
@@ -286,11 +345,20 @@ impl Layout {
                     commas += 1;
                     continue;
                 }
+                // A power of ten follows the digits; before them, `E+` is text.
+                Piece::Exponent(text) if matches!(at, At::Whole | At::Fraction) => {
+                    layout.thousands += std::mem::take(&mut commas);
+                    let mut letters = text.chars();
+                    let letter = letters.next().unwrap_or('E');
+                    layout.exponent = Some((letter, letters.next() == Some('+')));
+                    at = At::Exponent;
+                    continue;
+                }
                 Piece::Mark(other) => {
                     layout.percents += i32::from(other == '%');
                     &*other.encode_utf8(&mut mark)
                 }
-                Piece::Text(text) => text,
+                Piece::Text(text) | Piece::Exponent(text) => text,
                 // A pattern with letters for the parts of a date writes a date instead.
                 Piece::Letters(..) | Piece::Half(_) => continue,
             };

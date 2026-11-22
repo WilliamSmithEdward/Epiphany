@@ -283,7 +283,10 @@ practice that means:
     intervals: `yyyy`, `q`, `m`, `y`, `d`, `w`, `ww`, `h`, `n` and `s`.
   - `Format(value [, pattern])` writes a number or a date out as VBA's patterns say: for a
     date `yyyy`, `mmm`, `dd`, `hh:nn`, `AM/PM` and the rest; for a number `0`, `#`, `.`,
-    `,` and `%`, in up to three sections for positive, negative and zero values.
+    `,`, `%` and a power of ten with `E+` or `E-`, in up to three sections for positive,
+    negative and zero values. VBA's formats by name that read the same in every country
+    stand for patterns: `General Number`, `Fixed`, `Standard`, `Percent`, `Scientific`,
+    `Yes/No`, `True/False` and `On/Off`.
   - `WITH MEMBER` (calculated members, which may refer to one another, with
     `SOLVE_ORDER` and `FORMAT_STRING`) and `WITH SET`.
   - Numeric and text cells.
@@ -385,9 +388,9 @@ practice that means:
   - A number pattern puts its text before or after its digits, not among them, and writes
     at most 20 decimals; an empty cell is zero to it, as everywhere, and `NULL` is written
     as nothing.
-- Not done: functions outside the lists above; numbers written in scientific notation by
-  `Format` (a query may write them so, as `1.5E3`); and the formats VBA names, such as
-  `Currency` and `Short Date`, which follow the reader's locale.
+- Not done: functions outside the lists above, and VBA's formats by name for dates, times
+  and money, such as `Short Date` and `Currency`, which follow the reader's country: a
+  server has none of its own to go by.
 
 ### 2.8 Spreading
 
