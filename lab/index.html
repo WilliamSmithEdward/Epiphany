@@ -229,7 +229,17 @@ let shown = null;          // the query last answered: { text, result, sideways 
 let visible = [];          // { at, editable, text } for every cell on screen
 
 async function dimension(name) {
-  return dimensions[name] ??= await api('GET', `/dimensions/${encodeURIComponent(name)}`);
+  if (!dimensions[name]) {
+    const view = await api('GET', `/dimensions/${encodeURIComponent(name)}`);
+    // The server leaves out what an element has none of.
+    for (const element of view.elements) {
+      element.parents ??= [];
+      element.children ??= [];
+      element.attributes ??= {};
+    }
+    dimensions[name] = view;
+  }
+  return dimensions[name];
 }
 const element = (name, member) => dimensions[name].elements.find(e => e.name === member);
 /** The element a dimension stands at when a query does not mention it: its first top element. */

@@ -404,7 +404,9 @@ practice that means:
     views and dashboards. A dimension of half a million elements makes the whole model
     some 19 MB; the outline stays a few hundred bytes (done)
   - `/dimensions/{name}`: one dimension with each element's level, parents, children and
-    attributes (done)
+    attributes, those it has none of left out (done). Most elements of a large dimension
+    are leaves, and their empty lists were half of what was sent: half a million elements
+    went from 44 MB to 24 MB
   - `/cells/read`, `/cells/write`, `/cells/spread`: batched. Each cell names its cube, so
     one batch can span cubes, as one worksheet calculation can. A read reports errors per
     cell; a write is all or nothing and reports the first bad cell (read and write done)

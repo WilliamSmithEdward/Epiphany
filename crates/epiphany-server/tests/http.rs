@@ -231,10 +231,10 @@ async fn a_dimension_is_served_with_its_hierarchy() {
                 { "name": "Jan", "weight": 1.0 },
                 { "name": "Feb", "weight": 1.0 },
                 { "name": "Mar", "weight": 1.0 }
-            ],
-            "attributes": {}
+            ]
         })
     );
+    // What an element has none of is left out: here, a leaf's children.
     assert_eq!(
         body["elements"][4],
         json!({
@@ -242,10 +242,10 @@ async fn a_dimension_is_served_with_its_hierarchy() {
             "type": "numeric",
             "level": 0,
             "parents": ["Q1"],
-            "children": [],
             "attributes": { "Code": "M02", "Days": 28.0 }
         })
     );
+    assert_eq!(body["elements"][0]["parents"], Value::Null);
 }
 
 #[tokio::test]

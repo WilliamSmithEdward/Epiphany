@@ -676,6 +676,9 @@ struct DimensionView {
     subsets: BTreeMap<String, Vec<String>>,
 }
 
+/// An element and its place in the hierarchy. Its parents, children and attributes are left
+/// out where it has none, as a leaf has no children: in a large dimension, most of the
+/// elements are leaves, and the empty lists were half of what was sent.
 #[derive(Serialize, ToSchema)]
 struct ElementView {
     name: String,
@@ -683,8 +686,11 @@ struct ElementView {
     kind: ElementType,
     /// Zero for a leaf, otherwise one more than the highest child level.
     level: u32,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     parents: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     children: Vec<ChildDef>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     attributes: BTreeMap<String, Scalar>,
     /// For a string element with a picklist, the values its text cells may be given.
     #[serde(skip_serializing_if = "Option::is_none")]

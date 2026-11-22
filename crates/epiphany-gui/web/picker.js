@@ -15,6 +15,12 @@ export async function dimension(name) {
   const key = `${modelVersion}\u0000${name}`;
   if (!loaded.has(key)) {
     const view = await get(`/dimensions/${part(name)}`);
+    // The server leaves out what an element has none of; the pages find it empty.
+    for (const element of view.elements) {
+      element.parents ??= [];
+      element.children ??= [];
+      element.attributes ??= {};
+    }
     const byName = new Map(view.elements.map((element) => [element.name, element]));
     const roots = view.elements.filter((element) => element.parents.length === 0).map((element) => element.name);
     loaded.set(key, { ...view, byName, roots });

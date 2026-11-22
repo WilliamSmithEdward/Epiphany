@@ -4280,13 +4280,11 @@
       },
       "ElementView": {
         "type": "object",
+        "description": "An element and its place in the hierarchy. Its parents, children and attributes are left\nout where it has none, as a leaf has no children: in a large dimension, most of the\nelements are leaves, and the empty lists were half of what was sent.",
         "required": [
           "name",
           "type",
-          "level",
-          "parents",
-          "children",
-          "attributes"
+          "level"
         ],
         "properties": {
           "attributes": {
