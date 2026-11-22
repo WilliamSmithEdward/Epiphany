@@ -1966,6 +1966,66 @@
         }
       }
     },
+    "/transactions/{id}/point": {
+      "get": {
+        "summary": "Says how far a transaction has come: a point to take it back to later.",
+        "operationId": "transaction_point",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The point the transaction has come to",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionPoint"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/transactions/{id}/rollback": {
       "post": {
         "summary": "Discards a transaction's pending writes and ends it.",
@@ -2008,6 +2068,79 @@
           },
           "404": {
             "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions/{id}/undo": {
+      "post": {
+        "summary": "Takes back a transaction's writes since a point it came to, the last first, so that each\ncell is pending as it was then. Spreads and batches go back whole. The transaction stays\nopen.",
+        "operationId": "undo_transaction",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transaction, or a point it has not come to",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request body is malformed",
             "content": {
               "application/json": {
                 "schema": {
@@ -3405,6 +3538,20 @@
           }
         }
       },
+      "TransactionPoint": {
+        "type": "object",
+        "description": "How far a transaction has come.",
+        "required": [
+          "point"
+        ],
+        "properties": {
+          "point": {
+            "type": "integer",
+            "description": "How many writes the transaction has been given. Its writes since this point can be\ntaken back with `POST /transactions/{id}/undo`.",
+            "minimum": 0
+          }
+        }
+      },
       "TransactionView": {
         "type": "object",
         "required": [
@@ -3417,6 +3564,20 @@
             "minimum": 0
           }
         }
+      },
+      "UndoRequest": {
+        "type": "object",
+        "required": [
+          "to"
+        ],
+        "properties": {
+          "to": {
+            "type": "integer",
+            "description": "The point to go back to, as `GET /transactions/{id}/point` gave it.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
       },
       "UserList": {
         "type": "object",

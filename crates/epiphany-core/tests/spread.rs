@@ -178,6 +178,7 @@ fn a_spread_is_part_of_its_transaction() {
     assert_eq!(get(&database, QUARTER), 0.0);
 
     // A second spread in the same transaction works from the first one's pending values.
+    let after_first = database.savepoint(transaction).unwrap();
     database
         .spread(
             Some(transaction),
@@ -187,6 +188,12 @@ fn a_spread_is_part_of_its_transaction() {
     assert_eq!(
         database.read(Some(transaction), &cell(LEAVES[0])),
         Ok(Scalar::Number(10.0))
+    );
+    // Going back past the second spread takes back every leaf it wrote, at once.
+    database.undo_to(transaction, after_first).unwrap();
+    assert_eq!(
+        database.read(Some(transaction), &cell(QUARTER)),
+        Ok(Scalar::Number(100.0))
     );
     database.rollback(transaction).unwrap();
     assert_eq!(get(&database, QUARTER), 0.0);

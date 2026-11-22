@@ -212,6 +212,52 @@ async fn a_transaction_keeps_its_writes_to_itself_until_it_commits() {
 }
 
 #[tokio::test]
+async fn a_transaction_goes_back_to_a_point_it_came_to() {
+    let app = example();
+    let at = ["Rent", "US", "Jan", "Actual"];
+    let (_, body) = call(&app, "POST", "/transactions", None).await;
+    let id = body["transaction"].clone();
+    let point = || async {
+        let (status, body) = call(&app, "GET", &format!("/transactions/{id}/point"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        body["point"].clone()
+    };
+    assert_eq!(point().await, json!(0));
+    let write = |value: f64| json!({ "transaction": id, "cells": [write(at, json!(value))] });
+    call(&app, "POST", "/cells/write", Some(write(25.0))).await;
+    let kept = point().await;
+    assert_eq!(kept, json!(1));
+    call(&app, "POST", "/cells/write", Some(write(40.0))).await;
+
+    let undo = |to: Value| json!({ "to": to });
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/transactions/{id}/undo"),
+        Some(undo(kept)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let read = json!({ "transaction": id, "cells": [cell(at)] });
+    let (_, body) = call(&app, "POST", "/cells/read", Some(read)).await;
+    assert_eq!(body, json!({ "cells": [{ "value": 25.0 }] }));
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/transactions/{id}/undo"),
+        Some(undo(json!(9))),
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].clone()),
+        (StatusCode::NOT_FOUND, json!("not_found"))
+    );
+    let (status, _) = call(&app, "GET", "/transactions/77/point", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn a_rolled_back_transaction_leaves_no_trace() {
     let app = example();
     let at = ["Rent", "US", "Jan", "Actual"];

@@ -240,6 +240,49 @@ fn rollback_discards_pending_writes() {
 }
 
 #[test]
+fn a_transaction_goes_back_to_a_point_it_came_to() {
+    let mut database = database();
+    database
+        .write(None, &[set("Sales", ["A", "Units"], 10.0)])
+        .unwrap();
+    let transaction = database.begin();
+    let start = database.savepoint(transaction).unwrap();
+    assert_eq!(start, 0);
+    let both = [
+        set("Sales", ["A", "Units"], 4.0),
+        set("Sales", ["B", "Units"], 1.0),
+    ];
+    database.write(Some(transaction), &both).unwrap();
+    let middle = database.savepoint(transaction).unwrap();
+    assert_eq!(middle, 2);
+    database
+        .write(Some(transaction), &[set("Sales", ["A", "Units"], 7.0)])
+        .unwrap();
+    assert_eq!(units(&database, Some(transaction), "All"), 8.0);
+
+    // Back to the middle, A is pending at 4 again and B still at 1.
+    database.undo_to(transaction, middle).unwrap();
+    assert_eq!(units(&database, Some(transaction), "A"), 4.0);
+    assert_eq!(units(&database, Some(transaction), "All"), 5.0);
+    // Back to the start, nothing is pending and the stored value shows through.
+    database.undo_to(transaction, start).unwrap();
+    assert_eq!(units(&database, Some(transaction), "All"), 10.0);
+    assert_eq!(database.savepoint(transaction), Ok(0));
+
+    // A point not come to is refused, and the transaction stays open with nothing to commit.
+    assert!(matches!(
+        database.undo_to(transaction, 5),
+        Err(Error::NotFound(_))
+    ));
+    database.commit(transaction).unwrap();
+    assert_eq!(units(&database, None, "A"), 10.0);
+    assert_eq!(
+        database.savepoint(transaction),
+        Err(Error::UnknownTransaction(transaction))
+    );
+}
+
+#[test]
 fn a_finished_transaction_is_unknown() {
     let mut database = database();
     let transaction = database.begin();

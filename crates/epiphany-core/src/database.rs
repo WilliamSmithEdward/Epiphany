@@ -278,6 +278,10 @@ fn named(model: &Model, cube: usize, at: &[ElementId], value: Scalar) -> CellWri
 struct Transaction {
     /// Pending writes to each cube, in [`Model::cubes`] order.
     writes: Vec<Writes>,
+    /// What each write did to the pending writes, in order: the cube, the cell, and the value
+    /// it had pending before, if any. Played back, it takes the transaction to an earlier
+    /// point, as [`Database::undo_to`] does.
+    undo: Vec<(usize, Coordinate, Option<Scalar>)>,
     /// When the transaction was last used, in milliseconds since the database started.
     used: AtomicU64,
 }
@@ -728,6 +732,7 @@ impl Database {
         };
         let transaction = Transaction {
             writes: vec![Writes::default(); self.cells.len()],
+            undo: Vec::new(),
             used: AtomicU64::new(self.now()),
         };
         self.transactions.insert(id, transaction);
@@ -768,6 +773,34 @@ impl Database {
     pub fn rollback(&mut self, id: TransactionId) -> Result<(), Error> {
         self.expire();
         self.end(id).map(drop)
+    }
+
+    /// The point a transaction has come to: how many writes it has been given. Its writes
+    /// since then can be taken back with [`Database::undo_to`].
+    pub fn savepoint(&self, id: TransactionId) -> Result<usize, Error> {
+        Ok(self.transaction(id)?.undo.len())
+    }
+
+    /// Takes back a transaction's writes since a point it came to, the last first, so that
+    /// each cell is pending as it was then; the transaction stays open. Spreads and batches
+    /// are taken back whole, being writes like any other.
+    pub fn undo_to(&mut self, id: TransactionId, point: usize) -> Result<(), Error> {
+        self.expire();
+        let transaction = self.transaction(id)?;
+        if point > transaction.undo.len() {
+            return Err(Error::NotFound(format!(
+                "transaction {id} has not come to point {point}; it is at {}",
+                transaction.undo.len()
+            )));
+        }
+        let transaction = self.transactions.get_mut(&id).expect("checked above");
+        for (cube, at, before) in transaction.undo.drain(point..).rev() {
+            match before {
+                Some(value) => transaction.writes[cube].insert(at, value),
+                None => transaction.writes[cube].remove(&at),
+            };
+        }
+        Ok(())
     }
 
     /// Locks a cube, or the whole server when no cube is named, until the transaction ends.
@@ -836,6 +869,7 @@ impl Database {
         if let Some((cells, dropped)) = moved {
             for transaction in self.transactions.values_mut() {
                 transaction.writes = vec![Writes::default(); cells.len()];
+                transaction.undo.clear();
             }
             self.cells = cells;
             dropped_cells = dropped;
@@ -907,13 +941,10 @@ impl Database {
             }
         }
 
-        let pending = &mut self
-            .transactions
-            .get_mut(&id)
-            .expect("checked above")
-            .writes;
+        let transaction = self.transactions.get_mut(&id).expect("checked above");
         for (index, (cube, at)) in located.into_iter().enumerate() {
-            pending[cube].insert(at, batch.value(index).clone());
+            let before = transaction.writes[cube].insert(at.clone(), batch.value(index).clone());
+            transaction.undo.push((cube, at, before));
         }
         Ok(())
     }

@@ -120,6 +120,9 @@ function spreadCode(text, before) {
   return { method, value: action === '+' ? before + amount : action === '~' ? before - amount : amount };
 }
 
+/** What an entry of the history of changes changed, as the Undo and Redo buttons say it. */
+const said = (entry) => (entry === undefined ? '' : typeof entry === 'string' ? 'the change to the layout' : entry.label);
+
 /** Puts text on the clipboard, and says so. */
 function copied(text) {
   navigator.clipboard?.writeText(text).then(
@@ -166,7 +169,7 @@ class Explorer {
     this.edits = new Map();
     this.writable = new Set();
     addEventListener('beforeunload', (event) => {
-      if (this.tx && this.page.isConnected) event.preventDefault();
+      if (this.tx && this.changes && this.page.isConnected) event.preventDefault();
     });
     // A page closed with changes unsaved lets them go at once, rather than leaving them to
     // hold their cells until the server gives up on them.
@@ -182,6 +185,12 @@ class Explorer {
   /** Asked before the page is left: unsaved changes are discarded only if the user agrees. */
   async leave() {
     if (!this.tx) return true;
+    // A transaction whose changes were all taken back is let go without asking.
+    if (!this.changes) {
+      post(`/transactions/${this.tx}/rollback`).catch(() => {});
+      this.forget();
+      return true;
+    }
     const agreed = await dialog({
       title: 'Discard your changes?',
       body: h('p', {}, `You have ${this.changes || 0} unsaved change${this.changes === 1 ? '' : 's'} to ${this.cube.name}. Leaving discards them.`),
@@ -305,18 +314,67 @@ class Explorer {
     this.run();
   }
 
-  undo() {
-    if (!this.past.length) return;
-    this.future.push(JSON.stringify(this.layout));
-    this.layout = JSON.parse(this.past.pop());
-    this.after();
+  /**
+   * Takes back the last change, of the layout or of values. A change of values goes back
+   * within the edit transaction, to the point it was made from.
+   */
+  async undo() {
+    const last = this.past.pop();
+    if (last === undefined) return;
+    if (typeof last === 'string') {
+      this.future.push(JSON.stringify(this.layout));
+      this.layout = JSON.parse(last);
+      this.after();
+      return;
+    }
+    try {
+      await post(`/transactions/${this.tx}/undo`, { to: last.point });
+    } catch (problem) {
+      this.refused(problem);
+      return;
+    }
+    this.future.push(last);
+    this.edits = last.edits;
+    this.changes = last.changes;
+    notify(`Undid ${last.label}.`);
+    await this.run();
   }
 
-  redo() {
-    if (!this.future.length) return;
-    this.past.push(JSON.stringify(this.layout));
-    this.layout = JSON.parse(this.future.pop());
-    this.after();
+  /** Makes the last change taken back again. */
+  async redo() {
+    const next = this.future.pop();
+    if (next === undefined) return;
+    if (typeof next === 'string') {
+      this.past.push(JSON.stringify(this.layout));
+      this.layout = JSON.parse(next);
+      this.after();
+      return;
+    }
+    await next.again();
+  }
+
+  /**
+   * Changes values within the edit transaction through `send`, which posts the change and
+   * resolves with what to say of it. The change goes on the history of changes: the point in
+   * the transaction it was made from, to go back to, and how to make it again.
+   */
+  async changeValues(label, send, redoing = false) {
+    const before = { edits: new Map(this.edits), changes: this.changes ?? 0 };
+    let said;
+    let point;
+    try {
+      await this.ensureTransaction();
+      ({ point } = await get(`/transactions/${this.tx}/point`));
+      said = await send();
+    } catch (problem) {
+      this.refused(problem);
+      return;
+    }
+    this.past.push({ label, point, ...before, again: () => this.changeValues(label, send, true) });
+    if (this.past.length > 100) this.past.shift();
+    if (!redoing) this.future = [];
+    if (said) notify(said, 'good');
+    await this.run();
   }
 
   /* ---- Building the page ---- */
@@ -470,8 +528,8 @@ class Explorer {
 
   /** The strip that says what is not yet saved, with the ways to save or discard it. */
   drawPending() {
-    this.pendingBar.hidden = !this.tx;
-    if (!this.tx) return;
+    this.pendingBar.hidden = !this.tx || !this.changes;
+    if (this.pendingBar.hidden) return;
     const count = this.changes || 0;
     mount(this.pendingBar,
       icon('edit', 16),
@@ -498,8 +556,8 @@ class Explorer {
     const layout = this.layout;
     const button = (label, iconName, action, props = {}) => h('button', { class: 'button small quiet', onclick: action, ...props }, icon(iconName, 16), h('span', {}, label));
     mount(this.toolbar,
-      button('Undo', 'undo', () => this.undo(), { disabled: !this.past.length, title: 'Undo (Ctrl Z)' }),
-      button('Redo', 'redo', () => this.redo(), { disabled: !this.future.length, title: 'Redo (Ctrl Y)' }),
+      button('Undo', 'undo', () => this.undo(), { disabled: !this.past.length, title: `Undo ${said(this.past.at(-1))} (Ctrl Z)` }),
+      button('Redo', 'redo', () => this.redo(), { disabled: !this.future.length, title: `Redo ${said(this.future.at(-1))} (Ctrl Y)` }),
       h('span', { class: 'divider' }),
       button('Swap axes', 'swap', () => this.change((l) => {
         [l.rows, l.columns] = [l.columns, l.rows];
@@ -1675,17 +1733,13 @@ class Explorer {
   async writeCells(cells, done) {
     const written = cells.map(({ r, c, value }) => ({ at: this.coordinate(r, c), value }));
     this.focusAfter ??= [cells[0].r, cells[0].c];
-    try {
-      await this.ensureTransaction();
+    const label = written.length === 1 ? `the change to ${written[0].at.join(' · ')}` : `${written.length.toLocaleString()} changes`;
+    await this.changeValues(label, async () => {
       await post('/cells/write', { transaction: this.tx, cells: written.map(({ at, value }) => ({ cube: this.cube.name, at, value })) });
-    } catch (problem) {
-      this.refused(problem);
-      return;
-    }
-    for (const { at, value } of written) this.edits.set(JSON.stringify(at), value);
-    this.changes = (this.changes ?? 0) + written.length;
-    if (done) notify(done, 'good');
-    await this.run();
+      for (const { at, value } of written) this.edits.set(JSON.stringify(at), value);
+      this.changes = (this.changes ?? 0) + written.length;
+      return done;
+    });
   }
 
   /** The value a cell of the result holds. */
@@ -1832,20 +1886,12 @@ class Explorer {
 
   /** Shares a value out among the leaves beneath a total, within the edit transaction. */
   async spreadValue(r, c, value, method) {
-    let answer;
-    try {
-      await this.ensureTransaction();
-      answer = await post('/cells/spread', {
-        transaction: this.tx,
-        spread: { cube: this.cube.name, at: this.coordinate(r, c), value, method },
-      });
-    } catch (problem) {
-      this.refused(problem);
-      return;
-    }
-    notify(`Spread over ${answer.written.toLocaleString()} cell${answer.written === 1 ? '' : 's'}.`, 'good');
-    this.changes = (this.changes ?? 0) + 1;
-    await this.run();
+    const at = this.coordinate(r, c);
+    await this.changeValues(`the spread over ${at.join(' · ')}`, async () => {
+      const answer = await post('/cells/spread', { transaction: this.tx, spread: { cube: this.cube.name, at, value, method } });
+      this.changes = (this.changes ?? 0) + 1;
+      return `Spread over ${answer.written.toLocaleString()} cell${answer.written === 1 ? '' : 's'}.`;
+    });
   }
   async ensureTransaction() {
     if (this.tx) return;
@@ -1880,6 +1926,10 @@ class Explorer {
     this.tx = null;
     this.edits.clear();
     this.changes = 0;
+    // Changes of values went with the transaction; the layout's history stays.
+    this.past = this.past.filter((entry) => typeof entry === 'string');
+    this.future = this.future.filter((entry) => typeof entry === 'string');
+    this.drawToolbar();
   }
 
   /** Reports a write the server refused; a transaction it no longer has is let go. */

@@ -156,6 +156,8 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(begin_transaction))
         .routes(routes!(commit_transaction))
         .routes(routes!(rollback_transaction))
+        .routes(routes!(transaction_point))
+        .routes(routes!(undo_transaction))
         .routes(routes!(lock))
         .routes(routes!(put_dashboard, delete_dashboard))
         .routes(routes!(server_status))
@@ -1297,6 +1299,62 @@ async fn rollback_transaction(
     Path(id): Path<TransactionId>,
 ) -> Result<StatusCode, ApiError> {
     database.write().rollback(id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// How far a transaction has come.
+#[derive(Serialize, ToSchema)]
+struct TransactionPoint {
+    /// How many writes the transaction has been given. Its writes since this point can be
+    /// taken back with `POST /transactions/{id}/undo`.
+    point: usize,
+}
+
+/// Says how far a transaction has come: a point to take it back to later.
+#[utoipa::path(
+    get,
+    path = "/transactions/{id}/point",
+    params(("id" = u64, Path)),
+    responses(
+        (status = OK, body = TransactionPoint, description = "The point the transaction has come to"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown transaction")
+    )
+)]
+async fn transaction_point(
+    State(database): State<Shared>,
+    Path(id): Path<TransactionId>,
+) -> Result<Json<TransactionPoint>, ApiError> {
+    let point = database.read().unwrap().savepoint(id)?;
+    Ok(Json(TransactionPoint { point }))
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct UndoRequest {
+    /// The point to go back to, as `GET /transactions/{id}/point` gave it.
+    to: usize,
+}
+
+/// Takes back a transaction's writes since a point it came to, the last first, so that each
+/// cell is pending as it was then. Spreads and batches go back whole. The transaction stays
+/// open.
+#[utoipa::path(
+    post,
+    path = "/transactions/{id}/undo",
+    params(("id" = u64, Path)),
+    request_body = UndoRequest,
+    responses(
+        (status = NO_CONTENT, description = "Done"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown transaction, or a point it has not come to"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The request body is malformed")
+    )
+)]
+async fn undo_transaction(
+    State(database): State<Shared>,
+    Path(id): Path<TransactionId>,
+    Body(request): Body<UndoRequest>,
+) -> Result<StatusCode, ApiError> {
+    database.write().undo_to(id, request.to)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

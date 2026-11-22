@@ -115,7 +115,7 @@ fn bodies() -> Vec<String> {
     bodies
 }
 
-const ROUTES: [(&str, &str); 44] = [
+const ROUTES: [(&str, &str); 48] = [
     ("POST", "/sessions"),
     ("DELETE", "/sessions"),
     ("GET", "/model"),
@@ -160,6 +160,10 @@ const ROUTES: [(&str, &str); 44] = [
     ("POST", "/transactions/x/rollback"),
     ("POST", "/transactions/1/locks"),
     ("POST", "/transactions/99999999999999999999/locks"),
+    ("GET", "/transactions/1/point"),
+    ("GET", "/transactions/x/point"),
+    ("POST", "/transactions/1/undo"),
+    ("POST", "/transactions/18446744073709551615/undo"),
     ("GET", "/nowhere"),
     ("PATCH", "/model"),
     ("GET", "/openapi.json"),
