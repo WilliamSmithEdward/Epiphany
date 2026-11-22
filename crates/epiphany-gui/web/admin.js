@@ -1,7 +1,8 @@
 // Administration: the server's state, its users and their roles, and open transactions.
 
 import { del, get, part, post, put } from './api.js';
-import { empty, failure, loading, model, state } from './app.js';
+import { empty, failure, go, loading, model, state } from './app.js';
+import { cellQuery, handOver } from './layout.js';
 import { dialog, h, icon, mount, notify, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
@@ -34,6 +35,7 @@ class AdminPage {
     this.statusCard = h('section', { class: 'admin-section', 'aria-label': 'Server' });
     this.usersCard = h('section', { class: 'card fit', 'aria-label': 'Users' });
     this.transactionsCard = h('section', { class: 'card fit', 'aria-label': 'Open transactions' });
+    this.changesCard = h('section', { class: 'card fit', 'aria-label': 'Changes to cells' });
     this.updated = h('span', { class: 'muted' });
     mount(target, h('div', { class: 'page' },
       h('div', { class: 'page-head' },
@@ -42,12 +44,15 @@ class AdminPage {
         h('button', { class: 'button', onclick: (event) => working(event.currentTarget, () => this.load()) }, icon('refresh', 16), 'Refresh')),
       this.statusCard,
       this.usersCard,
-      this.transactionsCard));
+      this.transactionsCard,
+      this.changesCard));
     // Until the first answer, each part holds its outline.
     mount(this.statusCard, loading('cards'));
     mount(this.usersCard, h('div', { class: 'card-body' }, loading('lines')));
     mount(this.transactionsCard, h('div', { class: 'card-body' }, loading('lines')));
+    this.buildChanges();
     this.load();
+    this.loadChanges();
     // Kept current while the page is open.
     this.timer = setInterval(() => {
       if (!target.isConnected) clearInterval(this.timer);
@@ -66,6 +71,8 @@ class AdminPage {
       this.drawStatus(status);
       this.drawUsers(users);
       this.drawTransactions(transactions);
+      this.offer(this.userFilter, 'Anyone', (users.users ?? []).map((user) => user.name));
+      this.offer(this.cubeFilter, 'Every cube', status.cubes.map((cube) => cube.name));
       this.usersCard.hidden = false;
       this.transactionsCard.hidden = false;
       this.updated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
@@ -221,6 +228,94 @@ class AdminPage {
     if (!removed) return;
     notify(`Removed ${user.name}.`, 'good');
     this.load();
+  }
+
+  /* ---- Changes to cells ---- */
+
+  /**
+   * The card of changes saved to cells: chosen by cube, by user and by how long ago, the
+   * newest first, each to be opened in Explore. It is fetched as it opens and as the choices
+   * change, not with the rest of the page every few seconds, the history being long to read.
+   */
+  buildChanges() {
+    const choice = (label) => h('select', { class: 'select small-select', 'aria-label': label, onchange: () => this.loadChanges() }, h('option', { value: '' }, label));
+    this.cubeFilter = choice('Every cube');
+    this.userFilter = choice('Anyone');
+    this.sinceFilter = h('select', { class: 'select small-select', 'aria-label': 'How long ago', onchange: () => this.loadChanges() },
+      [['', 'At any time'], ['3600', 'In the last hour'], ['86400', 'In the last day'], ['604800', 'In the last week'], ['2592000', 'In the last 30 days']]
+        .map(([value, label]) => h('option', { value }, label)));
+    this.changesList = h('div', { class: 'changes' });
+    mount(this.changesCard,
+      h('div', { class: 'card-head' },
+        h('h3', { class: 'grow' }, 'Changes to cells'),
+        this.cubeFilter, this.userFilter, this.sinceFilter,
+        h('button', { class: 'button small quiet icon', 'aria-label': 'Fetch the changes again', title: 'Fetch them again', onclick: (event) => working(event.currentTarget, () => this.loadChanges()) }, icon('refresh', 14))),
+      this.changesList);
+    mount(this.changesList, h('div', { class: 'card-body' }, loading('lines')));
+  }
+
+  /**
+   * Puts the choices given in a filter, after the one that chooses everything, keeping what
+   * was chosen; left alone while they are the same, so that the page keeping itself current
+   * does not close it under the pointer.
+   */
+  offer(select, all, names) {
+    const listed = names.join('\n');
+    if (select.dataset.listed === listed) return;
+    select.dataset.listed = listed;
+    const chosen = select.value;
+    mount(select, h('option', { value: '' }, all), names.map((name) => h('option', { value: name, selected: name === chosen }, name)));
+  }
+
+  /** Fetches the changes as the filters ask, the newest 200, and shows them; the last answer fades meanwhile. */
+  async loadChanges() {
+    const asked = new URLSearchParams({ most: '200' });
+    if (this.cubeFilter.value) asked.set('cube', this.cubeFilter.value);
+    if (this.userFilter.value) asked.set('user', this.userFilter.value);
+    if (this.sinceFilter.value) asked.set('since', String(Math.floor(Date.now() / 1000) - Number(this.sinceFilter.value)));
+    const ticket = (this.changesTicket = (this.changesTicket ?? 0) + 1);
+    this.changesList.classList.add('busy');
+    try {
+      const answer = await get(`/admin/changes?${asked}`, { quiet: true });
+      if (ticket === this.changesTicket) this.drawChanges(answer.changes);
+    } catch (problem) {
+      if (ticket === this.changesTicket) mount(this.changesList, h('div', { class: 'card-body' }, h('p', { class: 'error-text' }, problem.message)));
+    } finally {
+      if (ticket === this.changesTicket) this.changesList.classList.remove('busy');
+    }
+  }
+
+  drawChanges(changes) {
+    if (!changes.length) {
+      mount(this.changesList, h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'No change to a cell has been saved as asked.')));
+      return;
+    }
+    const shown = (value) => (value === 0 || value === '' || value === null || value === undefined
+      ? h('span', { class: 'muted' }, 'empty')
+      : typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 6 }) : String(value));
+    mount(this.changesList,
+      h('table', { class: 'table' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'When'), h('th', {}, 'Who'), h('th', {}, 'Cube'), h('th', {}, 'Cell'), h('th', { class: 'num-col' }, 'From'), h('th', { class: 'num-col' }, 'To'), h('th', { class: 'actions' }, ''))),
+        h('tbody', {}, changes.map((change) => h('tr', {},
+          h('td', { class: 'muted nowrap' }, new Date(change.time * 1000).toLocaleString()),
+          h('td', {}, change.author ?? h('span', { class: 'muted' }, 'Not known')),
+          h('td', {}, change.cube),
+          h('td', {}, change.at.join(' · ')),
+          h('td', { class: 'num-col num' }, shown(change.before)),
+          h('td', { class: 'num-col num' }, h('strong', {}, shown(change.after))),
+          h('td', { class: 'actions' }, h('button', { class: 'button small quiet', title: 'Open the cell in Explore', onclick: () => this.explore(change) }, icon('explore', 14), 'Open')))))),
+      changes.length === 200 ? h('p', { class: 'hint card-body' }, 'The newest 200. Choose a cube, a user or a time to see others.') : null);
+  }
+
+  /** Opens a changed cell in Explore, alone in the grid, to look about from there. */
+  async explore(change) {
+    const cube = (await model()).cubes.find((each) => each.name === change.cube);
+    if (!cube) {
+      notify(`There is no cube called ${change.cube} now.`, 'bad');
+      return;
+    }
+    handOver(cube.name, cellQuery(cube.name, cube.dimensions, change.at));
+    go(`/explore?cube=${encodeURIComponent(cube.name)}`);
   }
 
   /* ---- Transactions ---- */

@@ -19,8 +19,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    CellChange, CellRef, CellRefs, CellWrite, CellWrites, Comment, Database, EarlierModel, Error,
-    Explanation, LockMode, ModelUpdate, Spread, TransactionId,
+    Asked, CellChange, CellRef, CellRefs, CellWrite, CellWrites, Comment, Database, EarlierModel,
+    Error, Explanation, HistoryRead, LockMode, ModelUpdate, Spread, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
@@ -182,6 +182,7 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(end_sessions))
         .routes(routes!(list_transactions))
         .routes(routes!(list_earlier_models))
+        .routes(routes!(list_changes))
         .routes(routes!(get_earlier_model))
         .routes(routes!(list_comments, add_comment))
         .routes(routes!(remove_comment))
@@ -1157,11 +1158,24 @@ async fn cell_history(
     Body(request): Body<HistoryRequest>,
 ) -> Result<Json<HistoryResponse>, ApiError> {
     allow(&grants, &request.cube, Role::Read)?;
-    let history = database
-        .read()
-        .unwrap()
-        .history(&request.cube, &request.at)?;
-    let most = request.most.unwrap_or(100).clamp(1, 1000);
+    let asked = Asked {
+        cube: Some(request.cube),
+        at: Some(request.at),
+        ..Asked::default()
+    };
+    let history = database.read().unwrap().history(asked)?;
+    Ok(Json(HistoryResponse {
+        changes: read_history(history, request.most).await?,
+    }))
+}
+
+/// Reads the history of cells as asked, after the database is let go and on a thread of its
+/// own: at most `most` changes, the newest, 100 unless given, and never more than 1,000.
+async fn read_history(
+    history: HistoryRead,
+    most: Option<usize>,
+) -> Result<Vec<CellChange>, ApiError> {
+    let most = most.unwrap_or(100).clamp(1, 1000);
     let read = tokio::task::spawn_blocking(move || history.read(most))
         .await
         .map_err(|error| {
@@ -1171,8 +1185,50 @@ async fn cell_history(
                 error.to_string(),
             )
         })?;
+    Ok(read.map_err(Error::from)?)
+}
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Query)]
+struct ChangesQuery {
+    /// Only changes to this cube.
+    cube: Option<String>,
+    /// Only changes made by this user, in any case.
+    user: Option<String>,
+    /// Only changes made from this time on, in seconds since 1970.
+    since: Option<u64>,
+    /// Only changes made until this time, in seconds since 1970.
+    until: Option<u64>,
+    /// At most this many, the newest: 100 unless given, and never more than 1,000.
+    most: Option<usize>,
+}
+
+/// The changes saved to the cells of every cube, or of one, the newest first: who made each,
+/// when, to which cell, from what to what. Narrowed by cube, by user, and by time.
+#[utoipa::path(
+    get,
+    path = "/admin/changes",
+    params(ChangesQuery),
+    responses(
+        (status = OK, body = HistoryResponse, description = "The changes, the newest first"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "Unknown cube, or the query is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The history could not be read")
+    )
+)]
+async fn list_changes(
+    State(database): State<Shared>,
+    Query(query): Query<ChangesQuery>,
+) -> Result<Json<HistoryResponse>, ApiError> {
+    let asked = Asked {
+        cube: query.cube,
+        author: query.user,
+        since: query.since,
+        until: query.until,
+        ..Asked::default()
+    };
+    let history = database.read().unwrap().history(asked)?;
     Ok(Json(HistoryResponse {
-        changes: read.map_err(Error::from)?,
+        changes: read_history(history, query.most).await?,
     }))
 }
 

@@ -169,3 +169,28 @@ export function mdx(layout, dims) {
 
 /** Where the last layout of a cube is kept, in this browser. */
 export const saved = (cube) => `epiphany.explore.${cube}`;
+
+/** Where a query waits for the page of the cube it asks of. */
+const HANDED = 'epiphany.explore.handed';
+
+/** Leaves a query for the page of a cube, which runs it as it opens, within a few seconds. */
+export function handOver(cube, text) {
+  sessionStorage.setItem(HANDED, JSON.stringify({ cube, mdx: text, at: Date.now() }));
+}
+
+/**
+ * The query left for a cube's page, if one was left for it just now: one left when going
+ * there was called off is no longer wanted. Taken, it is gone.
+ */
+export function takeOver(cube) {
+  const handed = JSON.parse(sessionStorage.getItem(HANDED) ?? 'null');
+  sessionStorage.removeItem(HANDED);
+  return handed?.cube === cube && Date.now() - handed.at < 10000 ? handed.mdx : null;
+}
+
+/** A query of one cell: its first dimension's member on columns, its second's on rows, the rest standing in the slicer. */
+export function cellQuery(cube, dimensions, at) {
+  const [columns, rows, ...rest] = dimensions.map((dimension, index) => member(dimension, at[index]));
+  const axes = [`{${columns}} ON COLUMNS`, rows ? `{${rows}} ON ROWS` : null].filter(Boolean);
+  return `SELECT\n  ${axes.join(',\n  ')}\nFROM ${quote(cube)}${rest.length ? `\nWHERE (${rest.join(', ')})` : ''}`;
+}

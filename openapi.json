@@ -9,6 +9,116 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/admin/changes": {
+      "get": {
+        "summary": "The changes saved to the cells of every cube, or of one, the newest first: who made each,\nwhen, to which cell, from what to what. Narrowed by cube, by user, and by time.",
+        "operationId": "list_changes",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "query",
+            "description": "Only changes to this cube.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "description": "Only changes made by this user, in any case.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Only changes made from this time on, in seconds since 1970.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Only changes made until this time, in seconds since 1970.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "most",
+            "in": "query",
+            "description": "At most this many, the newest: 100 unless given, and never more than 1,000.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The changes, the newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown cube, or the query is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/models": {
       "get": {
         "summary": "The models kept from before the current one, newest first. One is restored by sending it\nback with `PUT /model`, which makes it the newest version. For administrators.",
@@ -2604,6 +2714,8 @@
         "description": "A change to a cell, as the history gives it back.",
         "required": [
           "time",
+          "cube",
+          "at",
           "before",
           "after"
         ],
@@ -2611,6 +2723,13 @@
           "after": {
             "$ref": "#/components/schemas/Scalar",
             "description": "What it held after."
+          },
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One element name for each dimension of the cube."
           },
           "author": {
             "type": [
@@ -2622,6 +2741,9 @@
           "before": {
             "$ref": "#/components/schemas/Scalar",
             "description": "What the cell held before: zero, or empty text, where it held nothing."
+          },
+          "cube": {
+            "type": "string"
           },
           "time": {
             "type": "integer",

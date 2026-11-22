@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use common::Home;
 use epiphany_core::Scalar;
-use epiphany_core::database::{CellRef, CellWrite, Database, Error};
+use epiphany_core::database::{Asked, CellRef, CellWrite, Database, Error};
 use epiphany_server::open;
 use serde_json::{Value as Json, json};
 
@@ -751,8 +751,13 @@ fn the_history_of_a_cell_outlasts_snapshots_and_the_process() {
 
     // Opening again replaces the log with a snapshot; the history stays as it was.
     let database = home.open();
-    let rent = RENT.map(str::to_owned);
-    let changes = database.history(CUBE, &rent).unwrap().read(10).unwrap();
+    let read = |asked: Asked, most: usize| database.history(asked).unwrap().read(most).unwrap();
+    let cell = |at: [&str; 4]| Asked {
+        cube: Some(CUBE.to_owned()),
+        at: Some(at.map(str::to_owned).to_vec()),
+        ..Asked::default()
+    };
+    let changes = read(cell(RENT), 10);
     let seen: Vec<_> = changes
         .iter()
         .map(|change| {
@@ -772,17 +777,28 @@ fn the_history_of_a_cell_outlasts_snapshots_and_the_process() {
         ]
     );
     // The newest, at most as many as asked for; none for a cell never written.
-    let newest = database.history(CUBE, &rent).unwrap().read(1).unwrap();
-    assert_eq!(newest, changes[..1]);
-    let expenses = EXPENSES.map(str::to_owned);
-    assert!(
-        database
-            .history(CUBE, &expenses)
-            .unwrap()
-            .read(10)
-            .unwrap()
-            .is_empty()
+    assert_eq!(read(cell(RENT), 1), changes[..1]);
+    assert!(read(cell(EXPENSES), 10).is_empty());
+
+    // Across the cube, every change; by a user, in any case, theirs; and by time.
+    let cube = Asked {
+        cube: Some("general ledger".to_owned()),
+        ..Asked::default()
+    };
+    assert_eq!(read(cube.clone(), 10).len(), 3);
+    let by_ada = read(
+        Asked {
+            author: Some("ADA".to_owned()),
+            ..cube.clone()
+        },
+        10,
     );
+    assert_eq!(by_ada, changes[1..]);
+    let later = Asked {
+        since: Some(changes[0].time + 1),
+        ..cube
+    };
+    assert!(read(later, 10).is_empty());
 }
 
 #[test]

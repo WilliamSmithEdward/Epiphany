@@ -251,6 +251,32 @@ async fn a_cells_history_says_who_changed_it_and_from_what_to_what() {
     let missing = json!({ "cube": "General Ledger", "at": ["Nothing", "UK", "Jan", "Actual"] });
     let (status, _, _) = send(&app, "POST", "/cells/history", Some(&token), Some(missing)).await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // An administrator sees the changes across cubes, by cube, by user in any case, and by time.
+    let listed = |uri: &str| {
+        let uri = uri.to_owned();
+        let (app, token) = (app.clone(), token.clone());
+        async move {
+            let (status, _, body) = send(&app, "GET", &uri, Some(&token), None).await;
+            (status, body["changes"].as_array().map_or(0, Vec::len))
+        }
+    };
+    assert_eq!(listed("/admin/changes").await, (StatusCode::OK, 2));
+    assert_eq!(
+        listed("/admin/changes?cube=general%20ledger&user=ADA").await,
+        (StatusCode::OK, 2)
+    );
+    assert_eq!(
+        listed("/admin/changes?user=someone").await,
+        (StatusCode::OK, 0)
+    );
+    assert_eq!(
+        listed("/admin/changes?since=99999999999").await,
+        (StatusCode::OK, 0)
+    );
+    assert_eq!(listed("/admin/changes?most=1").await, (StatusCode::OK, 1));
+    let (status, _) = listed("/admin/changes?cube=Nowhere").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]

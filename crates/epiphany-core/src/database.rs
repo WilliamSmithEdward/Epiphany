@@ -40,7 +40,7 @@ use locks::{Locks, Mode, Resource};
 pub use batch::{CellRefs, CellWrites};
 pub use comments::{Comment, CommentChange};
 pub use error::Error;
-pub use history::{CellChange, CellHistory, Changes, History};
+pub use history::{Asked, CellChange, Changes, History, HistoryRead};
 pub use locks::LockMode;
 pub use spread::{Spread, SpreadMethod};
 

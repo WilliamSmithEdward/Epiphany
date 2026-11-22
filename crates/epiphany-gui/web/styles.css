@@ -426,7 +426,7 @@ a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transfo
 .chip-more:hover { color: var(--text); background: var(--surface-2); }
 
 .output { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; position: relative; background: var(--bg); }
-.output.busy::after, .tile-body.busy::after { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: progress 1s linear infinite; }
+.output.busy::after, .tile-body.busy::after, .changes.busy::after { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: progress 1s linear infinite; }
 @keyframes progress { from { background-position: -50% 0; } to { background-position: 150% 0; } }
 .output > .empty { flex: 1; }
 .status-line { display: flex; align-items: center; gap: var(--s4); min-height: 34px; padding: 0 var(--s5); border-top: 1px solid var(--line); background: var(--surface); font-size: var(--text-s); }
@@ -599,6 +599,11 @@ fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(-
 .admin-section { display: flex; flex-direction: column; gap: var(--s4); }
 .table .num-col { text-align: right; width: 140px; }
 .table .bar-col { width: 32%; }
+/* Changes to cells: fetched again, the last answer fades after a moment. */
+.changes { position: relative; }
+.changes.busy > .table { opacity: .6; transition: opacity .3s .5s; }
+.nowrap { white-space: nowrap; }
+.card-head { flex-wrap: wrap; }
 /* A card as wide as its table, rather than the table's columns spread across the page. */
 .card.fit { width: fit-content; max-width: 100%; overflow-x: auto; }
 .card.fit .table { width: auto; }

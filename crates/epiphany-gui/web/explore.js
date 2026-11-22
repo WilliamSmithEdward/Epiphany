@@ -4,7 +4,7 @@
 import { ApiError, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { chart, shape } from './chart.js';
-import { CALCULATIONS, cubeOf, defaultLayout, emptiness, mdx, saved, shown } from './layout.js';
+import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, mdx, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
@@ -32,17 +32,11 @@ export async function render(target, { params }) {
     return;
   }
   const dims = new Map(await Promise.all(cube.dimensions.map(async (dim) => [dim, await dimension(dim)])));
-  // A query written on another cube's page, for this cube, comes along to be run here: just
-  // now, for one left when leaving that page was called off is no longer wanted.
-  const handed = JSON.parse(sessionStorage.getItem(HANDED) ?? 'null');
-  sessionStorage.removeItem(HANDED);
-  const fresh = handed?.cube === cube.name && Date.now() - handed.at < 10000;
-  const view = fresh ? { mdx: handed.mdx } : cube.views?.[params.get('view')];
+  // A query left for this cube, from another cube's page or another page, is run here.
+  const handed = takeOver(cube.name);
+  const view = handed ? { mdx: handed } : cube.views?.[params.get('view')];
   return new Explorer(target, definition, cube, dims, view);
 }
-
-/** Where a query written for another cube waits for that cube's page to open. */
-const HANDED = 'epiphany.explore.handed';
 
 class Explorer {
   /** `view`, where one is given, is a saved view to open in place of the last layout. */
@@ -797,7 +791,7 @@ class Explorer {
     if (!cube || cube.name === this.cube.name) return false;
     this.layout.mdx = null;
     localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
-    sessionStorage.setItem(HANDED, JSON.stringify({ cube: cube.name, mdx: text, at: Date.now() }));
+    handOver(cube.name, text);
     notify(`The query asks of ${cube.name}, so it runs there.`);
     go(`/explore?cube=${encodeURIComponent(cube.name)}`);
     return true;

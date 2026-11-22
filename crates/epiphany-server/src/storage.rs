@@ -19,7 +19,7 @@
 //! A commit is appended to the log and flushed to disk before it is acknowledged. Opening the
 //! directory loads the snapshot, replays the log, and replaces both with a fresh snapshot.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::error::Error;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufWriter, Write};
@@ -28,7 +28,7 @@ use std::time::UNIX_EPOCH;
 
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    CellChange, CellWrite, Changes, CommentChange, Database, EarlierModel, History, Journal,
+    Asked, CellChange, CellWrite, Changes, CommentChange, Database, EarlierModel, History, Journal,
     NamedCells, NamedWrites,
 };
 use epiphany_core::model::ModelDef;
@@ -262,22 +262,27 @@ struct RecordedCell {
 struct HistoryFile(PathBuf);
 
 impl History for HistoryFile {
-    /// Reads the file through, keeping the changes to one cell. A line is read as JSON only
-    /// if it holds the cube's name and every element's, as JSON writes them, so that most
-    /// lines are passed over at a glance. A line cut short, the last after a crash, is left out.
-    fn of(&self, cube: &str, at: &[String], most: usize) -> io::Result<Vec<CellChange>> {
+    /// Reads the file through, keeping the newest changes as asked, `most` at a time. A line
+    /// is read as JSON only if it holds every name asked about, as JSON writes them, so that
+    /// most lines are passed over at a glance; a user's name may be written in another case,
+    /// and is looked for once the line is read. A line cut short, the last after a crash, is
+    /// left out.
+    fn find(&self, asked: &Asked, most: usize) -> io::Result<Vec<CellChange>> {
+        if most == 0 {
+            return Ok(Vec::new());
+        }
         let file = match File::open(&self.0) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
-        let names = std::iter::once(cube).chain(at.iter().map(String::as_str));
+        let names = asked.cube.iter().chain(asked.at.iter().flatten());
         let needles = names
             .map(serde_json::to_vec)
             .collect::<Result<Vec<_>, _>>()?;
         let holds =
             |line: &[u8], needle: &[u8]| line.windows(needle.len()).any(|part| part == needle);
-        let mut found = Vec::new();
+        let mut found = VecDeque::with_capacity(most.min(1024));
         for line in io::BufRead::split(io::BufReader::new(file), b'\n') {
             let line = line?;
             if !needles.iter().all(|needle| holds(&line, needle)) {
@@ -286,20 +291,27 @@ impl History for HistoryFile {
             let Ok(commit) = serde_json::from_slice::<Recorded>(&line) else {
                 continue;
             };
+            if !asked.takes_commit(commit.time, commit.author.as_deref()) {
+                continue;
+            }
             for cell in commit.cells {
-                if cell.cube == cube && cell.at == at {
-                    found.push(CellChange {
-                        time: commit.time,
-                        author: commit.author.clone(),
-                        before: cell.before,
-                        after: cell.after,
-                    });
+                if !asked.takes_cell(&cell.cube, &cell.at) {
+                    continue;
                 }
+                if found.len() == most {
+                    found.pop_front();
+                }
+                found.push_back(CellChange {
+                    time: commit.time,
+                    author: commit.author.clone(),
+                    cube: cell.cube,
+                    at: cell.at,
+                    before: cell.before,
+                    after: cell.after,
+                });
             }
         }
-        found.reverse();
-        found.truncate(most);
-        Ok(found)
+        Ok(found.into_iter().rev().collect())
     }
 }
 

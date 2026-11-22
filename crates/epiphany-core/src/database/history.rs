@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
-use super::{CellRef, Database, Error, Names, Transaction};
+use super::{Database, Error, Names, Transaction};
 use crate::Scalar;
 use crate::model::{ElementId, Model};
 
@@ -20,32 +20,68 @@ pub struct CellChange {
     pub time: u64,
     /// Who made it: the user who began the transaction it came in, where the server knew.
     pub author: Option<String>,
+    pub cube: String,
+    /// One element name for each dimension of the cube.
+    pub at: Vec<String>,
     /// What the cell held before: zero, or empty text, where it held nothing.
     pub before: Scalar,
     /// What it held after.
     pub after: Scalar,
 }
 
-/// Where the history of cells is kept, to be read apart from the database.
-pub trait History: Send {
-    /// The changes recorded to a cell, named by its elements' names, the newest first, at
-    /// most `most` of them.
-    fn of(&self, cube: &str, at: &[String], most: usize) -> io::Result<Vec<CellChange>>;
+/// What to read from the history of cells: the changes to a cube, or to one cell of it, by
+/// a user, from a time and until one, in seconds since 1970. What is left out is not asked
+/// about. Names are as the history knows them: the cube's and the elements' own, a user's
+/// in any case.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Asked {
+    pub cube: Option<String>,
+    pub at: Option<Vec<String>>,
+    pub author: Option<String>,
+    pub since: Option<u64>,
+    pub until: Option<u64>,
 }
 
-/// A cell's history, to be read once the database is let go.
-pub struct CellHistory {
-    /// The cell, named as the history knows it: by its elements' names, not their aliases.
-    pub cell: CellRef,
+impl Asked {
+    /// Whether a commit, by when it was made and by whom, is among those asked for.
+    pub fn takes_commit(&self, time: u64, author: Option<&str>) -> bool {
+        self.since.is_none_or(|since| time >= since)
+            && self.until.is_none_or(|until| time <= until)
+            && self.author.as_ref().is_none_or(|wanted| {
+                author.is_some_and(|author| author.to_lowercase() == wanted.to_lowercase())
+            })
+    }
+
+    /// Whether a cell a commit changed is among those asked for.
+    pub fn takes_cell(&self, cube: &str, at: &[String]) -> bool {
+        self.cube.as_ref().is_none_or(|wanted| wanted == cube)
+            && self.at.as_ref().is_none_or(|wanted| wanted == at)
+    }
+}
+
+/// Where the history of cells is kept, to be read apart from the database.
+pub trait History: Send {
+    /// The changes recorded as asked, the newest first, at most `most` of them.
+    fn find(&self, asked: &Asked, most: usize) -> io::Result<Vec<CellChange>>;
+}
+
+/// The history of cells as asked of it, to be read once the database is let go.
+pub struct HistoryRead {
+    asked: Asked,
     history: Option<Box<dyn History>>,
 }
 
-impl CellHistory {
-    /// The changes recorded to the cell, the newest first, at most `most` of them; none
-    /// where the journal keeps no history.
+impl HistoryRead {
+    /// What is asked, its names as the history knows them.
+    pub fn asked(&self) -> &Asked {
+        &self.asked
+    }
+
+    /// The changes recorded as asked, the newest first, at most `most` of them; none where
+    /// the journal keeps no history.
     pub fn read(&self, most: usize) -> io::Result<Vec<CellChange>> {
         match &self.history {
-            Some(history) => history.of(&self.cell.cube, &self.cell.at, most),
+            Some(history) => history.find(&self.asked, most),
             None => Ok(Vec::new()),
         }
     }
@@ -125,17 +161,30 @@ impl Database {
         self.author = author.map(str::to_owned);
     }
 
-    /// A cell's history, named by one element name or alias for each dimension of the cube,
-    /// to be read once the database is let go. The history knows a cell by its elements'
-    /// names, so changes made before an element was renamed are not found under its new one.
-    pub fn history(&self, cube: &str, at: &[String]) -> Result<CellHistory, Error> {
-        let (id, coordinate) = self.locate(cube, at)?;
-        let named = self.named(id, &coordinate, Scalar::Number(0.0));
-        Ok(CellHistory {
-            cell: CellRef {
-                cube: named.cube,
-                at: named.at,
-            },
+    /// The history of cells as asked of it, to be read once the database is let go: a cube
+    /// named as the model has it, in any case, and a cell by one element name or alias for
+    /// each of its dimensions, put as the history knows them. The history knows a cell by its
+    /// elements' names, so changes made before an element was renamed are not found under
+    /// its new one.
+    pub fn history(&self, mut asked: Asked) -> Result<HistoryRead, Error> {
+        match (&asked.cube, &asked.at) {
+            (Some(cube), Some(at)) => {
+                let (id, coordinate) = self.locate(cube, at)?;
+                let named = self.named(id, &coordinate, Scalar::Number(0.0));
+                (asked.cube, asked.at) = (Some(named.cube), Some(named.at));
+            }
+            (Some(cube), None) => {
+                asked.cube = Some(self.model.cubes()[self.cube_id(cube)?].name.clone());
+            }
+            (None, Some(_)) => {
+                return Err(Error::NotFound(
+                    "a cell is asked about within its cube: name the cube".to_owned(),
+                ));
+            }
+            (None, None) => {}
+        }
+        Ok(HistoryRead {
+            asked,
             history: self.journal().and_then(|journal| journal.history()),
         })
     }

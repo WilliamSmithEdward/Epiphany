@@ -114,13 +114,13 @@ Tableau, Atoti) found these gaps. Already taken up: cell comments in a panel bes
 totals placement, writable cells marked and read-only ones explained, typed spreading with a
 check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, data bars, shades and coloured rules kept with views, earlier versions of the model compared and restored, calculations added from a heading (difference, ratio, % change, share of parent), the largest or smallest N rows by a column, the feeder check offered from Explain, undo and
 redo of values, only the rows in view drawn, in the grid and in every tree of members, so
-that results and dimensions of any size show whole and scroll smoothly, and each cell's
-history of changes, who made each and from what to what, beside its comments. Still to do,
-most valuable first:
+that results and dimensions of any size show whole and scroll smoothly, each cell's history
+of changes, who made each and from what to what, beside its comments, and the changes across
+cubes for administrators, by cube, user and time, each opened in Explore. Still to do, most
+valuable first:
 
 | Gap | Seen in | Shape here |
 | --- | --- | --- |
-| Changes across a cube, by user and time | Anaplan, Oracle, Pigment, PAW | An administrator's view of the history of cells, filtered by who and when ([Anaplan](https://help.anaplan.com/afe9dd2f-a532-4aba-b7da-4971d13ca76f)) |
 | Named sandboxes, compared side by side | PAW, Oracle, Pigment, SAP Analytics Cloud | A kept, named transaction, shown as a column beside the stored values |
 | Picklists and validation | TM1, Oracle smart lists and validation rules | A picklist attribute with a dropdown in the cell; rules that warn or refuse |
 | Supporting detail beneath a cell | Oracle, OneStream, Adaptive Planning | Lines that add up to the cell's value, kept with it |
