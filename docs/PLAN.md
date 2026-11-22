@@ -250,9 +250,9 @@ practice that means:
     `DrillupMember(set, members)` and `ToggleDrillState(set, members)`, which closes a
     member that is followed by something beneath it and opens any other.
   - Members: `[Dimension].[Member]` by name or alias, `.Parent`, `.FirstChild`,
-    `.LastChild`, `.FirstSibling`, `.LastSibling`, `.CurrentMember`, `Ancestor`, `.PrevMember`, `.NextMember`, `.Lag(n)`,
-    `.Lead(n)`, and `StrToMember`, `StrToTuple`, `StrToSet` for a member, tuple or set
-    given as text.
+    `.LastChild`, `.FirstSibling`, `.LastSibling`, `.CurrentMember`, `Ancestor`,
+    `.PrevMember`, `.NextMember`, `.Lag(n)`, `.Lead(n)`, and `StrToMember`, `StrToTuple`,
+    `StrToSet` for a member, tuple or set given as text.
   - Levels: `[Dimension].Levels(n)`, `[Dimension].Levels('name')`, `[Dimension].[name]`
     and `member.Level`, with `.Members`, `.Ordinal` and `.Name`; `Ancestor(member, level)`,
     `Descendants(member, level [, flag])`, `Cousin(member, ancestor)`,
@@ -263,16 +263,26 @@ practice that means:
   - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `XOR` / `NOT`,
     `IS` (the same member, tuple or level, or `NULL`), `IIF`, `CASE` in both its forms
     (`CASE WHEN condition THEN ...` and `CASE value WHEN other THEN ...`, with or without
-    `ELSE`), `NULL`, `IsAncestor`, `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`, `Aggregate`, `Avg`, `Min`, `Max`,
-    `Count` and `.Count`, tuples as cell references, `.Name`, `.UniqueName`, `.Value`,
-    and `.Properties("name")` for an attribute or for `MEMBER_NAME`,
-    `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`, `CHILDREN_CARDINALITY`.
+    `ELSE`), `NULL`, `IsAncestor`, `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`,
+    `Aggregate`, `Avg`, `Min`, `Max`, `Count` and `.Count`, tuples as cell references,
+    `.Name`, `.UniqueName`, `.Value`, and `.Properties("name")` for an attribute or for
+    `MEMBER_NAME`, `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`,
+    `CHILDREN_CARDINALITY`.
   - `Rank(tuple, set [, expression])`, and `TopSum`, `BottomSum`, `TopPercent` and
     `BottomPercent` beside `TopCount` and `BottomCount`.
   - `Median`, `Var`, `VarP`, `Stdev` and `StdevP` beside `Sum`, `Avg`, `Min` and `Max`.
   - Numbers: `Abs`, `Round`, `Int`, `Fix`, `Sqr`, `Exp`, `Log`, `Log10`, `Sgn`, `Mod`,
     `Power`. Text: `Len`, `Left`, `Right`, `Mid`, `UCase`, `LCase`, `Trim`, `InStr`,
     `Replace`, `Val`, `Str`, `CStr`.
+  - Dates, as Excel and VBA count them: days from 30 December 1899, with the time of day as
+    the fraction of a day, so that a date may be kept in any numeric cell. `Now()`,
+    `Date()`, `DateSerial(year, month, day)`, `CDate(text)`, `Year`, `Month`, `Day`,
+    `Hour`, `Minute`, `Second`, `Weekday(date [, first day])`,
+    `DateAdd(interval, number, date)` and `DateDiff(interval, date, date)`, with VBA's
+    intervals: `yyyy`, `q`, `m`, `y`, `d`, `w`, `ww`, `h`, `n` and `s`.
+  - `Format(value [, pattern])` writes a number or a date out as VBA's patterns say: for a
+    date `yyyy`, `mmm`, `dd`, `hh:nn`, `AM/PM` and the rest; for a number `0`, `#`, `.`,
+    `,` and `%`, in up to three sections for positive, negative and zero values.
   - `WITH MEMBER` (calculated members, which may refer to one another, with
     `SOLVE_ORDER`) and `WITH SET`.
   - Numeric and text cells.
@@ -351,8 +361,24 @@ practice that means:
   - `Rank` with an expression is one more than the number of tuples with a greater
     value, so equal values share a rank; a tuple that is not in the set ranks zero.
   - `Round` rounds halves away from zero. A root or logarithm that does not exist is null.
-- Not done: functions outside the lists above (for example the date functions), and
-  formatting.
+  - `Now()` and `Date()` are the server's clock in UTC, to the second, since a server has
+    no time zone of its own to go by. A rule that uses them gives what they were when its
+    cell was worked out, and a total kept since stays as it was until the data or the model
+    changes.
+  - Dates fall in the years 100 to 9999, as in VBA. A text taken as a date is written
+    yyyy-mm-dd, alone or with hh:mm or hh:mm:ss after a space or a T: the one way of writing
+    a date that reads the same everywhere. Years are written in full, and the names of
+    months and days are English.
+  - `DateDiff` counts as VBA does: the year, quarter, month, day, hour, minute or second
+    boundaries passed, the Sundays passed for `ww`, and whole weeks of days for `w`. A
+    month or a year on from the 31st is the last day of a shorter month. A number of
+    intervals that is not whole is rounded as VBA rounds it, a half to the even number.
+  - A number pattern puts its text before or after its digits, not among them, and writes
+    at most 20 decimals; an empty cell is zero to it, as everywhere, and `NULL` is written
+    as nothing.
+- Not done: functions outside the lists above; numbers written in scientific notation,
+  in queries or by `Format`; the formats VBA names, such as `Currency` and `Short Date`,
+  which follow the reader's locale; and the `FORMAT_STRING` of a calculated member.
 
 ### 2.8 Spreading
 

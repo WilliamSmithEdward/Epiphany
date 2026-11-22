@@ -13,7 +13,7 @@ use epiphany_core::Scalar;
 use epiphany_core::database::{CellWrite, Database};
 use epiphany_core::model::ModelDef;
 
-const FUNCTIONS: [&str; 96] = [
+const FUNCTIONS: [&str; 110] = [
     "Sum",
     "Aggregate",
     "Avg",
@@ -93,6 +93,20 @@ const FUNCTIONS: [&str; 96] = [
     "Mid",
     "InStr",
     "Replace",
+    "Now",
+    "Date",
+    "DateSerial",
+    "CDate",
+    "Year",
+    "Month",
+    "Day",
+    "Hour",
+    "Minute",
+    "Second",
+    "Weekday",
+    "DateAdd",
+    "DateDiff",
+    "Format",
     "Cousin",
     "ParallelPeriod",
     "PeriodsToDate",
@@ -139,7 +153,7 @@ const METHODS: [&str; 26] = [
     "FirstChild",
     "LastChild",
 ];
-const ATOMS: [&str; 40] = [
+const ATOMS: [&str; 44] = [
     "0",
     "1",
     "2",
@@ -154,6 +168,10 @@ const ATOMS: [&str; 40] = [
     "'[Period].[Jan]'",
     "'{[Period].Members}'",
     "'*a*'",
+    "'yyyy-mm-dd hh:mm AM/PM'",
+    "'#,##0.0%;(0);\"z\"'",
+    "'2026-11-22 18:05'",
+    "'ww'",
     "\"Code\"",
     "NULL",
     "[Period].[Jan]",

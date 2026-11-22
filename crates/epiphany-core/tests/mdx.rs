@@ -1011,6 +1011,189 @@ fn text_is_measured_cut_and_changed() {
     assert_eq!(number("Len([Period].CurrentMember.Parent.Name)"), Some(2.0));
 }
 
+/// What an expression that should fail says, as a calculated member.
+fn refusal(expression: &str) -> String {
+    failure(&format!(
+        "WITH MEMBER [Account].[X] AS {expression} SELECT {{[Account].[X]}} ON COLUMNS \
+         FROM [General Ledger]"
+    ))
+}
+
+#[test]
+fn dates_are_days_from_the_end_of_1899_as_excel_counts_them() {
+    // Sunday 22 November 2026.
+    let day = 46_348.0;
+    assert_eq!(number("DateSerial(2026, 11, 22)"), Some(day));
+    assert_eq!(number("DateSerial(1899, 12, 30)"), Some(0.0));
+    assert_eq!(number("DateSerial(1900, 3, 1)"), Some(61.0));
+    // Months and days run over, so the day before the 1st is the last of the month before.
+    assert_eq!(number("DateSerial(2026, 13, 1)"), Some(46_388.0));
+    assert_eq!(number("Day(DateSerial(2026, 3, 0))"), Some(28.0));
+    assert_eq!(number("Day(DateSerial(2024, 3, 0))"), Some(29.0));
+    // Taken apart, from a number or from a text written as yyyy-mm-dd.
+    let evening = "CDate('2026-11-22 18:05:09')";
+    assert_eq!(
+        number(evening),
+        Some(day + (18.0 * 3600.0 + 309.0) / 86_400.0)
+    );
+    assert_eq!(
+        number("CDate('2026-11-22T18:05')"),
+        Some(day + (18.0 * 60.0 + 5.0) / 1_440.0)
+    );
+    for (part, expected) in [
+        ("Year", 2026.0),
+        ("Month", 11.0),
+        ("Day", 22.0),
+        ("Hour", 18.0),
+        ("Minute", 5.0),
+        ("Second", 9.0),
+        ("Weekday", 1.0),
+    ] {
+        assert_eq!(
+            number(&format!("{part}({evening})")),
+            Some(expected),
+            "{part}"
+        );
+    }
+    assert_eq!(number("Year('2026-11-22')"), Some(2026.0));
+    assert_eq!(number("Weekday(DateSerial(2026, 11, 22), 2)"), Some(7.0));
+    // Moved, a month on from the 31st being the last day of a shorter month.
+    assert_eq!(
+        number("DateAdd('m', 1, DateSerial(2026, 1, 31))"),
+        Some(46_081.0)
+    );
+    assert_eq!(
+        number("DateAdd('yyyy', 1, DateSerial(2024, 2, 29))"),
+        Some(45_716.0)
+    );
+    assert_eq!(
+        number("DateAdd('q', -1, DateSerial(2026, 11, 22))"),
+        Some(46_256.0)
+    );
+    assert_eq!(
+        number("DateAdd('d', -1, DateSerial(2026, 3, 1))"),
+        Some(46_081.0)
+    );
+    assert_eq!(
+        number("DateAdd('ww', 2, DateSerial(2026, 11, 22))"),
+        Some(day + 14.0)
+    );
+    assert_eq!(
+        number("DateAdd('H', 30, DateSerial(2026, 11, 22))"),
+        Some(day + 1.25)
+    );
+    // Compared by the boundaries passed, as VBA compares them.
+    let between = |interval: &str, from: &str, to: &str| {
+        number(&format!(
+            "DateDiff('{interval}', CDate('{from}'), CDate('{to}'))"
+        ))
+    };
+    assert_eq!(between("yyyy", "2025-12-31", "2026-01-01"), Some(1.0));
+    assert_eq!(between("q", "2026-03-31", "2026-04-01"), Some(1.0));
+    assert_eq!(between("m", "2026-01-31", "2026-02-01"), Some(1.0));
+    assert_eq!(between("d", "2026-11-22", "2026-11-01"), Some(-21.0));
+    assert_eq!(between("ww", "2026-11-21", "2026-11-22"), Some(1.0));
+    assert_eq!(between("w", "2026-11-21", "2026-11-22"), Some(0.0));
+    assert_eq!(between("w", "2026-11-01", "2026-11-22"), Some(3.0));
+    assert_eq!(
+        between("h", "2026-11-22 23:59", "2026-11-23 00:01"),
+        Some(1.0)
+    );
+    assert_eq!(
+        between("n", "2026-11-22 10:00", "2026-11-22 08:30"),
+        Some(-90.0)
+    );
+    // Now is the server's clock, and Date its day.
+    assert_eq!(
+        number("IIF(Now() > DateSerial(2026, 1, 1), 1, 0)"),
+        Some(1.0)
+    );
+    assert_eq!(
+        number("IIF(Date() <= Now() AND Now() - Date() < 1, 1, 0)"),
+        Some(1.0)
+    );
+
+    for (expression, expected) in [
+        (
+            "DateSerial(10000, 1, 1)",
+            "a date falls in the years 100 to 9999",
+        ),
+        (
+            "DateAdd('yyyy', 1000000000000000, 0)",
+            "a date falls in the years 100 to 9999",
+        ),
+        ("Year(10000000)", "a date falls in the years 100 to 9999"),
+        (
+            "DateAdd('x', 1, 0)",
+            "'x' is no interval: yyyy, q, m, y, d, w, ww, h, n or s",
+        ),
+        (
+            "CDate('22/11/2026')",
+            "'22/11/2026' is not a date written as yyyy-mm-dd",
+        ),
+        (
+            "CDate('2026-02-30')",
+            "'2026-02-30' is not a date written as yyyy-mm-dd",
+        ),
+        (
+            "Weekday(0, 8)",
+            "a week begins on a day from 1, Sunday, to 7, Saturday",
+        ),
+    ] {
+        assert_eq!(refusal(expression), expected, "{expression}");
+    }
+}
+
+#[test]
+fn numbers_and_dates_are_written_out_as_a_pattern_says() {
+    let written = |value: &str, pattern: &str| text(&format!("Format({value}, '{pattern}')"));
+    let evening = "CDate('2026-11-22 18:05:09')";
+    assert_eq!(written(evening, "yyyy-mm-dd"), "2026-11-22");
+    assert_eq!(written(evening, "mmmm yyyy"), "November 2026");
+    assert_eq!(written(evening, "dddd d mmm yy"), "Sunday 22 Nov 26");
+    assert_eq!(written(evening, "ddd dd/mm"), "Sun 22/11");
+    assert_eq!(written(evening, "hh:mm:ss"), "18:05:09");
+    assert_eq!(written(evening, "h:nn AM/PM"), "6:05 PM");
+    assert_eq!(written(evening, "h:nn a/p"), "6:05 p");
+    assert_eq!(written(evening, "q y ww w"), "4 326 48 1");
+    assert_eq!(written(evening, r#""Q"q \y yyyy"#), "Q4 y 2026");
+    // A text written as a date is written out again.
+    assert_eq!(written("'2026-11-22'", "mmm d"), "Nov 22");
+
+    assert_eq!(written("1234.5", "#,##0.00"), "1,234.50");
+    assert_eq!(written("1234567", r##"#,##0,"K""##), "1,235K");
+    assert_eq!(written("0.256", "0.0%"), "25.6%");
+    assert_eq!(written("2.5", "0"), "3");
+    assert_eq!(written("5", "000"), "005");
+    assert_eq!(written("0.5", "#.##"), ".5");
+    assert_eq!(written("1", "#.##"), "1.");
+    assert_eq!(written("-5", "0"), "-5");
+    assert_eq!(written("-5", "0;(0)"), "(5)");
+    assert_eq!(written("0", r#"0;(0);"none""#), "none");
+    assert_eq!(written("-0.004", "0.00"), "0.00");
+    assert_eq!(written("'12.5'", "0.0"), "12.5");
+    assert_eq!(written("[Account].[Product Revenue]", "$#,##0"), "$20");
+    assert_eq!(text("Format(5)"), "5");
+    assert_eq!(text("Format(5, '')"), "5");
+    // An empty cell is zero, as everywhere; only no value at all is written as nothing.
+    assert_eq!(written("[Account].[Rent]", "0.00"), "0.00");
+    assert_eq!(written("NULL", "0.00"), "");
+
+    for (expression, expected) in [
+        ("Format('abc', '0')", "'abc' is not a number"),
+        (
+            "Format(1, '0 x 0')",
+            "a number pattern has its text before or after its digits, not among them",
+        ),
+        (
+            "Format(1, '0.000000000000000000000')",
+            "a number pattern writes at most 20 decimals",
+        ),
+    ] {
+        assert_eq!(refusal(expression), expected, "{expression}");
+    }
+}
+
 #[test]
 fn levels_count_up_from_the_leaves() {
     let columns = |set: &str| {

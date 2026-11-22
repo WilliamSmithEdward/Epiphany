@@ -11,8 +11,11 @@ use crate::model::{
     Cube, Dimension, DimensionId, DimensionType, Element, ElementId, ElementType, Model, key,
 };
 
+mod dates;
+mod format;
 mod sparse;
 
+use dates::{Interval, Parts};
 use sparse::Laid;
 
 /// The most cells one query may return.
@@ -1673,6 +1676,84 @@ impl<'a> Evaluator<'a> {
                     false => text.replace(&sought, &with),
                 })
             }
+            // Dates are numbers, days from 30 December 1899, as Excel and VBA count them.
+            "NOW" | "DATE" => {
+                count(0..=0)?;
+                let now = dates::now();
+                Ok(Datum::Number(match function {
+                    "NOW" => now,
+                    _ => now.floor(),
+                }))
+            }
+            "DATESERIAL" => {
+                count(3..=3)?;
+                let year = self.count_of(&arguments[0], context)?;
+                let month = self.count_of(&arguments[1], context)?;
+                let day = self.count_of(&arguments[2], context)?;
+                dates::date(year, month, day).map(Datum::Number)
+            }
+            "CDATE" => {
+                count(1..=1)?;
+                Ok(Datum::Number(self.date(&arguments[0], context)?.value()))
+            }
+            "YEAR" | "MONTH" | "DAY" | "HOUR" | "MINUTE" | "SECOND" => {
+                count(1..=1)?;
+                let date = self.date(&arguments[0], context)?;
+                Ok(Datum::Number(match function {
+                    "YEAR" => date.year,
+                    "MONTH" => date.month,
+                    "DAY" => date.day,
+                    "HOUR" => date.seconds / 3_600,
+                    "MINUTE" => date.seconds / 60 % 60,
+                    _ => date.seconds % 60,
+                } as f64))
+            }
+            "WEEKDAY" => {
+                count(1..=2)?;
+                let date = self.date(&arguments[0], context)?;
+                // The day the week begins on: 1 for Sunday, as VBA has it, to 7 for Saturday.
+                let first = match arguments.get(1) {
+                    Some(first) => self.count_of(first, context)?,
+                    None => 1,
+                };
+                if !(1..=7).contains(&first) {
+                    return fail("a week begins on a day from 1, Sunday, to 7, Saturday");
+                }
+                Ok(Datum::Number(date.weekday(first) as f64))
+            }
+            "DATEADD" => {
+                count(3..=3)?;
+                let interval = Interval::named(&self.text(&arguments[0], context)?)?;
+                let number = self.count_of(&arguments[1], context)?;
+                let date = self.date(&arguments[2], context)?;
+                date.add(interval, number).map(Datum::Number)
+            }
+            "DATEDIFF" => {
+                count(3..=3)?;
+                let interval = Interval::named(&self.text(&arguments[0], context)?)?;
+                let from = self.date(&arguments[1], context)?;
+                let to = self.date(&arguments[2], context)?;
+                Ok(Datum::Number(from.until(&to, interval) as f64))
+            }
+            "FORMAT" => {
+                count(1..=2)?;
+                let Some(pattern) = arguments.get(1) else {
+                    return self.text(&arguments[0], context).map(Datum::Text);
+                };
+                let pattern = self.text(pattern, context)?;
+                let value = self.evaluate(&arguments[0], context)?;
+                let number = match self.scalar(value, context)? {
+                    Datum::Null => return Ok(Datum::Text(String::new())),
+                    // A text is a date or a number written out, to be written out again.
+                    Datum::Text(text) if format::writes_dates(&pattern) => dates::parse(&text)?,
+                    Datum::Text(text) => match text.trim().parse::<f64>() {
+                        Ok(number) if number.is_finite() => number,
+                        _ => return fail(format!("'{text}' is not a number")),
+                    },
+                    other => to_number(&other)?,
+                };
+                bounded_text(format::write(number, &pattern)?)
+            }
             "COUSIN" => {
                 count(2..=2)?;
                 let member = self.member(&arguments[0], context)?;
@@ -2693,6 +2774,27 @@ impl<'a> Evaluator<'a> {
             Datum::Number(number) => Ok(number.to_string()),
             Datum::Null => Ok(String::new()),
             _ => fail("expected text"),
+        }
+    }
+
+    /// An expression's value as a date: a number of days from 30 December 1899, or a text
+    /// written as yyyy-mm-dd.
+    fn date(&self, expression: &Expr, context: &Context) -> Evaluated<Parts> {
+        let value = self.evaluate(expression, context)?;
+        match self.scalar(value, context)? {
+            Datum::Text(text) => Parts::of(dates::parse(&text)?),
+            other => Parts::of(to_number(&other)?),
+        }
+    }
+
+    /// An expression's value as a whole number of years, months, days or the like, a
+    /// fraction rounded as VBA rounds it, a half to the even number.
+    fn count_of(&self, expression: &Expr, context: &Context) -> Evaluated<i64> {
+        let number = self.number(expression, context)?.round_ties_even();
+        // Further than any date may be from any other, in seconds.
+        match number.abs() <= 1e12 {
+            true => Ok(number as i64),
+            false => fail("a date falls in the years 100 to 9999"),
         }
     }
 
