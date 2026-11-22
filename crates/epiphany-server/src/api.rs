@@ -29,7 +29,7 @@ use epiphany_core::model::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{Auth, Grants, Refusal, Role, UserView};
+use crate::auth::{Admitted, AuditEntry, Auth, Grants, Refusal, Role, UserView};
 use utoipa::openapi::RefOr;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
 use utoipa::{IntoParams, OpenApi, ToSchema};
@@ -183,6 +183,8 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_users))
         .routes(routes!(put_user, delete_user))
         .routes(routes!(end_sessions))
+        .routes(routes!(view_as))
+        .routes(routes!(read_audit))
         .routes(routes!(list_transactions))
         .routes(routes!(list_earlier_models))
         .routes(routes!(list_changes))
@@ -419,7 +421,12 @@ async fn require_session(
     };
     let admitted = bearer(request.headers()).and_then(|token| auth.admits(token));
     let needed = needed(request.method(), request.uri().path());
-    if let Some((name, grants)) = admitted {
+    if let Some(Admitted {
+        name,
+        grants,
+        viewer,
+    }) = admitted
+    {
         // The model belongs to no cube, so changing it takes the user's own role. Anything
         // else is let in by a role on any cube; the route then asks about the cube it names.
         let held = match needed {
@@ -427,11 +434,17 @@ async fn require_session(
             _ => grants.most(),
         };
         if held < needed {
-            let message = format!("this needs a user with the role '{needed}'");
+            let message = match viewer {
+                Some(_) => format!("a view as {name} only reads; this needs the role '{needed}'"),
+                None => format!("this needs a user with the role '{needed}'"),
+            };
             return ApiError::new(StatusCode::FORBIDDEN, "forbidden", message).into_response();
         }
         request.extensions_mut().insert(grants);
         request.extensions_mut().insert(Signed(name));
+        if viewer.is_some() {
+            request.extensions_mut().insert(Viewing);
+        }
         return next.run(request).await;
     }
     let refusal = ApiError::new(
@@ -460,6 +473,9 @@ struct Session {
     role: Role,
     /// The cubes on which the user has another role in place of that one.
     cubes: BTreeMap<String, Role>,
+    /// For a view as another user, the administrator viewing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    viewer: Option<String>,
 }
 
 /// Signs in, starting a session.
@@ -501,6 +517,7 @@ async fn sign_in(State(state): State<AppState>, Body(request): Body<SignIn>) -> 
                 idle_seconds,
                 role: grants.role(),
                 cubes: grants.cubes().clone(),
+                viewer: None,
             };
             (StatusCode::CREATED, Json(session)).into_response()
         }
@@ -912,6 +929,7 @@ struct Based {
 fn unknown(what: &'static str, name: &str) -> ApiError {
     let code = match what {
         "cube" => "unknown_cube",
+        "user" => "unknown_user",
         _ => "unknown_dimension",
     };
     ApiError::new(
@@ -1080,6 +1098,10 @@ type Held = Extension<Arc<Grants>>;
 /// The name of the user a request is from, as the session layer found it.
 #[derive(Clone)]
 struct Signed(String);
+
+/// Marks a request made in a view as another user.
+#[derive(Clone)]
+struct Viewing;
 
 /// Who a server without users takes a request to be from.
 const OPEN_USER: &str = "this machine";
@@ -1633,7 +1655,12 @@ struct SandboxRequest {
 async fn list_sandboxes(
     State(database): State<Shared>,
     Extension(Signed(user)): Extension<Signed>,
+    viewing: Option<Extension<Viewing>>,
 ) -> Json<Vec<Sandbox>> {
+    // A user's sandboxes are their drafts: a view as them does not see into them.
+    if viewing.is_some() {
+        return Json(Vec::new());
+    }
     Json(database.read().unwrap().sandboxes(&user))
 }
 
@@ -1935,6 +1962,84 @@ async fn delete_user(
         ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_user", message)
     })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct ViewAsRequest {
+    /// The user to view the server as, ignoring case.
+    user: String,
+}
+
+/// Starts a view of the server as another user has it: a session of theirs that may only
+/// read what they may read, and none of their sandboxes, naming the administrator viewing.
+/// It is recorded in the audit first. Sign out of it as of any session. For administrators.
+#[utoipa::path(
+    post,
+    path = "/admin/view-as",
+    request_body = ViewAsRequest,
+    responses(
+        (status = CREATED, body = Session, description = "The view's session"),
+        (status = NOT_FOUND, body = ApiError, description = "There is no such user"),
+        (status = CONFLICT, body = ApiError, description = "The server has no users"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The view could not be recorded, so it is not given")
+    )
+)]
+async fn view_as(
+    State(state): State<AppState>,
+    Extension(Signed(viewer)): Extension<Signed>,
+    Body(request): Body<ViewAsRequest>,
+) -> Result<(StatusCode, Json<Session>), ApiError> {
+    let auth = users_of(&state)?;
+    if !auth.has(&request.user) {
+        return Err(unknown("user", &request.user));
+    }
+    let (token, grants, _) = auth.view_as(&viewer, &request.user).map_err(|message| {
+        ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "storage_failed", message)
+    })?;
+    let session = Session {
+        token,
+        idle_seconds: auth.idle().as_secs(),
+        role: grants.role(),
+        cubes: grants.cubes().clone(),
+        viewer: Some(viewer),
+    };
+    Ok((StatusCode::CREATED, Json(session)))
+}
+
+#[derive(Deserialize, IntoParams)]
+struct AuditQuery {
+    /// At most this many entries, the newest; 100 if not given, and never more than 1,000.
+    most: Option<usize>,
+}
+
+/// What the audit records, the newest first: each view of the server as another user, who
+/// viewed and when. For administrators.
+#[utoipa::path(
+    get,
+    path = "/admin/audit",
+    params(AuditQuery),
+    responses(
+        (status = OK, body = Vec<AuditEntry>, description = "What the audit records"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The audit could not be read")
+    )
+)]
+async fn read_audit(
+    State(state): State<AppState>,
+    Query(query): Query<AuditQuery>,
+) -> Result<Json<Vec<AuditEntry>>, ApiError> {
+    let Some(auth) = state.auth.as_ref() else {
+        return Ok(Json(Vec::new()));
+    };
+    let most = query.most.unwrap_or(100).min(1000);
+    let entries = auth.audit(most).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_failed",
+            error.to_string(),
+        )
+    })?;
+    Ok(Json(entries))
 }
 
 /// Ends every session of a user, who must sign in again. For administrators.

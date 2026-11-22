@@ -113,6 +113,17 @@ async function signOut() {
   leaveApp();
 }
 
+/** Ends a view as another user, and starts the application again as the administrator. */
+async function stopViewing() {
+  try {
+    await api('DELETE', '/gui/view-as');
+  } catch (problem) {
+    notify(problem.message, 'bad');
+    return;
+  }
+  location.assign('/admin');
+}
+
 /** Leaves the application for the sign-in page, letting go of the page shown. */
 function leaveApp(reason) {
   active = null;
@@ -137,7 +148,8 @@ async function reauthenticate() {
   reauthenticating = true;
   const before = state.user;
   const name = h('input', { class: 'input', id: 'again-name', autocomplete: 'username', required: true });
-  name.value = before.name;
+  // A view as another user that has ended is the administrator's to sign in again from.
+  name.value = before.viewer ?? before.name;
   const password = h('input', { class: 'input', id: 'again-password', type: 'password', autocomplete: 'current-password', required: true });
   const asked = dialog({
     title: 'Your session has ended',
@@ -214,9 +226,18 @@ function shell() {
     'aria-haspopup': 'menu',
     onclick: (event) => menu([
       { heading: `${user.name} · ${roleName(user.role)}` },
+      user.viewer ? { heading: `Viewed by ${user.viewer}, reading only` } : null,
+      user.viewer ? { label: 'Stop viewing', icon: 'eyeOff', action: stopViewing } : null,
       ...(state.open ? [] : [{ label: 'Sign out', icon: 'out', action: signOut }]),
     ], event.currentTarget),
   }, icon('user', 18), h('span', { class: 'label' }, user.name));
+  // While an administrator views the server as another user, the bar says so on every page.
+  const viewing = user.viewer
+    ? h('div', { class: 'viewing', role: 'status' },
+      icon('eye', 16),
+      h('span', {}, 'Viewing as ', h('strong', {}, user.name), ', reading only'),
+      h('button', { class: 'button small', onclick: (event) => working(event.currentTarget, stopViewing) }, 'Stop'))
+    : null;
   const themeButton = h('button', {
     class: 'button quiet icon',
     id: 'theme-button',
@@ -236,6 +257,7 @@ function shell() {
       h('button', { class: 'search-button', onclick: palette, 'aria-label': 'Search and commands' },
         icon('search', 16), h('span', {}, 'Search cubes, pages and commands'), h('kbd', {}, 'Ctrl K')),
       h('div', { class: 'spacer' }),
+      viewing,
       statusElement,
       themeButton,
       userButton),

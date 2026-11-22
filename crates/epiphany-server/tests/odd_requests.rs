@@ -115,7 +115,7 @@ fn bodies() -> Vec<String> {
     bodies
 }
 
-const ROUTES: [(&str, &str); 64] = [
+const ROUTES: [(&str, &str); 67] = [
     ("POST", "/sessions"),
     ("DELETE", "/sessions"),
     ("GET", "/model"),
@@ -173,6 +173,9 @@ const ROUTES: [(&str, &str); 64] = [
     ("POST", "/sandboxes"),
     ("DELETE", "/sandboxes/Extra"),
     ("DELETE", "/sandboxes/%00"),
+    ("POST", "/admin/view-as"),
+    ("GET", "/admin/audit"),
+    ("GET", "/admin/audit?most=-1"),
     ("GET", "/admin/models"),
     ("GET", "/admin/models/nowhere"),
     ("GET", "/admin/models/%2E%2E"),

@@ -50,6 +50,11 @@ A role is `read`, `write` or `admin`; a cube can be given another in its place, 
 included, as in `"Payroll=none"`. The server has no TLS of its own: to use it across a
 network, put it behind a proxy that provides it.
 
+An administrator may view the server as another user has it, to see what they see: a
+session of theirs that only reads, and sees none of their sandboxes, until it is signed out
+of. Each such view is recorded in `<directory>/audit.jsonl` before it is given, and
+`GET /admin/audit` lists them.
+
 ## The model
 
 A model is a folder of JSON files, one per dimension and one per cube:
@@ -149,6 +154,7 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `GET /cubes/{cube}/feeders/check` | Calculated cells that no feeder feeds |
 | `GET /admin/models`, `GET /admin/models/{name}` | The earlier versions of the model the server keeps; one is restored by `PUT /model` |
 | `GET /admin/changes` | The changes saved to cells across cubes, the newest first, by cube, user and time |
+| `POST /admin/view-as`, `GET /admin/audit` | A view of the server as another user has it, reading only, and the audit that records each |
 | `POST /transactions`, then `/transactions/{id}/commit`, `rollback`, `locks`, `point` and `undo` | Transactions, and taking one back to a point it came to |
 | `GET`, `POST /sandboxes`, `DELETE /sandboxes/{name}` | The signed-in user's sandboxes: transactions kept under a name |
 

@@ -34,6 +34,7 @@ class AdminPage {
   constructor(target) {
     this.statusCard = h('section', { class: 'admin-section', 'aria-label': 'Server' });
     this.usersCard = h('section', { class: 'card fit', 'aria-label': 'Users' });
+    this.auditCard = h('section', { class: 'card fit', 'aria-label': 'Audit' });
     this.transactionsCard = h('section', { class: 'card fit', 'aria-label': 'Open transactions' });
     this.changesCard = h('section', { class: 'card fit', 'aria-label': 'Changes to cells' });
     this.updated = h('span', { class: 'muted' });
@@ -44,11 +45,13 @@ class AdminPage {
         h('button', { class: 'button', onclick: (event) => working(event.currentTarget, () => this.load()) }, icon('refresh', 16), 'Refresh')),
       this.statusCard,
       this.usersCard,
+      this.auditCard,
       this.transactionsCard,
       this.changesCard));
     // Until the first answer, each part holds its outline.
     mount(this.statusCard, loading('cards'));
     mount(this.usersCard, h('div', { class: 'card-body' }, loading('lines')));
+    mount(this.auditCard, h('div', { class: 'card-body' }, loading('lines')));
     mount(this.transactionsCard, h('div', { class: 'card-body' }, loading('lines')));
     this.buildChanges();
     this.load();
@@ -63,23 +66,27 @@ class AdminPage {
   /** Fetches the page's parts; `quietly`, as the page keeps itself current, without a word. */
   async load(quietly = false) {
     try {
-      const [status, users, transactions] = await Promise.all([
+      const [status, users, transactions, audit] = await Promise.all([
         get('/admin/status', { quiet: quietly }),
         get('/admin/users', { quiet: quietly }),
         get('/admin/transactions', { quiet: quietly }),
+        get('/admin/audit?most=50', { quiet: quietly }),
       ]);
       this.drawStatus(status);
       this.drawUsers(users);
       this.drawTransactions(transactions);
+      this.drawAudit(audit);
       this.offer(this.userFilter, 'Anyone', (users.users ?? []).map((user) => user.name));
       this.offer(this.cubeFilter, 'Every cube', status.cubes.map((cube) => cube.name));
       this.usersCard.hidden = false;
+      this.auditCard.hidden = !users.signing_in;
       this.transactionsCard.hidden = false;
       this.updated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
     } catch (problem) {
       if (quietly) return;
       // What could not be fetched is not shown as if it were coming.
       this.usersCard.hidden = true;
+      this.auditCard.hidden = true;
       this.transactionsCard.hidden = true;
       mount(this.statusCard, h('div', { class: 'card' }, failure(problem, () => this.load())));
     }
@@ -140,9 +147,43 @@ class AdminPage {
             h('td', { class: 'num-col num' }, user.sessions.toLocaleString()),
             h('td', { class: 'actions' },
               h('button', { class: 'button small quiet', onclick: (event) => this.editUser(user, event.currentTarget) }, icon('edit', 14), 'Edit'),
+              user.name.toLowerCase() === me ? null : h('button', {
+                class: 'button small quiet',
+                title: `See the server as ${user.name} does, reading only. It is kept on record.`,
+                onclick: (event) => working(event.currentTarget, () => this.viewAs(user)),
+              }, icon('eye', 14), 'View as'),
               h('button', { class: 'button small quiet', disabled: !user.sessions, onclick: (event) => working(event.currentTarget, () => this.signOut(user)) }, icon('out', 14), 'Sign out'),
               h('button', { class: 'button small quiet danger', onclick: () => this.removeUser(user) }, icon('trash', 14), 'Remove')));
         }))));
+  }
+
+  /**
+   * Views the server as another user does, reading only, until the bar's Stop: the whole
+   * application starts again as they have it. The server keeps it on record.
+   */
+  async viewAs(user) {
+    try {
+      await post('/gui/view-as', { user: user.name });
+    } catch (problem) {
+      notify(problem.message, 'bad');
+      return;
+    }
+    location.assign('/');
+  }
+
+  /** What the audit records, the newest first: each view as another user, by whom and when. */
+  drawAudit(entries) {
+    const said = (entry) => (entry.action === 'view as' ? `Viewed the server as ${entry.subject}` : `${entry.action}: ${entry.subject}`);
+    mount(this.auditCard,
+      h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Audit'), h('span', { class: 'muted' }, 'Kept on record: each view of the server as another user')),
+      entries.length
+        ? h('table', { class: 'table' },
+          h('thead', {}, h('tr', {}, h('th', {}, 'When'), h('th', {}, 'Who'), h('th', {}, 'What'))),
+          h('tbody', {}, entries.map((entry) => h('tr', {},
+            h('td', { class: 'muted' }, new Date(entry.time * 1000).toLocaleString()),
+            h('td', {}, h('strong', {}, entry.user)),
+            h('td', {}, said(entry))))))
+        : h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'Nothing yet.')));
   }
 
   /**

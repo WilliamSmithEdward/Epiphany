@@ -180,6 +180,103 @@ async fn every_file_of_the_application_is_built_into_the_program() {
 }
 
 #[tokio::test]
+async fn an_administrator_views_as_another_user_and_comes_back() {
+    let home = Home::new("view-as", true);
+    let gui = Gui::new(&server(&home).await, None);
+    let sign_in = json!({ "name": "ada", "password": "a long password" });
+    let signed = call(
+        &gui,
+        HERE,
+        Method::POST,
+        "/gui/session",
+        &[FROM_CLIENT],
+        Some(sign_in),
+    )
+    .await;
+    let own = cookie(&signed);
+    fn with(session: &str) -> [(&str, &str); 2] {
+        [FROM_CLIENT, ("cookie", session)]
+    }
+    let lin = json!({ "password": "another long one", "role": "write" });
+    let added = call(
+        &gui,
+        HERE,
+        Method::PUT,
+        "/api/admin/users/lin",
+        &with(&own),
+        Some(lin),
+    )
+    .await;
+    assert_eq!(added.status, StatusCode::NO_CONTENT);
+
+    // The cookie holds the view, as Lin, reading only, and naming who views.
+    let asked = json!({ "user": "lin" });
+    let viewing = call(
+        &gui,
+        HERE,
+        Method::POST,
+        "/gui/view-as",
+        &with(&own),
+        Some(asked),
+    )
+    .await;
+    assert_eq!(viewing.status, StatusCode::OK);
+    let view = cookie(&viewing);
+    assert_ne!(view, own);
+    let user = &viewing.json()["user"];
+    assert_eq!(
+        (&user["name"], &user["role"], &user["viewer"]),
+        (&json!("lin"), &json!("read"), &json!("ada"))
+    );
+    let state = call(
+        &gui,
+        HERE,
+        Method::GET,
+        "/gui/session",
+        &[("cookie", &view)],
+        None,
+    )
+    .await;
+    assert_eq!(state.json()["user"]["viewer"], "ada");
+
+    // Stopped, the cookie holds the administrator's own session again.
+    let back = call(
+        &gui,
+        HERE,
+        Method::DELETE,
+        "/gui/view-as",
+        &with(&view),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (back.status, &back.json()["user"]["name"]),
+        (StatusCode::OK, &json!("ada"))
+    );
+    assert_eq!(cookie(&back), own);
+    let ended = call(
+        &gui,
+        HERE,
+        Method::GET,
+        "/api/model",
+        &[("cookie", &view)],
+        None,
+    )
+    .await;
+    assert_eq!(ended.status, StatusCode::UNAUTHORIZED);
+    let again = call(
+        &gui,
+        HERE,
+        Method::GET,
+        "/api/model",
+        &[("cookie", &own)],
+        None,
+    )
+    .await;
+    assert_eq!(again.status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn signing_in_keeps_the_token_in_a_cookie_the_page_cannot_read() {
     let home = Home::new("sign-in", true);
     let gui = Gui::new(&server(&home).await, None);

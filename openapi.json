@@ -9,6 +9,72 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/admin/audit": {
+      "get": {
+        "summary": "What the audit records, the newest first: each view of the server as another user, who\nviewed and when. For administrators.",
+        "operationId": "read_audit",
+        "parameters": [
+          {
+            "name": "most",
+            "in": "path",
+            "description": "At most this many entries, the newest; 100 if not given, and never more than 1,000.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the audit records",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuditEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The audit could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/changes": {
       "get": {
         "summary": "The changes saved to the cells of every cube, or of one, the newest first: who made each,\nwhen, to which cell, from what to what. Narrowed by cube, by user, and by time.",
@@ -546,6 +612,84 @@
           },
           "409": {
             "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/view-as": {
+      "post": {
+        "summary": "Starts a view of the server as another user has it: a session of theirs that may only\nread what they may read, and none of their sandboxes, naming the administrator viewing.\nIt is recorded in the audit first. Sign out of it as of any session. For administrators.",
+        "operationId": "view_as",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewAsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The view's session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no such user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The view could not be recorded, so it is not given",
             "content": {
               "application/json": {
                 "schema": {
@@ -2950,6 +3094,36 @@
           "alias"
         ]
       },
+      "AuditEntry": {
+        "type": "object",
+        "description": "One thing kept on record: when, by whom, what, and as or of whom.",
+        "required": [
+          "time",
+          "user",
+          "action",
+          "subject"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "What they did, such as `view as`."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Whom it was done as or to."
+          },
+          "time": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When, in seconds since 1970.",
+            "minimum": 0
+          },
+          "user": {
+            "type": "string",
+            "description": "Who did it."
+          }
+        }
+      },
       "AxisResult": {
         "type": "object",
         "required": [
@@ -4503,6 +4677,13 @@
           "token": {
             "type": "string",
             "description": "Send this with every request, as `Authorization: Bearer <token>`."
+          },
+          "viewer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a view as another user, the administrator viewing."
           }
         }
       },
@@ -4904,6 +5085,19 @@
           "valid": {
             "type": "string",
             "description": "What holds wherever a value is acceptable, written as a rule's expression is and\nworked out at each cell checked, such as `[Account].[Salaries] >= 0`. True, any number\nbut zero and any text but none hold; so does an expression that cannot be worked out."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ViewAsRequest": {
+        "type": "object",
+        "required": [
+          "user"
+        ],
+        "properties": {
+          "user": {
+            "type": "string",
+            "description": "The user to view the server as, ignoring case."
           }
         },
         "additionalProperties": false

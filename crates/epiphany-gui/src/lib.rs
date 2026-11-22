@@ -13,7 +13,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header};
 use axum::middleware::{Next, from_fn};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
@@ -50,6 +50,9 @@ struct Inner {
     client: Client<HttpConnector, Body>,
     /// Who each session token belongs to, for the sessions started here.
     sessions: Mutex<HashMap<String, Value>>,
+    /// For each view as another user started here, the token of the administrator viewing,
+    /// to go back to when the view ends. The page never holds either.
+    viewers: Mutex<HashMap<String, String>>,
     /// Where to read the application's files from instead of the copy built in.
     web: Option<PathBuf>,
 }
@@ -64,6 +67,7 @@ impl Gui {
             server: server.trim_end_matches('/').to_owned(),
             client,
             sessions: Mutex::default(),
+            viewers: Mutex::default(),
             web,
         }))
     }
@@ -73,6 +77,7 @@ impl Gui {
     pub fn router(self) -> Router {
         Router::new()
             .route("/gui/session", get(session).post(sign_in).delete(sign_out))
+            .route("/gui/view-as", post(view_as).delete(stop_viewing))
             .route("/api/{*path}", any(pass))
             .fallback(get(assets::serve))
             .layer(from_fn(secure))
@@ -82,6 +87,13 @@ impl Gui {
     fn sessions(&self) -> MutexGuard<'_, HashMap<String, Value>> {
         self.0
             .sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn viewers(&self) -> MutexGuard<'_, HashMap<String, String>> {
+        self.0
+            .viewers
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
     }
@@ -236,43 +248,140 @@ async fn sign_in(State(gui): State<Gui>, headers: HeaderMap, request: Request) -
     if !answer.status().is_success() {
         return answer;
     }
+    match keep(&gui, answer, &name).await {
+        Ok((token, profile)) => signed_in(&token, &profile, &headers),
+        Err(refused) => *refused,
+    }
+}
+
+/// Keeps the session the Epiphany server answered with, under the name it is of: its token
+/// stays here, out of the page's reach. Gives the token and the profile the page is told.
+async fn keep(gui: &Gui, answer: Response, name: &str) -> Result<(String, Value), Box<Response>> {
+    let unavailable = |message| Box::new(refusal(StatusCode::BAD_GATEWAY, "unavailable", message));
     let Ok(bytes) = answer
         .into_body()
         .collect()
         .await
         .map(|body| body.to_bytes())
     else {
-        return refusal(
-            StatusCode::BAD_GATEWAY,
-            "unavailable",
-            "the sign-in was cut off",
-        );
+        return Err(unavailable("the session was cut off"));
     };
     let Ok(Value::Object(mut session)) = serde_json::from_slice::<Value>(&bytes) else {
-        return refusal(
-            StatusCode::BAD_GATEWAY,
-            "unavailable",
-            "the sign-in was not understood",
-        );
+        return Err(unavailable("the session was not understood"));
     };
     let Some(Value::String(token)) = session.remove("token") else {
-        return refusal(
-            StatusCode::BAD_GATEWAY,
-            "unavailable",
-            "the sign-in gave no session",
-        );
+        return Err(unavailable("the server gave no session"));
     };
     let profile = serde_json::to_value(Profile {
-        name: &name,
+        name,
         session: &session,
     })
     .expect("plain data");
     gui.sessions().insert(token.clone(), profile.clone());
+    Ok((token, profile))
+}
+
+/// The answer that the page is signed in as a profile, the cookie holding its session.
+fn signed_in(token: &str, profile: &Value, headers: &HeaderMap) -> Response {
     let mut response = Json(json!({ "signed_in": true, "user": profile })).into_response();
     response
         .headers_mut()
-        .insert(header::SET_COOKIE, cookie(&token, &headers));
+        .insert(header::SET_COOKIE, cookie(token, headers));
     response
+}
+
+/// Starts a view of the server as another user has it, for the administrator signed in
+/// here: the cookie then holds the view's session, which only reads, and the
+/// administrator's is kept here to go back to.
+async fn view_as(State(gui): State<Gui>, headers: HeaderMap, request: Request) -> Response {
+    if !from_client(&headers) {
+        return refusal(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "view as another user from the Epiphany application",
+        );
+    }
+    let Some(own) = token(&headers).map(str::to_owned) else {
+        return refusal(StatusCode::UNAUTHORIZED, "unauthorized", "sign in first");
+    };
+    let Ok(body) = axum::body::to_bytes(request.into_body(), MOST_SIGN_IN).await else {
+        return refusal(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "invalid_request",
+            "the request is too long",
+        );
+    };
+    let user = serde_json::from_slice::<Value>(&body)
+        .ok()
+        .and_then(|asked| asked.get("user").and_then(Value::as_str).map(str::to_owned))
+        .unwrap_or_default();
+    let json = HeaderValue::from_static("application/json");
+    let answer = match gui
+        .send(
+            Method::POST,
+            "/admin/view-as",
+            Some(&own),
+            Body::from(body),
+            Some(&json),
+        )
+        .await
+    {
+        Ok(answer) => answer,
+        Err(refused) => return *refused,
+    };
+    if !answer.status().is_success() {
+        return answer;
+    }
+    match keep(&gui, answer, &user).await {
+        Ok((view, profile)) => {
+            gui.viewers().insert(view.clone(), own);
+            signed_in(&view, &profile, &headers)
+        }
+        Err(refused) => *refused,
+    }
+}
+
+/// Ends a view as another user, and goes back to the administrator's own session, where the
+/// server still has it.
+async fn stop_viewing(State(gui): State<Gui>, headers: HeaderMap) -> Response {
+    if !from_client(&headers) {
+        return refusal(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "stop viewing from the Epiphany application",
+        );
+    }
+    let Some(view) = token(&headers).map(str::to_owned) else {
+        return refusal(StatusCode::UNAUTHORIZED, "unauthorized", "sign in first");
+    };
+    let Some(own) = gui.viewers().remove(&view) else {
+        return refusal(
+            StatusCode::CONFLICT,
+            "not_viewing",
+            "this session views the server as nobody else",
+        );
+    };
+    gui.sessions().remove(&view);
+    let _ = gui
+        .send(
+            Method::DELETE,
+            "/sessions",
+            Some(&view),
+            Body::empty(),
+            None,
+        )
+        .await;
+    let profile = gui.sessions().get(&own).cloned();
+    match profile {
+        Some(profile) => signed_in(&own, &profile, &headers),
+        None => {
+            let mut response = Json(json!({ "signed_in": false })).into_response();
+            response
+                .headers_mut()
+                .insert(header::SET_COOKIE, cookie("", &headers));
+            response
+        }
+    }
 }
 
 /// Signs out on the Epiphany server and forgets the cookie.
@@ -285,17 +394,21 @@ async fn sign_out(State(gui): State<Gui>, headers: HeaderMap) -> Response {
         );
     }
     if let Some(token) = token(&headers) {
-        gui.sessions().remove(token);
-        // Signed out here whatever the server says: the cookie goes either way.
-        let _ = gui
-            .send(
-                Method::DELETE,
-                "/sessions",
-                Some(token),
-                Body::empty(),
-                None,
-            )
-            .await;
+        // Signing out of a view signs the administrator viewing out as well.
+        let own = gui.viewers().remove(token);
+        for token in std::iter::once(token).chain(own.as_deref()) {
+            gui.sessions().remove(token);
+            // Signed out here whatever the server says: the cookie goes either way.
+            let _ = gui
+                .send(
+                    Method::DELETE,
+                    "/sessions",
+                    Some(token),
+                    Body::empty(),
+                    None,
+                )
+                .await;
+        }
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     response
@@ -364,6 +477,7 @@ async fn pass(
         && let Some(token) = &token
     {
         gui.sessions().remove(token);
+        gui.viewers().remove(token);
         answer
             .headers_mut()
             .insert(header::SET_COOKIE, cookie("", &parts.headers));

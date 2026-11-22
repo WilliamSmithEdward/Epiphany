@@ -301,6 +301,104 @@ async fn a_sandbox_is_its_owners_own_and_published_only_where_they_may_write() {
 }
 
 #[tokio::test]
+async fn an_administrator_views_as_another_user_reading_only_and_on_record() {
+    let (_home, app) = secured("view-as", None);
+    let admin = token(&app).await;
+    let user = |role: &str| json!({ "password": PASSWORD, "role": role });
+    send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(user("write")),
+    )
+    .await;
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    let lin = signed["token"].as_str().unwrap().to_owned();
+    let draft = json!({ "name": "Draft" });
+    send(&app, "POST", "/sandboxes", Some(&lin), Some(draft)).await;
+
+    let asked = json!({ "user": "LIN" });
+    let (status, _, view) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(asked)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        (&view["role"], &view["viewer"]),
+        (&json!("read"), &json!(NAME))
+    );
+    let viewing = view["token"].as_str().unwrap().to_owned();
+
+    // It reads as Lin does, and writes nothing, sees none of Lin's sandboxes, and no
+    // administration; made an administrator meanwhile, Lin is still only read as.
+    let at = json!(["Rent", "UK", "Jan", "Actual"]);
+    let read = json!({ "cells": [{ "cube": "General Ledger", "at": at }] });
+    let write = json!({ "cells": [{ "cube": "General Ledger", "at": at, "value": 1 }] });
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/read",
+        Some(&viewing),
+        Some(read.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, refused) = send(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(&viewing),
+        Some(write.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("a view as lin only reads")
+    );
+    let (_, _, sandboxes) = send(&app, "GET", "/sandboxes", Some(&viewing), None).await;
+    assert_eq!(sandboxes, json!([]));
+    let (status, _, _) = send(&app, "GET", "/admin/users", Some(&viewing), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(user("admin")),
+    )
+    .await;
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&viewing), Some(write)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // It is on record; nobody unknown is viewed as.
+    let (_, _, audit) = send(&app, "GET", "/admin/audit", Some(&admin), None).await;
+    let recorded = (&audit[0]["user"], &audit[0]["action"], &audit[0]["subject"]);
+    assert_eq!(recorded, (&json!(NAME), &json!("view as"), &json!("lin")));
+    let nobody = json!({ "user": "nobody" });
+    let (status, _, body) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(nobody)).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::NOT_FOUND, &json!("unknown_user"))
+    );
+
+    // Signed out of, the view is over, and the administrator's own session goes on.
+    let (status, _, _) = send(&app, "DELETE", "/sessions", Some(&viewing), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/read",
+        Some(&viewing),
+        Some(read.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(&app, "POST", "/cells/read", Some(&admin), Some(read)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
 async fn a_cells_history_says_who_changed_it_and_from_what_to_what() {
     let (_home, app) = secured("history", None);
     let token = token(&app).await;

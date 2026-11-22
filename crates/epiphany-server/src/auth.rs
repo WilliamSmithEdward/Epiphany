@@ -7,14 +7,20 @@
 //!
 //! A name that has been given the wrong password several times running is refused for a
 //! while whatever password comes with it, so that passwords cannot be tried by the thousand.
+//!
+//! An administrator may view the server as another user does: a session of that user's,
+//! able only to read what they may read, which names the administrator viewing. Each is
+//! recorded in `audit.jsonl` before it is given.
 
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt;
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
@@ -26,6 +32,8 @@ use utoipa::ToSchema;
 use crate::storage::{read_json, write_json};
 
 const FILE: &str = "users.json";
+/// Where what administrators do as others is recorded, one line each, beside the users.
+const AUDIT: &str = "audit.jsonl";
 /// How long a session lasts without being used, unless set otherwise.
 const IDLE: Duration = Duration::from_secs(30 * 60);
 /// How many wrong passwords running a name may be given before it is refused for a while.
@@ -119,6 +127,17 @@ impl Grants {
     pub fn most(&self) -> Role {
         self.cubes.values().copied().fold(self.role, Role::max)
     }
+
+    /// The same grants with none above reading: what another may see through them, changing
+    /// nothing.
+    pub fn read_only(&self) -> Self {
+        let read = |role: Role| role.min(Role::Read);
+        let cubes = self
+            .cubes
+            .iter()
+            .map(|(cube, &role)| (cube.clone(), read(role)));
+        Self::new(read(self.role), cubes.collect())
+    }
 }
 
 /// Cube names are compared as the engine compares them: ignoring case and spaces.
@@ -178,6 +197,31 @@ struct Session {
     user: String,
     grants: Arc<Grants>,
     used: Instant,
+    /// For a view of the server as the user has it, the administrator viewing, by name in
+    /// lower case. The grants are then the user's, read only.
+    viewer: Option<String>,
+}
+
+/// The user a live session is of, by the name as given, and what it may do; and for a view
+/// as that user, the administrator viewing.
+#[derive(Debug, Clone)]
+pub struct Admitted {
+    pub name: String,
+    pub grants: Arc<Grants>,
+    pub viewer: Option<String>,
+}
+
+/// One thing kept on record: when, by whom, what, and as or of whom.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AuditEntry {
+    /// When, in seconds since 1970.
+    pub time: u64,
+    /// Who did it.
+    pub user: String,
+    /// What they did, such as `view as`.
+    pub action: String,
+    /// Whom it was done as or to.
+    pub subject: String,
 }
 
 #[derive(Debug)]
@@ -195,6 +239,8 @@ pub struct Auth {
     /// so only so many are checked at once and only so many more may wait their turn.
     pub(crate) checking: Semaphore,
     pub(crate) waiting: Semaphore,
+    /// Taken to add a line to the audit, one at a time.
+    recording: Mutex<()>,
 }
 
 impl Auth {
@@ -223,6 +269,7 @@ impl Auth {
             pause: PAUSE,
             checking: Semaphore::new(CHECKED_AT_ONCE),
             waiting: Semaphore::new(WAITING),
+            recording: Mutex::default(),
         }))
     }
 
@@ -294,30 +341,107 @@ impl Auth {
             }
         };
         self.failures.lock().unwrap().remove(&name);
-        let mut random = [0u8; 32];
-        getrandom::fill(&mut random).expect("the operating system provides randomness");
-        let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
-        let mut sessions = self.sessions();
-        sessions.retain(|_, session| now.duration_since(session.used) <= self.idle);
-        let session = Session {
-            user: name,
-            grants: Arc::clone(&grants),
-            used: now,
-        };
-        sessions.insert(token.clone(), session);
+        let token = self.start(name, Arc::clone(&grants), None);
         Ok((token, grants))
     }
 
-    /// The user of a live session, by the name as it was given, and what they may do; the
-    /// session then counts as used just now. Nothing if the token belongs to no live session.
-    pub fn admits(&self, token: &str) -> Option<(String, Arc<Grants>)> {
-        let (user, grants) = {
+    /// Starts a session and gives its token: a random one, which cannot be guessed.
+    fn start(&self, user: String, grants: Arc<Grants>, viewer: Option<String>) -> String {
+        let mut random = [0u8; 32];
+        getrandom::fill(&mut random).expect("the operating system provides randomness");
+        let token: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
+        let now = Instant::now();
+        let mut sessions = self.sessions();
+        sessions.retain(|_, session| now.duration_since(session.used) <= self.idle);
+        let session = Session {
+            user,
+            grants,
+            used: now,
+            viewer,
+        };
+        sessions.insert(token.clone(), session);
+        token
+    }
+
+    /// Starts a view of the server as another user has it, for an administrator: a session
+    /// of that user's that may only read what they may read. It is recorded in the audit
+    /// first, and refused if it cannot be. Gives its token, its grants, and the user's name
+    /// as it was given.
+    pub fn view_as(
+        &self,
+        viewer: &str,
+        user: &str,
+    ) -> Result<(String, Arc<Grants>, String), String> {
+        let key = user.trim().to_lowercase();
+        let (name, grants) = self
+            .users()
+            .get(&key)
+            .map(|account| (account.name.clone(), Arc::new(account.grants.read_only())))
+            .ok_or_else(|| format!("there is no user called {user}"))?;
+        let entry = AuditEntry {
+            time: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| since.as_secs()),
+            user: viewer.to_owned(),
+            action: "view as".to_owned(),
+            subject: name.clone(),
+        };
+        self.record(&entry).map_err(|error| {
+            format!("the view could not be recorded, so it is not given: {error}")
+        })?;
+        let token = self.start(key, Arc::clone(&grants), Some(viewer.to_lowercase()));
+        Ok((token, grants, name))
+    }
+
+    /// Adds a line to the audit, flushed to disk before it is relied on.
+    fn record(&self, entry: &AuditEntry) -> io::Result<()> {
+        let _turn = self
+            .recording
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut line = serde_json::to_vec(entry)?;
+        line.push(b'\n');
+        let path = self.directory.join(AUDIT);
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        file.write_all(&line)?;
+        file.sync_data()
+    }
+
+    /// What the audit records, the newest first, at most `most` of it. A line cut short, the
+    /// last after a crash, is left out.
+    pub fn audit(&self, most: usize) -> io::Result<Vec<AuditEntry>> {
+        let file = match File::open(self.directory.join(AUDIT)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut entries = std::collections::VecDeque::with_capacity(most.min(1024));
+        for line in io::BufReader::new(file).lines() {
+            let Ok(entry) = serde_json::from_str::<AuditEntry>(&line?) else {
+                continue;
+            };
+            if entries.len() == most {
+                entries.pop_front();
+            }
+            if most > 0 {
+                entries.push_back(entry);
+            }
+        }
+        Ok(entries.into_iter().rev().collect())
+    }
+
+    /// The user of a live session, by the name as it was given, what they may do, and who
+    /// views as them; the session then counts as used just now. Nothing if the token belongs
+    /// to no live session.
+    pub fn admits(&self, token: &str) -> Option<Admitted> {
+        let (user, grants, viewer) = {
             let mut sessions = self.sessions();
             let now = Instant::now();
             match sessions.get_mut(token) {
                 Some(session) if now.duration_since(session.used) <= self.idle => {
                     session.used = now;
-                    (session.user.clone(), Arc::clone(&session.grants))
+                    let grants = Arc::clone(&session.grants);
+                    (session.user.clone(), grants, session.viewer.clone())
                 }
                 _ => {
                     sessions.remove(token);
@@ -325,13 +449,19 @@ impl Auth {
                 }
             }
         };
-        // The name as it was given, looked up once the sessions are let go, so that the two
-        // locks are never held together.
+        // The names as they were given, looked up once the sessions are let go, so that the
+        // two locks are never held together.
         let users = self.users.read().unwrap_or_else(PoisonError::into_inner);
-        let name = users
-            .get(&user)
-            .map_or(user.clone(), |account| account.name.clone());
-        Some((name, grants))
+        let given = |key: &String| {
+            users
+                .get(key)
+                .map_or(key.clone(), |account| account.name.clone())
+        };
+        Some(Admitted {
+            name: given(&user),
+            grants,
+            viewer: viewer.as_ref().map(given),
+        })
     }
 
     pub fn sign_out(&self, token: &str) {
@@ -343,8 +473,10 @@ impl Auth {
         let now = Instant::now();
         let mut open: HashMap<String, usize> = HashMap::new();
         for session in self.sessions().values() {
+            // A view as another user is the session of the administrator viewing.
             if now.duration_since(session.used) <= self.idle {
-                *open.entry(session.user.clone()).or_default() += 1;
+                let whose = session.viewer.as_ref().unwrap_or(&session.user);
+                *open.entry(whose.clone()).or_default() += 1;
             }
         }
         let mut users: Vec<UserView> = self
@@ -407,10 +539,16 @@ impl Auth {
         save(&self.directory, &changed).map_err(|error| error.to_string())?;
         *users = changed;
         drop(users);
-        for session in self.sessions().values_mut() {
-            if session.user == key {
-                session.grants = Arc::clone(&grants);
-            }
+        let mut sessions = self.sessions();
+        // Views by someone no longer an administrator end.
+        let admin = grants.role() == Role::Admin;
+        sessions.retain(|_, session| admin || session.viewer.as_ref() != Some(&key));
+        for session in sessions.values_mut().filter(|session| session.user == key) {
+            // A view as the user stays one that only reads.
+            session.grants = match session.viewer {
+                Some(_) => Arc::new(grants.read_only()),
+                None => Arc::clone(&grants),
+            };
         }
         Ok(())
     }
@@ -432,12 +570,13 @@ impl Auth {
         Ok(())
     }
 
-    /// Ends every session of a user; says how many there were.
+    /// Ends every session of a user, their views as others with them; says how many there
+    /// were.
     pub fn end_sessions(&self, name: &str) -> usize {
         let key = name.trim().to_lowercase();
         let mut sessions = self.sessions();
         let before = sessions.len();
-        sessions.retain(|_, session| session.user != key);
+        sessions.retain(|_, session| session.user != key && session.viewer.as_ref() != Some(&key));
         before - sessions.len()
     }
 
