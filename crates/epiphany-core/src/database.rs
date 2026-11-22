@@ -175,12 +175,13 @@ pub struct NamedCells<'a> {
 }
 
 impl<'a> NamedCells<'a> {
-    /// How many cells each cube stores, by its name: written ahead of the cells, it lets
-    /// whoever loads them make room for them at once ([`Database::reserve`]).
+    /// How many numbers each cube stores, by its name: written ahead of the cells, it lets
+    /// whoever loads them make room for them at once ([`Database::reserve`]). Texts, few
+    /// as a rule, are given room as they come.
     pub fn counts(&self) -> std::collections::BTreeMap<&'a str, usize> {
         let cubes = self.model.cubes().iter().zip(self.cells);
         cubes
-            .map(|(cube, cells)| (cube.name.as_str(), cells.len()))
+            .map(|(cube, cells)| (cube.name.as_str(), cells.stored()))
             .collect()
     }
 
@@ -342,7 +343,7 @@ impl Database {
         skipped
     }
 
-    /// Makes room in a cube for cells about to be loaded. Nothing if there is no such cube.
+    /// Makes room in a cube for numbers about to be loaded. Nothing if there is no such cube.
     pub fn reserve(&mut self, cube: &str, cells: usize) {
         if let Some(id) = self.model.cube_id(cube) {
             self.cells[id].reserve(cells);

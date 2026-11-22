@@ -694,3 +694,25 @@ fn a_snapshot_loads_whatever_order_its_fields_come_in_and_drops_what_no_longer_f
     let error = epiphany_server::open(&home.0).unwrap_err().to_string();
     assert!(error.contains("value"), "{error}");
 }
+
+#[test]
+fn a_snapshot_cell_named_twice_is_damage_and_one_given_as_a_list_loads() {
+    let home = Home::new("snapshot-shapes");
+    drop(home.open());
+    let listed =
+        json!({ "model_version": 1, "cells": [[CUBE, RENT, 25.0], [CUBE, SALARIES, 40.0]] });
+    fs::write(home.path("data/snapshot.json"), listed.to_string()).unwrap();
+    fs::write(home.path("data/log.jsonl"), "").unwrap();
+    assert_eq!(get(&home.open(), EXPENSES), 65.0);
+
+    for twice in [
+        r#"{"cube":"General Ledger","at":["Rent","US","Jan","Actual"],"cube":"Other","value":1}"#,
+        r#"{"cube":"General Ledger","at":["Rent","US","Jan","Actual"],"at":["Rent"],"value":1}"#,
+        r#"{"cube":"General Ledger","at":["Rent","US","Jan","Actual"],"value":1,"value":2}"#,
+    ] {
+        let damaged = format!(r#"{{"model_version":1,"cells":[{twice}]}}"#);
+        fs::write(home.path("data/snapshot.json"), damaged).unwrap();
+        let error = epiphany_server::open(&home.0).unwrap_err().to_string();
+        assert!(error.contains("duplicate field"), "{error}");
+    }
+}

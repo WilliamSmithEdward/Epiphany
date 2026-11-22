@@ -3,10 +3,10 @@
 
 use std::fmt;
 
-use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
 use super::Database;
+use super::batch::{Key, WRITE};
 use crate::Scalar;
 use crate::cells::{check, coordinate};
 use crate::model::{Dimension, ElementId, Model};
@@ -21,10 +21,11 @@ impl Database {
             at: Vec::new(),
             skipped: 0,
         };
-        cells.deserialize_seq(&mut loading)?;
+        let read = cells.deserialize_seq(&mut loading);
         let skipped = loading.skipped;
+        // What was stored before a failure is stored all the same.
         self.changed();
-        Ok(skipped)
+        read.map(|()| skipped)
     }
 }
 
@@ -48,16 +49,9 @@ impl<'de> Visitor<'de> for &mut Loading<'_> {
     }
 }
 
-/// One cell: an object of its cube, the names of its elements and its value.
+/// One cell: an object of its cube, the names of its elements and its value, or a list of
+/// the same in that order. Read as the derived [`super::CellWrite`] is, refused as it is.
 struct Cell<'a, 'b>(&'a mut Loading<'b>);
-
-#[derive(Deserialize)]
-#[serde(field_identifier, rename_all = "lowercase")]
-enum Field {
-    Cube,
-    At,
-    Value,
-}
 
 /// A cell's names: looked up already, fitting or not, or kept until its cube is known.
 enum At {
@@ -65,48 +59,15 @@ enum At {
     Kept(Vec<String>),
 }
 
-impl<'de> DeserializeSeed<'de> for Cell<'_, '_> {
-    type Value = ();
-
-    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_map(self)
-    }
-}
-
-impl<'de> Visitor<'de> for Cell<'_, '_> {
-    type Value = ();
-
-    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a cell, with its cube, elements and value")
-    }
-
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
+impl Cell<'_, '_> {
+    /// Stores a cell that has been read, if it fits the model.
+    fn store(self, cube: Option<usize>, at: At, value: Scalar) {
         let Loading {
             database,
             at: found,
             skipped,
         } = self.0;
         let model = &database.model;
-        let (mut cube, mut at, mut value) = (None, None, None);
-        while let Some(field) = map.next_key()? {
-            match field {
-                Field::Cube => cube = Some(map.next_value_seed(CubeName(model))?),
-                Field::At => {
-                    at = Some(match cube {
-                        Some(Some(cube)) => At::Found(map.next_value_seed(Names {
-                            model,
-                            cube,
-                            found: &mut *found,
-                        })?),
-                        _ => At::Kept(map.next_value()?),
-                    })
-                }
-                Field::Value => value = Some(map.next_value::<Scalar>()?),
-            }
-        }
-        let cube = cube.ok_or_else(|| de::Error::missing_field("cube"))?;
-        let at = at.ok_or_else(|| de::Error::missing_field("at"))?;
-        let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
         let fits = cube.filter(|&cube| {
             let definition = &model.cubes()[cube];
             let located = match at {
@@ -121,10 +82,70 @@ impl<'de> Visitor<'de> for Cell<'_, '_> {
             Some(cube) => database.cells[cube].set(found, value),
             None => *skipped += 1,
         }
-        Ok(())
+    }
+
+    /// A cell's element names, looked up if its cube is known.
+    fn names<'de, A: MapAccess<'de>>(
+        &mut self,
+        cube: Option<Option<usize>>,
+        map: &mut A,
+    ) -> Result<At, A::Error> {
+        let Loading { database, at, .. } = &mut *self.0;
+        Ok(match cube {
+            Some(Some(cube)) => At::Found(map.next_value_seed(Names {
+                model: &database.model,
+                cube,
+                found: at,
+            })?),
+            _ => At::Kept(map.next_value()?),
+        })
     }
 }
 
+impl<'de> DeserializeSeed<'de> for Cell<'_, '_> {
+    type Value = ();
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
+        deserializer.deserialize_struct("CellWrite", WRITE, self)
+    }
+}
+
+impl<'de> Visitor<'de> for Cell<'_, '_> {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("struct CellWrite")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(mut self, mut map: A) -> Result<(), A::Error> {
+        let (mut cube, mut at, mut value) = (None, None, None);
+        while let Some(field) = map.next_key_seed(Key(WRITE))? {
+            match field {
+                0 if cube.is_some() => return Err(de::Error::duplicate_field("cube")),
+                1 if at.is_some() => return Err(de::Error::duplicate_field("at")),
+                2 if value.is_some() => return Err(de::Error::duplicate_field("value")),
+                0 => cube = Some(map.next_value_seed(CubeName(&self.0.database.model))?),
+                1 => at = Some(self.names(cube, &mut map)?),
+                _ => value = Some(map.next_value::<Scalar>()?),
+            }
+        }
+        let cube = cube.ok_or_else(|| de::Error::missing_field("cube"))?;
+        let at = at.ok_or_else(|| de::Error::missing_field("at"))?;
+        let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
+        self.store(cube, at, value);
+        Ok(())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut parts: A) -> Result<(), A::Error> {
+        let short = |found| de::Error::invalid_length(found, &"struct CellWrite with 3 elements");
+        let cube = parts.next_element_seed(CubeName(&self.0.database.model))?;
+        let cube = cube.ok_or_else(|| short(0))?;
+        let names: Vec<String> = parts.next_element()?.ok_or_else(|| short(1))?;
+        let value = parts.next_element::<Scalar>()?.ok_or_else(|| short(2))?;
+        self.store(cube, At::Kept(names), value);
+        Ok(())
+    }
+}
 /// A cube's name, looked up: nothing if the model has no such cube.
 struct CubeName<'a>(&'a Model);
 

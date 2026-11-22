@@ -270,22 +270,44 @@ impl<'de> Visitor<'de> for Reading<'_> {
 }
 
 /// One cell: an object of its cube, the names of its elements, and its value if it is
-/// written.
+/// written; or a list of the same in that order. Read as the derived [`CellWrite`] and
+/// [`CellRef`] are, refused as they are.
 struct Cell<'a, 'b>(&'a mut Reading<'b>);
 
-#[derive(Deserialize)]
-#[serde(field_identifier, rename_all = "lowercase")]
-enum Field {
-    Cube,
-    At,
-    Value,
+/// The fields of a cell write, and of a cell to read.
+pub(crate) const WRITE: &[&str] = &["cube", "at", "value"];
+const REF: &[&str] = &["cube", "at"];
+
+impl Cell<'_, '_> {
+    fn shape(&self) -> (&'static str, &'static [&'static str]) {
+        match self.0.values {
+            Some(_) => ("CellWrite", WRITE),
+            None => ("CellRef", REF),
+        }
+    }
+
+    /// Adds a cell whose cube and element names have been numbered into the list.
+    fn push(self, cube: u32, value: Option<Scalar>) {
+        let Reading {
+            listed,
+            values,
+            elements,
+        } = self.0;
+        if let (Some(values), Some(value)) = (values, value) {
+            values.push(value);
+        }
+        let from = listed.elements.len() as u32;
+        listed.elements.extend_from_slice(elements);
+        listed.cells.push((cube, from));
+    }
 }
 
 impl<'de> DeserializeSeed<'de> for Cell<'_, '_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
-        deserializer.deserialize_map(self)
+        let (name, fields) = self.shape();
+        deserializer.deserialize_struct(name, fields, self)
     }
 }
 
@@ -293,49 +315,95 @@ impl<'de> Visitor<'de> for Cell<'_, '_> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a cell, with its cube and elements")
+        write!(formatter, "struct {}", self.shape().0)
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        let Reading {
-            listed,
-            values,
-            elements,
-        } = self.0;
+        let fields = self.shape().1;
         let (mut cube, mut at, mut value) = (None, false, None);
-        while let Some(field) = map.next_key()? {
+        while let Some(field) = map.next_key_seed(Key(fields))? {
+            let Reading {
+                listed, elements, ..
+            } = &mut *self.0;
             match field {
-                Field::Cube if cube.is_some() => return Err(de::Error::duplicate_field("cube")),
-                Field::At if at => return Err(de::Error::duplicate_field("at")),
-                Field::Value if values.is_none() => {
-                    return Err(de::Error::unknown_field("value", &["cube", "at"]));
-                }
-                Field::Value if value.is_some() => {
-                    return Err(de::Error::duplicate_field("value"));
-                }
-                Field::Cube => cube = Some(map.next_value_seed(Name(listed))?),
-                Field::At => {
+                0 if cube.is_some() => return Err(de::Error::duplicate_field("cube")),
+                1 if at => return Err(de::Error::duplicate_field("at")),
+                2 if value.is_some() => return Err(de::Error::duplicate_field("value")),
+                0 => cube = Some(map.next_value_seed(Name(listed))?),
+                1 => {
                     elements.clear();
                     map.next_value_seed(Names { listed, elements })?;
                     at = true;
                 }
-                Field::Value => value = Some(map.next_value::<Scalar>()?),
+                _ => value = Some(map.next_value::<Scalar>()?),
             }
         }
         let cube = cube.ok_or_else(|| de::Error::missing_field("cube"))?;
         if !at {
             return Err(de::Error::missing_field("at"));
         }
-        if let Some(values) = values {
-            values.push(value.ok_or_else(|| de::Error::missing_field("value"))?);
+        if fields.len() == WRITE.len() && value.is_none() {
+            return Err(de::Error::missing_field("value"));
         }
-        let from = listed.elements.len() as u32;
-        listed.elements.extend_from_slice(elements);
-        listed.cells.push((cube, from));
+        self.push(cube, value);
+        Ok(())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut parts: A) -> Result<(), A::Error> {
+        let (name, fields) = self.shape();
+        let short = |found| de::Error::invalid_length(found, &Fields(name, fields.len()));
+        let Reading {
+            listed, elements, ..
+        } = &mut *self.0;
+        let cube = parts
+            .next_element_seed(Name(listed))?
+            .ok_or_else(|| short(0))?;
+        elements.clear();
+        parts
+            .next_element_seed(Names { listed, elements })?
+            .ok_or_else(|| short(1))?;
+        let value = match fields.len() == WRITE.len() {
+            true => Some(parts.next_element::<Scalar>()?.ok_or_else(|| short(2))?),
+            false => None,
+        };
+        self.push(cube, value);
         Ok(())
     }
 }
 
+/// What a cell given as a list must hold: as derived code says it.
+struct Fields(&'static str, usize);
+
+impl de::Expected for Fields {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        write!(formatter, "struct {} with {} elements", self.0, self.1)
+    }
+}
+
+/// A field's name, given as its place among `fields`. One of no such name is refused as
+/// derived code refuses it, naming the fields there are.
+pub(crate) struct Key(pub(crate) &'static [&'static str]);
+
+impl<'de> DeserializeSeed<'de> for Key {
+    type Value = usize;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<usize, D::Error> {
+        deserializer.deserialize_identifier(self)
+    }
+}
+
+impl Visitor<'_> for Key {
+    type Value = usize;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("field identifier")
+    }
+
+    fn visit_str<E: de::Error>(self, name: &str) -> Result<usize, E> {
+        let place = self.0.iter().position(|&field| field == name);
+        place.ok_or_else(|| E::unknown_field(name, self.0))
+    }
+}
 /// A name, numbered as it is read.
 struct Name<'a>(&'a mut Listed);
 
@@ -351,7 +419,7 @@ impl Visitor<'_> for Name<'_> {
     type Value = u32;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a name")
+        formatter.write_str("a string")
     }
 
     fn visit_str<E: de::Error>(self, name: &str) -> Result<u32, E> {
@@ -377,7 +445,7 @@ impl<'de> Visitor<'de> for Names<'_> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a list of element names")
+        formatter.write_str("a sequence")
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut names: A) -> Result<(), A::Error> {
@@ -425,6 +493,15 @@ mod tests {
 
         let text = r#"[{ "cube": "C", "at": ["a", "b"] }, { "at": ["b"], "cube": "D" }]"#;
         let refs: CellRefs = serde_json::from_str(text).unwrap();
+        // A cell may also be given as a list of its fields, in order.
+        let listed: CellRefs =
+            serde_json::from_str(r#"[["C", ["a", "b"]], ["D", ["b"]]]"#).unwrap();
+        assert_eq!(cells(&listed.listed), cells(&refs.listed));
+        let listed: CellWrites = serde_json::from_str(r#"[["C", ["a"], 2]]"#).unwrap();
+        assert_eq!(
+            (cells(&listed.listed), listed.values),
+            (vec![named("C", &["a"])], vec![Scalar::Number(2.0)])
+        );
         let expected = [named("C", &["a", "b"]), named("D", &["b"])];
         assert_eq!(cells(&refs.listed), expected);
     }
@@ -445,7 +522,7 @@ mod tests {
             ),
             (
                 r#"[{ "cube": "C", "at": [1], "value": 1 }]"#,
-                "expected a name",
+                "expected a string",
             ),
         ] {
             let error = serde_json::from_str::<CellWrites>(text)
@@ -453,6 +530,18 @@ mod tests {
                 .to_string();
             assert!(error.contains(refused), "{text}: {error}");
         }
+        let refused = |text| {
+            serde_json::from_str::<CellRefs>(text)
+                .unwrap_err()
+                .to_string()
+        };
+        let error = refused(r#"[{ "cube": "C", "at": [], "where": 1 }]"#);
+        assert!(
+            error.contains("unknown field `where`, expected `cube` or `at`"),
+            "{error}"
+        );
+        let error = refused(r#"[["C"]]"#);
+        assert!(error.contains("struct CellRef with 2 elements"), "{error}");
         let error = serde_json::from_str::<CellRefs>(r#"[{ "cube": "C", "at": [], "value": 1 }]"#);
         assert!(
             error
