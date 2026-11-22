@@ -2678,6 +2678,34 @@
           }
         }
       },
+      "Geometry": {
+        "type": "object",
+        "description": "The sizes a grid was given by hand: the height of its rows and the widths of columns,\neach column known by a key of the client's choosing. Sizes not given are fitted to the\ncontent.",
+        "properties": {
+          "row_height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The height of every row, in pixels.",
+            "minimum": 0
+          },
+          "widths": {
+            "type": "object",
+            "description": "The width of each column, in pixels, by key.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "LockMode": {
         "type": "string",
         "description": "A lock a client may ask for.",
@@ -3406,6 +3434,17 @@
           "mdx"
         ],
         "properties": {
+          "geometry": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Geometry",
+                "description": "The sizes the grid of the view was given, kept with it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mdx": {
             "type": "string",
             "description": "The MDX query, which must select from the cube the view belongs to."

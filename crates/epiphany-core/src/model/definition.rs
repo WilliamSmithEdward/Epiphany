@@ -114,6 +114,24 @@ pub enum SubsetDef {
 pub struct ViewDef {
     /// The MDX query, which must select from the cube the view belongs to.
     pub mdx: String,
+    /// The sizes the grid of the view was given, kept with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<Geometry>,
+}
+
+/// The sizes a grid was given by hand: the height of its rows and the widths of columns,
+/// each column known by a key of the client's choosing. Sizes not given are fitted to the
+/// content.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct Geometry {
+    /// The height of every row, in pixels.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_height: Option<u16>,
+    /// The width of each column, in pixels, by key.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub widths: BTreeMap<String, u16>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

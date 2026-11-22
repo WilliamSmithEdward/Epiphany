@@ -724,7 +724,12 @@ fn a_dashboard_is_kept_with_the_model_on_disk() {
     );
     database.update_model(1, definition).unwrap();
     drop(database);
-    assert!(home.path("model/dashboards/Finance.json").exists());
+    // Files are named in lower case, whatever the file system makes of case.
+    let names: Vec<_> = fs::read_dir(home.path("model/dashboards"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["finance.json"]);
     let reopened = home.open();
     assert_eq!(reopened.definition().dashboards[0].name, "Finance");
 }

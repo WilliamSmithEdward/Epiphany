@@ -304,6 +304,7 @@ class Explorer {
             icon: 'grid',
             action: () => this.change((layout) => {
               layout.mdx = this.cube.views[name].mdx;
+              layout.geometry = this.cube.views[name].geometry ?? null;
             }, true),
           })),
           admin ? '-' : null,
@@ -368,7 +369,6 @@ class Explorer {
   drawToolbar() {
     this.drawPending();
     const layout = this.layout;
-    const written = false;
     const button = (label, iconName, action, props = {}) => h('button', { class: 'button small quiet', onclick: action, ...props }, icon(iconName, 16), h('span', {}, label));
     mount(this.toolbar,
       button('Undo', 'undo', () => this.undo(), { disabled: !this.past.length, title: 'Undo (Ctrl Z)' }),
@@ -377,12 +377,12 @@ class Explorer {
       button('Swap axes', 'swap', () => this.change((l) => {
         [l.rows, l.columns] = [l.columns, l.rows];
         l.sort = null;
-      }), { disabled: written }),
+      })),
       button(layout.nonEmpty ? 'Showing non-empty' : 'Showing empty rows', layout.nonEmpty ? 'eyeOff' : 'eye',
         () => this.change((l) => {
           l.nonEmpty = !l.nonEmpty;
-        }), { disabled: written, 'aria-pressed': String(layout.nonEmpty), title: 'Leave out rows and columns with no values' }),
-      layout.sort && !written ? button('Clear sort', 'close', () => this.change((l) => {
+        }), { 'aria-pressed': String(layout.nonEmpty), title: 'Leave out rows and columns with no values' }),
+      layout.sort ? button('Clear sort', 'close', () => this.change((l) => {
         l.sort = null;
       })) : null,
       h('div', { class: 'grow' }),
@@ -392,7 +392,20 @@ class Explorer {
       }, icon('code', 12), 'Written in MDX') : null,
       button('Refresh', 'refresh', () => this.run()),
       button('Export CSV', 'download', () => this.exportCsv(), { disabled: !this.result }),
-      button('Reset layout', 'trash', () => this.change((l) => Object.assign(l, defaultLayout(this.cube, this.dims)))));
+      button('Reset', 'down', (event) => menu([
+        {
+          label: 'Reset sizes',
+          icon: 'columns',
+          disabled: !layout.geometry,
+          action: () => {
+            this.layout.geometry = null;
+            localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
+            this.drawToolbar();
+            this.draw();
+          },
+        },
+        { label: 'Reset layout', icon: 'trash', action: () => this.change((l) => Object.assign(l, defaultLayout(this.cube, this.dims))) },
+      ], event.currentTarget), { 'aria-haspopup': 'menu', title: 'Fit the sizes to the content again, or start the layout over' }));
   }
 
   /* ---- Field list ---- */
@@ -816,11 +829,9 @@ class Explorer {
       }
       const tr = h('tr');
       if (level === 0) {
-        tr.append(h('th', { class: 'corner', colspan: Math.max(rowWidth, 1), rowspan: headRows, scope: 'col' },
-          h('div', { class: 'corner-labels' }, rowTuples[0]?.flatMap((m, index) => [
-            h('span', {}, m.dimension),
-            ...rowAttributes[index].map((attribute) => h('span', { class: 'muted' }, attribute)),
-          ]) ?? '')));
+        // A heading over each column of row headings: its dimension, or an attribute shown.
+        const labels = rowTuples[0]?.flatMap((m, index) => [m.dimension, ...rowAttributes[index]]) ?? [];
+        tr.append(...(labels.length ? labels : ['']).map((label) => h('th', { class: 'corner', rowspan: headRows, scope: 'col' }, label)));
       }
       for (const [m, span] of groups) {
         tr.append(h('th', { scope: 'col', colspan: span, class: `col-head ${m.type === 'consolidated' ? 'total' : ''}` },
@@ -863,7 +874,11 @@ class Explorer {
       }
       body.append(tr);
     });
-    table.append(head, body);
+    const keys = [
+      ...(rowTuples[0] ?? []).flatMap((m, index) => [`row:${m.dimension}`, ...rowAttributes[index].map((attribute) => `row:${m.dimension}:${attribute}`)]),
+      ...columnTuples.map((tuple) => `col:${tuple.map((m) => m.unique_name).join('|')}`),
+    ];
+    table.append(h('colgroup', {}, keys.map((key) => h('col', { dataset: { key } }))), head, body);
     table.addEventListener('contextmenu', (event) => {
       const cell = event.target.closest('td');
       if (!cell) return;
@@ -877,6 +892,7 @@ class Explorer {
     });
     const scroller = h('div', { class: 'pivot-scroll' }, table);
     mount(this.output, scroller);
+    this.size(table);
     this.pinHeads(table);
     this.focusCell();
     const cells = rowTuples.length * columnCount;
@@ -922,6 +938,90 @@ class Explorer {
   }
 
   /**
+   * Sizes the grid: every column to its content and headings, unless given a width by hand,
+   * and every row to the height given by hand, if one is. Then puts the handles that change
+   * them on the headings.
+   */
+  size(table) {
+    const geometry = this.layout.geometry ?? {};
+    const cols = [...table.querySelectorAll('col')];
+    if (geometry.row_height) table.style.setProperty('--row-height', `${geometry.row_height}px`);
+    // Measured as laid out by their content, then held, so that changing one moves no other.
+    const fitted = cols.map((col) => Math.ceil(col.getBoundingClientRect().width));
+    const widths = cols.map((col, index) => geometry.widths?.[col.dataset.key] ?? fitted[index]);
+    const apply = () => {
+      cols.forEach((col, index) => {
+        col.style.width = `${widths[index]}px`;
+      });
+      table.style.width = `${widths.reduce((sum, width) => sum + width, 0)}px`;
+    };
+    apply();
+    table.classList.add('sized');
+    const keep = (change) => {
+      this.layout.geometry = { ...(this.layout.geometry ?? {}), ...change(this.layout.geometry ?? {}) };
+      localStorage.setItem(saved(this.cube.name), JSON.stringify(this.layout));
+      this.drawToolbar();
+    };
+    // Follows the pointer wherever it goes until it is let go.
+    const drag = (handle, start, move, end) => handle.addEventListener('pointerdown', (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const origin = { x: event.clientX, y: event.clientY, value: start() };
+      document.body.classList.add('resizing');
+      const moved = (next) => move(origin, next);
+      const done = () => {
+        window.removeEventListener('pointermove', moved);
+        window.removeEventListener('pointerup', done);
+        window.removeEventListener('pointercancel', done);
+        document.body.classList.remove('resizing');
+        end();
+      };
+      window.addEventListener('pointermove', moved);
+      window.addEventListener('pointerup', done);
+      window.addEventListener('pointercancel', done);
+    });
+    // A handle on the right edge of the heading of each column.
+    const headRows = [...table.tHead.rows];
+    const dataHeads = [...headRows[headRows.length - 1].cells].filter((cell) => !cell.classList.contains('corner'));
+    const corners = [...table.tHead.querySelectorAll('th.corner')];
+    const rowHeads = [...(table.tBodies[0]?.rows[0]?.cells ?? [])].filter((cell) => cell.tagName === 'TH');
+    const columnHeads = [...(rowHeads.length ? corners : []), ...dataHeads];
+    if (columnHeads.length !== cols.length) return;
+    columnHeads.forEach((cell, index) => {
+      const handle = h('span', { class: 'col-resize', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': 'Drag to change the width of the column', title: 'Drag to change the width; double-click to fit it' });
+      cell.append(handle);
+      drag(handle, () => widths[index], (origin, event) => {
+        widths[index] = Math.max(40, Math.round(origin.value + event.clientX - origin.x));
+        apply();
+      }, () => keep((geometry) => ({ widths: { ...(geometry.widths ?? {}), [cols[index].dataset.key]: widths[index] } })));
+      handle.addEventListener('dblclick', (event) => {
+        event.stopPropagation();
+        widths[index] = fitted[index];
+        apply();
+        keep((geometry) => {
+          const kept = { ...(geometry.widths ?? {}) };
+          delete kept[cols[index].dataset.key];
+          return { widths: kept };
+        });
+      });
+    });
+    // One handle beneath the first row's heading sets the height of every row.
+    const first = rowHeads[0] ?? table.tBodies[0]?.rows[0]?.cells[0];
+    if (!first) return;
+    const handle = h('span', { class: 'row-resize', role: 'separator', 'aria-orientation': 'horizontal', 'aria-label': 'Drag to change the height of every row', title: 'Drag to change the height of every row' });
+    first.append(handle);
+    let height = geometry.row_height ?? first.getBoundingClientRect().height;
+    drag(handle, () => height, (origin, event) => {
+      height = Math.max(22, Math.min(120, Math.round(origin.value + event.clientY - origin.y)));
+      table.style.setProperty('--row-height', `${height}px`);
+    }, () => {
+      keep(() => ({ row_height: height }));
+      this.pinHeads(table);
+    });
+  }
+
+  /**
    * Keeps the heading rows and the row headings in view as the grid scrolls: each heading
    * row below the one above it, and each row heading column beside those before it.
    */
@@ -942,6 +1042,9 @@ class Explorer {
       lefts.push(left);
       left += cell.offsetWidth;
     }
+    table.tHead.querySelectorAll('th.corner').forEach((cell, index) => {
+      cell.style.left = `${lefts[index] ?? 0}px`;
+    });
     for (const row of table.tBodies[0].rows) {
       [...row.cells].slice(0, lefts.length).forEach((cell, index) => {
         cell.style.left = `${lefts[index]}px`;
@@ -1046,13 +1149,12 @@ class Explorer {
     const [columns, rows] = this.result.axes;
     const rowTuple = rows?.tuples[r] ?? [];
     const columnTuple = columns.tuples[c] ?? [];
-    const written = false;
     const openable = (place, tuple) => tuple.filter((m) => this.dims.get(m.dimension)?.byName.get(m.name)?.children.length);
-    const rowOpen = written ? [] : openable('rows', rowTuple);
+    const rowOpen = openable('rows', rowTuple);
     menu([
       { heading: [...rowTuple, ...columnTuple].map((m) => m.name).join(' · ') },
-      { label: 'Sort rows by this column, largest first', icon: 'down', disabled: written || !this.layout.rows.length, action: () => this.sortBy(columnTuple, true) },
-      { label: 'Sort rows by this column, smallest first', icon: 'chevron', disabled: written || !this.layout.rows.length, action: () => this.sortBy(columnTuple, false) },
+      { label: 'Sort rows by this column, largest first', icon: 'down', disabled: !this.layout.rows.length, action: () => this.sortBy(columnTuple, true) },
+      { label: 'Sort rows by this column, smallest first', icon: 'chevron', disabled: !this.layout.rows.length, action: () => this.sortBy(columnTuple, false) },
       '-',
       ...rowOpen.map((m) => {
         const entry = this.layout.rows.find((candidate) => candidate.dimension === m.dimension);
@@ -1379,7 +1481,11 @@ class Explorer {
         // The cube as it is now, saved against the version it was read at, so that a change
         // someone else made meanwhile is not overwritten.
         const cube = await get(`/cubes/${part(this.cube.name)}`);
-        const views = { ...(cube.views ?? {}), [view]: { mdx: this.text } };
+        const geometry = this.layout.geometry;
+        const kept = geometry && (geometry.row_height || Object.keys(geometry.widths ?? {}).length)
+          ? { geometry: { ...(geometry.row_height ? { row_height: geometry.row_height } : {}), widths: geometry.widths ?? {} } }
+          : {};
+        const views = { ...(cube.views ?? {}), [view]: { mdx: this.text, ...kept } };
         await put(`/cubes/${part(this.cube.name)}`, { based_on: Number(modelVersion), cube: { ...cube, views } });
         this.cube.views = views;
         return view;
