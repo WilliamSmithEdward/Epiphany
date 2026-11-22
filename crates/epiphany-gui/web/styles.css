@@ -570,3 +570,14 @@ fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(-
 .plain-list { margin: 0; padding-left: var(--s5); }
 @media (max-width: 1100px) { .element-layout { grid-template-columns: 1fr; } .model-page { grid-template-columns: 1fr; } .model-list { display: none; } }
 .textarea { width: 100%; }
+
+/* ---- Text boxes: their width follows their place ---- */
+
+.input, .select, .textarea { min-width: 0; max-width: 100%; }
+.field > .input, .field > .select, .field > .textarea, .card-body > .textarea, .facts > .textarea, .mdx-pane > .textarea { width: 100%; }
+.toolbar > .input { flex: 1 1 220px; }
+.toolbar > .select { flex: 0 1 auto; min-width: 160px; }
+.attribute-row .input, .attribute-row .select { width: 100%; }
+.card-body.toolbar { gap: var(--s3); }
+.facts { gap: var(--s4); }
+.dialog-body .field { gap: var(--s2); }
