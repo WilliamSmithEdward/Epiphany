@@ -983,6 +983,9 @@ fn numbers_are_rounded_rooted_and_raised() {
         number("Round(([Account].[Product Revenue], [Period].[Jan]) / 3, 1)"),
         Some(33.3)
     );
+    // A number may be written with an exponent, but not one too large to hold.
+    assert_eq!(number("1.5E3 + 25e-2 + 1E+2"), Some(1600.25));
+    assert_eq!(refusal("1e999"), "malformed number at character 29");
 }
 
 #[test]

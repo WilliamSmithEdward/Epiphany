@@ -376,9 +376,10 @@ practice that means:
   - A number pattern puts its text before or after its digits, not among them, and writes
     at most 20 decimals; an empty cell is zero to it, as everywhere, and `NULL` is written
     as nothing.
-- Not done: functions outside the lists above; numbers written in scientific notation,
-  in queries or by `Format`; the formats VBA names, such as `Currency` and `Short Date`,
-  which follow the reader's locale; and the `FORMAT_STRING` of a calculated member.
+- Not done: functions outside the lists above; numbers written in scientific notation by
+  `Format` (a query may write them so, as `1.5E3`); the formats VBA names, such as
+  `Currency` and `Short Date`, which follow the reader's locale; and the `FORMAT_STRING`
+  of a calculated member.
 
 ### 2.8 Spreading
 
