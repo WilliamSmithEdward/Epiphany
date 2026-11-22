@@ -672,6 +672,22 @@ async function exploring() {
     const grown = [100, 110, 121].every((expected, index) => Math.abs(months[index] - expected) < 1e-6);
     expect(grown, `The API reads ${quoted(months)} where 100 grown by a tenth a month, 100, 110 and 121, was typed.`);
   });
+  await step('A link to the query shown opens it as it is shown, and a damaged one says so', async () => {
+    await page.click('button', 'Views');
+    await page.waitFor(`[...document.querySelectorAll('.menu [role="menuitem"]')].some((item) => item.textContent === 'Copy a link to this query')`, 'the link, offered');
+    await page.press('Escape');
+    // The link as the menu makes it, for the query in thousands to one decimal place.
+    const link = new URL(await page.evaluate(`import('/layout.js').then(({ linkOf }) => linkOf('General Ledger', { mdx: ${quoted(QUERY)}, format: { decimals: 1, scale: 'thousands' } }))`));
+    await page.goto(link.pathname + link.search);
+    await page.waitFor(`[...document.querySelectorAll('th.row-head[data-r1]')].map((th) => th.textContent.trim()).join() === 'Salaries,Rent'`, 'the rows the link asks for');
+    const { data } = await page.api('POST', '/cells/read', { cells: [{ cube: 'General Ledger', at: at('Salaries', 'Jan') }] });
+    const expected = ((data.cells[0].value ?? 0) / 1000).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    const shown = (await page.evaluate(GRID)).cells['0,0'];
+    expect(shown === expected, `Salaries in January shows ${quoted(shown)}, not ${quoted(expected)}, in thousands to one place.`);
+    await page.goto('/explore?cube=General%20Ledger&shared=not-a-link');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('This link is damaged'))`, 'the damaged link, said');
+    await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid, as it was last');
+  });
 }
 
 async function changingTheModel() {

@@ -4,11 +4,11 @@
 import { ApiError, del, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { chart, shape } from './chart.js';
-import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, mdx, quote, saved, shown, takeOver } from './layout.js';
+import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, linkOf, mdx, quote, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
-import { choices, dialog, download, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
+import { choices, copyText, dialog, download, formatValue, h, icon, menu, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid } from './grid.js';
 import { sandboxes } from './sandboxes.js';
@@ -50,9 +50,13 @@ export async function render(target, { params, titled }) {
     Promise.all(cube.dimensions.map(async (dim) => [dim, await dimension(dim)])).then((pairs) => new Map(pairs)),
     get('/sandboxes', { quiet: true }).catch(() => []),
   ]);
-  // A query left for this cube, from another cube's page or another page, is run here.
+  // A query left for this cube, from another cube's page or another page, is run here; or the
+  // view a link carries, or one saved with the cube.
   const handed = takeOver(cube.name);
-  const view = handed ? { mdx: handed } : cube.views?.[params.get('view')];
+  const shared = params.get('shared');
+  const linked = shared ? linkedView(shared) : null;
+  if (shared && !linked) notify('This link is damaged: it carries no query to show. The last layout of the cube is shown.', 'bad');
+  const view = handed ? { mdx: handed } : linked ?? cube.views?.[params.get('view')];
   return new Explorer(target, definition, cube, dims, view, kept, titled);
 }
 
@@ -1184,7 +1188,8 @@ class Explorer {
       unfetched ? { heading: 'Your views could not be fetched' } : null,
       { heading: everyones.length ? 'Everyone\'s views' : 'No views for everyone yet' },
       ...everyones.map(([name, view]) => ({ label: name, icon: 'grid', action: open(view) })),
-      saving ? '-' : null,
+      '-',
+      { label: 'Copy a link to this query', icon: 'link', disabled: !this.text, action: () => copyText(linkOf(this.cube.name, this.asView())) },
       saving ? { label: 'Save this query as a view…', icon: 'save', disabled: !this.text, action: () => this.saveView() } : null,
       saving && mine.length ? { label: 'Take one of your views away…', icon: 'trash', action: () => this.removeOwnViews(mine) } : null,
     ], button);

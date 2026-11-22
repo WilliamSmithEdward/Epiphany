@@ -170,6 +170,55 @@ export function mdx(layout, dims) {
 /** Where the last layout of a cube is kept, in this browser. */
 export const saved = (cube) => `epiphany.explore.${cube}`;
 
+/**
+ * A link to a cube's page that opens `view` there, its query and how it is shown, for anyone
+ * who may read the cube: the view travels in the address, as base64url of its JSON.
+ */
+export function linkOf(cube, view) {
+  let binary = '';
+  for (const byte of new TextEncoder().encode(JSON.stringify(view))) binary += String.fromCharCode(byte);
+  const shared = btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+  return `${location.origin}/explore?cube=${encodeURIComponent(cube)}&shared=${shared}`;
+}
+
+/**
+ * The view a link carries, kept to what a view may say, as the server holds views to it;
+ * null for a link damaged or made up.
+ */
+export function linkedView(shared) {
+  let read;
+  try {
+    const binary = atob(shared.replaceAll('-', '+').replaceAll('_', '/'));
+    read = JSON.parse(new TextDecoder().decode(Uint8Array.from(binary, (letter) => letter.charCodeAt(0))));
+  } catch {
+    return null;
+  }
+  if (typeof read?.mdx !== 'string') return null;
+  const whole = (value, most) => (Number.isInteger(value) && value >= 0 && value <= most ? value : undefined);
+  const among = (value, ...allowed) => (allowed.includes(value) ? value : undefined);
+  const { format, highlights, geometry } = read;
+  return {
+    mdx: read.mdx,
+    format: format && {
+      decimals: whole(format.decimals, 20),
+      scale: among(format.scale, 'thousands', 'millions', 'billions'),
+      parentheses: format.parentheses === true,
+      dash_zeros: format.dash_zeros === true,
+    },
+    highlights: highlights && {
+      bars: highlights.bars === true,
+      shades: highlights.shades === true,
+      rules: (Array.isArray(highlights.rules) ? highlights.rules : [])
+        .filter((rule) => among(rule?.test, 'above', 'at_least', 'below', 'at_most', 'equals') && Number.isFinite(rule.value) && among(rule.tone, 'good', 'bad', 'warn', 'accent'))
+        .map(({ test, value, tone }) => ({ test, value, tone })),
+    },
+    geometry: geometry && {
+      row_height: whole(geometry.row_height, 65_535),
+      widths: Object.fromEntries(Object.entries(geometry.widths ?? {}).filter(([, width]) => whole(width, 65_535) !== undefined)),
+    },
+  };
+}
+
 /** Where a query waits for the page of the cube it asks of. */
 const HANDED = 'epiphany.explore.handed';
 

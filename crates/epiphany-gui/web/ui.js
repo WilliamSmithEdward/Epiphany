@@ -99,6 +99,7 @@ const ICONS = {
   pause: 'M8 5v14 M16 5v14',
   bars: 'M4 6h10 M4 12h16 M4 18h7',
   copy: 'M9 9h11v11H9z M5 15H4V4h11v1',
+  link: 'M9 15l6-6 M11 6l1-1a4.2 4.2 0 0 1 6 6l-1 1 M13 18l-1 1a4.2 4.2 0 0 1-6-6l1-1',
   paste: 'M9 3h6v4H9z M8 5H5v16h14V5h-3',
   expand: 'M7 15l5 5 5-5 M7 9l5-5 5 5',
   collapse: 'M7 20l5-5 5 5 M7 4l5 5 5-5',
