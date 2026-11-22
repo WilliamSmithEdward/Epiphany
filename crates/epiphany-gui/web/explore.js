@@ -1369,13 +1369,29 @@ class Explorer {
     };
     const rowTuples = rows?.tuples ?? [[]];
     const lines = [];
-    const depth = rowTuples[0]?.length ?? 0;
+    // As the grid shows them: by alias where one is chosen, with the attributes shown.
+    const label = (place, m) => {
+      const entry = this.layout.mdx ? null : this.entryOf(place, m.dimension);
+      const alias = entry?.alias ? this.dims.get(m.dimension)?.byName.get(m.name)?.attributes?.[entry.alias] : null;
+      return alias || m.name;
+    };
+    const attributesOf = (place, m) => (this.layout.mdx ? [] : this.entryOf(place, m.dimension)?.attributes ?? []);
+    const rowHeading = rowTuples[0] ?? [];
+    const rowCells = (tuple) => tuple.flatMap((m) => [label('rows', m), ...attributesOf('rows', m).map((attribute) => this.attributeValue(m, attribute))]);
+    const width = rowCells(rowHeading).length;
+    const heading = rowHeading.flatMap((m) => [m.dimension, ...attributesOf('rows', m)]);
     for (let level = 0; level < (columns.tuples[0]?.length ?? 0); level += 1) {
-      lines.push([...Array(depth).fill(''), ...columns.tuples.map((tuple) => tuple[level].name)].map(field).join(','));
+      const first = columns.tuples[0][level];
+      const lead = level === (columns.tuples[0].length - 1) ? heading : Array(width).fill('');
+      lines.push([...lead, ...columns.tuples.map((tuple) => label('columns', tuple[level]))].map(field).join(','));
+      for (const attribute of attributesOf('columns', first)) {
+        lines.push([...Array(Math.max(width - 1, 0)).fill(''), width ? attribute : null, ...columns.tuples.map((tuple) => this.attributeValue(tuple[level], attribute))]
+          .filter((cell) => cell !== null).map(field).join(','));
+      }
     }
     rowTuples.forEach((tuple, r) => {
       const values = columns.tuples.map((_, c) => result.cells[r * columns.tuples.length + c]);
-      lines.push([...tuple.map((m) => m.name), ...values].map(field).join(','));
+      lines.push([...rowCells(tuple), ...values].map(field).join(','));
     });
     download(`${this.cube.name}.csv`, `${lines.join('\r\n')}\r\n`, 'text/csv');
   }
