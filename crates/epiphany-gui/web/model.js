@@ -6,7 +6,7 @@ import { del, get, part, put } from './api.js';
 import { empty, failure, go } from './app.js';
 import { dialog, h, icon, menu, mount, notify } from './ui.js';
 
-const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Total' };
+const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 
 export async function render(target, { params }) {
   const view = await get('/model');
@@ -141,7 +141,7 @@ class ModelPage {
       body: h('div', { class: 'facts' },
         h('div', { class: 'field' }, h('label', { for: 'new-name' }, 'Name'), name),
         h('div', { class: 'field' }, h('label', { for: 'new-type' }, 'Type'), type),
-        h('p', { class: 'hint' }, 'It starts with one element, Total, to build from.')),
+        h('p', { class: 'hint' }, 'It starts with one consolidation, Total, to build from.')),
       onsubmit: async () => {
         const value = name.value.trim();
         if (!value) throw new Error('Give the dimension a name.');
