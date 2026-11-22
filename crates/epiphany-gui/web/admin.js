@@ -3,9 +3,16 @@
 import { del, get, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { cellQuery, handOver } from './layout.js';
+import { chooseMember, dimension } from './picker.js';
 import { dialog, h, icon, mount, notify, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
+/** The roles an element takes: hidden, it is not there for the user at all. */
+const ELEMENT_ROLES = { none: 'Hidden', read: 'Can read', write: 'Can write' };
+
+/** A user's roles on elements, as the users list says them: Region · Europe: hidden. */
+const elementRoles = (elements) => Object.entries(elements ?? {})
+  .flatMap(([dimensionName, roles]) => Object.entries(roles).map(([element, role]) => `${dimensionName} · ${element}: ${ELEMENT_ROLES[role].toLowerCase()}`));
 
 const bytes = (count) => {
   if (count === null || count === undefined) return '—';
@@ -137,13 +144,14 @@ class AdminPage {
     const me = state.user?.name?.toLowerCase();
     mount(this.usersCard, head,
       h('table', { class: 'table' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Role'), h('th', {}, 'On particular cubes'), h('th', { class: 'num-col' }, 'Sessions'), h('th', { class: 'actions' }, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Role'), h('th', {}, 'On particular cubes'), h('th', {}, 'On particular elements'), h('th', { class: 'num-col' }, 'Sessions'), h('th', { class: 'actions' }, ''))),
         h('tbody', {}, list.users.map((user) => {
           const cubes = Object.entries(user.cubes);
           return h('tr', {},
             h('td', {}, h('strong', {}, user.name), user.name.toLowerCase() === me ? h('span', { class: 'badge accent you' }, 'You') : null),
             h('td', {}, h('span', { class: `badge ${user.role === 'admin' ? 'accent' : user.role === 'none' ? 'bad' : ''}` }, ROLES[user.role])),
             h('td', { class: 'muted' }, cubes.length ? cubes.map(([cube, role]) => `${cube}: ${ROLES[role].toLowerCase()}`).join(' · ') : '—'),
+            h('td', { class: 'muted' }, elementRoles(user.elements).join(', ') || '—'),
             h('td', { class: 'num-col num' }, user.sessions.toLocaleString()),
             // Each row's buttons name its user, to be told from the next row's.
             h('td', { class: 'actions' },
@@ -189,8 +197,8 @@ class AdminPage {
   }
 
   /**
-   * Adds a user, or edits one: their password, role and roles on particular cubes. The
-   * button that asked shows it at work while the cubes are fetched.
+   * Adds a user, or edits one: their password, role, and roles on particular cubes and on
+   * particular elements. The button that asked shows it at work while the model is fetched.
    */
   async editUser(user, button) {
     const adding = !user;
@@ -211,6 +219,34 @@ class AdminPage {
       rows.append(row);
     };
     for (const [cube, chosen] of Object.entries(user?.cubes ?? {})) addRow(cube, chosen);
+    // A role on an element: its dimension, the element chosen from the dimension's tree, and
+    // the role, which holds beneath it too.
+    const dimensions = definition.dimensions.map((each) => each.name);
+    const elementRows = h('div', { class: 'cube-roles' });
+    const addElementRow = (dimensionName = dimensions[0], element = null, chosen = 'none') => {
+      const dimensionSelect = h('select', { class: 'select', 'aria-label': 'Dimension' }, dimensions.map((each) => h('option', { value: each, selected: each === dimensionName }, each)));
+      const elementButton = h('button', { class: 'button', type: 'button' });
+      const roleSelect = h('select', { class: 'select', 'aria-label': 'Role on the element' }, Object.entries(ELEMENT_ROLES).map(([value, label]) => h('option', { value, selected: value === chosen }, label)));
+      const row = h('div', { class: 'cube-role element-role' }, dimensionSelect, elementButton, roleSelect,
+        h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this element role', onclick: () => row.remove() }, icon('close', 14)));
+      const pick = (picked) => {
+        row.dataset.element = picked ?? '';
+        elementButton.textContent = picked ?? 'Choose an element';
+        elementButton.setAttribute('aria-label', picked ? `Element ${picked}, chosen from ${dimensionSelect.value}` : `Choose an element of ${dimensionSelect.value}`);
+      };
+      pick(element);
+      elementButton.addEventListener('click', async () => {
+        const dim = await working(elementButton, () => dimension(dimensionSelect.value));
+        if (!dim) return;
+        const member = await chooseMember(dim, { title: `An element of ${dim.name}`, current: row.dataset.element || undefined });
+        if (member !== null) pick(member);
+      });
+      dimensionSelect.addEventListener('change', () => pick(null));
+      elementRows.append(row);
+    };
+    for (const [dimensionName, roles] of Object.entries(user?.elements ?? {})) {
+      for (const [element, chosen] of Object.entries(roles)) addElementRow(dimensionName, element, chosen);
+    }
     const saved = await dialog({
       title: adding ? 'Add a user' : `Edit ${user.name}`,
       confirm: adding ? 'Add user' : 'Save',
@@ -225,7 +261,12 @@ class AdminPage {
         h('div', { class: 'field' },
           h('label', {}, 'On particular cubes'),
           rows,
-          cubes.length ? h('div', {}, h('button', { class: 'button small', type: 'button', onclick: () => addRow() }, icon('plus', 14), 'Add a cube role')) : null)),
+          cubes.length ? h('div', {}, h('button', { class: 'button small', type: 'button', onclick: () => addRow() }, icon('plus', 14), 'Add a cube role')) : null),
+        h('div', { class: 'field' },
+          h('label', {}, 'On particular elements'),
+          elementRows,
+          dimensions.length ? h('div', {}, h('button', { class: 'button small', type: 'button', onclick: () => addElementRow() }, icon('plus', 14), 'Add an element role')) : null,
+          h('span', { class: 'hint' }, 'A role on an element holds for everything beneath it, unless an element nearer has its own. A hidden element is not there for the user at all, though totals still count it. Administrators are bound by none.'))),
       onsubmit: async () => {
         const value = name.value.trim();
         if (!value) throw new Error('Give the user a name.');
@@ -236,7 +277,13 @@ class AdminPage {
           const [cube, chosen] = row.querySelectorAll('select');
           cubeRoles[cube.value] = chosen.value;
         }
-        const body = { role: role.value, cubes: cubeRoles };
+        const elements = {};
+        for (const row of elementRows.children) {
+          const [dimensionSelect, roleSelect] = row.querySelectorAll('select');
+          if (!row.dataset.element) throw new Error('Choose an element for each element role, or take the role away.');
+          (elements[dimensionSelect.value] ??= {})[row.dataset.element] = roleSelect.value;
+        }
+        const body = { role: role.value, cubes: cubeRoles, elements };
         if (password.value) body.password = password.value;
         await put(`/admin/users/${part(value)}`, body);
         return value;

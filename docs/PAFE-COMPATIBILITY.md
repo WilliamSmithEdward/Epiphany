@@ -46,6 +46,8 @@ corrected and the adapter with it.
 | `DBS`/`DBSW` to a string cell, `DBSS` to a numeric cell | `*KEY_ERR`; nothing is written | Refused, unverified |
 | A write by a user who may only read, or to a cube the user may not write | `*KEY_ERR`; that write is not made, and the others of the calculation are | Unverified |
 | A read of a cube the user may not read | `*KEY_ERR` | Unverified |
+| An element hidden from the user by a role on it | Not there: a read or write at it gives `*KEY_ERR` as an unknown element does, and the dimension functions answer from the dimension as the server gives it to the user, without it. A total above it still counts it | TM1's element security; unverified |
+| A write to an element the user may only read | `*KEY_ERR`; that write is not made, and the others of the calculation are | Unverified |
 | `DBS` with a value that is not a number | `#VALUE!`, from Excel | Unverified |
 | The cube is locked by another transaction | `#N/A`; **Refresh** to try again | No equivalent |
 | No connection, or the session has ended | `#N/A`, and the sign-in window opens once | Unverified |

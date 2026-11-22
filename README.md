@@ -10,7 +10,7 @@ PAfE functions (`DBRW`, `DBS`, `SUBNM` and the rest).
 - **Writeback** in atomic batches, **spreading** to consolidations, and **transactions** with
   locks and rollback that span requests.
 - **A model defined in JSON files**, updated through the API in one step and versioned.
-- **Users** with roles, for the whole server or cube by cube.
+- **Users** with roles, for the whole server, cube by cube and element by element.
 - **One HTTP API**, described by [openapi.json](openapi.json), which is generated from the
   routes and checked by a test.
 
@@ -50,6 +50,15 @@ epiphany-server user <directory> <name> [role] [cube=role ...]
 A role is `read`, `write` or `admin`; a cube can be given another in its place, `none`
 included, as in `"Payroll=none"`. The server has no TLS of its own: to use it across a
 network, put it behind a proxy that provides it.
+
+An element can be given a role of its own too, in Administration or with
+`PUT /admin/users/{name}`: `"elements": { "Region": { "Europe": "none" } }`. It holds
+beneath the element as well, unless a nearer element has its own, and an element beneath
+several takes the highest of theirs. `none` hides the element: it is not in the user's
+dimensions, queries or subsets, and its cells are refused as cells of an element there is
+not, though the totals above it still count them, the same for everyone. `read` lets its
+cells be read and not written, and a spread is refused where it would change a leaf the
+user may not write. An administrator is bound by none.
 
 An administrator may view the server as another user has it, to see what they see: a
 session of theirs that only reads, and sees none of their sandboxes, until it is signed out

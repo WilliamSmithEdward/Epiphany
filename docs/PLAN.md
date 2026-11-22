@@ -535,9 +535,34 @@ practice that means:
     not, as a view may; only what the user asks for directly is checked. The model and
     its dimensions are open to anyone who may read any cube, and changed only by a user
     whose role everywhere is `admin`.
-- Not done: permissions by cell or by element, TLS (put the server behind a proxy that
-  provides it before using it across a network), and tying a transaction to the session
-  that began it. Transaction ids are fifty-three random bits, so the last adds little.
+  - A user may also have a role on elements, `none`, `read` or `write`, set beside the
+    cubes' (`"elements": { "Region": { "Europe": "none" } }`). **Decisions** (the owner's,
+    2026-11-22, with TM1's element security as the model):
+    - A role holds beneath its element too, unless a nearer element has its own; an element
+      beneath several such takes the highest of theirs; one with none above it is bound by
+      none, and its cube's role holds. A cell is open to what the lowest of its elements
+      allows. An administrator is bound by none.
+    - `none` hides the element: it is not in `GET /dimensions/{name}` or the model, as an
+      element, a child or a parent, in subsets, picklists or private subsets, nor in the
+      outline's counts. A query does not find it by name, as one never made, and leaves it
+      out of every set; a walk to it comes to no member. A cell at it is refused as a cell
+      of an element there is not, by the name it was asked for by, so that what is hidden
+      cannot be told from what is not there; its history, comments and feeder findings are
+      not the user's to see.
+    - Totals still add up every leaf, those hidden from the user included, so a total is the
+      same number for everyone who may see it, and the totals kept for all stay right.
+    - The texts of the model, its rules, feeders, views and the MDX of subsets, are shown as
+      written: they say how its numbers come about. A view that names an element hidden
+      from a user fails for them, as a query naming an element there is not; views meant
+      for users who see different elements name sets, such as `.Members` or subsets.
+    - A write to a cell at an element the user may only read is refused as forbidden, 403
+      as for a cube, with the write's place in its batch; a spread is refused unless every
+      leaf beneath the cell may be written, and does not name what is hidden.
+    - The permits are worked out from the roles once for each version of the model and kept
+      with the user's grants; a query, a read or a write takes them where it resolves names.
+- Not done: permissions by cell, TLS (put the server behind a proxy that provides it before
+  using it across a network), and tying a transaction to the session that began it.
+  Transaction ids are fifty-three random bits, so the last adds little.
   Anyone who knows a name can keep its user out by giving wrong passwords; the pause is
   short so that this is a nuisance and no more.
 

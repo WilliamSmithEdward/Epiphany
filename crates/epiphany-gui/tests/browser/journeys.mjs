@@ -629,6 +629,28 @@ async function administering({ reader }) {
     await page.waitFor(`[...document.querySelectorAll('td strong')].some((name) => name.textContent === ${quoted(reader.name)})`, 'the users');
     await page.audit('Administration');
   });
+  await step('An administrator hides an element from a user, chosen from its tree', async () => {
+    await page.click('button', `Edit ${reader.name}`);
+    await page.waitFor(`document.querySelector('dialog[open]')?.getAttribute('aria-label') === ${quoted(`Edit ${reader.name}`)}`, 'the user\'s editor');
+    await page.click('dialog[open] button', 'Add an element role');
+    await page.evaluate(`(() => {
+      const select = document.querySelector('dialog[open] .element-role select[aria-label="Dimension"]');
+      select.value = 'Entity';
+      select.dispatchEvent(new Event('change'));
+    })()`);
+    await page.click('dialog[open] button', 'Choose an element of Entity');
+    await page.waitFor(`[...document.querySelectorAll('dialog[open]')].some((open) => open.getAttribute('aria-label') === 'An element of Entity')`, 'the tree of Entity');
+    await page.click('dialog[open] .picker-row', 'UK');
+    await page.click('dialog[open] button', 'Apply');
+    await page.waitFor(`document.querySelector('dialog[open] .element-role button')?.getAttribute('aria-label') === 'Element UK, chosen from Entity'`, 'UK, chosen');
+    await page.audit('Hiding an element from a user');
+    await page.click('dialog[open] button', 'Save');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes(${quoted(`Saved ${reader.name}`)}))`, 'the user, saved');
+    const users = (await page.api('GET', '/admin/users')).data.users;
+    const elements = users.find((user) => user.name === reader.name)?.elements;
+    expect(quoted(elements) === quoted({ Entity: { UK: 'none' } }), `The API keeps ${quoted(elements)} for ${reader.name}.`);
+    await page.waitFor(`[...document.querySelectorAll('td')].some((cell) => cell.textContent === 'Entity · UK: hidden')`, 'the role in the list of users');
+  });
   await step('An administrator views the server as a reader, who may only read', async () => {
     const loaded = page.once('Page.loadEventFired');
     await page.click('button', `View as ${reader.name}`);
@@ -638,6 +660,9 @@ async function administering({ reader }) {
     const pages = await page.evaluate(`[...document.querySelectorAll('.nav a')].map((link) => link.textContent.trim())`);
     expect(!pages.includes('Model') && !pages.includes('Administration'), `A reader is shown ${quoted(pages)}.`);
     await page.audit('Viewing as a reader');
+    // What is hidden from the reader is not there for the view as them either.
+    const entity = (await page.api('GET', '/dimensions/Entity')).data.elements.map((element) => element.name);
+    expect(!entity.includes('UK') && entity.includes('US'), `A view as the reader shows Entity as ${quoted(entity)}.`);
     const refused = await page.api('POST', '/cells/write', { cells: [{ cube: 'General Ledger', at: ['Rent', 'US', 'Mar', 'Budget'], value: 1 }] });
     expect(refused.status === 403, `A write while viewing was answered ${refused.status}.`);
     await page.goto('/explore?cube=General%20Ledger');

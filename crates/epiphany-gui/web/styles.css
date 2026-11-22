@@ -635,6 +635,8 @@ fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(-
 .cube-roles:empty { display: none; }
 .cube-role { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: var(--s2); align-items: center; }
 .cube-role .select { width: 100%; }
+.element-role { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 0.9fr) auto; }
+.element-role > .button { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; line-height: var(--control); }
 dialog:has(.cube-roles) { max-width: min(620px, calc(100vw - 32px)); }
 
 /* ---- Dimensions left out of the query ---- */
