@@ -1,2 +1,419 @@
-// Replaced by the application shell in stage G2.
-document.getElementById('app').textContent = 'Epiphany';
+// The application: signing in, the shell around every page, and moving between pages.
+
+import { ApiError, api, events, get } from './api.js';
+import { h, icon, menu, mount, notify } from './ui.js';
+
+/** Who is signed in, and the model as last fetched. */
+export const state = { user: null, open: false, model: null, version: null };
+
+/** The pages, in the order the navigation lists them. `admin` pages need the admin role. */
+const PAGES = [
+  { path: '/', title: 'Overview', icon: 'home', load: async () => ({ render: overview }) },
+  { path: '/explore', title: 'Explore', icon: 'explore', load: () => import('./explore.js') },
+  { path: '/model', title: 'Model', icon: 'model', load: () => import('./later.js'), section: 'Manage', admin: true },
+  { path: '/admin', title: 'Administration', icon: 'admin', load: () => import('./later.js'), admin: true },
+];
+
+const root = document.getElementById('app');
+
+/* ---- Theme ---- */
+
+const THEME = 'epiphany.theme';
+const dark = matchMedia('(prefers-color-scheme: dark)');
+
+function applyTheme() {
+  const chosen = localStorage.getItem(THEME) ?? 'system';
+  const theme = chosen === 'system' ? (dark.matches ? 'dark' : 'light') : chosen;
+  document.documentElement.dataset.theme = theme;
+  document.getElementById('theme-button')?.replaceChildren(icon(theme === 'dark' ? 'moon' : 'sun', 18));
+}
+dark.addEventListener('change', applyTheme);
+applyTheme();
+
+function chooseTheme(theme) {
+  localStorage.setItem(THEME, theme);
+  applyTheme();
+}
+
+/* ---- Starting, signing in and out ---- */
+
+async function start() {
+  try {
+    const session = await api('GET', '/gui/session');
+    state.open = session.open === true;
+    state.user = session.signed_in ? session.user : state.open ? { name: 'This machine', role: 'admin' } : null;
+  } catch (problem) {
+    return unreachable(problem);
+  }
+  if (state.user) shell();
+  else signIn();
+}
+
+function unreachable(problem) {
+  mount(root, h('div', { class: 'sign-in' },
+    h('div', { class: 'card' },
+      brand(),
+      h('div', { class: 'banner bad' }, icon('alert'), problem.message),
+      h('button', { class: 'button primary', onclick: start }, icon('refresh', 16), 'Try again'))));
+}
+
+function brand() {
+  return h('a', { class: 'brand', href: '/', 'data-link': '' }, h('img', { src: '/icon.svg', alt: '' }), 'Epiphany');
+}
+
+function signIn(reason) {
+  document.title = 'Sign in · Epiphany';
+  const name = h('input', { class: 'input', id: 'name', name: 'name', autocomplete: 'username', required: true, autofocus: true });
+  const password = h('input', { class: 'input', id: 'password', name: 'password', type: 'password', autocomplete: 'current-password', required: true });
+  const error = h('p', { class: 'error-text', role: 'alert', hidden: !reason }, reason ?? '');
+  const submit = h('button', { class: 'button primary', type: 'submit' }, 'Sign in');
+  const form = h('form', {
+    onsubmit: async (event) => {
+      event.preventDefault();
+      submit.disabled = true;
+      submit.replaceChildren(h('span', { class: 'spinner', 'aria-hidden': 'true' }), 'Signing in…');
+      error.hidden = true;
+      try {
+        const session = await api('POST', '/gui/session', { name: name.value.trim(), password: password.value });
+        state.user = session.user;
+        shell();
+      } catch (problem) {
+        error.textContent = problem.status === 401
+          ? 'That name and password do not match.'
+          : problem.message;
+        error.hidden = false;
+        password.select();
+        submit.disabled = false;
+        submit.replaceChildren('Sign in');
+      }
+    },
+  },
+  h('div', { class: 'field' }, h('label', { for: 'name' }, 'Name'), name),
+  h('div', { class: 'field' }, h('label', { for: 'password' }, 'Password'), password),
+  error,
+  submit);
+  mount(root, h('div', { class: 'sign-in' },
+    h('main', { class: 'card' },
+      brand(),
+      h('div', {}, h('h1', {}, 'Sign in'), h('p', { class: 'muted' }, 'Use the name and password your administrator gave you.')),
+      form)));
+  name.focus();
+}
+
+async function signOut() {
+  try {
+    await api('DELETE', '/gui/session');
+  } catch {
+    // Signed out here whether or not the server heard.
+  }
+  state.user = null;
+  history.pushState(null, '', '/');
+  signIn();
+}
+
+events.addEventListener('signed-out', () => {
+  if (!state.user || state.open) return;
+  state.user = null;
+  signIn('Your session has ended. Sign in again to carry on.');
+});
+
+events.addEventListener('model-changed', () => {
+  state.model = null;
+});
+
+/* ---- The shell ---- */
+
+let page;
+let shellElement;
+let statusElement;
+
+const isAdmin = () => state.user?.role === 'admin';
+const visible = () => PAGES.filter((entry) => !entry.admin || isAdmin());
+
+function shell() {
+  const narrow = localStorage.getItem('epiphany.nav') === 'narrow';
+  statusElement = h('span', { class: 'status', title: 'The Epiphany server is answering' }, 'Connected');
+  const nav = h('nav', { class: 'nav', 'aria-label': 'Pages' });
+  let section;
+  for (const entry of visible()) {
+    if (entry.section && entry.section !== section) {
+      section = entry.section;
+      nav.append(h('div', { class: 'section' }, section));
+    }
+    nav.append(h('a', { href: entry.path, 'data-link': '', title: entry.title }, icon(entry.icon, 20), h('span', { class: 'label' }, entry.title)));
+  }
+  nav.append(h('div', { class: 'grow' }));
+  const toggle = h('button', {
+    class: 'button quiet icon',
+    'aria-label': 'Collapse navigation',
+    onclick: () => {
+      const now = shellElement.dataset.nav === 'narrow' ? 'wide' : 'narrow';
+      shellElement.dataset.nav = now;
+      localStorage.setItem('epiphany.nav', now);
+    },
+  }, icon('menu', 20));
+  page = h('main', { class: 'main', id: 'main' });
+  const user = state.user;
+  const userButton = h('button', {
+    class: 'button quiet',
+    'aria-haspopup': 'menu',
+    onclick: (event) => menu([
+      { heading: `${user.name} · ${roleName(user.role)}` },
+      ...(state.open ? [] : [{ label: 'Sign out', icon: 'out', action: signOut }]),
+    ], event.currentTarget),
+  }, icon('user', 18), h('span', { class: 'label' }, user.name));
+  const themeButton = h('button', {
+    class: 'button quiet icon',
+    id: 'theme-button',
+    'aria-label': 'Theme',
+    'aria-haspopup': 'menu',
+    onclick: (event) => menu([
+      { heading: 'Theme' },
+      { label: 'Light', icon: 'sun', action: () => chooseTheme('light') },
+      { label: 'Dark', icon: 'moon', action: () => chooseTheme('dark') },
+      { label: 'As the system', icon: 'monitor', action: () => chooseTheme('system') },
+    ], event.currentTarget),
+  }, icon(document.documentElement.dataset.theme === 'dark' ? 'moon' : 'sun', 18));
+  shellElement = h('div', { class: 'shell', dataset: { nav: narrow ? 'narrow' : 'wide' } },
+    h('header', { class: 'bar' },
+      toggle,
+      brand(),
+      h('button', { class: 'search-button', onclick: palette, 'aria-label': 'Search and commands' },
+        icon('search', 16), h('span', {}, 'Search cubes, pages and commands'), h('kbd', {}, 'Ctrl K')),
+      h('div', { class: 'spacer' }),
+      statusElement,
+      themeButton,
+      userButton),
+    nav,
+    page);
+  mount(root, shellElement);
+  route();
+  watch();
+}
+
+function roleName(role) {
+  return { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' }[role] ?? role;
+}
+
+/* ---- Moving between pages ---- */
+
+let rendering = 0;
+
+async function route() {
+  if (!state.user) return;
+  const path = location.pathname.replace(/\/+$/, '') || '/';
+  const entry = visible().find((candidate) => candidate.path === path)
+    ?? visible().find((candidate) => candidate.path !== '/' && path.startsWith(`${candidate.path}/`));
+  for (const link of shellElement.querySelectorAll('.nav a')) {
+    link.toggleAttribute('aria-current', false);
+    if (entry && link.getAttribute('href') === entry.path) link.setAttribute('aria-current', 'page');
+  }
+  const ticket = ++rendering;
+  if (!entry) {
+    document.title = 'Not found · Epiphany';
+    mount(page, h('div', { class: 'page' }, empty('search', 'There is no such page', 'Check the address, or choose a page from the navigation.')));
+    return;
+  }
+  document.title = `${entry.title} · Epiphany`;
+  mount(page, h('div', { class: 'page' }, loading()));
+  try {
+    const module = await entry.load();
+    if (ticket !== rendering) return;
+    await module.render(page, { state, params: new URLSearchParams(location.search), path, title: entry.title });
+  } catch (problem) {
+    if (ticket !== rendering) return;
+    mount(page, h('div', { class: 'page' }, failure(problem, route)));
+  }
+}
+
+/** Goes to a page within the application. */
+export function go(path) {
+  if (path === location.pathname + location.search) return;
+  history.pushState(null, '', path);
+  route();
+}
+
+addEventListener('popstate', route);
+document.addEventListener('click', (event) => {
+  const link = event.target.closest?.('a[data-link]');
+  if (!link || event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
+  event.preventDefault();
+  go(link.getAttribute('href'));
+});
+
+/* ---- Shared states of a page ---- */
+
+export function loading() {
+  return h('div', { class: 'empty', 'aria-busy': 'true' }, h('div', { class: 'spinner' }), h('p', {}, 'Loading…'));
+}
+
+export function empty(iconName, title, text, ...actions) {
+  return h('div', { class: 'empty' }, icon(iconName, 40), h('h3', {}, title), text && h('p', {}, text), actions.length ? h('div', { class: 'toolbar' }, actions) : null);
+}
+
+export function failure(problem, retry) {
+  const refused = problem instanceof ApiError && problem.status === 403;
+  return empty(refused ? 'lock' : 'alert',
+    refused ? 'You may not see this' : 'Something went wrong',
+    refused ? 'Your role does not allow it. Ask an administrator if you need it.' : problem.message,
+    retry ? h('button', { class: 'button', onclick: retry }, icon('refresh', 16), 'Try again') : null);
+}
+
+/** The model, fetched once and again after it changes. */
+export async function model() {
+  if (!state.model) {
+    const view = await get('/model');
+    state.model = view.model;
+    state.version = view.version;
+  }
+  return state.model;
+}
+
+/* ---- Server status ---- */
+
+let watching;
+
+function watch() {
+  clearInterval(watching);
+  const check = async () => {
+    try {
+      const session = await api('GET', '/gui/session');
+      setStatus(true);
+      if (!session.signed_in && !session.open && state.user && !state.open) {
+        events.dispatchEvent(new Event('signed-out'));
+      }
+    } catch {
+      setStatus(false);
+    }
+  };
+  watching = setInterval(check, 30000);
+}
+
+function setStatus(up) {
+  if (!statusElement) return;
+  statusElement.dataset.state = up ? 'up' : 'down';
+  statusElement.textContent = up ? 'Connected' : 'Unreachable';
+  statusElement.title = up ? 'The Epiphany server is answering' : 'The Epiphany server is not answering';
+}
+
+/* ---- Command palette ---- */
+
+async function palette() {
+  if (document.querySelector('dialog.palette')) return;
+  const commands = visible().map((entry) => ({ label: entry.title, kind: 'Page', icon: entry.icon, run: () => go(entry.path) }));
+  try {
+    const definition = await model();
+    for (const cube of definition.cubes) {
+      commands.push({ label: `Explore ${cube.name}`, kind: 'Cube', icon: 'cube', run: () => go(`/explore?cube=${encodeURIComponent(cube.name)}`) });
+    }
+  } catch {
+    // The pages are still there to choose.
+  }
+  commands.push(
+    { label: 'Use the light theme', kind: 'Theme', icon: 'sun', run: () => chooseTheme('light') },
+    { label: 'Use the dark theme', kind: 'Theme', icon: 'moon', run: () => chooseTheme('dark') },
+    { label: 'Follow the system theme', kind: 'Theme', icon: 'monitor', run: () => chooseTheme('system') });
+  if (!state.open) commands.push({ label: 'Sign out', kind: 'Session', icon: 'out', run: signOut });
+
+  const input = h('input', { placeholder: 'Type a cube, page or command', 'aria-label': 'Search', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'palette-list', autocomplete: 'off' });
+  const list = h('ul', { id: 'palette-list', role: 'listbox' });
+  const element = h('dialog', { class: 'palette', 'aria-label': 'Search and commands' }, input, list);
+  let shown = [];
+  let selected = 0;
+  const draw = () => {
+    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+    shown = commands.filter((command) => words.every((word) => command.label.toLowerCase().includes(word)));
+    selected = Math.min(selected, Math.max(0, shown.length - 1));
+    mount(list, shown.length
+      ? shown.map((command, index) => h('li', {
+        role: 'option',
+        id: `palette-${index}`,
+        'aria-selected': String(index === selected),
+        onpointermove: () => {
+          if (selected !== index) {
+            selected = index;
+            draw();
+          }
+        },
+        onclick: () => choose(index),
+      }, icon(command.icon, 16), command.label, h('span', { class: 'kind' }, command.kind)))
+      : h('li', { class: 'none' }, 'Nothing matches'));
+    input.setAttribute('aria-activedescendant', shown.length ? `palette-${selected}` : '');
+    list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  };
+  const choose = (index) => {
+    const command = shown[index];
+    element.close();
+    command?.run();
+  };
+  input.addEventListener('input', () => {
+    selected = 0;
+    draw();
+  });
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      selected = (selected + (event.key === 'ArrowDown' ? 1 : -1) + shown.length) % Math.max(shown.length, 1);
+      draw();
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      choose(selected);
+    }
+  });
+  element.addEventListener('close', () => element.remove());
+  element.addEventListener('click', (event) => {
+    if (event.target === element) element.close();
+  });
+  document.body.append(element);
+  draw();
+  element.showModal();
+  input.focus();
+}
+
+addEventListener('keydown', (event) => {
+  if (!state.user) return;
+  const typing = event.target.closest?.('input, textarea, select, [contenteditable]');
+  if ((event.key === 'k' && (event.ctrlKey || event.metaKey)) || (event.key === '/' && !typing)) {
+    event.preventDefault();
+    palette();
+  }
+});
+
+/* ---- Overview ---- */
+
+async function overview(target) {
+  const definition = await model();
+  const elements = definition.dimensions.reduce((total, dimension) => total + dimension.elements.length, 0);
+  const stat = (label, value, iconName) => h('div', { class: 'card tile' },
+    h('div', { class: 'tile-icon' }, icon(iconName, 20)),
+    h('div', { class: 'stat' }, value.toLocaleString()),
+    h('div', { class: 'muted' }, label));
+  const cubes = definition.cubes.map((cube) => h('a', {
+    class: 'card tile',
+    href: `/explore?cube=${encodeURIComponent(cube.name)}`,
+    'data-link': '',
+  },
+  h('div', { class: 'toolbar' }, h('div', { class: 'tile-icon' }, icon('cube', 20)), h('div', { class: 'grow' }),
+    cube.rules?.length ? h('span', { class: 'badge accent' }, `${cube.rules.length} rule${cube.rules.length === 1 ? '' : 's'}`) : null,
+    cube.views?.length ? h('span', { class: 'badge' }, `${cube.views.length} view${cube.views.length === 1 ? '' : 's'}`) : null),
+  h('h3', {}, cube.name),
+  h('p', { class: 'muted' }, cube.dimensions.join(' · '))));
+  mount(target, h('div', { class: 'page' },
+    h('div', { class: 'page-head' },
+      h('div', { class: 'grow' }, h('h1', {}, state.open ? 'Welcome' : `Welcome, ${state.user.name}`), h('p', {}, 'Choose a cube to explore, or press Ctrl K to find anything.'))),
+    h('div', { class: 'grid-cards' },
+      stat('Cubes', definition.cubes.length, 'cube'),
+      stat('Dimensions', definition.dimensions.length, 'dimension'),
+      stat('Elements', elements, 'member'),
+      stat('Model version', Number(state.version ?? 0), 'model')),
+    h('h2', { class: 'section-title' }, 'Cubes'),
+    definition.cubes.length
+      ? h('div', { class: 'grid-cards' }, cubes)
+      : empty('cube', 'No cubes yet', 'An administrator adds cubes to the model.')));
+}
+
+window.addEventListener('unhandledrejection', (event) => {
+  if (event.reason instanceof ApiError) notify(event.reason.message, 'bad');
+});
+
+start();

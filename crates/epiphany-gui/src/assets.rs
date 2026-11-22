@@ -16,7 +16,16 @@ macro_rules! files {
     };
 }
 
-const FILES: &[(&str, &[u8])] = files!["index.html", "app.js", "styles.css", "icon.svg",];
+const FILES: &[(&str, &[u8])] = files![
+    "index.html",
+    "styles.css",
+    "icon.svg",
+    "app.js",
+    "api.js",
+    "ui.js",
+    "explore.js",
+    "later.js",
+];
 
 /// What a file is, by its extension.
 fn kind(path: &str) -> &'static str {
