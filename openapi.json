@@ -505,6 +505,74 @@
         }
       }
     },
+    "/cells/history": {
+      "post": {
+        "summary": "The changes committed to a cell, the newest first: when, by whom, and from what to what.\nThe history is read after the database is let go, so that a long one holds up nobody.",
+        "operationId": "cell_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The cell's changes, the newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No such cell, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cells/read": {
       "post": {
         "summary": "Reads a batch of cells. A cell that cannot be read reports its own error.",
@@ -2109,7 +2177,7 @@
     },
     "/transactions": {
       "post": {
-        "summary": "Begins a transaction. It is rolled back if left idle.",
+        "summary": "Begins a transaction, signed with the user who begins it: the history of cells records\nits commit as theirs. It is rolled back if left idle.",
         "operationId": "begin_transaction",
         "responses": {
           "201": {
@@ -2528,6 +2596,38 @@
               }
             },
             "description": "Each tuple holds one member per dimension on the axis."
+          }
+        }
+      },
+      "CellChange": {
+        "type": "object",
+        "description": "A change to a cell, as the history gives it back.",
+        "required": [
+          "time",
+          "before",
+          "after"
+        ],
+        "properties": {
+          "after": {
+            "$ref": "#/components/schemas/Scalar",
+            "description": "What it held after."
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who made it: the user who began the transaction it came in, where the server knew."
+          },
+          "before": {
+            "$ref": "#/components/schemas/Scalar",
+            "description": "What the cell held before: zero, or empty text, where it held nothing."
+          },
+          "time": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was committed, in seconds since 1970.",
+            "minimum": 0
           }
         }
       },
@@ -3349,6 +3449,49 @@
           }
         },
         "additionalProperties": false
+      },
+      "HistoryRequest": {
+        "type": "object",
+        "required": [
+          "cube",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One element name or alias for each dimension of the cube."
+          },
+          "cube": {
+            "type": "string"
+          },
+          "most": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "At most this many changes, the newest: 100 unless given, and never more than 1,000.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryResponse": {
+        "type": "object",
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CellChange"
+            },
+            "description": "The newest first."
+          }
+        }
       },
       "LockMode": {
         "type": "string",

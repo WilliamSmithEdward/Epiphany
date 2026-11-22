@@ -892,6 +892,7 @@ export const grid = {
       this.holds.size ? { label: `Release every hold (${this.holds.size.toLocaleString()})`, icon: 'lock', action: () => this.hold(null, null, false) } : null,
       { label: 'Explain this value', icon: 'info', action: () => this.explain(rowTuple, columnTuple) },
       this.coordinate(r, c) ? { label: this.commentsAt(r, c).length ? `Comments (${this.commentsAt(r, c).length})…` : 'Comment on it…', icon: 'edit', action: () => this.openComments(r, c) } : null,
+      this.coordinate(r, c) ? { label: 'Who changed it, and when…', icon: 'clock', action: () => this.openHistory(r, c) } : null,
       [...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
         ? { label: 'Show the leaves beneath', icon: 'level', action: () => this.drillToLeaves(rowTuple, columnTuple) }
         : null,

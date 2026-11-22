@@ -19,8 +19,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    CellRef, CellRefs, CellWrite, CellWrites, Comment, Database, EarlierModel, Error, Explanation,
-    LockMode, ModelUpdate, Spread, TransactionId,
+    CellChange, CellRef, CellRefs, CellWrite, CellWrites, Comment, Database, EarlierModel, Error,
+    Explanation, LockMode, ModelUpdate, Spread, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
@@ -76,6 +76,14 @@ impl Guarded {
         }
     }
 
+    /// Takes the turn and the database for a user: what they begin is signed with their
+    /// name, for the history of cells.
+    fn write_by(&self, user: &str) -> Writing<'_> {
+        let mut writing = self.write();
+        writing.database.sign(Some(user));
+        writing
+    }
+
     /// Writes a snapshot if a commit has called for one, in the turn and holding the
     /// database for reading, so that others go on reading meanwhile.
     fn snapshot_if_wanted(&self) {
@@ -83,6 +91,13 @@ impl Guarded {
         if let Ok(database) = self.database.read() {
             database.snapshot_if_wanted();
         }
+    }
+}
+
+/// The database given back unsigned, so that whoever writes next is not taken for the last.
+impl Drop for Writing<'_> {
+    fn drop(&mut self) {
+        self.database.sign(None);
     }
 }
 
@@ -148,6 +163,7 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(read_cells))
         .routes(routes!(write_cells))
         .routes(routes!(explain_cells))
+        .routes(routes!(cell_history))
         .routes(routes!(spread_cells))
         .routes(routes!(query))
         .routes(routes!(stored_cells))
@@ -362,7 +378,7 @@ fn needed(method: &Method, path: &str) -> Role {
     {
         return Role::Write;
     }
-    let reads = ["/cells/read", "/cells/explain", "/mdx"];
+    let reads = ["/cells/read", "/cells/explain", "/cells/history", "/mdx"];
     if method == Method::GET || path == "/sessions" || reads.contains(&path) {
         Role::Read
     } else if method == Method::PUT || method == Method::DELETE {
@@ -750,6 +766,22 @@ enum ExplainResult {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+struct HistoryRequest {
+    cube: String,
+    /// One element name or alias for each dimension of the cube.
+    at: Vec<String>,
+    /// At most this many changes, the newest: 100 unless given, and never more than 1,000.
+    most: Option<usize>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct HistoryResponse {
+    /// The newest first.
+    changes: Vec<CellChange>,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 struct SpreadRequest {
     /// Hold the writes in this transaction until it commits. Without it they are committed
     /// at once.
@@ -1106,6 +1138,44 @@ async fn explain_cells(
     })
 }
 
+/// The changes committed to a cell, the newest first: when, by whom, and from what to what.
+/// The history is read after the database is let go, so that a long one holds up nobody.
+#[utoipa::path(
+    post,
+    path = "/cells/history",
+    request_body = HistoryRequest,
+    responses(
+        (status = OK, body = HistoryResponse, description = "The cell's changes, the newest first"),
+        (status = FORBIDDEN, body = ApiError, description = "The cube may not be read"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "No such cell, or the request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The history could not be read")
+    )
+)]
+async fn cell_history(
+    State(database): State<Shared>,
+    Extension(grants): Held,
+    Body(request): Body<HistoryRequest>,
+) -> Result<Json<HistoryResponse>, ApiError> {
+    allow(&grants, &request.cube, Role::Read)?;
+    let history = database
+        .read()
+        .unwrap()
+        .history(&request.cube, &request.at)?;
+    let most = request.most.unwrap_or(100).clamp(1, 1000);
+    let read = tokio::task::spawn_blocking(move || history.read(most))
+        .await
+        .map_err(|error| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                error.to_string(),
+            )
+        })?;
+    Ok(Json(HistoryResponse {
+        changes: read.map_err(Error::from)?,
+    }))
+}
+
 /// Writes a batch of leaf cells: all of them, or none if any is refused.
 #[utoipa::path(
     post,
@@ -1122,6 +1192,7 @@ async fn explain_cells(
 async fn write_cells(
     State(database): State<Shared>,
     Extension(grants): Held,
+    Extension(Signed(user)): Extension<Signed>,
     Body(request): Body<WriteRequest>,
 ) -> Result<StatusCode, ApiError> {
     for index in 0..request.cells.len() {
@@ -1130,7 +1201,7 @@ async fn write_cells(
             ..refusal
         })?;
     }
-    let mut database = database.write();
+    let mut database = database.write_by(&user);
     database.write_batch(request.transaction, &request.cells)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1152,10 +1223,11 @@ async fn write_cells(
 async fn spread_cells(
     State(database): State<Shared>,
     Extension(grants): Held,
+    Extension(Signed(user)): Extension<Signed>,
     Body(request): Body<SpreadRequest>,
 ) -> Result<Json<SpreadResult>, ApiError> {
     allow(&grants, &request.spread.cube, Role::Write)?;
-    let mut database = database.write();
+    let mut database = database.write_by(&user);
     let written = database.spread(request.transaction, &request.spread)?;
     Ok(Json(SpreadResult { written }))
 }
@@ -1282,10 +1354,14 @@ async fn check_feeders(
     Ok(Json(FeederCheck { unfed }))
 }
 
-/// Begins a transaction. It is rolled back if left idle.
+/// Begins a transaction, signed with the user who begins it: the history of cells records
+/// its commit as theirs. It is rolled back if left idle.
 #[utoipa::path(post, path = "/transactions", responses((status = CREATED, body = TransactionView, description = "The new transaction")))]
-async fn begin_transaction(State(database): State<Shared>) -> (StatusCode, Json<TransactionView>) {
-    let transaction = database.write().begin();
+async fn begin_transaction(
+    State(database): State<Shared>,
+    Extension(Signed(user)): Extension<Signed>,
+) -> (StatusCode, Json<TransactionView>) {
+    let transaction = database.write_by(&user).begin();
     (StatusCode::CREATED, Json(TransactionView { transaction }))
 }
 

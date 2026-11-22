@@ -14,6 +14,7 @@ mod batch;
 use batch::Resolver;
 mod comments;
 mod error;
+mod history;
 mod load;
 mod locks;
 mod migrate;
@@ -39,6 +40,7 @@ use locks::{Locks, Mode, Resource};
 pub use batch::{CellRefs, CellWrites};
 pub use comments::{Comment, CommentChange};
 pub use error::Error;
+pub use history::{CellChange, CellHistory, Changes, History};
 pub use locks::LockMode;
 pub use spread::{Spread, SpreadMethod};
 
@@ -162,6 +164,17 @@ pub trait Journal: Send + Sync + fmt::Debug {
         let _ = name;
         Ok(None)
     }
+
+    /// Records what a commit changed, for the history of cells, once the commit is
+    /// recorded. Seeing that it is kept is the journal's affair: the commit stands either way.
+    fn changes(&mut self, changes: &Changes<'_>) {
+        let _ = changes;
+    }
+
+    /// Where the history of cells can be read, apart from the journal; nowhere if it keeps none.
+    fn history(&self) -> Option<Box<dyn History>> {
+        None
+    }
 }
 
 /// A model kept from before the current one.
@@ -272,23 +285,29 @@ impl serde::Serialize for Named<'_> {
         use serde::ser::SerializeStruct;
         let mut cell = serializer.serialize_struct("CellWrite", 3)?;
         cell.serialize_field("cube", &self.cube.name)?;
-        cell.serialize_field("at", &Names(self))?;
+        let at = Names {
+            model: self.model,
+            cube: self.cube,
+            at: &self.at,
+        };
+        cell.serialize_field("at", &at)?;
         cell.serialize_field("value", &self.value)?;
         cell.end()
     }
 }
 
-/// The names of a cell's elements.
-struct Names<'a>(&'a Named<'a>);
+/// The names of a cell's elements, borrowed from the model.
+struct Names<'a> {
+    model: &'a Model,
+    cube: &'a Cube,
+    at: &'a [ElementId],
+}
 
 impl serde::Serialize for Names<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let Named {
-            model, cube, at, ..
-        } = self.0;
-        let dimensions = cube.dimensions.iter().zip(&**at);
+        let dimensions = self.cube.dimensions.iter().zip(self.at);
         serializer.collect_seq(dimensions.map(|(&dimension, &element)| {
-            &model.dimensions()[dimension as usize].elements[element as usize].name
+            &self.model.dimensions()[dimension as usize].elements[element as usize].name
         }))
     }
 }
@@ -317,6 +336,8 @@ struct Transaction {
     undo: Vec<(usize, Coordinate, Option<Scalar>)>,
     /// When the transaction was last used, in milliseconds since the database started.
     used: AtomicU64,
+    /// Who began it, as the history of cells records its commit.
+    author: Option<String>,
 }
 
 #[derive(Debug)]
@@ -347,6 +368,8 @@ pub struct Database {
     /// Notes pinned to cells, the oldest first, and the id the last was given.
     comments: Vec<Comment>,
     last_comment: u64,
+    /// Who the transactions begun next are signed with, for the history of cells.
+    author: Option<String>,
 }
 
 impl Database {
@@ -380,6 +403,7 @@ impl Database {
             totals: Totals::default(),
             comments: Vec::new(),
             last_comment: 0,
+            author: None,
         })
     }
 
@@ -788,6 +812,7 @@ impl Database {
             writes: vec![Writes::default(); self.cells.len()],
             undo: Vec::new(),
             used: AtomicU64::new(self.now()),
+            author: self.author.clone(),
         };
         self.transactions.insert(id, transaction);
         id
@@ -808,6 +833,13 @@ impl Database {
         }
 
         let transaction = self.end(id)?;
+        // What changed goes to the history of cells, read from the cells before they change.
+        if let Some(mut journal) = self.journal() {
+            let changes = self.changes(&transaction);
+            if !changes.is_empty() {
+                journal.changes(&changes);
+            }
+        }
         for (cells, writes) in self.cells.iter_mut().zip(transaction.writes) {
             for (at, value) in writes {
                 cells.set(&at, value);

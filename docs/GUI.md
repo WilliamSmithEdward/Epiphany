@@ -113,13 +113,14 @@ Office, Excel and Power BI, Anaplan, Pigment, Workday Adaptive Planning, OneStre
 Tableau, Atoti) found these gaps. Already taken up: cell comments in a panel beside the grid, dashboard filters, number formats and
 totals placement, writable cells marked and read-only ones explained, typed spreading with a
 check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, holds that spreads leave alone, pausing the query while a layout is built, data bars, shades and coloured rules kept with views, earlier versions of the model compared and restored, calculations added from a heading (difference, ratio, % change, share of parent), the largest or smallest N rows by a column, the feeder check offered from Explain, undo and
-redo of values, and only the rows in view drawn, in the grid and in every tree of members, so
-that results and dimensions of any size show whole and scroll smoothly. Still to do, most
-valuable first:
+redo of values, only the rows in view drawn, in the grid and in every tree of members, so
+that results and dimensions of any size show whole and scroll smoothly, and each cell's
+history of changes, who made each and from what to what, beside its comments. Still to do,
+most valuable first:
 
 | Gap | Seen in | Shape here |
 | --- | --- | --- |
-| Cell history: who changed a cell, when, from what | Anaplan, Oracle, Pigment, PAW | A History tab beside Explain, from the journal; an admin view by user and time ([Anaplan](https://help.anaplan.com/afe9dd2f-a532-4aba-b7da-4971d13ca76f)) |
+| Changes across a cube, by user and time | Anaplan, Oracle, Pigment, PAW | An administrator's view of the history of cells, filtered by who and when ([Anaplan](https://help.anaplan.com/afe9dd2f-a532-4aba-b7da-4971d13ca76f)) |
 | Named sandboxes, compared side by side | PAW, Oracle, Pigment, SAP Analytics Cloud | A kept, named transaction, shown as a column beside the stored values |
 | Picklists and validation | TM1, Oracle smart lists and validation rules | A picklist attribute with a dropdown in the cell; rules that warn or refuse |
 | Supporting detail beneath a cell | Oracle, OneStream, Adaptive Planning | Lines that add up to the cell's value, kept with it |

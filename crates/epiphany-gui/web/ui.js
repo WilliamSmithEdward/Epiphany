@@ -102,6 +102,7 @@ const ICONS = {
   paste: 'M9 3h6v4H9z M8 5H5v16h14V5h-3',
   expand: 'M7 15l5 5 5-5 M7 9l5-5 5 5',
   collapse: 'M7 20l5-5 5 5 M7 4l5 5 5-5',
+  clock: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2',
 };
 
 /** An icon by name, `size` pixels square. */

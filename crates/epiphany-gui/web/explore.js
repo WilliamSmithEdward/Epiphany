@@ -284,7 +284,7 @@ class Explorer {
     this.layoutBar = h('div', { class: 'layout-bar' });
     this.output = h('div', { class: 'output' });
     this.statusLine = h('div', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
-    this.commentPanel = h('aside', { class: 'comment-panel', 'aria-label': 'Comments', hidden: true });
+    this.commentPanel = h('aside', { class: 'comment-panel', 'aria-label': 'About the cell', hidden: true });
     this.pendingBar = h('div', { class: 'pending', role: 'status', 'aria-live': 'polite', hidden: true });
     const cubes = h('select', {
       class: 'select',

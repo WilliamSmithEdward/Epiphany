@@ -9,7 +9,8 @@ use common::{Rng, Shape, random_model};
 use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
 use epiphany_core::database::{
-    CellRef, CellWrite, Database, Error, Journal, LockMode, ModelUpdate, NamedCells, NamedWrites,
+    CellRef, CellWrite, Changes, Database, Error, Journal, LockMode, ModelUpdate, NamedCells,
+    NamedWrites,
 };
 use epiphany_core::model::ModelDef;
 use serde_json::json;
@@ -873,6 +874,69 @@ impl Journal for Written {
     fn snapshot(&mut self, _: u64, _: &NamedCells<'_>) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// A journal that keeps what each commit changed, as the history of cells would write it.
+#[derive(Debug, Default)]
+struct Changed(Arc<std::sync::Mutex<Vec<serde_json::Value>>>);
+
+impl Journal for Changed {
+    fn commit(&mut self, _: &NamedWrites<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        false
+    }
+
+    fn snapshot(&mut self, _: u64, _: &NamedCells<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn changes(&mut self, changes: &Changes<'_>) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(serde_json::to_value(changes).unwrap());
+    }
+}
+
+#[test]
+fn a_commit_records_who_changed_each_cell_from_what_to_what() {
+    let changed = Changed::default();
+    let lines = Arc::clone(&changed.0);
+    let mut database = database();
+    database.set_journal(Box::new(changed));
+    // Unsigned, and at once.
+    database
+        .write(None, &[set("Sales", ["A", "Units"], 5.0)])
+        .unwrap();
+    // Begun signed, the transaction keeps the name; writing nothing where nothing was changes nothing.
+    database.sign(Some("ada"));
+    let transaction = database.begin();
+    database.sign(None);
+    let writes = [
+        set("Sales", ["A", "Units"], 7.0),
+        set("Sales", ["B", "Units"], 0.0),
+    ];
+    database.write(Some(transaction), &writes).unwrap();
+    database.commit(transaction).unwrap();
+    // A value written again as it was is no change at all.
+    database
+        .write(None, &[set("Sales", ["A", "Units"], 7.0)])
+        .unwrap();
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["author"], serde_json::Value::Null);
+    let cell = |before: f64, after: f64| json!([{ "cube": "Sales", "at": ["A", "Units"], "before": before, "after": after }]);
+    assert_eq!(lines[0]["cells"], cell(0.0, 5.0));
+    assert_eq!(lines[1]["author"], "ada");
+    assert_eq!(lines[1]["cells"], cell(5.0, 7.0));
+    assert!(lines[1]["time"].as_u64().unwrap() > 1_700_000_000);
 }
 
 #[test]

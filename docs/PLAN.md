@@ -122,8 +122,13 @@ practice that means:
   append-only log of committed transactions, replayed on start. The log is written before a
   commit is acknowledged. A snapshot truncates the log.
 - Done. The server is given one directory: `model/` holds the current model with its
-  version in `model.json`; `data/` holds `snapshot.json`, `log.jsonl` and every earlier
-  model under `models/<version>/`.
+  version in `model.json`; `data/` holds `snapshot.json`, `log.jsonl`, `comments.jsonl`,
+  `history.jsonl` and every earlier model under `models/<version>/`.
+- The history of cells, `history.jsonl`, keeps one line for each commit that changed a
+  value: when, who began its transaction, and each cell's value before and after. A
+  snapshot does not replace it. It is written after the commit is safe in the log, without
+  waiting on the disk again, and read through for one cell at a time, apart from the
+  database, so that reading a long history holds up no one.
 - The engine reaches disk only through the `Journal` trait; the server crate implements it
   with files. A commit is appended to the log and flushed to disk before it is applied in
   memory; if that fails the commit is refused and the transaction stays open.

@@ -160,6 +160,11 @@ async fn a_user_may_do_only_what_the_role_allows() {
             ("GET", "/dimensions/Period", None),
             ("POST", "/cells/read", Some(read.clone())),
             ("POST", "/cells/explain", Some(read.clone())),
+            (
+                "POST",
+                "/cells/history",
+                Some(json!({ "cube": "General Ledger", "at": at })),
+            ),
             ("POST", "/mdx", Some(query.clone())),
         ] {
             let (status, _, _) = send(&app, method, uri, Some(token), body).await;
@@ -191,6 +196,61 @@ async fn a_user_may_do_only_what_the_role_allows() {
     // Anyone may sign out.
     let (status, _, _) = send(&app, "DELETE", "/sessions", Some(&reader), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_cells_history_says_who_changed_it_and_from_what_to_what() {
+    let (_home, app) = secured("history", None);
+    let token = token(&app).await;
+    let at = json!(["Rent", "UK", "Jan", "Actual"]);
+    let cell = json!({ "cube": "General Ledger", "at": at });
+    let write =
+        |value: f64| json!({ "cells": [{ "cube": "General Ledger", "at": at, "value": value }] });
+    // Written at once, then in a transaction: both signed with the user who asked.
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(&token),
+        Some(write(10.0)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, begun) = send(&app, "POST", "/transactions", Some(&token), None).await;
+    let id = begun["transaction"].as_u64().unwrap();
+    let mut pending = write(12.5);
+    pending["transaction"] = json!(id);
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&token), Some(pending)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let commit = format!("/transactions/{id}/commit");
+    let (status, _, _) = send(&app, "POST", &commit, Some(&token), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _, body) = send(&app, "POST", "/cells/history", Some(&token), Some(cell)).await;
+    assert_eq!(status, StatusCode::OK);
+    let changes: Vec<(Value, Value, Value)> = body["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|change| {
+            (
+                change["author"].clone(),
+                change["before"].clone(),
+                change["after"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            (json!(NAME), json!(10.0), json!(12.5)),
+            (json!(NAME), json!(0.0), json!(10.0))
+        ]
+    );
+    // A cell that is not there is refused, as the other cell routes refuse it.
+    let missing = json!({ "cube": "General Ledger", "at": ["Nothing", "UK", "Jan", "Actual"] });
+    let (status, _, _) = send(&app, "POST", "/cells/history", Some(&token), Some(missing)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]

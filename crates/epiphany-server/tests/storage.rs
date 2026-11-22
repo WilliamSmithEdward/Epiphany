@@ -734,6 +734,58 @@ fn comments_outlast_the_process_and_so_do_those_taken_away() {
 }
 
 #[test]
+fn the_history_of_a_cell_outlasts_snapshots_and_the_process() {
+    let home = Home::new("history-kept");
+    let mut database = home.open();
+    database.sign(Some("Ada"));
+    let transaction = database.begin();
+    database.sign(None);
+    database
+        .write(Some(transaction), &[set(RENT, 25.0)])
+        .unwrap();
+    database.commit(transaction).unwrap();
+    database
+        .write(None, &[set(RENT, 30.0), set(SALARIES, 40.0)])
+        .unwrap();
+    drop(database);
+
+    // Opening again replaces the log with a snapshot; the history stays as it was.
+    let database = home.open();
+    let rent = RENT.map(str::to_owned);
+    let changes = database.history(CUBE, &rent).unwrap().read(10).unwrap();
+    let seen: Vec<_> = changes
+        .iter()
+        .map(|change| {
+            (
+                change.author.as_deref(),
+                change.before.clone(),
+                change.after.clone(),
+            )
+        })
+        .collect();
+    let number = Scalar::Number;
+    assert_eq!(
+        seen,
+        [
+            (None, number(25.0), number(30.0)),
+            (Some("Ada"), number(0.0), number(25.0)),
+        ]
+    );
+    // The newest, at most as many as asked for; none for a cell never written.
+    let newest = database.history(CUBE, &rent).unwrap().read(1).unwrap();
+    assert_eq!(newest, changes[..1]);
+    let expenses = EXPENSES.map(str::to_owned);
+    assert!(
+        database
+            .history(CUBE, &expenses)
+            .unwrap()
+            .read(10)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn earlier_models_are_kept_and_can_be_read_back() {
     let home = Home::new("earlier-models");
     let mut database = home.open();

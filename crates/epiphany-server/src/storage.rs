@@ -10,6 +10,8 @@
 //!     lock                 held by the one process serving the directory
 //!     snapshot.json        every stored cell at some moment
 //!     log.jsonl            one line per commit since the snapshot
+//!     history.jsonl        one line per commit that changed a value: when, by whom, and
+//!                          each cell's value before and after, kept through snapshots
 //!     comments.jsonl       one line per comment added or taken away
 //!     models/<version>/    every earlier model
 //! ```
@@ -24,8 +26,10 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use epiphany_core::Scalar;
 use epiphany_core::database::{
-    CellWrite, CommentChange, Database, EarlierModel, Journal, NamedCells, NamedWrites,
+    CellChange, CellWrite, Changes, CommentChange, Database, EarlierModel, History, Journal,
+    NamedCells, NamedWrites,
 };
 use epiphany_core::model::ModelDef;
 use serde::de::DeserializeOwned;
@@ -234,6 +238,71 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
 /// Where the comments are kept, in the data folder.
 const COMMENTS: &str = "comments.jsonl";
 
+/// Where the history of cells is kept, in the data folder: one line for each commit that
+/// changed a value, never replaced by a snapshot.
+const HISTORY: &str = "history.jsonl";
+
+/// A commit as the history file holds it.
+#[derive(Deserialize)]
+struct Recorded {
+    time: u64,
+    author: Option<String>,
+    cells: Vec<RecordedCell>,
+}
+
+#[derive(Deserialize)]
+struct RecordedCell {
+    cube: String,
+    at: Vec<String>,
+    before: Scalar,
+    after: Scalar,
+}
+
+/// The history file, read apart from the database.
+struct HistoryFile(PathBuf);
+
+impl History for HistoryFile {
+    /// Reads the file through, keeping the changes to one cell. A line is read as JSON only
+    /// if it holds the cube's name and every element's, as JSON writes them, so that most
+    /// lines are passed over at a glance. A line cut short, the last after a crash, is left out.
+    fn of(&self, cube: &str, at: &[String], most: usize) -> io::Result<Vec<CellChange>> {
+        let file = match File::open(&self.0) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let names = std::iter::once(cube).chain(at.iter().map(String::as_str));
+        let needles = names
+            .map(serde_json::to_vec)
+            .collect::<Result<Vec<_>, _>>()?;
+        let holds =
+            |line: &[u8], needle: &[u8]| line.windows(needle.len()).any(|part| part == needle);
+        let mut found = Vec::new();
+        for line in io::BufRead::split(io::BufReader::new(file), b'\n') {
+            let line = line?;
+            if !needles.iter().all(|needle| holds(&line, needle)) {
+                continue;
+            }
+            let Ok(commit) = serde_json::from_slice::<Recorded>(&line) else {
+                continue;
+            };
+            for cell in commit.cells {
+                if cell.cube == cube && cell.at == at {
+                    found.push(CellChange {
+                        time: commit.time,
+                        author: commit.author.clone(),
+                        before: cell.before,
+                        after: cell.after,
+                    });
+                }
+            }
+        }
+        found.reverse();
+        found.truncate(most);
+        Ok(found)
+    }
+}
+
 /// Loads every `dimensions/*.json` and `cubes/*.json` under a model directory, in name order.
 pub fn load_model(directory: &Path) -> Result<ModelDef, Box<dyn Error>> {
     let dashboards = directory.join("dashboards");
@@ -380,6 +449,32 @@ impl Journal for Files {
             settle(&self.directory.join("data"))?;
         }
         Ok(())
+    }
+
+    /// Appends what a commit changed to the history file. The commit itself is in the log,
+    /// flushed to disk; its history is written without waiting on the disk again, and a
+    /// failure is reported rather than undoing the commit.
+    fn changes(&mut self, changes: &Changes<'_>) {
+        let path = self.directory.join("data").join(HISTORY);
+        let written = serde_json::to_vec(changes)
+            .map_err(io::Error::from)
+            .and_then(|mut line| {
+                line.push(b'\n');
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)?
+                    .write_all(&line)
+            });
+        if let Err(error) = written {
+            eprintln!("warning: the history of cells could not be written: {error}");
+        }
+    }
+
+    fn history(&self) -> Option<Box<dyn History>> {
+        Some(Box::new(HistoryFile(
+            self.directory.join("data").join(HISTORY),
+        )))
     }
 
     fn model(&mut self, version: u64, definition: &ModelDef) -> io::Result<()> {
