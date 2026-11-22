@@ -599,7 +599,11 @@ export const writeback = {
       reached.push([row, column]);
     }
     await this.explainRows(reached.map(([row]) => row));
-    const takes = ([row, column]) => typeof this.valueAt(row, column) !== 'string'
+    // A cell is text where one of its members is a string element, empty or not.
+    const [columnAxis, rowAxis] = this.result.axes;
+    const text = (row, column) => [...(rowAxis?.tuples[row] ?? []), ...columnAxis.tuples[column], ...(this.result.slicer ?? [])]
+      .some((m) => m.type === 'string');
+    const takes = ([row, column]) => !text(row, column)
       && !(this.holds.size && this.holds.has(this.key(row, column)))
       && (this.writable.has(`${row},${column}`) || this.spreadable(row, column));
     const targets = reached.filter(takes);
