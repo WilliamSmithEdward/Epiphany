@@ -46,10 +46,36 @@ export function shape(result, byColumns) {
 }
 
 /**
- * A chart of `data` ({ categories, series }) as `kind`: 'bars', 'stacked' or 'lines'. It
- * fills its container's width and redraws as that changes.
+ * A line of values, small and without axes, to show which way they go: gaps where a value
+ * is missing, and a dot on the last.
  */
-export function chart(data, kind) {
+export function sparkline(values, { width = 180, height = 40 } = {}) {
+  const known = values.filter((value) => value !== null);
+  const low = Math.min(...known);
+  const high = Math.max(...known);
+  const x = (index) => 2 + (index / Math.max(values.length - 1, 1)) * (width - 4);
+  const y = (value) => 2 + (high === low ? (height - 4) / 2 : (1 - (value - low) / (high - low)) * (height - 4));
+  let path = '';
+  let drawing = false;
+  values.forEach((value, index) => {
+    if (value === null) {
+      drawing = false;
+      return;
+    }
+    path += `${drawing ? 'L' : 'M'}${x(index).toFixed(1)},${y(value).toFixed(1)}`;
+    drawing = true;
+  });
+  const last = values.length - 1 - [...values].reverse().findIndex((value) => value !== null);
+  return h('svg', { class: 'sparkline', width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `Trend over ${values.length} values` },
+    h('path', { class: 'line c0', d: path }),
+    h('circle', { class: 'dot c0', cx: x(last), cy: y(values[last]), r: 3 }));
+}
+
+/**
+ * A chart of `data` ({ categories, series }) as `kind`: 'bars', 'stacked' or 'lines',
+ * `height` pixels high. It fills its container's width and redraws as that changes.
+ */
+export function chart(data, kind, { height = 380 } = {}) {
   const hidden = new Set();
   const total = data.series.length;
   const series = data.series.slice(0, MOST_SERIES).map((entry, index) => ({ ...entry, colour: index % COLOURS }));
@@ -75,8 +101,7 @@ export function chart(data, kind) {
   };
 
   const draw = () => {
-    const width = Math.max(plot.clientWidth, 320);
-    const height = 380;
+    const width = Math.max(plot.clientWidth, 280);
     const shown = series.filter((entry) => !hidden.has(entry.name));
     const categories = data.categories;
     const crowded = categories.length > Math.floor(width / 70);

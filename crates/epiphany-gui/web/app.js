@@ -1,7 +1,7 @@
 // The application: signing in, the shell around every page, and moving between pages.
 
 import { ApiError, api, events, get } from './api.js';
-import { h, icon, menu, mount, notify } from './ui.js';
+import { dialog, h, icon, menu, mount, notify } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
@@ -10,6 +10,7 @@ export const state = { user: null, open: false, model: null, version: null };
 const PAGES = [
   { path: '/', title: 'Overview', icon: 'home', load: async () => ({ render: overview }) },
   { path: '/explore', title: 'Explore', icon: 'explore', load: () => import('./explore.js') },
+  { path: '/dashboards', title: 'Dashboards', icon: 'dashboard', load: () => import('./dashboards.js') },
   { path: '/model', title: 'Model', icon: 'model', load: () => import('./model.js'), section: 'Manage', admin: true },
   { path: '/admin', title: 'Administration', icon: 'admin', load: () => import('./admin.js'), admin: true },
 ];
@@ -101,21 +102,72 @@ function signIn(reason) {
 }
 
 async function signOut() {
+  // What is not saved goes only if the user agrees.
+  if (active?.leave && !(await active.leave())) return;
   try {
     await api('DELETE', '/gui/session');
   } catch {
     // Signed out here whether or not the server heard.
   }
+  leaveApp();
+}
+
+/** Leaves the application for the sign-in page, letting go of the page shown. */
+function leaveApp(reason) {
+  active = null;
   state.user = null;
   history.pushState(null, '', '/');
-  signIn();
+  signIn(reason);
 }
 
 events.addEventListener('signed-out', () => {
-  if (!state.user || state.open) return;
-  state.user = null;
-  signIn('Your session has ended. Sign in again to carry on.');
+  if (!state.user || state.open || reauthenticating) return;
+  reauthenticate();
 });
+
+let reauthenticating = false;
+
+/**
+ * Asks for the password again when the session ends, over the page, so that nothing on it
+ * is lost: the user signs in again and carries on. Signing in as someone else starts afresh,
+ * and dismissing it signs out.
+ */
+async function reauthenticate() {
+  reauthenticating = true;
+  const before = state.user;
+  const name = h('input', { class: 'input', id: 'again-name', autocomplete: 'username', required: true });
+  name.value = before.name;
+  const password = h('input', { class: 'input', id: 'again-password', type: 'password', autocomplete: 'current-password', required: true });
+  const asked = dialog({
+    title: 'Your session has ended',
+    confirm: 'Sign in',
+    cancel: 'Sign out',
+    body: h('div', { class: 'facts' },
+      h('p', { class: 'muted' }, 'Sign in again to carry on. The page stays as it was, unsaved changes and all.'),
+      h('div', { class: 'field' }, h('label', { for: 'again-name' }, 'Name'), name),
+      h('div', { class: 'field' }, h('label', { for: 'again-password' }, 'Password'), password)),
+    onsubmit: async () => {
+      try {
+        return await api('POST', '/gui/session', { name: name.value.trim(), password: password.value });
+      } catch (problem) {
+        password.select();
+        throw new Error(problem.status === 401 ? 'That name and password do not match.' : problem.message);
+      }
+    },
+  });
+  password.focus();
+  const session = await asked;
+  reauthenticating = false;
+  if (!session) return leaveApp();
+  state.user = session.user;
+  if (session.user.name.toLowerCase() !== before.name.toLowerCase() || session.user.role !== before.role) {
+    // Another user, or another role: the page is drawn again for them.
+    active = null;
+    shell();
+    return;
+  }
+  notify('Signed in again. Carry on where you were.', 'good');
+}
 
 events.addEventListener('model-changed', () => {
   state.model = null;
@@ -315,6 +367,9 @@ async function palette() {
     for (const cube of definition.cubes) {
       commands.push({ label: `Explore ${cube.name}`, kind: 'Cube', icon: 'cube', run: () => go(`/explore?cube=${encodeURIComponent(cube.name)}`) });
     }
+    for (const dashboard of definition.dashboards ?? []) {
+      commands.push({ label: dashboard.name, kind: 'Dashboard', icon: 'dashboard', run: () => go(`/dashboards?name=${encodeURIComponent(dashboard.name)}`) });
+    }
   } catch {
     // The pages are still there to choose.
   }
@@ -404,9 +459,18 @@ async function overview(target) {
   },
   h('div', { class: 'toolbar' }, h('div', { class: 'tile-icon' }, icon('cube', 20)), h('div', { class: 'grow' }),
     cube.rules?.length ? h('span', { class: 'badge accent' }, `${cube.rules.length} rule${cube.rules.length === 1 ? '' : 's'}`) : null,
-    cube.views?.length ? h('span', { class: 'badge' }, `${cube.views.length} view${cube.views.length === 1 ? '' : 's'}`) : null),
+    views(cube) ? h('span', { class: 'badge' }, `${views(cube)} view${views(cube) === 1 ? '' : 's'}`) : null),
   h('h3', {}, cube.name),
   h('p', { class: 'muted' }, cube.dimensions.join(' · '))));
+  const dashboards = (definition.dashboards ?? []).map((dashboard) => h('a', {
+    class: 'card tile',
+    href: `/dashboards?name=${encodeURIComponent(dashboard.name)}`,
+    'data-link': '',
+  },
+  h('div', { class: 'toolbar' }, h('div', { class: 'tile-icon' }, icon('dashboard', 20)), h('div', { class: 'grow' }),
+    h('span', { class: 'badge' }, `${dashboard.tiles.length} tile${dashboard.tiles.length === 1 ? '' : 's'}`)),
+  h('h3', {}, dashboard.name),
+  dashboard.description ? h('p', { class: 'muted' }, dashboard.description) : null));
   mount(target, h('div', { class: 'page' },
     h('div', { class: 'page-head' },
       h('div', { class: 'grow' }, h('h1', {}, state.open ? 'Welcome' : `Welcome, ${state.user.name}`), h('p', {}, 'Choose a cube to explore, or press Ctrl K to find anything.'))),
@@ -418,8 +482,13 @@ async function overview(target) {
     h('h2', { class: 'section-title' }, 'Cubes'),
     definition.cubes.length
       ? h('div', { class: 'grid-cards' }, cubes)
-      : empty('cube', 'No cubes yet', 'An administrator adds cubes to the model.')));
+      : empty('cube', 'No cubes yet', 'An administrator adds cubes to the model.'),
+    dashboards.length ? h('h2', { class: 'section-title' }, 'Dashboards') : null,
+    dashboards.length ? h('div', { class: 'grid-cards' }, dashboards) : null));
 }
+
+/** How many views a cube has saved: they come keyed by name. */
+const views = (cube) => Object.keys(cube.views ?? {}).length;
 
 window.addEventListener('unhandledrejection', (event) => {
   if (event.reason instanceof ApiError) notify(event.reason.message, 'bad');

@@ -40,7 +40,7 @@ their practices, not their looks.
 | A menu on a cell: sort, drill, show as a share of the row or column | The cell menu |
 | Moving between the visual builder and MDX | An MDX view of the same query, editable |
 | One query seen as grid or chart | Grid and chart views |
-| KPI cards with sparklines, time presets, readable legends | Dashboards, after the explorer |
+| KPI cards with sparklines, time presets, readable legends | Dashboards: tiles of saved views as key figures with their trend, bar, stacked and line charts, or small grids, each opening in Explore |
 
 What they get wrong is avoided as well: crowded ribbons, low contrast, drag and drop as the
 only way to do something, and modal dialogs where a side panel would keep the data in view.
@@ -58,6 +58,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
 - **Every state designed.** Loading, empty, error with a retry, and refused for want of
   rights.
 - **One command palette** (Ctrl+K) reaching every screen and action.
+- **Nothing lost to a session ending.** When the session ends, a sign-in dialog opens over
+  the page, and the page, its unsaved changes with it, stays as it was. Signing out asks
+  first about changes not saved.
 
 ## Security
 

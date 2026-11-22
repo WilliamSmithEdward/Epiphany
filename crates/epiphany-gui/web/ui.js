@@ -94,6 +94,7 @@ const ICONS = {
   server: 'M3 4h18v6H3z M3 14h18v6H3z M7 7h.01 M7 17h.01',
   sigma: 'M18 7V4H6l6 8-6 8h12v-3',
   more: 'M12 12h.01 M19 12h.01 M5 12h.01',
+  dashboard: 'M3 3h8v10H3z M13 3h8v6h-8z M13 11h8v10h-8z M3 15h8v6H3z',
   copy: 'M9 9h11v11H9z M5 15H4V4h11v1',
   paste: 'M9 3h6v4H9z M8 5H5v16h14V5h-3',
   expand: 'M7 15l5 5 5-5 M7 9l5-5 5 5',

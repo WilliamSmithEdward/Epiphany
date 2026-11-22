@@ -55,7 +55,9 @@ export async function api(method, path, body) {
     }
   }
   if (!response.ok) {
-    const message = data?.message ?? `${response.status} ${response.statusText}`;
+    // The server tells API clients how to sign in; here, the application asks for it.
+    const ended = response.status === 401 && !path.startsWith('/gui/');
+    const message = ended ? 'Your session has ended.' : data?.message ?? `${response.status} ${response.statusText}`;
     throw new ApiError(response.status, data?.code ?? 'error', sentence(message), data?.index);
   }
   return data;

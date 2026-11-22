@@ -114,15 +114,17 @@ export async function render(target, { params }) {
   }
   dimensions.clear();
   const dims = new Map(await Promise.all(cube.dimensions.map(async (dim) => [dim, await dimension(dim)])));
-  return new Explorer(target, definition, cube, dims);
+  return new Explorer(target, definition, cube, dims, cube.views?.[params.get('view')]);
 }
 
 class Explorer {
-  constructor(target, definition, cube, dims) {
+  /** `view`, where one is given, is a saved view to open in place of the last layout. */
+  constructor(target, definition, cube, dims, view) {
     this.definition = definition;
     this.cube = cube;
     this.dims = dims;
     this.layout = this.restore() ?? defaultLayout(cube, dims);
+    if (view) Object.assign(this.layout, { mdx: view.mdx, geometry: view.geometry ?? null });
     this.past = [];
     this.future = [];
     this.view = 'grid';
