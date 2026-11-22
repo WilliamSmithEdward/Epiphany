@@ -445,8 +445,9 @@ a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transfo
 .member-label[data-depth="4"] { padding-left: 72px; }
 .member-label[data-depth="5"], .member-label[data-depth="6"], .member-label[data-depth="7"], .member-label[data-depth="8"] { padding-left: 90px; }
 .twisty { display: inline-grid; place-items: center; width: 18px; height: 18px; flex: none; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--text-2); cursor: pointer; padding: 0; }
-span.twisty { border-color: transparent; background: none; }
-.twisty:hover { border-color: var(--accent); color: var(--accent-text); }
+/* The space a leaf keeps where its parent has a button, so that names line up: never seen, never pressed. */
+span.twisty { border-color: transparent; background: none; cursor: inherit; }
+button.twisty:hover { border-color: var(--accent); color: var(--accent-text); }
 
 .picker { display: flex; flex-direction: column; gap: var(--s3); }
 .picker .select { height: 30px; font-size: var(--text-s); }
