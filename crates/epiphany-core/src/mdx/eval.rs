@@ -1158,7 +1158,9 @@ impl<'a> Evaluator<'a> {
                         Datum::Text(kind) if kind.eq_ignore_ascii_case("public") => false,
                         Datum::Text(kind) if kind.eq_ignore_ascii_case("private") => true,
                         _ => {
-                            return fail("TM1SUBSETTOSET's third argument is 'public' or 'private'");
+                            return fail(
+                                "TM1SUBSETTOSET's third argument is 'public' or 'private'",
+                            );
                         }
                     },
                 };
