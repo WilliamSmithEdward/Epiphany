@@ -89,6 +89,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
   rights. Moving to another page leaves the one shown, still, until the next is drawn: a
   quick load shows no gap, and a slow one the outline of what is coming. Choosing another
   dimension, cube or dashboard within a page changes only what it shows.
+- **Notices that can be read.** A notice stands as long as its words take to read, an error
+  twice as long, and waits while it is pointed at, has the keys or the page is out of sight.
+  The same notice again takes the place of the first, and four at most stand at once.
 - **One command palette** (Ctrl+K) reaching every screen and action: pages, cubes, saved
   views, dashboards and, for administrators, each dimension and cube of the model. The best
   matches come first, the words typed marked in them, and, with nothing typed, the commands

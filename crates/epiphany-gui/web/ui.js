@@ -131,16 +131,48 @@ export function icon(name, size = 18) {
 
 let notices;
 
-/** A short notice in the corner, gone after a while; `kind` is good, bad or plain. */
+/** The most notices that stand at once: a newer takes the place of the oldest. */
+const NOTICES_SHOWN = 4;
+
+/** Each notice standing, and for how many milliseconds more. */
+const standing = new Map();
+let ticking = null;
+
+/** Counts down the notices' time, except while the pointer or the keys are on one, or the page is out of sight. */
+function tick() {
+  for (const [notice, left] of standing) {
+    if (!notice.isConnected) standing.delete(notice);
+    else if (document.hidden || notice.matches(':hover, :focus-within')) continue;
+    else if (left > 500) standing.set(notice, left - 500);
+    else {
+      notice.remove();
+      standing.delete(notice);
+    }
+  }
+  if (!standing.size) {
+    clearInterval(ticking);
+    ticking = null;
+  }
+}
+
+/**
+ * A short notice in the corner, standing long enough to read, an error twice as long, and
+ * longer while it is pointed at, has the keys or the page is out of sight; `kind` is good, bad
+ * or plain. The same notice again takes the place of the first.
+ */
 export function notify(message, kind = 'plain') {
   notices ??= document.body.appendChild(h('div', { class: 'notices', role: 'status', 'aria-live': 'polite' }));
-  const close = () => notice.remove();
-  const notice = h('div', { class: `notice ${kind}` },
+  const said = `${kind}: ${message}`;
+  [...notices.children].find((other) => other.dataset.said === said)?.remove();
+  const notice = h('div', { class: `notice ${kind}`, dataset: { said } },
     icon(kind === 'bad' ? 'alert' : kind === 'good' ? 'check' : 'info'),
     h('p', {}, message),
-    h('button', { class: 'button quiet small icon', 'aria-label': 'Dismiss', onclick: close }, icon('close', 14)));
+    h('button', { class: 'button quiet small icon', 'aria-label': 'Dismiss', onclick: () => notice.remove() }, icon('close', 14)));
   notices.append(notice);
-  setTimeout(close, kind === 'bad' ? 9000 : 4500);
+  while (notices.children.length > NOTICES_SHOWN) notices.firstElementChild.remove();
+  // A fifteenth of a second a letter, at least four and a half seconds.
+  standing.set(notice, Math.max(4500, String(message).length * 70) * (kind === 'bad' ? 2 : 1));
+  ticking ??= setInterval(tick, 500);
 }
 
 /* ---- Dialogs ---- */

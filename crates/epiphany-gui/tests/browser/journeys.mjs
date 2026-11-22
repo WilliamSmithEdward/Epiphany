@@ -447,6 +447,25 @@ async function signingIn({ admin }) {
     await page.press('Escape');
     await page.waitFor(`!document.querySelector('dialog.palette')`, 'the palette, closed');
   });
+  await step('A notice stands while it is pointed at, the same one shows once, and four at most', async () => {
+    const notices = `[...document.querySelectorAll('.notice p')].map((p) => p.textContent)`;
+    await page.evaluate(`import('/ui.js').then(({ notify }) => {
+      for (const n of [1, 2, 3, 4, 5]) notify('Notice ' + n);
+      notify('Notice 5');
+    })`);
+    const shown = await page.evaluate(notices);
+    expect(quoted(shown) === quoted(['Notice 2', 'Notice 3', 'Notice 4', 'Notice 5']), `The notices are ${quoted(shown)}.`);
+    // Pointed at, the last stands past its time, while the others go; let go, it goes too.
+    const middle = await page.evaluate(`(() => {
+      const box = [...document.querySelectorAll('.notice')].at(-1).getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    })()`);
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...middle });
+    // Had it not stood, it would have gone with them, at the same moment.
+    await page.waitFor(`${notices}.join() === 'Notice 5'`, 'the others, gone');
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+    await page.waitFor(`!document.querySelector('.notice')`, 'the notice, gone once let go');
+  });
 }
 
 async function exploring() {
