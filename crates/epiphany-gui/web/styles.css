@@ -765,3 +765,8 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 /* ---- Number formats ---- */
 
 .format-sample { display: flex; gap: var(--s5); padding: var(--s3) var(--s4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); font-variant-numeric: tabular-nums; }
+
+/* ---- Totals that take a value to spread ---- */
+
+.pivot td.spreadable { cursor: cell; }
+.pivot td.spreadable:hover { background-image: linear-gradient(to right, var(--accent) 60%, transparent 0); background-size: 6px 2px; background-repeat: repeat-x; background-position: left bottom; }

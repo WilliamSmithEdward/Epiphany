@@ -82,6 +82,44 @@ function mdx(layout, dims) {
 
 const saved = (cube) => `epiphany.explore.${cube}`;
 
+/**
+ * What a spreading code typed into a total asks for: `{ method, value }`, the value being
+ * the total's new one; null when the text is not a code. A number alone is spread in
+ * proportion; P, S or LS, and R or LR before it say in proportion, equally, or the whole
+ * into each; + or ~ after P or S adds to the total `before` or takes from it; C clears.
+ */
+/** A spread typed into a total asks first when it reaches more leaf cells than this. */
+const SPREAD_ASKS = 1000;
+
+/** How many leaves lie beneath an element of a dimension; one for a leaf. Kept with the dimension. */
+function leafCount(dim, name) {
+  dim.leafCounts ??= new Map();
+  if (!dim.leafCounts.has(name)) {
+    const leaves = new Set();
+    const seen = new Set();
+    const visit = (each) => {
+      if (seen.has(each)) return;
+      seen.add(each);
+      const kids = dim.byName.get(each)?.children ?? [];
+      if (!kids.length) leaves.add(each);
+      for (const kid of kids) visit(kid.name);
+    };
+    visit(name);
+    dim.leafCounts.set(name, leaves.size);
+  }
+  return dim.leafCounts.get(name);
+}
+
+function spreadCode(text, before) {
+  const [, letters = 'P', action, rest] = /^\s*(?:(LS|LR|P|S|R|C)\s*([+~])?)?\s*(.*?)\s*$/i.exec(String(text));
+  const kind = letters.toUpperCase();
+  if (kind === 'C') return rest === '' && !action ? { method: 'repeat', value: 0 } : null;
+  const amount = parseNumber(rest);
+  const method = { P: 'proportional', S: 'equal', LS: 'equal', R: 'repeat', LR: 'repeat' }[kind];
+  if (amount === null || (action && method === 'repeat')) return null;
+  return { method, value: action === '+' ? before + amount : action === '~' ? before - amount : amount };
+}
+
 /** Puts text on the clipboard, and says so. */
 function copied(text) {
   navigator.clipboard?.writeText(text).then(
@@ -809,7 +847,7 @@ class Explorer {
       this.error = null;
       this.took = performance.now() - started;
       if (this.layout.mdx) this.adopt(result);
-      this.writable = await this.findWritable(result);
+      ({ writable: this.writable, why: this.why } = await this.findWritable(result));
       if (ticket !== this.ticket) return;
     } catch (problem) {
       if (ticket !== this.ticket) return;
@@ -904,6 +942,8 @@ class Explorer {
     }
     const body = h('tbody');
     const columnCount = columnTuples.length;
+    // Totals take a value to spread where the user may write and nothing in the slicer is calculated.
+    const spreads = this.mayWrite() && !(result.slicer ?? []).some((m) => m.type === 'calculated');
     shownRows.forEach((tuple, r) => {
       const tr = h('tr', { class: total(tuple) ? 'total-row' : '' });
       tuple.forEach((m, level) => {
@@ -930,10 +970,11 @@ class Explorer {
         const number = typeof value === 'number';
         const editable = this.writable.has(`${r},${c}`);
         const edited = editable && this.edits.has(this.key(r, c));
+        const spreadable = spreads && totalCell && !editable && ![...tuple, ...columnTuples[c]].some((m) => m.type === 'calculated');
         tr.append(h('td', {
-          class: `${totalCell ? 'total' : ''} ${number ? 'n' : 's'} ${number && value < 0 ? 'negative' : ''} ${editable ? 'editable' : ''} ${edited ? 'edited' : ''}`,
+          class: `${totalCell ? 'total' : ''} ${number ? 'n' : 's'} ${number && value < 0 ? 'negative' : ''} ${editable ? 'editable' : ''} ${edited ? 'edited' : ''} ${spreadable ? 'spreadable' : ''}`,
           tabindex: r === 0 && c === 0 ? '0' : '-1',
-          title: edited ? 'Changed, not yet saved' : undefined,
+          title: edited ? 'Changed, not yet saved' : spreadable ? 'Type a value to spread it over the leaves beneath' : undefined,
           dataset: { r, c },
         }, formatValue(value, this.layout.format)));
       }
@@ -1235,13 +1276,22 @@ class Explorer {
       this.cellMenu(r, c, cell);
       return;
     }
-    if (cell.classList.contains('editable') && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const takes = cell.classList.contains('editable') || cell.classList.contains('spreadable');
+    const typing = !event.ctrlKey && !event.metaKey && !event.altKey && (event.key.length === 1 || event.key === 'F2');
+    if (!takes && typing && event.key !== ' ' && this.result) {
+      event.preventDefault();
+      // Once for each cell, not at every key.
+      if (this.toldWhy !== cell) notify(this.whyNot(r, c));
+      this.toldWhy = cell;
+      return;
+    }
+    if (takes && !event.ctrlKey && !event.metaKey && !event.altKey) {
       if (event.key === 'Enter' || event.key === 'F2') {
         event.preventDefault();
         this.edit(cell);
         return;
       }
-      if (event.key === 'Delete' || event.key === 'Backspace') {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && cell.classList.contains('editable')) {
         event.preventDefault();
         const chosen = this.selection.cells();
         this.clear(chosen.length ? chosen : [[r, c]]);
@@ -1488,12 +1538,13 @@ class Explorer {
   /** The cells of a result that may be written, as the server says: "row,column". */
   async findWritable(result) {
     const found = new Set();
-    if (!this.mayWrite()) return found;
+    const why = new Map();
+    if (!this.mayWrite()) return { writable: found, why };
     const [columns, rows] = result.axes;
     const columnCount = columns?.tuples.length ?? 0;
     const rowCount = rows ? Math.min(rows.tuples.length, 5000) : 1;
     const leaf = (m) => m.type === 'numeric' || m.type === 'string';
-    if (!(result.slicer ?? []).every(leaf)) return found;
+    if (!(result.slicer ?? []).every(leaf)) return { writable: found, why };
     const asked = [];
     const places = [];
     for (let r = 0; r < rowCount && asked.length < 20000; r += 1) {
@@ -1504,16 +1555,30 @@ class Explorer {
         places.push(`${r},${c}`);
       }
     }
-    if (!asked.length) return found;
+    if (!asked.length) return { writable: found, why };
     try {
       const answer = await post('/cells/explain', { cells: asked, transaction: this.tx ?? undefined });
       answer.cells.forEach((cell, index) => {
         if (cell.cell?.writable) found.add(places[index]);
+        else if (cell.cell?.rule) why.set(places[index], `A rule works this cell out: ${cell.cell.rule.text ?? ''}`.trim());
       });
     } catch {
       // Without an answer nothing is offered for writing; the grid still shows.
     }
-    return found;
+    return { writable: found, why };
+  }
+
+  /** Why a cell takes no value, said when someone types into it rather than nothing at all. */
+  whyNot(r, c) {
+    if (!this.mayWrite()) return `You may read ${this.cube.name}, not write to it.`;
+    if (!this.coordinate(r, c)) return 'A calculated member\'s cells are worked out by the query, not stored.';
+    return this.why?.get(`${r},${c}`) ?? 'This cell cannot be written.';
+  }
+
+  /** How many leaf cells lie beneath a cell of the grid: the leaves beneath each of its members, multiplied. */
+  leavesBeneath(r, c) {
+    const at = this.coordinate(r, c);
+    return this.cube.dimensions.reduce((count, name, index) => count * leafCount(this.dims.get(name), at[index]), 1);
   }
 
   /** Opens the editor in a cell, with what was typed into it or its current value. */
@@ -1522,10 +1587,13 @@ class Explorer {
     const r = Number(cell.dataset.r);
     const c = Number(cell.dataset.c);
     const before = this.result.cells[r * this.result.axes[0].tuples.length + c];
+    // A total takes a value, or a spreading code, to spread over the leaves beneath it.
+    const spreading = cell.classList.contains('spreadable');
     const input = h('input', {
       class: 'cell-editor',
-      'aria-label': 'New value',
-      inputmode: typeof before === 'string' ? 'text' : 'decimal',
+      'aria-label': spreading ? 'A value to spread over the leaves beneath' : 'New value',
+      title: spreading ? 'A number spreads in proportion. Or P, S or R and a number: in proportion, equally, or the whole into each; + or ~ after the letter adds or takes away; C clears.' : null,
+      inputmode: typeof before === 'string' ? 'text' : spreading ? 'text' : 'decimal',
     });
     input.value = typed ?? (before ?? '');
     const shown = [...cell.childNodes];
@@ -1537,7 +1605,8 @@ class Explorer {
       if (done) return;
       done = true;
       cell.replaceChildren(...shown);
-      if (save) this.write(r, c, before, input.value, move);
+      if (save && spreading) this.spreadTyped(r, c, before, input.value, move);
+      else if (save) this.write(r, c, before, input.value, move);
       else cell.focus();
     };
     input.addEventListener('keydown', (event) => {
@@ -1657,41 +1726,85 @@ class Explorer {
     const box = this.selection.ranges.reduce((a, b) => ({ r1: Math.min(a.r1, b.r1), r2: Math.max(a.r2, b.r2), c1: Math.min(a.c1, b.c1), c2: Math.max(a.c2, b.c2) }));
     return this.tableOf([box.r1, box.r2], [box.c1, box.c2]).map((cells) => cells.map(cellText).join('\t')).join('\n');
   }
-  /** Shares a value out among the leaves beneath a total. */
+
+  /** Asks for a value to share out among the leaves beneath a total, and how. */
   async spread(r, c) {
     const at = this.coordinate(r, c);
-    const before = this.result.cells[r * this.result.axes[0].tuples.length + c];
+    const before = this.valueAt(r, c);
     const amount = h('input', { class: 'input', id: 'spread-value', inputmode: 'decimal', required: true });
     amount.value = typeof before === 'number' ? String(before) : '';
     const method = h('select', { class: 'select', id: 'spread-method' },
       h('option', { value: 'proportional' }, 'In proportion to what each holds now'),
       h('option', { value: 'equal' }, 'Equally among them'),
       h('option', { value: 'repeat' }, 'The whole value in each'));
-    const written = await dialog({
+    const asked = await dialog({
       title: 'Spread a value',
       confirm: 'Spread',
       body: h('div', { class: 'facts' },
         h('p', { class: 'muted' }, `Over the leaves of ${at.join(' · ')}.`),
         h('div', { class: 'field' }, h('label', { for: 'spread-value' }, 'Value'), amount),
         h('div', { class: 'field' }, h('label', { for: 'spread-method' }, 'How'), method),
-        h('p', { class: 'hint' }, 'Nothing is saved until you save your changes.')),
-      onsubmit: async () => {
-        const value = Number(amount.value.trim().replace(/[\s,]/g, ''));
-        if (!Number.isFinite(value)) throw new Error('Enter a number.');
-        await this.ensureTransaction();
-        const answer = await post('/cells/spread', {
-          transaction: this.tx,
-          spread: { cube: this.cube.name, at, value, method: method.value },
-        });
-        return answer.written;
+        h('p', { class: 'hint' }, 'You can also type into a total: a number spreads in proportion, and P, S or R before it spreads in proportion, equally, or the whole into each. Nothing is saved until you save your changes.')),
+      onsubmit: () => {
+        const value = parseNumber(amount.value);
+        if (value === null) throw new Error('Enter a number.');
+        return { value, method: method.value };
       },
     });
-    if (written === null) return;
-    notify(`Spread over ${written.toLocaleString()} cell${written === 1 ? '' : 's'}.`, 'good');
+    if (asked) await this.spreadValue(r, c, asked.value, asked.method);
+  }
+
+  /**
+   * Spreads what was typed into a total over the leaves beneath it, as TM1 does: a number
+   * in proportion to what they hold; P, S (or LS) and R (or LR) before a number spread it in
+   * proportion, equally, or the whole of it into each leaf; + or ~ after P or S adds the
+   * number to the total or takes it away; and C clears every leaf.
+   */
+  async spreadTyped(r, c, before, text, move) {
+    this.focusAfter = [r + (move?.[0] ?? 0), c + (move?.[1] ?? 0)];
+    const asked = spreadCode(text, typeof before === 'number' ? before : 0);
+    if (!asked) {
+      if (String(text).trim() !== '' && String(text) !== String(before ?? '')) notify(`“${text}” is neither a number nor a spreading code such as P100, S100 or R100.`, 'bad');
+      this.focusCell();
+      return;
+    }
+    if (asked.method === 'proportional' && asked.value === before) {
+      this.focusCell();
+      return;
+    }
+    const count = this.leavesBeneath(r, c);
+    if (count > SPREAD_ASKS || (asked.value === 0 && count > 1)) {
+      const agreed = await dialog({
+        title: asked.value === 0 ? `Empty ${count.toLocaleString()} cells?` : `Spread over ${count.toLocaleString()} cells?`,
+        body: h('p', {}, `${asked.value === 0 ? 'Every leaf beneath' : 'The leaves beneath'} ${this.coordinate(r, c).join(' · ')} ${asked.value === 0 ? 'becomes empty' : 'take a share of it'}. Nothing is stored until you save your changes, and Discard takes it back.`),
+        confirm: asked.value === 0 ? 'Empty them' : 'Spread',
+        danger: asked.value === 0,
+      });
+      if (!agreed) {
+        this.focusCell();
+        return;
+      }
+    }
+    await this.spreadValue(r, c, asked.value, asked.method);
+  }
+
+  /** Shares a value out among the leaves beneath a total, within the edit transaction. */
+  async spreadValue(r, c, value, method) {
+    let answer;
+    try {
+      await this.ensureTransaction();
+      answer = await post('/cells/spread', {
+        transaction: this.tx,
+        spread: { cube: this.cube.name, at: this.coordinate(r, c), value, method },
+      });
+    } catch (problem) {
+      this.refused(problem);
+      return;
+    }
+    notify(`Spread over ${answer.written.toLocaleString()} cell${answer.written === 1 ? '' : 's'}.`, 'good');
     this.changes = (this.changes ?? 0) + 1;
     await this.run();
   }
-
   async ensureTransaction() {
     if (this.tx) return;
     const answer = await post('/transactions');
