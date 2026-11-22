@@ -228,14 +228,18 @@ const pending = new Set(); // the cells written in the open transaction, by cell
 let shown = null;          // the query last answered: { text, result, sideways }
 let visible = [];          // { at, editable, text } for every cell on screen
 
+// What an element has none of: one empty list and map for all, never changed.
+const NONE = Object.freeze([]);
+const NOTHING = Object.freeze({});
+
 async function dimension(name) {
   if (!dimensions[name]) {
     const view = await api('GET', `/dimensions/${encodeURIComponent(name)}`);
     // The server leaves out what an element has none of.
     for (const element of view.elements) {
-      element.parents ??= [];
-      element.children ??= [];
-      element.attributes ??= {};
+      element.parents ??= NONE;
+      element.children ??= NONE;
+      element.attributes ??= NOTHING;
     }
     dimensions[name] = view;
   }

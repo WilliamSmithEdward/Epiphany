@@ -8,6 +8,13 @@ import { dialog, h, icon } from './ui.js';
 const loaded = new Map();
 
 /**
+ * What an element has none of: one empty list and one empty map for all, never changed. Made
+ * afresh for each of a million leaves, they held 84 MB more of the page's memory, a third.
+ */
+const NONE = Object.freeze([]);
+const NOTHING = Object.freeze({});
+
+/**
  * A dimension with its elements, each by name in `byName`, and the names of its top
  * elements in `roots`; fetched once for each version of the model.
  */
@@ -17,9 +24,9 @@ export async function dimension(name) {
     const view = await get(`/dimensions/${part(name)}`);
     // The server leaves out what an element has none of; the pages find it empty.
     for (const element of view.elements) {
-      element.parents ??= [];
-      element.children ??= [];
-      element.attributes ??= {};
+      element.parents ??= NONE;
+      element.children ??= NONE;
+      element.attributes ??= NOTHING;
     }
     const byName = new Map(view.elements.map((element) => [element.name, element]));
     const roots = view.elements.filter((element) => element.parents.length === 0).map((element) => element.name);
