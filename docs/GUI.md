@@ -104,3 +104,34 @@ Each is added to the OpenAPI contract, with the existing route tests.
 | G6 | Model: dimensions, cubes, rules, feeders and subsets, saved against the model's version | A change made in the GUI matches one sent to the API |
 | G7 | Admin: users, roles, sessions, transactions, server status, with the server routes above | An admin can do every listed task; a non-admin sees none of it |
 | G8 | Polish: accessibility audit, large-result performance, browser tests of the main journeys | The journeys pass in the browser, and 100,000 cells scroll smoothly |
+
+## Backlog from the survey of OLAP tools (2026-11-22)
+
+A survey of the main planning and OLAP tools' screens and documentation (IBM Planning
+Analytics Workspace and TM1, Oracle EPM and Smart View, SAP Analytics Cloud and Analysis for
+Office, Excel and Power BI, Anaplan, Pigment, Workday Adaptive Planning, OneStream, Jedox,
+Tableau, Atoti) found these gaps. Already taken up: dashboard filters, number formats and
+totals placement, writable cells marked and read-only ones explained, typed spreading with a
+check before sweeping spreads, drilling to the leaves, DBRW formulas copied out, and undo and
+redo of values. Still to do, most valuable first:
+
+| Gap | Seen in | Shape here |
+| --- | --- | --- |
+| Cell comments, threaded, with a marker in the cell | SAP Analytics Cloud, Adaptive Planning, OneStream, Oracle, PAW | Comment from the cell menu; a corner marker; the thread in a side panel ([SAC](https://help.sap.com/doc/00f68c2e08b941f081002fd3691d86a7/2023.20/en-US/b6cd7dfffb9c4ac7bfe6739b22ff45ce.html)) |
+| Cell history: who changed a cell, when, from what | Anaplan, Oracle, Pigment, PAW | A History tab beside Explain, from the journal; an admin view by user and time ([Anaplan](https://help.anaplan.com/afe9dd2f-a532-4aba-b7da-4971d13ca76f)) |
+| Holds: cells a spread leaves alone | PAW, Anaplan, SAP Analytics Cloud, Oracle | A hold toggle kept with the edit transaction, honoured by spreads |
+| Named sandboxes, compared side by side | PAW, Oracle, Pigment, SAP Analytics Cloud | A kept, named transaction, shown as a column beside the stored values |
+| One-click calculations and top or bottom N | Excel's Show Values As, PAW member calculations, Tableau quick calculations | A heading menu item that writes a calculated member into the query |
+| Conditional formatting and data bars, kept with views | Power BI, PAW | Rules of thresholds or comparisons with another member, first match wins |
+| Picklists and validation | TM1, Oracle smart lists and validation rules | A picklist attribute with a dropdown in the cell; rules that warn or refuse |
+| Supporting detail beneath a cell | Oracle, OneStream, Adaptive Planning | Lines that add up to the cell's value, kept with it |
+| Pausing updates while the layout is built | Excel's defer layout update, PAW | A pause toggle on the layout bar and a Run button |
+| Rows drawn as they scroll, for very large results | Power BI's matrix | Only the visible rows drawn (stage G8) |
+| Checking feeders from Explain | TM1's rules tracer | The server's feeder check, offered where a total leaves a cell out |
+| Model history and seeing as another user | Anaplan, Pigment | The numbered model copies the server keeps, listed with a restore; a read-only "view as" |
+
+Anti-patterns the tools are criticised for, to avoid: spreads that empty whole years from one
+typed zero; suppression that hides rows people must plan into; affordances that look like
+nothing (picklists that look like plain cells); state that silently disappears (holds lost on
+a sort, undo lost on switching workbooks); undo so costly it hangs the server; and switches
+that change what every query means.
