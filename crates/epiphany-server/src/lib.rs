@@ -2,8 +2,8 @@
 
 mod api;
 mod auth;
+mod private;
 mod storage;
-mod views;
 
 pub use api::{app, app_with, openapi, with_lab};
 pub use auth::{Auth, Grants, Refusal, Role, set_user};

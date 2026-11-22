@@ -381,14 +381,17 @@ practice that means:
 - A model update that changes only subsets and views leaves the stored cells untouched.
 - A subset is saved by putting its dimension, and a view by putting its cube; neither has
   a route of its own.
-- Each user may also keep views of their own, which nobody else sees, at
-  `/cubes/{cube}/private-views`. **Decision:** they are the user's, not the model's, so they
-  are kept with the users, in `views.json`, outside the model's versions; a model update
-  leaves them as they are, and one whose cube or members are gone fails when it is run, as a
-  query would. Keeping one takes reading the cube, and its query is run as it is kept. A
-  user's views take at most 4 MiB, so that a reader cannot fill the disk. A view as the user
-  sees none of them and changes none.
-- Not done: subsets that depend on cell values, and private (per-user) subsets.
+- Each user may also keep views and subsets of their own, which nobody else sees, at
+  `/cubes/{cube}/private-views` and `/dimensions/{dimension}/private-subsets`. **Decision:**
+  they are the user's, not the model's, so they are kept with the users, in `views.json` and
+  `subsets.json`, outside the model's versions; a model update leaves them as they are. A
+  view whose cube or members are gone fails when it is run, as a query would; a subset
+  leaves out the members its dimension no longer has. Keeping a view takes reading its cube,
+  and its query is run as it is kept. A user's own subset is a list of members, for the GUI's
+  set editor to choose from: queries name only the model's subsets. A user's views, and
+  their subsets, take at most 4 MiB each, so that a reader cannot fill the disk. A view as
+  the user sees none of them and changes none.
+- Not done: subsets that depend on cell values, and a user's own subsets in queries.
 
 ## 3. API
 

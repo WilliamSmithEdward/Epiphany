@@ -2206,6 +2206,231 @@
         }
       }
     },
+    "/dimensions/{dimension}/private-subsets": {
+      "get": {
+        "summary": "The signed-in user's own subsets of a dimension, by name: lists of members kept for them\nalone, beside the dimension's subsets, which everybody sees. A member since taken out of\nthe dimension is left out. A view as the user sees none of them.",
+        "operationId": "list_private_subsets",
+        "parameters": [
+          {
+            "name": "dimension",
+            "in": "path",
+            "description": "Dimension name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user's subsets of the dimension, each its members' names in order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dimension, or a server without users, which has no subsets of anybody's own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dimensions/{dimension}/private-subsets/{name}": {
+      "put": {
+        "summary": "Saves a subset of a dimension for the signed-in user alone, in place of one of theirs of\nthe same name, case and spaces aside. Each member must be the dimension's, by name or\nalias. Each user's subsets may take 4 MiB.",
+        "operationId": "put_private_subset",
+        "parameters": [
+          {
+            "name": "dimension",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The subset's name, up to 120 characters",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnSubset"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dimension, or a server without users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A member is not the dimension's, there are none, the name will not do, or the user's subsets would take too much room",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The subset could not be kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Takes one of the signed-in user's own subsets away; of a dimension that is gone, too.",
+        "operationId": "delete_private_subset",
+        "parameters": [
+          {
+            "name": "dimension",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Taken away"
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user has no such subset, or the server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The subsets could not be kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dimensions/{name}": {
       "get": {
         "summary": "One dimension, with each element's level, parents, children and attributes.",
@@ -4598,6 +4823,23 @@
                 "type": "null"
               }
             ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "OwnSubset": {
+        "type": "object",
+        "description": "A subset a user keeps for themself: the members it holds, in order.",
+        "required": [
+          "elements"
+        ],
+        "properties": {
+          "elements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The members, by name or alias; each is kept by its name."
           }
         },
         "additionalProperties": false

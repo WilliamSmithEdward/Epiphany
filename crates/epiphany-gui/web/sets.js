@@ -1,5 +1,7 @@
 // The set editor: a dimension's members on one side, the set being built on the other.
 
+import { del, get, part, put } from './api.js';
+import { state } from './app.js';
 import { beneath, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
 import { choices, copyText, dialog, h, icon, menu, mount, notify } from './ui.js';
 
@@ -29,6 +31,8 @@ class SetEditor {
     this.rules = [];
     this.matchAll = true;
     this.filtering = false;
+    // The user's own subsets of the dimension, by name: none until they are fetched.
+    this.own = {};
   }
 
   /* ---- Filtering by rules ---- */
@@ -622,25 +626,34 @@ class SetEditor {
       levels: levels.map((level) => [level, levelName(level)]),
       to: (level) => openWhere(this.dim.elements.filter((element) => element.level > level).map((element) => element.name)),
     });
+    // The set replaced whole: by the top members, a level, one of the dimension's subsets, or
+    // one of the user's own, which come once they are fetched.
     const quick = h('select', {
       class: 'select small-select',
       'aria-label': 'Replace the set',
       onchange: (event) => {
-        const [kind, value] = event.target.value.split(':');
+        const chosen = event.target.value;
         event.target.value = '';
+        const [kind, ...rest] = chosen.split(':');
+        const value = rest.join(':');
         if (!kind) return;
         const names = kind === 'top' ? this.dim.roots
           : kind === 'level' ? this.dim.elements.filter((element) => element.level === Number(value)).map((element) => element.name)
-            : this.dim.subsets[value] ?? [];
+            : kind === 'own' ? this.own[value] ?? []
+              : this.dim.subsets[value] ?? [];
         this.change(() => {
           this.set = names.filter((name) => this.dim.byName.has(name));
         });
       },
-    },
-    h('option', { value: '' }, 'Replace with…'),
-    h('option', { value: 'top:' }, 'The top members'),
-    levels.map((level) => h('option', { value: `level:${level}` }, `Every member of ${levelName(level)}`)),
-    Object.keys(this.dim.subsets ?? {}).map((subset) => h('option', { value: `subset:${subset}` }, `The subset ${subset}`)));
+    });
+    this.drawQuick = () => mount(quick,
+      h('option', { value: '' }, 'Replace with…'),
+      h('option', { value: 'top:' }, 'The top members'),
+      levels.map((level) => h('option', { value: `level:${level}` }, `Every member of ${levelName(level)}`)),
+      Object.keys(this.dim.subsets ?? {}).map((subset) => h('option', { value: `subset:${subset}` }, `The subset ${subset}`)),
+      Object.keys(this.own).map((subset) => h('option', { value: `own:${subset}` }, `Your subset ${subset}`)));
+    this.drawQuick();
+    this.fetchOwn();
     // Copying gives the names, one to a line; pasting adds the members a list names.
     this.left.addEventListener('copy', (event) => this.copyNames(event, this.pickedInOrder()));
     this.right.addEventListener('copy', (event) => this.copyNames(event, this.marked.size ? this.set.filter((name) => this.marked.has(name)) : this.set));
@@ -698,6 +711,7 @@ class SetEditor {
         h('div', { class: 'toolbar' },
           quick,
           h('div', { class: 'grow' }),
+          this.keeps() ? h('button', { class: 'button small quiet', type: 'button', 'aria-haspopup': 'menu', title: 'Keep the set as one of your subsets, or take one away', onclick: (event) => this.keepMenu(event.currentTarget) }, icon('save', 14), 'Keep', icon('down', 12)) : null,
           h('button', { class: 'button small quiet', type: 'button', 'aria-haspopup': 'menu', title: 'Sort the set', onclick: (event) => this.sortMenu(event.currentTarget) }, icon('bars', 14), 'Sort', icon('down', 12)),
           h('button', { class: 'button small quiet', type: 'button', title: 'Add members by name or alias, from a list', onclick: () => this.pasteList() }, icon('paste', 14), 'Paste'),
           h('button', { class: 'button small quiet', type: 'button', onclick: () => this.change(() => { this.set = []; }) }, 'Clear')),
@@ -719,6 +733,89 @@ class SetEditor {
     this.leftRows.update();
     this.rightRows.update();
     return asked;
+  }
+
+  /* ---- The user's own subsets ---- */
+
+  /**
+   * Whether the user keeps subsets of their own: on a server with users, and not in a view
+   * as another user, which changes nothing of theirs.
+   */
+  keeps() {
+    return !state.open && !state.user?.viewer;
+  }
+
+  /** The user's own subsets of the dimension, offered beside its own once they come. */
+  async fetchOwn() {
+    if (state.open) return;
+    try {
+      this.own = await get(`/dimensions/${part(this.dim.name)}/private-subsets`, { quiet: true });
+    } catch {
+      // The dimension's own subsets are still there to choose.
+      return;
+    }
+    this.drawQuick();
+  }
+
+  keepMenu(at) {
+    const mine = Object.keys(this.own);
+    menu([
+      { label: 'Keep this set as one of your subsets…', icon: 'save', disabled: !this.set.length, action: () => this.keepOwn() },
+      mine.length ? { label: 'Take one of your subsets away…', icon: 'trash', action: () => this.removeOwn() } : null,
+    ], at);
+  }
+
+  /** Keeps the set as one of the user's own subsets, under a name they give. */
+  async keepOwn() {
+    const name = h('input', { class: 'input', id: 'subset-name', required: true, maxlength: 120 });
+    const kept = await dialog({
+      title: 'Keep as your subset',
+      confirm: 'Keep',
+      body: h('div', { class: 'facts' },
+        h('div', { class: 'field' }, h('label', { for: 'subset-name' }, 'Name'), name),
+        h('p', { class: 'hint' }, `The ${this.set.length.toLocaleString()} member${this.set.length === 1 ? '' : 's'} of the set, in order, kept for you alone: nobody else sees it. One of yours of the same name is replaced.`)),
+      onsubmit: async () => {
+        const subset = name.value.trim();
+        if (!subset) throw new Error('Give the subset a name.');
+        await put(`/dimensions/${part(this.dim.name)}/private-subsets/${part(subset)}`, { elements: this.set });
+        return subset;
+      },
+    });
+    if (!kept) return;
+    notify(`Kept the subset “${kept}” for you alone.`, 'good');
+    await this.fetchOwn();
+  }
+
+  /** Lists the user's own subsets of the dimension, each to be taken away. */
+  async removeOwn() {
+    const list = h('ul', { class: 'history-list' });
+    mount(list, Object.keys(this.own).map((name) => {
+      const item = h('li', {},
+        h('span', { class: 'grow' }, name),
+        h('span', { class: 'muted' }, `${this.own[name].length.toLocaleString()} member${this.own[name].length === 1 ? '' : 's'}`),
+        h('button', {
+          class: 'button small danger',
+          type: 'button',
+          'aria-label': `Take away the subset ${name}`,
+          onclick: async () => {
+            try {
+              await del(`/dimensions/${part(this.dim.name)}/private-subsets/${part(name)}`);
+            } catch (problem) {
+              notify(problem.message, 'bad');
+              return;
+            }
+            // The keys go on to the subset after, or before, or to Done.
+            const next = item.nextElementSibling ?? item.previousElementSibling;
+            item.remove();
+            if (!list.children.length) list.append(h('li', { class: 'muted' }, `You keep no subsets of ${this.dim.name} now.`));
+            (next?.querySelector('button') ?? list.closest('dialog')?.querySelector('button[type="submit"]'))?.focus();
+            notify(`Took away the subset “${name}”.`, 'good');
+          },
+        }, 'Take away'));
+      return item;
+    }));
+    await dialog({ title: `Your subsets of ${this.dim.name}`, confirm: 'Done', cancel: null, body: list });
+    await this.fetchOwn();
   }
 
   /** Puts names on the clipboard, one to a line. */

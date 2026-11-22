@@ -233,14 +233,20 @@ class Page {
 
   /** The middle of the element `css` finds, of the name given if one is, brought into view. */
   point(css, name) {
-    return this.waitFor(`(() => {
+    return this.waitFor(`(async () => {
       const element = [...document.querySelectorAll(${quoted(css)})].find((each) => {
         const box = each.getBoundingClientRect();
         const named = ${quoted(name ?? null)};
         return box.width > 0 && box.height > 0 && (named === null || each.getAttribute('aria-label') === named || each.textContent.trim() === named);
       });
       if (!element) return null;
-      element.scrollIntoView({ block: 'center', inline: 'center' });
+      // Brought into view only if out of it, as a person scrolls to what they cannot see.
+      const seen = element.getBoundingClientRect();
+      if (seen.top < 0 || seen.left < 0 || seen.bottom > innerHeight || seen.right > innerWidth) {
+        element.scrollIntoView({ block: 'center', inline: 'center' });
+      }
+      // The pointer goes where a frame has drawn it: what appeared since is drawn first.
+      await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
       const box = element.getBoundingClientRect();
       return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
     })()`, name ? `“${name}”` : css);
@@ -320,7 +326,8 @@ async function step(name, run) {
   } catch (problem) {
     const shot = join(folder, 'failed.png');
     await page.screenshot(shot).catch(() => {});
-    console.log(`  FAILED ${name}\n${String(problem.message).replace(/^/gm, '    ')}\n    The page as it was: ${shot}`);
+    const errors = page.errors.length ? `\n    The page's scripts failed:\n${page.errors.join('\n').replace(/^/gm, '      ')}` : '';
+    console.log(`  FAILED ${name}\n${String(problem.message).replace(/^/gm, '    ')}${errors}\n    The page as it was: ${shot}`);
     throw problem;
   }
   console.log(`  ok ${name} (${Date.now() - began} ms)`);
@@ -454,6 +461,32 @@ async function exploring() {
     await page.waitFor(`document.querySelector('dialog[open]')?.textContent.includes('You keep no views of this cube now.')`, 'the view, taken away');
     await page.click('dialog[open] button', 'Done');
     expect(quoted((await page.api('GET', views)).data) === '{}', 'The view is still kept.');
+  });
+  await step('A set kept as one\'s own subset is offered again, and taken away', async () => {
+    const subsets = '/dimensions/Account/private-subsets';
+    await page.click('.chip-main', 'Account2 members');
+    await page.waitFor(`document.querySelector('dialog[open]')?.getAttribute('aria-label') === 'Members of Account'`, 'the set editor');
+    await page.click('dialog[open] button', 'Keep');
+    await page.click('.menu [role="menuitem"]', 'Keep this set as one of your subsets…');
+    await page.waitFor(`document.querySelector('dialog[open] #subset-name')`, 'the dialog that keeps a subset');
+    await page.audit('Keeping a subset');
+    await page.fill('#subset-name', 'Costs');
+    await page.press('Enter');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Kept the subset'))`, 'the subset, kept');
+    const kept = (await page.api('GET', subsets)).data;
+    expect(quoted(kept) === quoted({ Costs: ['Salaries', 'Rent'] }), `The API keeps ${quoted(kept)}.`);
+    await page.waitFor(`[...document.querySelectorAll('dialog[open] option')].some((option) => option.textContent === 'Your subset Costs')`, 'the subset, offered to replace the set');
+    await page.audit('The set editor, with a subset of one\'s own');
+    await page.click('dialog[open] button', 'Keep');
+    await page.click('.menu [role="menuitem"]', 'Take one of your subsets away…');
+    await page.waitFor(`[...document.querySelectorAll('dialog[open]')].pop()?.getAttribute('aria-label') === 'Your subsets of Account'`, 'the user\'s subsets, to take away');
+    await page.audit('Taking a subset away');
+    await page.click('dialog[open] button', 'Take away the subset Costs');
+    await page.waitFor(`document.body.textContent.includes('You keep no subsets of Account now.')`, 'the subset, taken away');
+    await page.click('dialog[open] button', 'Done');
+    expect(quoted((await page.api('GET', subsets)).data) === '{}', 'The subset is still kept.');
+    await page.click('dialog[open] button', 'Cancel');
+    await page.waitFor(`!document.querySelector('dialog[open]')`, 'the set editor, closed');
   });
   await step('A cell\'s comments, history and detail open beside the grid', async () => {
     await page.click('td[data-r="1"][data-c="1"]');

@@ -12,7 +12,8 @@
 //! able only to read what they may read, which names the administrator viewing. Each is
 //! recorded in `audit.jsonl` before it is given.
 //!
-//! What a user keeps for themself, their own views, is kept with them ([`PrivateViews`]).
+//! What a user keeps for themself, their own views and subsets, is kept with them
+//! ([`Private`]).
 
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
@@ -27,13 +28,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use argon2::Argon2;
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher, PasswordVerifier};
-use epiphany_core::model::key;
+use epiphany_core::model::{ViewDef, key};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use utoipa::ToSchema;
 
+use crate::private::{Private, SUBSETS, VIEWS};
 use crate::storage::{read_json, write_json};
-use crate::views::PrivateViews;
 
 const FILE: &str = "users.json";
 /// Where what administrators do as others is recorded, one line each, beside the users.
@@ -238,7 +239,9 @@ pub struct Auth {
     /// Taken to add a line to the audit, one at a time.
     recording: Mutex<()>,
     /// The views each user keeps for themself, which go with them.
-    pub(crate) views: PrivateViews,
+    pub(crate) views: Private<ViewDef>,
+    /// The subsets each user keeps for themself, lists of members by name.
+    pub(crate) subsets: Private<Vec<String>>,
 }
 
 impl Auth {
@@ -271,7 +274,8 @@ impl Auth {
             checking: Semaphore::new(CHECKED_AT_ONCE),
             waiting: Semaphore::new(WAITING),
             recording: Mutex::default(),
-            views: PrivateViews::load(directory)?,
+            views: Private::load(directory, VIEWS)?,
+            subsets: Private::load(directory, SUBSETS)?,
         }))
     }
 
@@ -555,7 +559,7 @@ impl Auth {
         Ok(())
     }
 
-    /// Removes a user, ends their sessions and takes their views away. The last
+    /// Removes a user, ends their sessions and takes their views and subsets away. The last
     /// administrator cannot be removed.
     pub fn remove(&self, name: &str) -> Result<(), String> {
         let key = name.trim().to_lowercase();
@@ -572,7 +576,8 @@ impl Auth {
         self.end_sessions(&key);
         self.views
             .forget_user(&key)
-            .map_err(|error| format!("{name} is removed, but not their views: {error}"))
+            .and_then(|()| self.subsets.forget_user(&key))
+            .map_err(|error| format!("{name} is removed, but not all they kept: {error}"))
     }
 
     /// Ends every session of a user, their views as others with them; says how many there

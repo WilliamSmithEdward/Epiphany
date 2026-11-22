@@ -511,6 +511,157 @@ async fn a_users_views_are_their_own_and_go_with_them() {
 }
 
 #[tokio::test]
+async fn a_users_subsets_are_their_own_lists_of_members() {
+    let (home, app) = secured("private-subsets", None);
+    let admin = token(&app).await;
+    let reader = json!({ "password": PASSWORD, "role": "read" });
+    send(&app, "PUT", "/admin/users/lin", Some(&admin), Some(reader)).await;
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    let lin = signed["token"].as_str().unwrap().to_owned();
+    let subsets = "/dimensions/Period/private-subsets";
+
+    // A reader keeps a list of members, named or by alias and kept by name, which nobody
+    // else sees.
+    let spring = json!({ "elements": ["mar", "Apr", "M05", "Jun"] });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        &format!("{subsets}/Spring"),
+        Some(&lin),
+        Some(spring),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, theirs) = send(
+        &app,
+        "GET",
+        "/dimensions/period/private-subsets",
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, theirs),
+        (
+            StatusCode::OK,
+            json!({ "Spring": ["Mar", "Apr", "May", "Jun"] })
+        )
+    );
+    let (_, _, admins) = send(&app, "GET", subsets, Some(&admin), None).await;
+    assert_eq!(admins, json!({}));
+
+    // A member the dimension has not, none at all, and a dimension there is not, will not do.
+    let refusals = [
+        (
+            format!("{subsets}/Odd"),
+            json!({ "elements": ["Mar", "Nowhere"] }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!("{subsets}/None"),
+            json!({ "elements": [] }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/dimensions/Nowhere/private-subsets/Any".to_owned(),
+            json!({ "elements": ["Mar"] }),
+            StatusCode::NOT_FOUND,
+        ),
+    ];
+    for (path, body, expected) in refusals {
+        let (status, _, _) = send(&app, "PUT", &path, Some(&lin), Some(body)).await;
+        assert_eq!(status, expected, "{path}");
+    }
+
+    // A member since taken out of the dimension is left out of the list.
+    let (_, _, model) = send(&app, "GET", "/model", Some(&admin), None).await;
+    let mut period = model["model"]["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|dimension| dimension["name"] == "Period")
+        .unwrap()
+        .clone();
+    let elements = period["elements"].as_array_mut().unwrap();
+    elements.retain(|element| element["name"] != "Jun");
+    for element in elements.iter_mut() {
+        if let Some(children) = element.get_mut("children").and_then(Value::as_array_mut) {
+            children.retain(|child| child["name"] != "Jun");
+        }
+    }
+    let changed = json!({ "based_on": model["version"], "dimension": period });
+    let (status, _, answer) = send(
+        &app,
+        "PUT",
+        "/dimensions/Period",
+        Some(&admin),
+        Some(changed),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (_, _, theirs) = send(&app, "GET", subsets, Some(&lin), None).await;
+    assert_eq!(theirs, json!({ "Spring": ["Mar", "Apr", "May"] }));
+
+    // A view as Lin sees none of them, and keeps or takes away nothing of Lin's.
+    let asked = json!({ "user": "lin" });
+    let (_, _, viewing) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(asked)).await;
+    let viewing = viewing["token"].as_str().unwrap().to_owned();
+    let (_, _, seen) = send(&app, "GET", subsets, Some(&viewing), None).await;
+    assert_eq!(seen, json!({}));
+    let summer = json!({ "elements": ["Jul"] });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        &format!("{subsets}/Summer"),
+        Some(&viewing),
+        Some(summer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // They are kept on disk, beside the users, and go with their user.
+    let kept = || -> Value {
+        serde_json::from_str(&fs::read_to_string(home.0.join("subsets.json")).unwrap()).unwrap()
+    };
+    assert_eq!(
+        kept()["lin"]["Period"]["Spring"],
+        json!(["Mar", "Apr", "May", "Jun"])
+    );
+    let (status, _, _) = send(
+        &app,
+        "DELETE",
+        &format!("{subsets}/SPRING"),
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, gone) = send(
+        &app,
+        "DELETE",
+        &format!("{subsets}/Spring"),
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, &gone["code"]),
+        (StatusCode::NOT_FOUND, &json!("unknown_subset"))
+    );
+    let autumn = json!({ "elements": ["Sep"] });
+    send(
+        &app,
+        "PUT",
+        &format!("{subsets}/Autumn"),
+        Some(&lin),
+        Some(autumn),
+    )
+    .await;
+    send(&app, "DELETE", "/admin/users/lin", Some(&admin), None).await;
+    assert_eq!(kept(), json!({}));
+}
+
+#[tokio::test]
 async fn a_cells_history_says_who_changed_it_and_from_what_to_what() {
     let (_home, app) = secured("history", None);
     let token = token(&app).await;
