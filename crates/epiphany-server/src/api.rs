@@ -18,8 +18,8 @@ use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
 use epiphany_core::database::{
-    Batch, CellRef, CellWrite, Database, Error, Explanation, LockMode, ModelUpdate, Spread,
-    TransactionId,
+    CellRef, CellRefs, CellWrite, CellWrites, Database, Error, Explanation, LockMode, ModelUpdate,
+    Spread, TransactionId,
 };
 use epiphany_core::mdx::QueryResult;
 use epiphany_core::model::{
@@ -642,7 +642,8 @@ impl From<&Dimension> for DimensionView {
 struct ReadRequest {
     /// Read within this transaction, seeing its pending writes.
     transaction: Option<u64>,
-    cells: Vec<CellRef>,
+    #[schema(value_type = Vec<CellRef>)]
+    cells: CellRefs,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -665,7 +666,7 @@ struct WriteRequest {
     /// at once.
     transaction: Option<u64>,
     #[schema(value_type = Vec<CellWrite>)]
-    cells: Batch,
+    cells: CellWrites,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -1008,19 +1009,16 @@ async fn read_cells(
     Body(request): Body<ReadRequest>,
 ) -> Json<ReadResponse> {
     let database = database.read().unwrap();
-    let result = |(cell, read): (&CellRef, Result<Scalar, Error>)| match allow(
-        &grants,
-        &cell.cube,
-        Role::Read,
-    )
-    .and_then(|()| Ok(read?))
-    {
-        Ok(value) => CellResult::Value(value),
-        Err(error) => CellResult::Error(error),
+    let result = |(cell, read): (usize, Result<Scalar, Error>)| {
+        let allowed = allow(&grants, request.cells.cube(cell), Role::Read);
+        match allowed.and_then(|()| Ok(read?)) {
+            Ok(value) => CellResult::Value(value),
+            Err(error) => CellResult::Error(error),
+        }
     };
-    let cells = database.read_many(request.transaction, &request.cells);
+    let cells = database.read_batch(request.transaction, &request.cells);
     Json(ReadResponse {
-        cells: request.cells.iter().zip(cells).map(result).collect(),
+        cells: cells.into_iter().enumerate().map(result).collect(),
     })
 }
 

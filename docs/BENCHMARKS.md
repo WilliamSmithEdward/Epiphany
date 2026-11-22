@@ -121,6 +121,11 @@ its names and its value, and each name is looked up once. The write of 500,000 c
 reaches 157 MB and takes 0.48 s; 50,000 cells take 32.9 ms through the server rather
 than 55.7 ms (2026-11-22).
 
+Cells read by name are taken in the same way, and the same names looked up once for a
+request. Read where nothing is stored, 50,000 cells took 12 ms to take in and 11 ms to
+look up; they take 5.8 ms and 3.3 ms. Through the server 5,000 cells are answered in 3.8
+ms rather than 6.2 ms, and 50,000 in 31.5 ms rather than 53.8 ms (2026-11-22).
+
 Reading a cell made a list of where the cell is, and reading the cell of one member made
 a tuple to hold that member; both are now done without. The grid of 10,000 leaf cells
 goes from 2.4 ms to 2.2 ms, that of a calculated member from 2.7 ms to 2.4 ms, and the

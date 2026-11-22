@@ -1,4 +1,4 @@
-//! Cell writes by name as a request brings them, each name kept once.
+//! Cells by name as a request brings them, each name kept once and looked up once.
 
 use std::fmt;
 
@@ -6,8 +6,10 @@ use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 
-use super::CellWrite;
+use super::{CellRef, CellWrite};
 use crate::Scalar;
+use crate::cells::CellError;
+use crate::model::{ElementId, Model};
 
 /// Writes to cells by name, read as a list of [`CellWrite`]s is.
 ///
@@ -17,64 +19,58 @@ use crate::Scalar;
 /// small texts; here a cell takes some 50, and a name is looked up once, not once for
 /// every cell it appears in.
 #[derive(Debug, Clone, Default)]
-pub struct Batch {
+pub struct CellWrites {
+    listed: Listed,
+    values: Vec<Scalar>,
+}
+
+/// Cells by name, read as a list of [`CellRef`]s is, each name kept once as in
+/// [`CellWrites`].
+#[derive(Debug, Clone, Default)]
+pub struct CellRefs {
+    listed: Listed,
+}
+
+/// The names of a list of cells.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Listed {
     names: Vec<String>,
-    /// Where each name is in `names`.
+    /// Where each name is in `names`, while the list is read.
     numbered: FxHashMap<String, u32>,
-    cells: Vec<Cell>,
+    /// The number of each cell's cube name, and where its element names start in
+    /// `elements`.
+    cells: Vec<(u32, u32)>,
     /// The numbers of each cell's element names, one cell after another.
     elements: Vec<u32>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-struct Cell {
-    cube: u32,
-    /// Where the cell's element names start in `elements`.
-    from: u32,
-    value: Scalar,
-}
-
-impl Batch {
-    pub fn len(&self) -> usize {
+impl Listed {
+    pub(crate) fn len(&self) -> usize {
         self.cells.len()
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
-    }
-
-    /// The number of a cell's cube name.
-    pub(crate) fn cube_name(&self, cell: usize) -> u32 {
-        self.cells[cell].cube
-    }
-
     /// The numbers of a cell's element names.
-    pub(crate) fn element_names(&self, cell: usize) -> &[u32] {
-        let from = self.cells[cell].from as usize;
+    fn element_names(&self, cell: usize) -> &[u32] {
+        let from = self.cells[cell].1 as usize;
         let to = self
             .cells
             .get(cell + 1)
-            .map_or(self.elements.len(), |next| next.from as usize);
+            .map_or(self.elements.len(), |&(_, next)| next as usize);
         &self.elements[from..to]
     }
 
-    /// A name by its number.
-    pub(crate) fn name(&self, number: u32) -> &str {
+    fn name(&self, number: u32) -> &str {
         &self.names[number as usize]
     }
 
-    /// How many names there are.
-    pub(crate) fn names(&self) -> usize {
-        self.names.len()
-    }
-
     /// A cell's cube, by name.
-    pub fn cube(&self, cell: usize) -> &str {
-        self.name(self.cube_name(cell))
+    pub(crate) fn cube(&self, cell: usize) -> &str {
+        self.name(self.cells[cell].0)
     }
 
-    pub(crate) fn value(&self, cell: usize) -> &Scalar {
-        &self.cells[cell].value
+    /// A cell's elements, by name.
+    pub(crate) fn at(&self, cell: usize) -> impl Iterator<Item = &str> {
+        self.element_names(cell).iter().map(|&name| self.name(name))
     }
 
     fn number(&mut self, name: &str) -> u32 {
@@ -87,44 +83,176 @@ impl Batch {
         number
     }
 
-    fn push(&mut self, cube: u32, elements: &[u32], value: Scalar) {
+    fn push<'a>(&mut self, cube: &str, at: impl IntoIterator<Item = &'a str>) {
+        let cube = self.number(cube);
         let from = self.elements.len() as u32;
-        self.elements.extend_from_slice(elements);
-        self.cells.push(Cell { cube, from, value });
-    }
-}
-
-impl From<&[CellWrite]> for Batch {
-    fn from(writes: &[CellWrite]) -> Self {
-        let mut batch = Batch::default();
-        let mut elements = Vec::new();
-        for write in writes {
-            let cube = batch.number(&write.cube);
-            elements.clear();
-            elements.extend(write.at.iter().map(|name| batch.number(name)));
-            batch.push(cube, &elements, write.value.clone());
+        for name in at {
+            let name = self.number(name);
+            self.elements.push(name);
         }
-        batch.numbered = FxHashMap::default();
-        batch
+        self.cells.push((cube, from));
+    }
+
+    /// Done with reading: the names are no longer looked up by text.
+    fn read(mut self) -> Self {
+        self.numbered = FxHashMap::default();
+        self
     }
 }
 
-impl<'de> Deserialize<'de> for Batch {
+impl CellWrites {
+    pub fn len(&self) -> usize {
+        self.listed.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.listed.len() == 0
+    }
+
+    /// A cell's cube, by name.
+    pub fn cube(&self, cell: usize) -> &str {
+        self.listed.cube(cell)
+    }
+
+    pub(crate) fn listed(&self) -> &Listed {
+        &self.listed
+    }
+
+    pub(crate) fn value(&self, cell: usize) -> &Scalar {
+        &self.values[cell]
+    }
+}
+
+impl CellRefs {
+    pub fn len(&self) -> usize {
+        self.listed.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.listed.len() == 0
+    }
+
+    /// A cell's cube, by name.
+    pub fn cube(&self, cell: usize) -> &str {
+        self.listed.cube(cell)
+    }
+
+    pub(crate) fn listed(&self) -> &Listed {
+        &self.listed
+    }
+}
+
+impl From<&[CellWrite]> for CellWrites {
+    fn from(writes: &[CellWrite]) -> Self {
+        let mut listed = Listed::default();
+        for write in writes {
+            listed.push(&write.cube, write.at.iter().map(String::as_str));
+        }
+        let values = writes.iter().map(|write| write.value.clone()).collect();
+        Self {
+            listed: listed.read(),
+            values,
+        }
+    }
+}
+
+impl From<&[CellRef]> for CellRefs {
+    fn from(cells: &[CellRef]) -> Self {
+        let mut listed = Listed::default();
+        for cell in cells {
+            listed.push(&cell.cube, cell.at.iter().map(String::as_str));
+        }
+        Self {
+            listed: listed.read(),
+        }
+    }
+}
+
+/// Looks the names of a list of cells up in a model: each name once as a cube, and once in
+/// each dimension it is met in.
+pub(crate) struct Resolver<'a> {
+    model: &'a Model,
+    listed: &'a Listed,
+    cubes: Vec<Option<Option<usize>>>,
+    elements: FxHashMap<(u32, u32), Option<ElementId>>,
+    at: Vec<ElementId>,
+}
+
+impl<'a> Resolver<'a> {
+    pub(crate) fn new(model: &'a Model, listed: &'a Listed) -> Self {
+        Self {
+            model,
+            listed,
+            cubes: vec![None; listed.names.len()],
+            elements: FxHashMap::default(),
+            at: Vec::new(),
+        }
+    }
+
+    /// A cell's cube and coordinate, as [`crate::cells::coordinate`] finds them.
+    pub(crate) fn locate(&mut self, cell: usize) -> Result<(usize, &[ElementId]), CellError> {
+        let (model, listed) = (self.model, self.listed);
+        let name = listed.cells[cell].0;
+        let cube =
+            *self.cubes[name as usize].get_or_insert_with(|| model.cube_id(listed.name(name)));
+        let cube = cube.ok_or_else(|| CellError::UnknownCube {
+            cube: listed.name(name).to_owned(),
+        })?;
+        let dimensions = &model.cubes()[cube].dimensions;
+        let names = listed.element_names(cell);
+        if names.len() != dimensions.len() {
+            return Err(CellError::Arity {
+                expected: dimensions.len(),
+                found: names.len(),
+            });
+        }
+        self.at.clear();
+        for (&id, &name) in dimensions.iter().zip(names) {
+            let dimension = &model.dimensions()[id as usize];
+            let found = self
+                .elements
+                .entry((id, name))
+                .or_insert_with(|| dimension.element_id(listed.name(name)));
+            self.at.push(found.ok_or_else(|| CellError::UnknownElement {
+                dimension: dimension.name.clone(),
+                element: listed.name(name).to_owned(),
+            })?);
+        }
+        Ok((cube, &self.at))
+    }
+}
+
+impl<'de> Deserialize<'de> for CellWrites {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mut batch = Batch::default();
+        let mut writes = CellWrites::default();
         deserializer.deserialize_seq(Reading {
-            batch: &mut batch,
+            listed: &mut writes.listed,
+            values: Some(&mut writes.values),
             elements: Vec::new(),
         })?;
-        batch.numbered = FxHashMap::default();
-        Ok(batch)
+        writes.listed = std::mem::take(&mut writes.listed).read();
+        Ok(writes)
     }
 }
 
-/// The list, read a cell at a time into the batch. `elements` is kept from one cell to the
-/// next.
+impl<'de> Deserialize<'de> for CellRefs {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut refs = CellRefs::default();
+        deserializer.deserialize_seq(Reading {
+            listed: &mut refs.listed,
+            values: None,
+            elements: Vec::new(),
+        })?;
+        refs.listed = std::mem::take(&mut refs.listed).read();
+        Ok(refs)
+    }
+}
+
+/// The list, read a cell at a time: with a value to each cell where there are `values`,
+/// and none allowed where there are not. `elements` is kept from one cell to the next.
 struct Reading<'a> {
-    batch: &'a mut Batch,
+    listed: &'a mut Listed,
+    values: Option<&'a mut Vec<Scalar>>,
     elements: Vec<u32>,
 }
 
@@ -132,17 +260,18 @@ impl<'de> Visitor<'de> for Reading<'_> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a list of cell writes")
+        formatter.write_str("a list of cells")
     }
 
     fn visit_seq<A: SeqAccess<'de>>(mut self, mut cells: A) -> Result<(), A::Error> {
-        while cells.next_element_seed(Write(&mut self))?.is_some() {}
+        while cells.next_element_seed(Cell(&mut self))?.is_some() {}
         Ok(())
     }
 }
 
-/// One cell write: an object of its cube, the names of its elements and its value.
-struct Write<'a, 'b>(&'a mut Reading<'b>);
+/// One cell: an object of its cube, the names of its elements, and its value if it is
+/// written.
+struct Cell<'a, 'b>(&'a mut Reading<'b>);
 
 #[derive(Deserialize)]
 #[serde(field_identifier, rename_all = "lowercase")]
@@ -152,7 +281,7 @@ enum Field {
     Value,
 }
 
-impl<'de> DeserializeSeed<'de> for Write<'_, '_> {
+impl<'de> DeserializeSeed<'de> for Cell<'_, '_> {
     type Value = ();
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<(), D::Error> {
@@ -160,27 +289,34 @@ impl<'de> DeserializeSeed<'de> for Write<'_, '_> {
     }
 }
 
-impl<'de> Visitor<'de> for Write<'_, '_> {
+impl<'de> Visitor<'de> for Cell<'_, '_> {
     type Value = ();
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        formatter.write_str("a cell write, with its cube, elements and value")
+        formatter.write_str("a cell, with its cube and elements")
     }
 
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<(), A::Error> {
-        let Reading { batch, elements } = self.0;
+        let Reading {
+            listed,
+            values,
+            elements,
+        } = self.0;
         let (mut cube, mut at, mut value) = (None, false, None);
         while let Some(field) = map.next_key()? {
             match field {
                 Field::Cube if cube.is_some() => return Err(de::Error::duplicate_field("cube")),
                 Field::At if at => return Err(de::Error::duplicate_field("at")),
+                Field::Value if values.is_none() => {
+                    return Err(de::Error::unknown_field("value", &["cube", "at"]));
+                }
                 Field::Value if value.is_some() => {
                     return Err(de::Error::duplicate_field("value"));
                 }
-                Field::Cube => cube = Some(map.next_value_seed(Name(batch))?),
+                Field::Cube => cube = Some(map.next_value_seed(Name(listed))?),
                 Field::At => {
                     elements.clear();
-                    map.next_value_seed(Names { batch, elements })?;
+                    map.next_value_seed(Names { listed, elements })?;
                     at = true;
                 }
                 Field::Value => value = Some(map.next_value::<Scalar>()?),
@@ -190,14 +326,18 @@ impl<'de> Visitor<'de> for Write<'_, '_> {
         if !at {
             return Err(de::Error::missing_field("at"));
         }
-        let value = value.ok_or_else(|| de::Error::missing_field("value"))?;
-        batch.push(cube, elements, value);
+        if let Some(values) = values {
+            values.push(value.ok_or_else(|| de::Error::missing_field("value"))?);
+        }
+        let from = listed.elements.len() as u32;
+        listed.elements.extend_from_slice(elements);
+        listed.cells.push((cube, from));
         Ok(())
     }
 }
 
 /// A name, numbered as it is read.
-struct Name<'a>(&'a mut Batch);
+struct Name<'a>(&'a mut Listed);
 
 impl<'de> DeserializeSeed<'de> for Name<'_> {
     type Value = u32;
@@ -221,7 +361,7 @@ impl Visitor<'_> for Name<'_> {
 
 /// A list of element names, numbered into `elements` as they are read.
 struct Names<'a> {
-    batch: &'a mut Batch,
+    listed: &'a mut Listed,
     elements: &'a mut Vec<u32>,
 }
 
@@ -241,7 +381,7 @@ impl<'de> Visitor<'de> for Names<'_> {
     }
 
     fn visit_seq<A: SeqAccess<'de>>(self, mut names: A) -> Result<(), A::Error> {
-        while let Some(name) = names.next_element_seed(Name(&mut *self.batch))? {
+        while let Some(name) = names.next_element_seed(Name(&mut *self.listed))? {
             self.elements.push(name);
         }
         Ok(())
@@ -252,46 +392,45 @@ impl<'de> Visitor<'de> for Names<'_> {
 mod tests {
     use super::*;
 
-    fn cells(batch: &Batch) -> Vec<(String, Vec<String>, Scalar)> {
-        (0..batch.len())
+    fn cells(listed: &Listed) -> Vec<(String, Vec<String>)> {
+        (0..listed.len())
             .map(|cell| {
-                let at = batch.element_names(cell).iter();
-                let at = at.map(|&name| batch.name(name).to_owned()).collect();
-                (batch.cube(cell).to_owned(), at, batch.value(cell).clone())
+                let at = listed.at(cell).map(str::to_owned).collect();
+                (listed.cube(cell).to_owned(), at)
             })
             .collect()
     }
 
     #[test]
-    fn a_batch_reads_as_its_cell_writes_do_and_keeps_each_name_once() {
+    fn cells_read_as_their_cell_writes_and_refs_do_and_keep_each_name_once() {
         let text = r#"[
             { "cube": "C", "at": ["a", "b"], "value": 1 },
             { "value": "note", "at": ["b", "a", "c"], "cube": "C" },
             { "at": [], "cube": "D", "value": 0 }
         ]"#;
-        let batch: Batch = serde_json::from_str(text).unwrap();
+        let batch: CellWrites = serde_json::from_str(text).unwrap();
         let writes: Vec<CellWrite> = serde_json::from_str(text).unwrap();
-        assert_eq!(cells(&batch), cells(&Batch::from(writes.as_slice())));
-        let expected = |cube: &str, at: &[&str], value: Scalar| {
-            (
-                cube.to_owned(),
-                at.iter().map(|&n| n.to_owned()).collect(),
-                value,
-            )
-        };
-        assert_eq!(
-            cells(&batch),
-            [
-                expected("C", &["a", "b"], Scalar::Number(1.0)),
-                expected("C", &["b", "a", "c"], Scalar::Text("note".to_owned())),
-                expected("D", &[], Scalar::Number(0.0)),
-            ]
-        );
-        assert_eq!(batch.names(), 5);
+        let named =
+            |cube: &str, at: &[&str]| (cube.to_owned(), at.iter().map(|&n| n.to_owned()).collect());
+        let expected = [
+            named("C", &["a", "b"]),
+            named("C", &["b", "a", "c"]),
+            named("D", &[]),
+        ];
+        assert_eq!(cells(&batch.listed), expected);
+        assert_eq!(cells(&CellWrites::from(writes.as_slice()).listed), expected);
+        let values: Vec<Scalar> = writes.into_iter().map(|write| write.value).collect();
+        assert_eq!(batch.values, values);
+        assert_eq!(batch.listed.names.len(), 5);
+
+        let text = r#"[{ "cube": "C", "at": ["a", "b"] }, { "at": ["b"], "cube": "D" }]"#;
+        let refs: CellRefs = serde_json::from_str(text).unwrap();
+        let expected = [named("C", &["a", "b"]), named("D", &["b"])];
+        assert_eq!(cells(&refs.listed), expected);
     }
 
     #[test]
-    fn a_cell_write_with_a_field_missing_repeated_or_unknown_is_refused() {
+    fn a_cell_with_a_field_missing_repeated_or_unknown_is_refused() {
         for (text, refused) in [
             (r#"[{ "cube": "C", "at": ["a"] }]"#, "missing field `value`"),
             (r#"[{ "at": ["a"], "value": 1 }]"#, "missing field `cube`"),
@@ -309,8 +448,17 @@ mod tests {
                 "expected a name",
             ),
         ] {
-            let error = serde_json::from_str::<Batch>(text).unwrap_err().to_string();
+            let error = serde_json::from_str::<CellWrites>(text)
+                .unwrap_err()
+                .to_string();
             assert!(error.contains(refused), "{text}: {error}");
         }
+        let error = serde_json::from_str::<CellRefs>(r#"[{ "cube": "C", "at": [], "value": 1 }]"#);
+        assert!(
+            error
+                .unwrap_err()
+                .to_string()
+                .contains("unknown field `value`")
+        );
     }
 }
