@@ -823,7 +823,7 @@ impl Database {
         transaction: Option<TransactionId>,
         text: &str,
     ) -> Result<QueryResult, Error> {
-        self.query_as(transaction, text, &|_| true, &[])
+        self.query_as(transaction, text, &|_| true, &[], &|_, _| None)
     }
 
     /// Answers an MDX query for someone who may read only some cubes: `may_read` says which,
@@ -831,13 +831,16 @@ impl Database {
     /// the model's rules read is the model's business and is not asked about. `standing`
     /// names members, `(dimension, member)`, to stand at in place of those the query's WHERE
     /// names for their dimensions, or beside them; an axis that places one of their
-    /// dimensions decides it.
+    /// dimensions decides it. `own` finds the subsets they keep for themselves, which
+    /// `TM1SubsetToSet` with "private" uses: by dimension and name, the names of a subset's
+    /// members.
     pub fn query_as(
         &self,
         transaction: Option<TransactionId>,
         text: &str,
         may_read: &dyn Fn(&str) -> bool,
         standing: &[(&str, &str)],
+        own: &dyn Fn(&str, &str) -> Option<Vec<String>>,
     ) -> Result<QueryResult, Error> {
         let query = mdx::parse(text)?;
         let cube = self.cube_id(&query.cube)?;
@@ -860,7 +863,8 @@ impl Database {
         let expect = |cells: &[&[ElementId]]| reader.expect(cube, cells);
         let occupied =
             |most: usize, show: &mut dyn FnMut(&[ElementId])| reader.occupied(cube, most, show);
-        Ok(query.evaluate(&self.model, cube, &read, &expect, &occupied, standing)?)
+        let own = Some(own);
+        Ok(query.evaluate(&self.model, cube, &read, &expect, &occupied, standing, own)?)
     }
 
     /// The elements a subset of a dimension selects now: as the model worked them out, or,

@@ -602,12 +602,46 @@ async fn a_users_subsets_are_their_own_lists_of_members() {
     let (_, _, theirs) = send(&app, "GET", subsets, Some(&lin), None).await;
     assert_eq!(theirs, json!({ "Spring": ["Mar", "Apr", "May"] }));
 
+    // Lin's queries, and Lin's own views, may take them with TM1SubsetToSet's "private".
+    let mdx =
+        "SELECT TM1SubsetToSet([Period], 'spring', 'private') ON COLUMNS FROM [General Ledger]";
+    let query = json!({ "mdx": mdx });
+    let columns = |answer: &Value| -> Vec<String> {
+        let tuples = answer["axes"][0]["tuples"].as_array().unwrap();
+        let names = tuples
+            .iter()
+            .map(|tuple| tuple[0]["name"].as_str().unwrap());
+        names.map(str::to_owned).collect()
+    };
+    let (status, _, answer) = send(&app, "POST", "/mdx", Some(&lin), Some(query.clone())).await;
+    assert_eq!(
+        (status, columns(&answer)),
+        (
+            StatusCode::OK,
+            vec!["Mar".to_owned(), "Apr".to_owned(), "May".to_owned()]
+        )
+    );
+    let view = "/cubes/General%20Ledger/private-views/Spring";
+    let (status, _, _) = send(&app, "PUT", view, Some(&lin), Some(query.clone())).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // Nobody else's queries find them.
+    let (status, _, refused) = send(&app, "POST", "/mdx", Some(&admin), Some(query.clone())).await;
+    assert_eq!(
+        (status, &refused["message"]),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!("you have no subset 'spring' of dimension 'Period'")
+        )
+    );
+
     // A view as Lin sees none of them, and keeps or takes away nothing of Lin's.
     let asked = json!({ "user": "lin" });
     let (_, _, viewing) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(asked)).await;
     let viewing = viewing["token"].as_str().unwrap().to_owned();
     let (_, _, seen) = send(&app, "GET", subsets, Some(&viewing), None).await;
     assert_eq!(seen, json!({}));
+    let (status, _, _) = send(&app, "POST", "/mdx", Some(&viewing), Some(query)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     let summer = json!({ "elements": ["Jul"] });
     let (status, _, _) = send(
         &app,

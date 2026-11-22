@@ -115,6 +115,9 @@ pub(super) struct Evaluator<'a> {
     expect: Expect<'a>,
     /// Shows the cells of the cube that may hold something, if it can.
     occupied: Occupied<'a>,
+    /// The subsets of the one asking, for `TM1SubsetToSet` with "private"; none where nobody
+    /// asks, as for the model's views, subsets and rules.
+    own: Option<Own<'a>>,
     calculated: Vec<Calculated<'a>>,
     sets: HashMap<String, Vec<Tuple>>,
     /// How many calculated members are being evaluated inside one another.
@@ -130,6 +133,10 @@ pub(crate) type Expect<'a> = &'a dyn Fn(&[&[ElementId]]);
 /// Shows every leaf cell of the cube that may hold something, unless there are more than a
 /// number of them, or says that it cannot.
 pub(crate) type Occupied<'a> = &'a dyn Fn(usize, &mut dyn FnMut(&[ElementId])) -> bool;
+
+/// Finds a subset of the one asking a query, by its dimension's name and its own: the names
+/// of its members.
+pub(crate) type Own<'a> = &'a dyn Fn(&str, &str) -> Option<Vec<String>>;
 
 /// For work whose cells are read one at a time.
 pub(super) fn unexpected(_: &[&[ElementId]]) {}
@@ -196,7 +203,9 @@ impl Query {
     /// after saying through `expect` which cells of the cube the axes will ask for.
     /// `standing` names members, `(dimension, member)`, that the query stands at in place of
     /// those its WHERE names for their dimensions, or beside them; where an axis places one
-    /// of their dimensions, the axis decides it.
+    /// of their dimensions, the axis decides it. `own` finds the subsets of the one asking,
+    /// where someone asks.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn evaluate(
         &self,
         model: &Model,
@@ -205,11 +214,13 @@ impl Query {
         expect: Expect,
         occupied: Occupied,
         standing: &[(&str, &str)],
+        own: Option<Own>,
     ) -> Evaluated<QueryResult> {
         let cube = &model.cubes()[cube_id];
         let mut evaluator = Evaluator::new(model, cube_id, cube, read);
         evaluator.expect = expect;
         evaluator.occupied = occupied;
+        evaluator.own = own;
         for member in &self.members {
             let [dimension, .., name] = member.name.as_slice() else {
                 return fail("a calculated member is named [Dimension].[Name]");
@@ -513,6 +524,7 @@ impl<'a> Evaluator<'a> {
             read,
             expect: &unexpected,
             occupied: &|_, _| false,
+            own: None,
             calculated: Vec::new(),
             sets: HashMap::new(),
             depth: Cell::new(0),
@@ -1132,25 +1144,54 @@ impl<'a> Evaluator<'a> {
                 })
             }
             "TM1SUBSETTOSET" => {
-                // A third argument says whether the subset is public or private; here
-                // every subset is public, so it is read past.
+                // A third argument says whether the subset is the model's, "public", or one
+                // the one asking keeps for themself, "private".
                 count(2..=3)?;
                 let dimension = self.evaluate(&arguments[0], context)?;
                 let name = self.evaluate(&arguments[1], context)?;
                 let (Datum::Dimension(position), Datum::Text(name)) = (dimension, name) else {
                     return fail("TM1SUBSETTOSET takes a dimension and a subset name in quotes");
                 };
+                let private = match arguments.get(2).map(|kind| self.evaluate(kind, context)) {
+                    None => false,
+                    Some(kind) => match kind? {
+                        Datum::Text(kind) if kind.eq_ignore_ascii_case("public") => false,
+                        Datum::Text(kind) if kind.eq_ignore_ascii_case("private") => true,
+                        _ => {
+                            return fail("TM1SUBSETTOSET's third argument is 'public' or 'private'");
+                        }
+                    },
+                };
                 let dimension = self.dimension(position);
-                let subset = dimension.subset(&name).ok_or_else(|| {
-                    let dimension = &dimension.name;
-                    MdxError::new(format!("dimension '{dimension}' has no subset '{name}'"))
-                })?;
-                // A subset that reads cells is worked out afresh, reading them as this does.
-                let now = match subset.reading() {
-                    Some(set) => {
-                        elements(self.model, self.cube.dimensions[position], set, self.read)?
+                let now: Vec<ElementId> = if private {
+                    let Some(own) = self.own else {
+                        return fail(
+                            "the model's views, subsets and rules cannot take anyone's private subsets",
+                        );
+                    };
+                    let members = own(&dimension.name, &name).ok_or_else(|| {
+                        let dimension = &dimension.name;
+                        MdxError::new(format!(
+                            "you have no subset '{name}' of dimension '{dimension}'"
+                        ))
+                    })?;
+                    // A member the dimension no longer has is left out.
+                    let found = members
+                        .iter()
+                        .filter_map(|member| dimension.element_id(member));
+                    found.collect()
+                } else {
+                    let subset = dimension.subset(&name).ok_or_else(|| {
+                        let dimension = &dimension.name;
+                        MdxError::new(format!("dimension '{dimension}' has no subset '{name}'"))
+                    })?;
+                    // A subset that reads cells is worked out afresh, reading them as this does.
+                    match subset.reading() {
+                        Some(set) => {
+                            elements(self.model, self.cube.dimensions[position], set, self.read)?
+                        }
+                        None => subset.elements.clone(),
                     }
-                    None => subset.elements.clone(),
                 };
                 let member = |id: ElementId| {
                     vec![Member {

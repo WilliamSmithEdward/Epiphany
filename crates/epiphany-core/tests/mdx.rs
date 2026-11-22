@@ -111,8 +111,9 @@ fn columns_rows_and_a_slicer_address_cells() {
 #[test]
 fn members_stood_at_take_the_slicers_place() {
     let database = database();
-    let stood =
-        |mdx: &str, standing: &[(&str, &str)]| database.query_as(None, mdx, &|_| true, standing);
+    let stood = |mdx: &str, standing: &[(&str, &str)]| {
+        database.query_as(None, mdx, &|_| true, standing, &|_, _| None)
+    };
     let unique = |result: &QueryResult| -> Vec<String> {
         result
             .slicer

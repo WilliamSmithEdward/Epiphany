@@ -107,6 +107,10 @@ fn a_bad_subset_makes_the_model_invalid() {
             "invalid MDX in subset 'A' of dimension 'Period': dimension 'Period' has no subset 'B'",
         ),
         (
+            json!({ "S": { "mdx": "TM1SubsetToSet([Period], 'Mine', 'private')" } }),
+            "invalid MDX in subset 'S' of dimension 'Period': the model's views, subsets and rules cannot take anyone's private subsets",
+        ),
+        (
             json!({ "S": { "elements": [] }, "s ": { "elements": [] } }),
             "duplicate subset 's ' in dimension 'Period'",
         ),
@@ -130,6 +134,10 @@ fn a_bad_view_makes_the_model_invalid() {
         (
             json!({ "V": { "mdx": "SELECT FROM" } }),
             "invalid MDX in view 'V' of cube 'Sales': expected a cube name at character 11",
+        ),
+        (
+            json!({ "V": { "mdx": "SELECT TM1SubsetToSet([Period], 'Mine', 'private') ON COLUMNS FROM [Sales]" } }),
+            "invalid MDX in view 'V' of cube 'Sales': the model's views, subsets and rules cannot take anyone's private subsets",
         ),
     ];
     for (views, expected) in cases {
@@ -284,6 +292,50 @@ fn a_subset_that_reads_cells_selects_what_they_say_when_it_is_used() {
         .unwrap();
     assert_eq!(ask(&database, Some(transaction), "Leader"), ["South"]);
     assert_eq!(ask(&database, None, "Leader"), ["North"]);
+}
+
+#[test]
+fn a_query_may_use_a_subset_its_asker_keeps_for_themself() {
+    let database = database();
+    // What the one asking keeps: Spring of Period, by name or alias, with a member the
+    // dimension no longer has.
+    let own = |dimension: &str, subset: &str| -> Option<Vec<String>> {
+        let theirs = dimension == "Period" && subset.eq_ignore_ascii_case("spring");
+        theirs.then(|| ["M05", "Smarch", "Apr"].map(str::to_owned).to_vec())
+    };
+    let columns = |subset: &str, third: &str| -> Result<Vec<String>, Error> {
+        let query =
+            format!("SELECT TM1SubsetToSet([Period], '{subset}'{third}) ON COLUMNS FROM [Sales]");
+        let result = database.query_as(None, &query, &|_| true, &[], &own)?;
+        Ok(result.axes[0]
+            .tuples
+            .iter()
+            .map(|tuple| tuple[0].name.clone())
+            .collect())
+    };
+    // "private" takes the asker's own, in its order, without what the dimension has not.
+    assert_eq!(columns("Spring", ", 'private'").unwrap(), ["May", "Apr"]);
+    assert_eq!(columns("SPRING", ", 'Private'").unwrap(), ["May", "Apr"]);
+    // Otherwise the model's subset, which is another thing of the same name or none.
+    assert_eq!(columns("First half", ", 'public'").unwrap(), ["Jan", "Feb"]);
+    assert_eq!(
+        columns("Spring", "").unwrap_err().to_string(),
+        "dimension 'Period' has no subset 'Spring'"
+    );
+    assert_eq!(
+        columns("Autumn", ", 'private'").unwrap_err().to_string(),
+        "you have no subset 'Autumn' of dimension 'Period'"
+    );
+    assert_eq!(
+        columns("Spring", ", 'privte'").unwrap_err().to_string(),
+        "TM1SUBSETTOSET's third argument is 'public' or 'private'"
+    );
+    // Asked by nobody in particular, a query finds nobody's.
+    let query = "SELECT TM1SubsetToSet([Period], 'Spring', 'private') ON COLUMNS FROM [Sales]";
+    assert_eq!(
+        database.query(None, query).unwrap_err().to_string(),
+        "you have no subset 'Spring' of dimension 'Period'"
+    );
 }
 
 #[test]

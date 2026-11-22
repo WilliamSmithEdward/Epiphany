@@ -66,7 +66,15 @@ pub(crate) fn check_view(model: &Model, cube_id: usize, text: &str) -> Result<()
         )));
     }
     query
-        .evaluate(model, cube_id, &eval::no_cells, &|_| (), &|_, _| false, &[])
+        .evaluate(
+            model,
+            cube_id,
+            &eval::no_cells,
+            &|_| (),
+            &|_, _| false,
+            &[],
+            None,
+        )
         .map(drop)
 }
 

@@ -1471,11 +1471,13 @@ async fn spread_cells(
     )
 )]
 async fn query(
-    State(database): State<Shared>,
+    State(state): State<AppState>,
     Extension(grants): Held,
+    Extension(Signed(user)): Extension<Signed>,
+    viewing: Option<Extension<Viewing>>,
     Body(request): Body<QueryRequest>,
 ) -> Result<Json<QueryResult>, ApiError> {
-    let database = database.read().unwrap();
+    let database = state.database.read().unwrap();
     let may_read = |cube: &str| grants.on(cube) >= Role::Read;
     let standing: Vec<(&str, &str)> = request
         .context
@@ -1487,7 +1489,22 @@ async fn query(
         &request.mdx,
         &may_read,
         &standing,
+        &own_subsets(&state, &user, viewing.is_some()),
     )?))
+}
+
+/// The subsets the one asking keeps for themself, which `TM1SubsetToSet` with "private"
+/// finds: none on a server without users, or in a view as another user, which sees none of
+/// theirs.
+fn own_subsets<'a>(
+    state: &'a AppState,
+    user: &'a str,
+    viewing: bool,
+) -> impl Fn(&str, &str) -> Option<Vec<String>> + 'a {
+    move |dimension, subset| {
+        let auth = state.auth.as_deref().filter(|_| !viewing)?;
+        auth.subsets.one(user, dimension, subset)
+    }
 }
 
 /// How many cells a page of stored cells holds unless the request says.
@@ -1892,7 +1909,8 @@ async fn put_private_view(
         let named = database.model().cube(&cube).map(|found| found.name.clone());
         let named = named.ok_or_else(|| unknown("cube", &cube))?;
         let may_read = |other: &str| grants.on(other) >= Role::Read;
-        let answered = database.query_as(None, &view.mdx, &may_read, &[])?;
+        let own = own_subsets(&state, &user, false);
+        let answered = database.query_as(None, &view.mdx, &may_read, &[], &own)?;
         if key(&answered.cube) != key(&named) {
             let message = format!(
                 "the view's query selects from {}, not from {named}",

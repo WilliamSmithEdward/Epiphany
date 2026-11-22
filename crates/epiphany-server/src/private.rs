@@ -103,12 +103,28 @@ impl<T: Clone + Serialize + DeserializeOwned> Private<T> {
 
     /// A user's things of a cube or a dimension, by name.
     pub fn of(&self, user: &str, under: &str) -> BTreeMap<String, T> {
+        self.under(user, under, BTreeMap::clone).unwrap_or_default()
+    }
+
+    /// One of a user's things of a cube or a dimension, by its name, case and spaces aside.
+    pub fn one(&self, user: &str, under: &str, name: &str) -> Option<T> {
+        self.under(user, under, |things| {
+            let found = things.iter().find(|(other, _)| key(other) == key(name));
+            found.map(|(_, thing)| thing.clone())
+        })?
+    }
+
+    /// What `take` makes of a user's things of a cube or a dimension, where they keep any.
+    fn under<R>(
+        &self,
+        user: &str,
+        under: &str,
+        take: impl FnOnce(&BTreeMap<String, T>) -> R,
+    ) -> Option<R> {
         let kept = self.kept();
-        let theirs = kept.get(&user.to_lowercase());
-        theirs
-            .and_then(|all| all.iter().find(|(name, _)| key(name) == key(under)))
-            .map(|(_, things)| things.clone())
-            .unwrap_or_default()
+        let theirs = kept.get(&user.to_lowercase())?;
+        let (_, things) = theirs.iter().find(|(name, _)| key(name) == key(under))?;
+        Some(take(things))
     }
 
     /// Keeps a thing of a cube or a dimension for a user, in place of any of theirs of the

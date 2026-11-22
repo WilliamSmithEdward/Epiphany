@@ -234,10 +234,11 @@ practice that means:
     `TM1Sort`.
   - `Extract(set, dimension, ...)` for what the tuples of a set hold of some dimensions,
     and `[Dimension].DefaultMember`, the first top element.
-  - `TM1SubsetToSet(dimension, name [, "public"])`, `TM1SortByIndex(set [, ASC | DESC])`,
-    `TM1Member(tuple, place)` and `TM1TupleSize(tuple)`, written from memory of TM1 and
-    not checked against it; and `.Dimension` and `.Hierarchy` of a member, a level or a
-    dimension, with `.Name` and `.UniqueName` of a dimension.
+  - `TM1SubsetToSet(dimension, name [, "public" | "private"])`,
+    `TM1SortByIndex(set [, ASC | DESC])`, `TM1Member(tuple, place)` and
+    `TM1TupleSize(tuple)`, written from memory of TM1 and not checked against it; and
+    `.Dimension` and `.Hierarchy` of a member, a level or a dimension, with `.Name` and
+    `.UniqueName` of a dimension.
   - `NonEmptyCrossJoin(set, set, ...)`, and `AddCalculatedMembers` and
     `StripCalculatedMembers` for the calculated members of a set's dimension.
   - Drilling: `DrilldownMember(set, members [, RECURSIVE])`, `TM1DrilldownMember` (which
@@ -381,7 +382,8 @@ practice that means:
   are stored, the route naming it in `subsets_reading_cells`. One built on it reads cells
   too. A picklist, worked out once, cannot offer one.
 - A view is checked when the model is compiled, by running it against an empty cube.
-- `TM1SubsetToSet([Dimension], "name")` uses a subset in any query.
+- `TM1SubsetToSet([Dimension], "name")` uses a subset in any query, and with "private"
+  one the user asking keeps for themself.
 - `GET /dimensions/{name}` lists each subset's elements; `GET /cubes/{cube}/views/{view}`
   runs a view.
 - A model update that changes only subsets and views leaves the stored cells untouched.
@@ -394,10 +396,12 @@ practice that means:
   view whose cube or members are gone fails when it is run, as a query would; a subset
   leaves out the members its dimension no longer has. Keeping a view takes reading its cube,
   and its query is run as it is kept. A user's own subset is a list of members, for the GUI's
-  set editor to choose from: queries name only the model's subsets. A user's views, and
-  their subsets, take at most 4 MiB each, so that a reader cannot fill the disk. A view as
-  the user sees none of them and changes none.
-- Not done: a user's own subsets in queries.
+  set editor to choose from, and for their queries and their own views to take with
+  `TM1SubsetToSet`'s "private". **Decision:** only the one asking finds them, so the model's
+  views, subsets and rules, which everyone shares and nobody asks, are refused one, and a
+  view as the user finds none. A user's views, and their subsets, take at most 4 MiB each,
+  so that a reader cannot fill the disk. A view as the user sees none of them and changes
+  none.
 
 ## 3. API
 

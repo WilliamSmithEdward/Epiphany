@@ -186,9 +186,10 @@ them alone, with the same sizes, number format and highlights a cube's view may 
 who may read a cube may keep views of it; the query is run as it is saved, and must select
 from that cube. A user may keep subsets of their own too: lists of a dimension's members,
 named or by alias and kept by name, which leave out a member the dimension no longer has.
-Queries name only the model's subsets; a user's own are for choosing members with. A user's
-views, and their subsets, take at most 4 MiB each, and go when the user does. A server
-without users keeps none: its views and subsets are everybody's.
+Their queries, and their own views, may take them as `TM1SubsetToSet([Period], 'Spring',
+'private')`; nobody else's can, and neither can the model's views, subsets and rules. A
+user's views, and their subsets, take at most 4 MiB each, and go when the user does. A
+server without users keeps none: its views and subsets are everybody's.
 
 A sandbox is a transaction its owner keeps under a name, for values to be tried out in
 before anyone else sees them. It holds no locks, so it holds up nobody, never expires, and
