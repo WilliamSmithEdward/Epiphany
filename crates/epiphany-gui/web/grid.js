@@ -485,12 +485,17 @@ export const grid = {
     ];
   },
 
-  /** A member's heading: with a button that opens or closes it where it has children. */
+  /**
+   * A member's heading: with a button that opens or closes it where it has children. Down the
+   * rows, a member stands indented by its depth, its leaves in line with the members that
+   * open. Across the columns, an indent would only widen its column and crowd its name: the
+   * buttons on the members that open show the outline there.
+   */
   memberLabel(place, m) {
     const entry = this.layout[place]?.find((candidate) => candidate.dimension === m.dimension);
     const dim = this.dims.get(m.dimension);
     const element = dim?.byName.get(m.name);
-    const depth = entry ? this.depthOf(entry, dim, m.name) : 0;
+    const depth = entry && place === 'rows' ? this.depthOf(entry, dim, m.name) : 0;
     const label = h('span', { class: 'member-label', dataset: { depth } });
     if (entry && element?.children.length) {
       const opened = entry.expanded.includes(m.name);

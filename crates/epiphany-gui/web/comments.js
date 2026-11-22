@@ -269,11 +269,13 @@ export const comments = {
 
   /**
    * The changes saved to a cell, the newest first: who made each, when, and from what to
-   * what; and first, a change made here and not yet saved. Fetched each time it is drawn,
-   * its outline standing in meanwhile.
+   * what; and first, a change not yet saved, or not yet published from the sandbox worked
+   * in, however it was made: typed, pasted, spread or written with detail. Fetched each time
+   * it is drawn, as it is after every change, its outline standing in meanwhile.
    */
   drawHistory(cell) {
     const list = h('ol', { class: 'comment-thread', 'aria-busy': 'true' }, h('li', {}, loading('lines')));
+    const pending = h('p', { class: 'history-pending', hidden: true });
     const shown = (value) => (value === null || value === undefined || value === 0 || value === ''
       ? h('span', { class: 'muted' }, 'empty')
       : formatValue(value, this.layout.format));
@@ -288,11 +290,18 @@ export const comments = {
     }, (problem) => {
       mount(list, h('li', { class: 'error-text comment-none' }, problem.message));
     }).finally(() => list.removeAttribute('aria-busy'));
-    const pending = this.edits.get(JSON.stringify(cell.at));
-    return [
-      pending === undefined ? null : h('p', { class: 'history-pending' }, icon('edit', 14), 'Changed here to ', h('strong', {}, shown(pending)), ', not yet saved.'),
-      list,
-    ];
+    // The cell as the edit transaction or the sandbox has it, beside the cell as stored.
+    if (this.tx) {
+      const read = (transaction) => post('/cells/read', { cells: [{ cube: this.cube.name, at: cell.at }], transaction }, { quiet: true })
+        .then((answer) => answer.cells[0]?.value);
+      Promise.all([read(this.tx), read(undefined)]).then(([now, stored]) => {
+        if (now === undefined || now === stored) return;
+        const where = this.sandbox ? [`Changed in ${this.sandbox.name} to `, ', not yet published.'] : ['Changed here to ', ', not yet saved.'];
+        mount(pending, icon('edit', 14), where[0], h('strong', {}, shown(now)), ` from ${stored === null || stored === undefined || stored === 0 || stored === '' ? 'empty' : formatValue(stored, this.layout.format)}`, where[1]);
+        pending.hidden = false;
+      }, () => {});
+    }
+    return [pending, list];
   },
 
   /** Pins a comment to the cell the panel is open on. */
