@@ -494,12 +494,11 @@ a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transfo
 .pivot td.negative { color: var(--bad); }
 .pivot tbody tr:hover td, .pivot tbody tr:hover th { background-color: var(--accent-soft); }
 .pivot td:focus { outline: 2px solid var(--focus); outline-offset: -2px; background: var(--accent-soft); }
-.member-label { display: inline-flex; align-items: center; gap: 6px; }
-.member-label[data-depth="1"] { padding-left: 18px; }
-.member-label[data-depth="2"] { padding-left: 36px; }
-.member-label[data-depth="3"] { padding-left: 54px; }
-.member-label[data-depth="4"] { padding-left: 72px; }
-.member-label[data-depth="5"], .member-label[data-depth="6"], .member-label[data-depth="7"], .member-label[data-depth="8"] { padding-left: 90px; }
+/* A row's member stands a step in for each member opened above it, its heading's --depth;
+   and a line runs down from the button of each member opened, through every row beneath it,
+   as a tree's guides do, so that what a member holds reads at a glance. */
+.member-label { display: inline-flex; align-items: center; gap: 6px; padding-left: calc(var(--depth, 0) * 20px); }
+.pivot tbody th[style*="--depth"]::before { content: ""; position: absolute; top: 0; bottom: 0; left: var(--s3); width: calc(var(--depth) * 20px); background: repeating-linear-gradient(to right, transparent 0 8px, var(--line-strong) 8px 9px, transparent 9px 20px); pointer-events: none; }
 .twisty { display: inline-grid; place-items: center; width: 18px; height: 18px; flex: none; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--text-2); cursor: pointer; padding: 0; }
 /* The space a leaf keeps where its parent has a button, so that names line up: never seen, never pressed. */
 span.twisty { border-color: transparent; background: none; cursor: inherit; }

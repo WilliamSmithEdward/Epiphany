@@ -4,10 +4,9 @@
 import { ApiError, del, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, readdress, state } from './app.js';
 import { chart, shape } from './chart.js';
-import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, linkOf, mdx, quote, saved, shown, takeOver } from './layout.js';
+import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, linkOf, mdx, namesOf, pathKey, pathsBeneath, quote, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
-import { beneath } from './tree.js';
 import { choices, copyText, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid } from './grid.js';
@@ -160,7 +159,7 @@ class Explorer {
       for (const entry of [...layout.rows, ...layout.columns]) {
         const dim = this.dims.get(entry.dimension);
         entry.members = entry.members.filter((name) => dim.byName.has(name));
-        entry.expanded = entry.expanded.filter((name) => dim.byName.has(name));
+        entry.expanded = entry.expanded.filter((path) => namesOf(path).every((name) => dim.byName.has(name)));
         if (!entry.members.length) entry.members = [...dim.roots];
       }
       for (const filter of layout.filters) {
@@ -597,17 +596,18 @@ class Explorer {
   openItems(place, dimension) {
     const dim = this.dims.get(dimension);
     const entry = this.entryOf(place, dimension);
-    const children = (name) => this.childrenOf(dim, name);
-    const within = [...new Set([...entry.members, ...beneath(entry.members, children)])].filter((name) => children(name).length);
-    const closed = shown(entry, dim).map(({ name }) => name).filter((name) => children(name).length && !entry.expanded.includes(name));
-    const levels = [...new Set(within.map((name) => dim.byName.get(name).level))].sort((a, b) => b - a);
+    // Each member is opened where it stands: one under two members it opens under both.
+    const chosen = entry.members.map((name) => [name]);
+    const within = pathsBeneath(dim, chosen);
+    const closed = shown(entry, dim).filter((row) => !row.opened && this.childrenOf(dim, row.name).length).map((row) => row.path);
+    const levels = [...new Set(within.map((path) => dim.byName.get(namesOf(path).at(-1)).level))].sort((a, b) => b - a);
     return [
       { label: 'Open one level more', icon: 'plus', disabled: !closed.length, action: () => this.setOpen(place, dimension, (expanded) => [...expanded, ...closed]) },
-      { label: 'Open every level', icon: 'expand', disabled: within.every((name) => entry.expanded.includes(name)), action: () => this.setOpen(place, dimension, () => within) },
+      { label: 'Open every level', icon: 'expand', disabled: within.every((path) => entry.expanded.includes(path)), action: () => this.setOpen(place, dimension, () => within) },
       ...levels.slice(1).map((level) => ({
         label: `Open down to ${dim.levels?.[level] || `level ${level}`}`,
         icon: 'level',
-        action: () => this.setOpen(place, dimension, () => within.filter((name) => dim.byName.get(name).level > level)),
+        action: () => this.setOpen(place, dimension, () => pathsBeneath(dim, chosen, (element) => element.level > level)),
       })),
       { label: 'Close every level', icon: 'collapse', disabled: !entry.expanded.length, action: () => this.setOpen(place, dimension, () => []) },
       {
@@ -662,7 +662,7 @@ class Explorer {
       if (entry.members.includes(name)) return;
       // Open the members on the way down to it from the nearest one chosen, or choose it.
       const path = this.pathFrom(dim, entry.members, name);
-      if (path) entry.expanded = [...new Set([...entry.expanded, ...path])];
+      if (path) entry.expanded = [...new Set([...entry.expanded, ...path.map((_, index) => pathKey(path.slice(0, index + 1)))])];
       else entry.members.push(name);
     });
   }
@@ -774,7 +774,7 @@ class Explorer {
       this.change((layout) => {
         const target = layout[place].find((candidate) => candidate.dimension === name);
         target.members = set;
-        target.expanded = target.expanded.filter((element) => set.includes(element));
+        target.expanded = target.expanded.filter((path) => set.includes(namesOf(path)[0]));
         layout.sort = null;
         layout.top = null;
       });
@@ -961,12 +961,13 @@ class Explorer {
     });
   }
 
-  toggle(place, dimName, name) {
+  /** Opens a member where it stands, by its path from the member chosen, or closes it there. */
+  toggle(place, dimName, path) {
     this.change((layout) => {
       const entry = layout[place].find((candidate) => candidate.dimension === dimName);
-      entry.expanded = entry.expanded.includes(name)
-        ? entry.expanded.filter((candidate) => candidate !== name)
-        : [...entry.expanded, name];
+      entry.expanded = entry.expanded.includes(path)
+        ? entry.expanded.filter((candidate) => candidate !== path)
+        : [...entry.expanded, path];
     });
   }
 

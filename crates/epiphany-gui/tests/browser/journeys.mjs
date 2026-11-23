@@ -844,6 +844,30 @@ async function exploring() {
     const grown = [100, 110, 121].every((expected, index) => Math.abs(months[index] - expected) < 1e-6);
     expect(grown, `The API reads ${quoted(months)} where 100 grown by a tenth a month, 100, 110 and 121, was typed.`);
   });
+  await step('A member shown twice opens where it is opened alone, each row standing in as far as it stands beneath', async () => {
+    // Revenue chosen, and Net Income open, beneath which Revenue stands again; the layout as
+    // one kept before kept it, its open member by name.
+    const key = quoted('epiphany.explore.General Ledger');
+    const kept = await page.evaluate(`localStorage.getItem(${key})`);
+    const layout = { cube: 'General Ledger', rows: [{ dimension: 'Account', members: ['Revenue', 'Operating Expenses', 'Net Income'], expanded: ['Net Income'] }], columns: [{ dimension: 'Period', members: ['Q1'], expanded: [] }], filters: [{ dimension: 'Entity', member: 'Total Entity' }, { dimension: 'Version', member: 'Budget' }], nonEmpty: { rows: false, columns: false }, sort: null, mdx: null };
+    await page.evaluate(`localStorage.setItem(${key}, ${quoted(JSON.stringify(layout))})`);
+    await page.goto('/explore?cube=General%20Ledger');
+    // Each row's member, how many steps in it stands, and whether it is open.
+    const rows = `[...document.querySelectorAll('th.row-head[data-member]')].map((th) => [th.dataset.member, th.style.getPropertyValue('--depth') || 0, th.querySelector('button.twisty')?.getAttribute('aria-expanded') ?? ''].join(':')).join('|')`;
+    await page.waitFor(`document.querySelectorAll('th.row-head[data-member]').length === 5`, 'the rows, Net Income open');
+    const before = await page.evaluate(rows);
+    expect(before === 'Revenue:0:false|Operating Expenses:0:false|Net Income:0:true|Revenue:1:false|Operating Expenses:1:false', `The rows stand as ${before}.`);
+    await page.click('th.row-head[data-path*="Net Income"][data-path$="Revenue"] button.twisty');
+    await page.waitFor(`document.querySelectorAll('th.row-head[data-member]').length === 7`, 'the Revenue beneath Net Income, open');
+    const after = await page.evaluate(rows);
+    expect(after === 'Revenue:0:false|Operating Expenses:0:false|Net Income:0:true|Revenue:1:true|Product Revenue:2:|Service Revenue:2:|Operating Expenses:1:false', `Opened beneath Net Income, the rows stand as ${after}.`);
+    // A line runs down from each member opened through the rows beneath it.
+    const guided = await page.evaluate(`getComputedStyle(document.querySelector('th.row-head[data-member="Product Revenue"]'), '::before').backgroundImage.includes('repeating-linear-gradient')`);
+    expect(guided, 'No line runs down beside the rows beneath an opened member.');
+    // The layout the journeys had, back for the steps after.
+    await page.evaluate(kept === null ? `localStorage.removeItem(${key})` : `localStorage.setItem(${key}, ${quoted(kept)})`);
+    await page.goto('/explore?cube=General%20Ledger');
+  });
   await step('A link to the query shown opens it as it is shown, and a damaged one says so', async () => {
     await page.click('button', 'Views');
     await page.waitFor(`[...document.querySelectorAll('.menu [role="menuitem"]')].some((item) => item.textContent === 'Copy a link to this query')`, 'the link, offered');

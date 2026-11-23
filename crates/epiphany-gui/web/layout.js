@@ -9,8 +9,11 @@ export const member = (dimension, name) => `${quote(dimension)}.${quote(name)}`;
 
 /**
  * A layout is `{ cube, rows, columns, filters, nonEmpty, sort, mdx }`. Each entry of rows
- * and columns is `{ dimension, members, expanded }`, the members chosen in order and those
- * opened to show their children; each filter is `{ dimension, member }`. `nonEmpty` says,
+ * and columns is `{ dimension, members, expanded }`, the members chosen in order and the
+ * paths of those opened to show their children; each filter is `{ dimension, member }`. A
+ * path is the names from a member chosen down to the one opened, as `pathKey` joins them, so
+ * that a member shown in two places is opened in one alone; a member chosen is its own path,
+ * as the name alone that a layout of before kept. `nonEmpty` says,
  * for `rows` and for `columns`, whether those with no values are left out. `top`, where set,
  * keeps only the `count` largest rows, or smallest with `bottom`, by the column `tuple`.
  * `calculations` add
@@ -99,23 +102,83 @@ export function emptiness(text) {
   return found;
 }
 
+/** What joins a path's names: a character no name holds. */
+const JOIN = '\u001f';
+/** A path as an entry's `expanded` keeps it, from its names. */
+export const pathKey = (names) => names.join(JOIN);
+/** A path's names, from the member chosen down. */
+export const namesOf = (path) => String(path).split(JOIN);
+
 /**
- * The members an axis entry shows: each chosen member, and its children where it is open;
- * the children after it, or before it where the entry puts totals last.
+ * The members an axis entry shows, as `{ name, depth, path, opened }`: each chosen member,
+ * and its children where it is open, after it, or before it where the entry puts totals last.
  */
 export function shown(entry, dim) {
   const open = new Set(entry.expanded);
   const out = [];
-  const visit = (name, depth) => {
-    const after = entry.totalsLast && open.has(name);
-    if (!after) out.push({ name, depth });
-    if (open.has(name)) {
-      for (const child of dim.byName.get(name)?.children ?? []) visit(child.name, depth + 1);
+  const visit = (names) => {
+    const path = pathKey(names);
+    const row = { name: names.at(-1), depth: names.length - 1, path, opened: open.has(path) };
+    const after = entry.totalsLast && row.opened;
+    if (!after) out.push(row);
+    if (row.opened) {
+      for (const child of dim.byName.get(row.name)?.children ?? []) visit([...names, child.name]);
     }
-    if (after) out.push({ name, depth });
+    if (after) out.push(row);
   };
-  for (const name of entry.members) visit(name, 0);
+  for (const name of entry.members) visit([name]);
   return out;
+}
+
+/**
+ * The paths of the members that have children at or beneath each path of `starts` (given as
+ * names), that `keep` keeps: those to open to show everything there, or down to a level.
+ */
+export function pathsBeneath(dim, starts, keep = () => true) {
+  const out = [];
+  const visit = (names) => {
+    const element = dim.byName.get(names.at(-1));
+    if (!element?.children.length) return;
+    if (keep(element)) out.push(pathKey(names));
+    for (const child of element.children) visit([...names, child.name]);
+  };
+  for (const names of starts) visit(names);
+  return out;
+}
+
+/**
+ * Where each tuple of an axis of a query's answer stands in the outline its layout opens: for
+ * each of its members, its row of `shown`, or null for one the layout does not show, such as a
+ * calculation. The answer keeps the outline's order, leaving out what is empty, so each member
+ * is the next of its name, or the same as the row before; and a member past the outer one
+ * before it starts its own outline again. One found nowhere after, as in rows put in order by
+ * their values, is taken where its name stands first.
+ */
+export function outlined(entries, dims, tuples) {
+  const outlines = (tuples[0] ?? []).map((member) => {
+    const entry = entries.find((each) => each.dimension === member.dimension);
+    const dim = dims.get(member.dimension);
+    return entry && dim ? shown(entry, dim) : null;
+  });
+  const at = outlines.map(() => -1);
+  let before = null;
+  return tuples.map((tuple) => {
+    let moved = false;
+    const found = tuple.map((member, level) => {
+      const outline = outlines[level];
+      if (!outline) return null;
+      if (moved) at[level] = -1;
+      else if (at[level] >= 0 && before?.[level]?.name === member.name) return outline[at[level]];
+      let next = at[level] + 1;
+      while (next < outline.length && outline[next].name !== member.name) next += 1;
+      moved = true;
+      if (next >= outline.length) return outline.find((row) => row.name === member.name) ?? null;
+      at[level] = next;
+      return outline[next];
+    });
+    before = tuple;
+    return found;
+  });
 }
 
 /**

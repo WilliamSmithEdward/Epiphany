@@ -3,7 +3,7 @@
 
 import { get, part, post } from './api.js';
 import { empty } from './app.js';
-import { member, saved } from './layout.js';
+import { member, namesOf, outlined, pathsBeneath, saved } from './layout.js';
 import { cellText, Selection } from './selection.js';
 import { beneath } from './tree.js';
 import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, printsWhole, SCALES, shownText, working } from './ui.js';
@@ -70,6 +70,10 @@ export const grid = {
       return;
     }
     const total = (tuple) => tuple.some((m) => m.type === 'consolidated');
+    // Where each row's and column's members stand in the outline the layout opens, each
+    // opened there alone.
+    const rowPlaces = outlined(this.layout.rows, this.dims, rowTuples);
+    const columnPlaces = outlined(this.layout.columns, this.dims, columnTuples);
     // The attributes shown beside each dimension's members, where the layout asks for them.
     const shownAttributes = (place, tuple) => (tuple ?? []).map((m) => this.entryOf(place, m.dimension)?.attributes ?? []);
     const rowAttributes = shownAttributes('rows', rowTuples[0]);
@@ -110,8 +114,8 @@ export const grid = {
           tabindex: '-1',
           class: `col-head ${m.type === 'consolidated' ? 'total' : ''}`,
           'aria-sort': by ? (sort.descending ? 'descending' : 'ascending') : null,
-          dataset: { ...across(span, index), ...this.headingOf('columns', m) },
-        }, this.memberLabel('columns', m), by ? h('span', { class: 'sort-mark', 'aria-hidden': 'true' }, icon(sort.descending ? 'down' : 'up', 12)) : null));
+          dataset: { ...across(span, index), ...this.headingOf('columns', m, columnPlaces[index]?.[level]) },
+        }, this.memberLabel('columns', m, columnPlaces[index]?.[level]), by ? h('span', { class: 'sort-mark', 'aria-hidden': 'true' }, icon(sort.descending ? 'down' : 'up', 12)) : null));
       }
       head.append(tr);
       for (const attribute of columnAttributes[level]) {
@@ -140,6 +144,7 @@ export const grid = {
       body,
       rowTuples,
       columnTuples,
+      rowPlaces,
       columnCount,
       rowWidth,
       headRows,
@@ -364,18 +369,19 @@ export const grid = {
       return th;
     };
     tuple.forEach((m, level) => {
-      const shares = (other) => other && other.slice(0, level + 1).every((o, i) => o.unique_name === tuple[i].unique_name);
-      const same = shares(rowTuples[r - 1]);
+      const at = grid.rowPlaces[r]?.[level];
+      const shares = (other, index) => other && other.slice(0, level + 1).every((o, i) => o.unique_name === tuple[i].unique_name && grid.rowPlaces[index]?.[i]?.path === grid.rowPlaces[r]?.[i]?.path);
+      const same = shares(rowTuples[r - 1], r - 1);
       // A heading stands for its row and the rows beneath that repeat it.
       let last = r;
-      while (!same && shares(rowTuples[last + 1])) last += 1;
+      while (!same && shares(rowTuples[last + 1], last + 1)) last += 1;
       const down = { r1: r, r2: last };
-      const heading = pin(h('th', {
+      const heading = pin(this.indent(h('th', {
         scope: 'row',
         tabindex: '-1',
         class: `row-head ${m.type === 'consolidated' ? 'total' : ''}`,
-        dataset: same ? down : { ...down, ...this.headingOf('rows', m), level },
-      }, same ? '' : this.memberLabel('rows', m)));
+        dataset: same ? down : { ...down, ...this.headingOf('rows', m, at), level },
+      }, same ? '' : this.memberLabel('rows', m, at)), at));
       // Beneath each row's first heading, the handle that sets the height of every row.
       if (level === 0) heading.append(h('span', { class: 'row-resize', role: 'separator', 'aria-orientation': 'horizontal', 'aria-label': 'Drag to change the height of every row', title: 'Drag to change the height of every row' }));
       for (const attribute of rowAttributes[level] ?? []) {
@@ -428,9 +434,11 @@ export const grid = {
       const entry = this.entryOf('rows', first.dimension);
       const dim = this.dims.get(first.dimension);
       const label = (m) => (entry?.alias ? dim?.byName.get(m.name)?.attributes?.[entry.alias] : null) || m.name;
-      // A name is as wide as its letters and its indent, at about six pixels a letter.
-      const r = widest((row) => String(label(rowTuples[row][level])).length + (entry && dim ? this.depthOf(entry, dim, rowTuples[row][level].name) * 3 : 0));
-      cells.push(h('th', { class: `row-head ${rowTuples[r][level].type === 'consolidated' ? 'total' : ''}` }, this.memberLabel('rows', rowTuples[r][level])));
+      // A name is as wide as its letters and its indent, at about six pixels a letter and three
+      // letters a step in.
+      const r = widest((row) => String(label(rowTuples[row][level])).length + this.depthOf(this.grid.rowPlaces[row]?.[level]) * 3);
+      const at = this.grid.rowPlaces[r]?.[level];
+      cells.push(this.indent(h('th', { class: `row-head ${rowTuples[r][level].type === 'consolidated' ? 'total' : ''}` }, this.memberLabel('rows', rowTuples[r][level], at)), at));
       for (const attribute of rowAttributes[level] ?? []) {
         const longest = widest((row) => String(this.attributeValue(rowTuples[row][level], attribute)).length);
         cells.push(h('th', { class: 'row-attribute' }, this.attributeValue(rowTuples[longest][level], attribute)));
@@ -506,28 +514,42 @@ export const grid = {
   },
 
   /**
-   * A member's heading: with a button that opens or closes it where it has children. Down the
-   * rows, a member stands indented by its depth, its leaves in line with the members that
-   * open. Across the columns, an indent would only widen its column and crowd its name: the
-   * buttons on the members that open show the outline there.
+   * How far a row's heading stands in, by where its member stands in the outline: a step for
+   * each member opened above it, the styles drawing a line down from each to the last member
+   * beneath it. Rows put in order by their values stand in line.
    */
-  memberLabel(place, m) {
+  indent(heading, at) {
+    const depth = this.depthOf(at);
+    // Set as a property: written into the style attribute, it would go when the heading is pinned.
+    if (depth) heading.style.setProperty('--depth', String(depth));
+    return heading;
+  },
+
+  depthOf(at) {
+    return at && !this.layout.sort && !this.layout.top ? Math.min(at.depth, 12) : 0;
+  },
+
+  /**
+   * A member's heading: with a button that opens or closes it where it has children, there
+   * alone, `at` being where it stands in the outline. Down the rows, its heading stands it in
+   * by its depth, its leaves in line with the members that open. Across the columns, an indent
+   * would only widen its column and crowd its name: the buttons on the members that open show
+   * the outline there.
+   */
+  memberLabel(place, m, at) {
     const entry = this.layout[place]?.find((candidate) => candidate.dimension === m.dimension);
-    const dim = this.dims.get(m.dimension);
-    const element = dim?.byName.get(m.name);
-    const depth = entry && place === 'rows' ? this.depthOf(entry, dim, m.name) : 0;
-    const label = h('span', { class: 'member-label', dataset: { depth } });
-    if (entry && element?.children.length) {
-      const opened = entry.expanded.includes(m.name);
+    const element = this.dims.get(m.dimension)?.byName.get(m.name);
+    const label = h('span', { class: 'member-label' });
+    if (entry && at && element?.children.length) {
       // Not a stop for Tab: the heading itself takes the keys that open and close it.
       label.append(h('button', {
         class: 'twisty',
         tabindex: '-1',
-        'aria-expanded': String(opened),
-        'aria-label': `${opened ? 'Close' : 'Open'} ${m.name}`,
-        onclick: () => this.toggle(place, m.dimension, m.name),
-      }, icon(opened ? 'minus' : 'plus', 12)));
-    } else if (depth) {
+        'aria-expanded': String(at.opened),
+        'aria-label': `${at.opened ? 'Close' : 'Open'} ${m.name}`,
+        onclick: () => this.toggle(place, m.dimension, at.path),
+      }, icon(at.opened ? 'minus' : 'plus', 12)));
+    } else if (place === 'rows' && this.depthOf(at)) {
       label.append(h('span', { class: 'twisty' }));
     }
     const alias = entry?.alias ? element?.attributes?.[entry.alias] : null;
@@ -663,18 +685,6 @@ export const grid = {
     grid.scroller.style.scrollPaddingLeft = `${widths.reduce((sum, width) => sum + width, 0)}px`;
   },
 
-  depthOf(entry, dim, name) {
-    let depth = 0;
-    let current = dim.byName.get(name);
-    while (current && !entry.members.includes(current.name) && current.parents.length) {
-      const parent = current.parents.find((candidate) => entry.expanded.includes(candidate));
-      if (!parent) break;
-      depth += 1;
-      current = dim.byName.get(parent);
-    }
-    return Math.min(depth, 8);
-  },
-
   moveFocus(event, table) {
     const cell = event.target.closest('td');
     if (!cell || event.defaultPrevented) return;
@@ -760,9 +770,9 @@ export const grid = {
     return [...(table.tHead.rows[row]?.cells ?? [])].find((cell) => cell.dataset.c1 !== undefined && Number(cell.dataset.c1) <= c && Number(cell.dataset.c2) >= c);
   },
 
-  /** What a heading stands for, kept on it to act on: its member, dimension and axis. */
-  headingOf(place, m) {
-    return { member: m.name, dimension: m.dimension, place };
+  /** What a heading stands for, kept on it to act on: its member, dimension and axis, and where it stands in the outline. */
+  headingOf(place, m, at) {
+    return { member: m.name, dimension: m.dimension, place, path: at?.path ?? '' };
   },
 
   /**
@@ -776,7 +786,7 @@ export const grid = {
     const member = heading.dataset.member;
     const row = heading.parentElement;
     const inHead = row.parentElement === table.tHead;
-    const opened = () => this.entryOf(heading.dataset.place, heading.dataset.dimension)?.expanded.includes(member);
+    const opened = () => this.entryOf(heading.dataset.place, heading.dataset.dimension)?.expanded.includes(heading.dataset.path);
     let target = null;
     switch (event.key) {
       case 'ArrowLeft':
@@ -824,21 +834,21 @@ export const grid = {
     target?.focus();
   },
 
-  /** Opens a heading's member, or closes it, keeping the keys on the heading. */
+  /** Opens a heading's member where it stands, or closes it, keeping the keys on the heading. */
   openHeading(heading) {
-    const { place, dimension, member } = heading.dataset;
-    if (!this.dims.get(dimension)?.byName.get(member)?.children.length || !this.entryOf(place, dimension)) return;
+    const { place, dimension, member, path } = heading.dataset;
+    if (!path || !this.dims.get(dimension)?.byName.get(member)?.children.length || !this.entryOf(place, dimension)) return;
     this.keepHeading(heading);
-    this.toggle(place, dimension, member);
+    this.toggle(place, dimension, path);
   },
 
-  /** Opens, or closes, a heading's member and everything beneath it. */
+  /** Opens, or closes, a heading's member where it stands and everything beneath it there. */
   openBeneath(heading, open) {
-    const { place, dimension, member } = heading.dataset;
-    const dim = this.dims.get(dimension);
-    const within = [member, ...beneath([member], (name) => this.childrenOf(dim, name))].filter((name) => this.childrenOf(dim, name).length);
+    const { place, dimension, path } = heading.dataset;
+    if (!path) return;
+    const within = pathsBeneath(this.dims.get(dimension), [namesOf(path)]);
     this.keepHeading(heading);
-    this.setOpen(place, dimension, (expanded) => (open ? [...new Set([...expanded, ...within])] : expanded.filter((name) => !within.includes(name))));
+    this.setOpen(place, dimension, (expanded) => (open ? [...new Set([...expanded, ...within])] : expanded.filter((each) => !within.includes(each))));
   },
 
   /** Keeps the keys on a heading through the grid being drawn again, if they were on it. */
@@ -851,8 +861,9 @@ export const grid = {
     this.headingAfter = null;
     if (!kept) return;
     // A row's heading may lie beyond the rows drawn: the first row it heads is brought into view.
-    if (kept.place === 'rows') this.revealRow(this.grid.rowTuples.findIndex((tuple) => tuple.some((m) => m.name === kept.member && m.dimension === kept.dimension)));
-    const same = [...table.querySelectorAll('th[data-member]')].find((th) => th.dataset.member === kept.member && th.dataset.dimension === kept.dimension && th.dataset.place === kept.place);
+    const at = (row) => row.some((place) => place?.path === kept.path);
+    if (kept.place === 'rows') this.revealRow(kept.path ? this.grid.rowPlaces.findIndex(at) : this.grid.rowTuples.findIndex((tuple) => tuple.some((m) => m.name === kept.member && m.dimension === kept.dimension)));
+    const same = [...table.querySelectorAll('th[data-member]')].find((th) => th.dataset.member === kept.member && th.dataset.dimension === kept.dimension && th.dataset.place === kept.place && th.dataset.path === kept.path);
     same?.focus();
   },
 
@@ -862,8 +873,8 @@ export const grid = {
     const dim = this.dims.get(dimension);
     const entry = this.entryOf(place, dimension);
     const element = dim?.byName.get(name);
-    const kids = element ? this.childrenOf(dim, name).length : 0;
-    const opened = entry?.expanded.includes(name);
+    const kids = element && heading.dataset.path ? this.childrenOf(dim, name).length : 0;
+    const opened = entry?.expanded.includes(heading.dataset.path);
     const chosen = entry?.members.includes(name);
     menu([
       { heading: name },
@@ -909,8 +920,9 @@ export const grid = {
     const [columns, rows] = this.result.axes;
     const rowTuple = rows?.tuples[r] ?? [];
     const columnTuple = columns.tuples[c] ?? [];
-    const openable = (place, tuple) => tuple.filter((m) => this.dims.get(m.dimension)?.byName.get(m.name)?.children.length);
-    const rowOpen = openable('rows', rowTuple);
+    // The members of the cell's row that open, each where it stands there.
+    const rowOpen = rowTuple.map((m, level) => ({ m, at: this.grid?.rowPlaces[r]?.[level] }))
+      .filter(({ m, at: place }) => place && this.dims.get(m.dimension)?.byName.get(m.name)?.children.length);
     const chosen = this.selection?.cells().length ?? 0;
     menu([
       { heading: [...rowTuple, ...columnTuple].map((m) => m.name).join(' · ') },
@@ -918,11 +930,7 @@ export const grid = {
       { label: 'Sort rows by this column, smallest first', icon: 'chevron', disabled: !this.layout.rows.length, action: () => this.sortBy(columnTuple, false) },
       { label: 'Keep only the largest or smallest rows by it…', icon: 'filter', disabled: !this.layout.rows.length, action: () => this.keepTop(columnTuple) },
       '-',
-      ...rowOpen.map((m) => {
-        const entry = this.layout.rows.find((candidate) => candidate.dimension === m.dimension);
-        const opened = entry?.expanded.includes(m.name);
-        return { label: `${opened ? 'Close' : 'Open'} ${m.name}`, icon: opened ? 'minus' : 'plus', action: () => this.toggle('rows', m.dimension, m.name) };
-      }),
+      ...rowOpen.map(({ m, at: place }) => ({ label: `${place.opened ? 'Close' : 'Open'} ${m.name}`, icon: place.opened ? 'minus' : 'plus', action: () => this.toggle('rows', m.dimension, place.path) })),
       this.writable.has(`${r},${c}`)
         ? { label: 'Change the value', icon: 'edit', action: () => this.edit(this.output.querySelector(`td[data-r="${r}"][data-c="${c}"]`)) }
         : null,
