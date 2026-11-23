@@ -21,6 +21,7 @@ use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use serde::Serialize;
 use serde_json::{Value, json};
+use tower_http::compression::{CompressionLayer, CompressionLevel};
 
 /// The cookie that holds a signed-in browser's session token.
 const COOKIE: &str = "epiphany_session";
@@ -81,6 +82,11 @@ impl Gui {
             .route("/api/{*path}", any(pass))
             .fallback(get(assets::serve))
             .layer(from_fn(secure))
+            // Gzipped for a browser that takes it, the files and the API's answers alike: a
+            // dimension's JSON comes to a twentieth of itself. At its quickest, which is nearly
+            // as small and costs a third of the time, as on this machine it is time spent for
+            // nothing.
+            .layer(CompressionLayer::new().quality(CompressionLevel::Fastest))
             .with_state(self)
     }
 

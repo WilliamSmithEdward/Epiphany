@@ -79,7 +79,9 @@ pub(crate) async fn serve(State(gui): State<Gui>, uri: Uri, headers: HeaderMap) 
     };
     let mut hasher = DefaultHasher::new();
     body.hash(&mut hasher);
-    let tag = format!("\"{:016x}\"", hasher.finish());
+    // Weak, as the file is sent gzipped to a browser that takes it and as it is to one that
+    // does not: the same file, in bytes that differ.
+    let tag = format!("W/\"{:016x}\"", hasher.finish());
     let fresh = headers
         .get(header::IF_NONE_MATCH)
         .is_some_and(|seen| seen == tag.as_str());

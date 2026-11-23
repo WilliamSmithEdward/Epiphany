@@ -166,6 +166,37 @@ async fn the_application_is_served_with_headers_that_keep_it_to_itself() {
     assert_eq!(again.status, StatusCode::NOT_MODIFIED);
 }
 
+/// The application's script, asked for with `encoding` accepted or none: its headers, and how
+/// many bytes came.
+async fn script(gui: &Gui, encoding: Option<&str>) -> (HeaderMap, usize) {
+    let mut request = Request::builder().method(Method::GET).uri("/app.js");
+    if let Some(encoding) = encoding {
+        request = request.header(header::ACCEPT_ENCODING, encoding);
+    }
+    let mut request = request.body(Body::empty()).unwrap();
+    let peer: SocketAddr = HERE.parse().unwrap();
+    request.extensions_mut().insert(ConnectInfo(peer));
+    let response = gui.clone().router().oneshot(request).await.unwrap();
+    let headers = response.headers().clone();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (headers, bytes.len())
+}
+
+#[tokio::test]
+async fn a_browser_that_takes_gzip_is_sent_the_files_gzipped() {
+    let gui = Gui::new("http://127.0.0.1:1", None);
+    let (plain, whole) = script(&gui, None).await;
+    let (zipped, smaller) = script(&gui, Some("gzip, deflate, br")).await;
+    assert!(plain.get(header::CONTENT_ENCODING).is_none());
+    assert_eq!(zipped[header::CONTENT_ENCODING], "gzip");
+    let vary = zipped[header::VARY].to_str().unwrap().to_ascii_lowercase();
+    assert!(vary.contains("accept-encoding"), "Vary: {vary}");
+    assert!(smaller * 2 < whole, "{smaller} bytes gzipped, of {whole}");
+    // The same file in bytes that differ: one tag for both, a weak one.
+    assert_eq!(plain[header::ETAG], zipped[header::ETAG]);
+    assert!(plain[header::ETAG].to_str().unwrap().starts_with("W/"));
+}
+
 #[tokio::test]
 async fn every_file_of_the_application_is_built_into_the_program() {
     // One left out of the program would be missed only once it shipped: a folder served

@@ -86,7 +86,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
   take that time away, but every page now reads a dimension as held whole. The modules the
   application imports are fetched beside it rather than once it has come, and the other
   pages' while the browser is idle once the first page shows, so that going to one waits on
-  no files.
+  no files. What the GUI's server sends, its files and the API's answers, goes gzipped to a
+  browser that takes it, at gzip's quickest: a dimension of 100,000 elements, 10.8 MB of
+  JSON, comes to 0.56 MB, made in some 8 ms; the files, 541 KB, to about 160 KB.
 - **Fits a phone.** At a phone's width the bar keeps its marks, the words beside them still
   heard by a screen reader; headings and their buttons stack, as do a dialog's fields set side
   by side, an element role taking two lines; and the explorer's buttons go

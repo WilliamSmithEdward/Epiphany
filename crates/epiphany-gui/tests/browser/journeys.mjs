@@ -408,6 +408,11 @@ async function signingIn({ admin }) {
       .map((entry) => [entry.name.split('/').pop(), [entry.startTime, entry.responseEnd]]))`);
     const beside = ['api.js', 'ui.js', 'tree.js'].every((name) => fetched[name]?.[0] < fetched['app.js']?.[1]);
     expect(beside, `What app.js imports was asked for only once it had come: ${quoted(fetched)}.`);
+    // Sent gzipped: the application's own script, and the API's answers, through the GUI.
+    const sizes = await page.evaluate(`performance.getEntriesByType('resource')
+      .filter((entry) => /\\/(app\\.js|api\\/model\\/outline)$/.test(entry.name))
+      .map((entry) => [entry.name.split('/').pop(), entry.encodedBodySize, entry.decodedBodySize])`);
+    expect(sizes.length === 2 && sizes.every(([, sent, whole]) => sent > 0 && sent < whole / 2), `Sent, of the whole: ${quoted(sizes)}.`);
     await page.waitFor(`performance.getEntriesByType('resource').some((entry) => entry.name.endsWith('/explore.js'))`, 'the other pages\' files, fetched ahead');
   });
   await step('The first key offers a way past the bar to the page', async () => {
