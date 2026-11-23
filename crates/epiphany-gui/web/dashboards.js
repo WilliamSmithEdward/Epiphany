@@ -968,7 +968,7 @@ class Dashboards {
       '-',
       { label: text ? 'Change the text…' : 'Rename…', icon: 'edit', action: () => this.retell(index) },
       free ? { label: 'Bring to front', icon: 'front', disabled: index === this.editing.tiles.length - 1, action: () => this.restack(index, this.editing.tiles.length - 1) } : null,
-      free ? { label: 'Send to back', icon: 'back', disabled: index === 0, action: () => this.restack(index, 0) } : null,
+      free ? { label: 'Send to back', icon: 'behind', disabled: index === 0, action: () => this.restack(index, 0) } : null,
       { label: 'Duplicate', icon: 'copy', action: () => this.addTile(structuredClone({ ...tile, place: undefined })) },
       { label: 'Remove', icon: 'trash', action: () => this.removeTile(index) },
     ], at);

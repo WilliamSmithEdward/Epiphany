@@ -116,7 +116,7 @@ const ICONS = {
   focus: 'M8 3H3v5 M16 3h5v5 M8 21H3v-5 M16 21h5v-5',
   unfocus: 'M3 8h5V3 M21 8h-5V3 M3 16h5v5 M21 16h-5v5',
   front: 'M9 9h11v11H9z M5 15H4V4h11v1',
-  back: 'M4 4h11v11H4z M20 9v11H9',
+  behind: 'M4 4h11v11H4z M20 9v11H9',
   snap: 'M6 3v8a6 6 0 0 0 12 0V3 M6 7h4 M14 7h4',
   move: 'M12 3v18 M3 12h18 M9 6l3-3 3 3 M9 18l3 3 3-3 M6 9l-3 3 3 3 M18 9l3 3-3 3',
 };

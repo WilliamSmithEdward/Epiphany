@@ -908,6 +908,22 @@ async function exploring() {
     expect(await page.evaluate(said) === 'now', `The dashboard says its tiles were run ${quoted(await page.evaluate(said))}.`);
     await page.click('button', 'Refresh');
     await page.waitFor(`!document.querySelector('.page-head [aria-busy="true"]') && ${said} === 'now'`, 'the tiles, run again');
+    // The bars' legend, kept to one line, is gone along by its arrows to its last series.
+    const bars = '.dash-tile[data-index="1"]';
+    const arrow = (name) => `document.querySelector('${bars} .legend-along[aria-label="${name}"]')`;
+    expect(await page.evaluate(`${arrow('Earlier series')}.hidden && !${arrow('Later series')}.hidden`), 'The bars\' legend offers no way along it.');
+    for (let along = 0; await page.evaluate(`!${arrow('Later series')}.hidden`); along += 1) {
+      expect(along < 20, 'The bars\' legend never comes to its end.');
+      await page.click(`${bars} .legend-along`, 'Later series');
+      await page.evaluate('new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))');
+    }
+    const last = `(() => {
+      const legend = document.querySelector('${bars} .chart-legend').getBoundingClientRect();
+      const item = document.querySelector('${bars} .chart-legend').lastElementChild.getBoundingClientRect();
+      return item.left >= legend.left - 1 && item.right <= legend.right + 1;
+    })()`;
+    expect(await page.evaluate(last), 'The bars\' last series is not in sight at the end of the legend.');
+    expect(await page.evaluate(`!${arrow('Earlier series')}.hidden`), 'The bars\' legend offers no way back along it.');
   });
   await step('On a dashboard\'s grid tiles change places as one passes them, rise into what is free, and make room for one made larger', async () => {
     const engine = await page.evaluate(`(async () => {

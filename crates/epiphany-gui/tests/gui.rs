@@ -210,6 +210,30 @@ async fn every_file_of_the_application_is_built_into_the_program() {
     }
 }
 
+#[test]
+fn every_icon_has_a_name_of_its_own() {
+    // An icon named twice is the later one wherever either is asked for: the left arrow of
+    // a link back once showed the shape for sending a tile behind the others.
+    let script =
+        fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("web/ui.js")).unwrap();
+    let icons = script
+        .split("const ICONS = {")
+        .nth(1)
+        .and_then(|rest| rest.split("\n};").next())
+        .expect("ui.js lists its icons in ICONS");
+    let mut names = std::collections::BTreeSet::new();
+    for line in icons.lines() {
+        let Some((name, _)) = line.trim().split_once(':') else {
+            continue;
+        };
+        assert!(
+            names.insert(name.to_owned()),
+            "the icon '{name}' is named twice"
+        );
+    }
+    assert!(names.len() > 10, "only {} icons were found", names.len());
+}
+
 #[tokio::test]
 async fn an_administrator_views_as_another_user_and_comes_back() {
     let home = Home::new("view-as", true);

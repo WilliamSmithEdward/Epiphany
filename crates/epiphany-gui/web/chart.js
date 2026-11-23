@@ -3,7 +3,7 @@
 // again as either changes. Its marks say what they are when pointed at, or gone through with
 // the arrow keys, and may be picked.
 
-import { formatNumber, h } from './ui.js';
+import { formatNumber, h, icon } from './ui.js';
 
 /** How many series are drawn at most; the rest are left out and said to be. */
 const MOST_SERIES = 12;
@@ -122,8 +122,28 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   const plot = h('div', { class: 'chart-plot', tabindex: '0', role: 'group', 'aria-roledescription': 'chart' });
   const tip = h('div', { class: 'chart-tip', role: 'status', hidden: true });
   const legend = h('div', { class: 'chart-legend', role: 'group', 'aria-label': ring ? 'Slices' : 'Series' });
+  // A legend kept to one line, as a dashboard's tile keeps it, is gone along by arrows, as
+  // Power BI's is: each shown where there is more that way. The keys reach every item.
+  const along = (way, name, shape) => h('button', {
+    class: 'button small quiet icon legend-along',
+    type: 'button',
+    tabindex: '-1',
+    hidden: true,
+    'aria-label': name,
+    title: name,
+    onclick: () => legend.scrollBy({ left: way * legend.clientWidth * 0.8, behavior: still.matches ? 'auto' : 'smooth' }),
+  }, icon(shape, 14));
+  const earlier = along(-1, ring ? 'Earlier slices' : 'Earlier series', 'back');
+  const later = along(1, ring ? 'Later slices' : 'Later series', 'chevron');
+  const ends = () => {
+    earlier.hidden = legend.scrollLeft <= 1;
+    later.hidden = legend.scrollLeft >= legend.scrollWidth - legend.clientWidth - 1;
+    legend.classList.toggle('more-before', !earlier.hidden);
+    legend.classList.toggle('more-after', !later.hidden);
+  };
+  legend.addEventListener('scroll', ends, { passive: true });
   const element = h('figure', { class: `chart${fill ? ' fill' : ''}` },
-    legend,
+    h('div', { class: 'legend-row' }, earlier, legend, later),
     h('div', { class: 'chart-area' }, plot, tip),
     !ring && data.series.length > MOST_SERIES ? h('figcaption', { class: 'hint' }, `Showing the first ${MOST_SERIES} of ${data.series.length} series.`) : null);
   let marks = [];
@@ -141,6 +161,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
         draw();
       },
     }, h('span', { class: `swatch c${part.colour}` }), part.name)));
+    ends();
   };
 
   const draw = () => {
@@ -165,6 +186,8 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     svg.setAttribute('aria-label', said);
     plot.setAttribute('aria-label', `${said}. The arrow keys go from one value to the next${pick ? ', and Enter picks it' : ''}.`);
     plot.replaceChildren(svg);
+    // The legend is as wide as the chart: drawn at a new size, it may hold more or less.
+    ends();
     entering = false;
     if (focused >= marks.length) focused = marks.length - 1;
     if (focused >= 0 && plot.contains(document.activeElement)) showFocus();

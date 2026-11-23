@@ -887,6 +887,15 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .tile-body.busy > :not(.skeleton) { opacity: .6; transition: opacity .3s .5s; }
 .dash-tile .chart { padding: 0; border: 0; box-shadow: none; background: none; }
 .dash-tile .chart-legend { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+/* The legend between the arrows that go along it, where it is kept to one line. */
+.legend-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.legend-row > .chart-legend { flex: 1; min-width: 0; }
+.legend-along { flex: none; }
+.legend-along[hidden] { display: none; }
+/* Where it goes on past an edge, the legend fades into it rather than stopping short. */
+.chart-legend.more-before { mask-image: linear-gradient(to right, transparent, #000 var(--s5)); }
+.chart-legend.more-after { mask-image: linear-gradient(to left, transparent, #000 var(--s5)); }
+.chart-legend.more-before.more-after { mask-image: linear-gradient(to right, transparent, #000 var(--s5), #000 calc(100% - var(--s5)), transparent); }
 .chart.fill { flex: 1; min-height: 0; gap: var(--s2); }
 .chart.fill .chart-area { flex: 1; min-height: 0; }
 .chart.fill .chart-plot { position: absolute; inset: 0; min-height: 0; }
@@ -1259,7 +1268,7 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
     --shadow-1: none; --shadow-2: none; --shadow-3: none;
   }
   .skip, .bar, .nav, .notices, .fields, .model-list, .work-head > .toolbar, .comment-panel, .pending,
-  .splitter, .dash-tabs, .page-head .toolbar, .dash-filters button, .tile-head .button, .tile-corner, .dash-drawer, .handle,
+  .splitter, .dash-tabs, .page-head .toolbar, .dash-filters button, .tile-head .button, .tile-corner, .dash-drawer, .handle, .legend-along,
   .zone:not(:has(.chip)), .chip-more, .pivot .twisty, .card-head > .button, .editor-head > .button,
   .editor-head .segmented, .tree-tools, .table .actions { display: none !important; }
   html, body, .shell, .main, .explorer, .work, .output-row, .output { display: block; }
@@ -1290,6 +1299,8 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
   .board { display: flex !important; flex-direction: column; gap: var(--s4); height: auto !important; background: none !important; }
   .board > .dash-tile { position: relative !important; left: auto !important; top: auto !important; width: auto !important; order: var(--order); }
   .board-ghost, .board-guides, .focus-backdrop { display: none !important; }
+  /* On paper a tile's legend lists every series, on as many lines as it takes. */
+  .dash-tile .chart-legend { flex-wrap: wrap; overflow: visible; mask-image: none; }
   /* Shading, highlights and the colours of a chart's series say something, where browsers
      leave backgrounds out; charts drawn wider than the paper fit it. */
   .pivot, .chart { print-color-adjust: exact; }
