@@ -78,6 +78,12 @@ export const grid = {
     const headRows = columnAttributes.reduce((sum, attributes) => sum + 1 + attributes.length, 0);
     const table = h('table', { class: 'pivot', role: 'grid', 'aria-rowcount': rowTuples.length + headRows, 'aria-colcount': columnTuples.length + rowWidth });
     const head = h('thead');
+    // The column the rows are put in order by: its heading says so to a screen reader, and
+    // shows it by an arrow.
+    const sort = this.layout.sort;
+    const sortedBy = sort ? columnTuples.findIndex((tuple) => tuple.length === sort.tuple.length
+      && tuple.every((m, i) => m.dimension === sort.tuple[i][0] && m.name === sort.tuple[i][1])) : -1;
+    const sorted = (level, span, index) => level === columnDepth - 1 && span === 1 && index === sortedBy;
     for (let level = 0; level < columnDepth; level += 1) {
       const groups = [];
       // Neighbouring columns that share this member and those above it share one heading.
@@ -97,13 +103,15 @@ export const grid = {
       // Each heading knows the columns beneath it, to choose them when it is clicked.
       const across = (span, index) => ({ c1: index, c2: index + span - 1 });
       for (const [m, span, index] of groups) {
+        const by = sorted(level, span, index);
         tr.append(h('th', {
           scope: 'col',
           colspan: span,
           tabindex: '-1',
           class: `col-head ${m.type === 'consolidated' ? 'total' : ''}`,
+          'aria-sort': by ? (sort.descending ? 'descending' : 'ascending') : null,
           dataset: { ...across(span, index), ...this.headingOf('columns', m) },
-        }, this.memberLabel('columns', m)));
+        }, this.memberLabel('columns', m), by ? h('span', { class: 'sort-mark', 'aria-hidden': 'true' }, icon(sort.descending ? 'down' : 'up', 12)) : null));
       }
       head.append(tr);
       for (const attribute of columnAttributes[level]) {

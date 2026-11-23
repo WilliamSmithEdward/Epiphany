@@ -744,6 +744,8 @@ dialog.wide .dialog-body { max-height: none; }
 .pivot.sized td, .pivot.sized th { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .pivot tbody th, .pivot tbody td { height: var(--row-height, 32px); }
 .pivot th .member-label { max-width: 100%; }
+/* The column the rows are in order by: an arrow beside its name, the way the order goes. */
+.pivot th .sort-mark { display: inline-flex; margin-left: 4px; vertical-align: -2px; color: var(--accent-text); }
 .col-resize { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; z-index: 4; touch-action: none; }
 .col-resize::after { content: ""; position: absolute; top: 20%; bottom: 20%; right: 2px; width: 2px; border-radius: 1px; background: transparent; transition: background .12s; }
 .col-resize:hover::after, .resizing .col-resize:active::after { background: var(--accent); }

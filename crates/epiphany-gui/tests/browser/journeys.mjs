@@ -1036,6 +1036,23 @@ async function aLargeGrid() {
     const after = await page.evaluate(drawn);
     expect(after < 200, `${after} elements are still drawn after printing.`);
   });
+  await step('Rows sorted by a column say so on its heading, to the eye and to a screen reader', async () => {
+    await page.goto('/explore?cube=Large');
+    await page.waitFor(`document.querySelector('td[data-r="0"][data-c="3"]')`, 'the grid');
+    await page.settled();
+    await page.evaluate(`(() => {
+      const cell = document.querySelector('td[data-r="0"][data-c="3"]');
+      const box = cell.getBoundingClientRect();
+      cell.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: box.x + 5, clientY: box.y + 5 }));
+    })()`);
+    await page.click('.menu [role="menuitem"]', 'Sort rows by this column, largest first');
+    await page.waitFor(`document.querySelector('th[aria-sort="descending"] .sort-mark')`, 'the column, marked sorted');
+    const marked = await page.evaluate(`[...document.querySelectorAll('th[aria-sort]')].map((th) => th.dataset.c1 + ' ' + th.getAttribute('aria-sort'))`);
+    expect(quoted(marked) === quoted(['3 descending']), `The headings marked sorted are ${quoted(marked)}.`);
+    await page.audit('Rows sorted by a column');
+    await page.click('button', 'Clear sort');
+    await page.waitFor(`!document.querySelector('th[aria-sort]')`, 'the sort, cleared');
+  });
 }
 
 /* ---- The run ---- */

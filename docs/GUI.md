@@ -66,7 +66,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
   themes and the system's choice followed by default. The theme is set by a small script in
   the page's head before anything is drawn, so that a dark page never shows light first.
 - **Accessible.** WCAG 2.2 AA contrast, a visible focus ring on everything, full keyboard
-  use, ARIA grid semantics for the pivot, rows of tabs and of choices that are one stop for
+  use, ARIA grid semantics for the pivot, the heading of the column its rows are sorted by
+  saying the order, with an arrow to the eye, rows of tabs and of choices that are one stop for
   Tab and gone along by the arrow keys, and, where the system asks for less motion, nothing
   that moves or fades. A screen reader hears a heading on every page and a name for every
   control, told apart from the control beside it, and, moving from page to page within the
