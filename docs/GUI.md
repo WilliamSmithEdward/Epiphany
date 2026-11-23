@@ -63,7 +63,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
 ## Design rules
 
 - **Tokens.** Colour, space, type and radius are CSS custom properties, with light and dark
-  themes and the system's choice followed by default.
+  themes and the system's choice followed by default. The theme is set by a small script in
+  the page's head before anything is drawn, so that a dark page never shows light first.
 - **Accessible.** WCAG 2.2 AA contrast, a visible focus ring on everything, full keyboard
   use, ARIA grid semantics for the pivot, rows of tabs and of choices that are one stop for
   Tab and gone along by the arrow keys, and, where the system asks for less motion, nothing

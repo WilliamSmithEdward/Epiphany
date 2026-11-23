@@ -20,6 +20,7 @@ const FILES: &[(&str, &[u8])] = files![
     "index.html",
     "styles.css",
     "icon.svg",
+    "theme.js",
     "app.js",
     "api.js",
     "ui.js",

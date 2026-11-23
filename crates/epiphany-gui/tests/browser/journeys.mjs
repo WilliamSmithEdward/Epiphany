@@ -406,6 +406,21 @@ async function signingIn({ admin }) {
     await page.press('Escape');
     await page.waitFor(`!document.querySelector('dialog[open]')`, 'the keys, closed');
   });
+  await step('A dark theme chosen is the page\'s from the first, before the application runs', async () => {
+    // The theme as the page's body begins: the head's script has run, the application's not.
+    const { identifier } = await page.call('Page.addScriptToEvaluateOnNewDocument', { source: `new MutationObserver((changes, watching) => {
+      if (!document.body) return;
+      window.themeAtFirst = document.documentElement.dataset.theme ?? null;
+      watching.disconnect();
+    }).observe(document, { childList: true, subtree: true });` });
+    await page.evaluate(`localStorage.setItem('epiphany.theme', 'dark')`);
+    await page.goto('/');
+    await page.waitFor(`document.querySelector('h1')?.textContent.startsWith('Welcome')`, 'the overview');
+    const first = await page.evaluate('window.themeAtFirst');
+    await page.call('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+    await page.evaluate(`localStorage.removeItem('epiphany.theme'); document.documentElement.dataset.theme = 'light'`);
+    expect(first === 'dark', `The page began ${quoted(first)}, not dark.`);
+  });
   await step('The bar says at once when the connection goes, and when it comes back', async () => {
     const network = (offline) => page.call('Network.emulateNetworkConditions', { offline, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
     await page.call('Network.enable');
