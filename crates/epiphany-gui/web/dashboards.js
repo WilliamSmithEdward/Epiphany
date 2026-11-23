@@ -343,7 +343,7 @@ class Dashboards {
       }, EVERY.map(([minutes, text]) => h('option', { value: minutes, selected: minutes === pace }, text))),
       h('button', { class: 'button', title: 'Show the dashboard over the whole screen, as on a wall', onclick: () => this.present(true) }, icon('monitor', 16), 'Present'),
       this.admin ? h('button', { class: 'button', onclick: () => this.edit() }, icon('edit', 16), 'Edit') : null,
-      this.admin ? h('button', { class: 'button', onclick: () => this.create() }, icon('plus', 16), 'New') : null,
+      this.admin ? h('button', { class: 'button', 'aria-haspopup': 'menu', title: 'A new dashboard, blank or a copy of this one', onclick: (event) => this.newMenu(event.currentTarget) }, icon('plus', 16), 'New', icon('down', 14)) : null,
       this.admin ? h('button', { class: 'button danger quiet', onclick: () => this.remove() }, icon('trash', 16), 'Delete') : null,
     ];
   }
@@ -682,11 +682,23 @@ class Dashboards {
     announce('Done again');
   }
 
-  async create() {
+  /** A new dashboard: a blank one, or a copy of the one shown, as Power BI duplicates a page. */
+  newMenu(at) {
+    const shown = this.current();
+    menu([
+      { label: 'A blank dashboard', icon: 'plus', action: () => this.create() },
+      shown ? { label: `A copy of ${shown.name}`, icon: 'copy', action: () => this.create(shown) } : null,
+    ], at);
+  }
+
+  /** Names a new dashboard, blank or a copy of `from`, and opens it to be arranged and saved. */
+  async create(from = null) {
     const name = h('input', { class: 'input', id: 'dashboard-name', required: true, maxlength: 120 });
     const description = h('input', { class: 'input', id: 'dashboard-description', maxlength: 240 });
+    name.value = from ? `Copy of ${from.name}` : '';
+    description.value = from?.description ?? '';
     const made = await dialog({
-      title: 'New dashboard',
+      title: from ? `A copy of ${from.name}` : 'New dashboard',
       confirm: 'Make it',
       body: h('div', { class: 'facts' },
         h('div', { class: 'field' }, h('label', { for: 'dashboard-name' }, 'Name'), name),
@@ -695,7 +707,8 @@ class Dashboards {
         const value = name.value.trim();
         if (!value) throw invalid(name, 'Give the dashboard a name.');
         if (this.list().some((dashboard) => dashboard.name.toLowerCase() === value.toLowerCase())) throw invalid(name, `There is a dashboard called ${value} already.`);
-        return { name: value, description: description.value.trim(), tiles: [] };
+        const named = { name: value, description: description.value.trim() };
+        return from ? { ...structuredClone(from), ...named } : { ...named, tiles: [] };
       },
     });
     if (!made) return;
@@ -703,7 +716,8 @@ class Dashboards {
     this.fresh = true;
     this.past = [];
     this.future = [];
-    this.adding = true;
+    // A blank one opens with the views to add beside it; a copy has its tiles already.
+    this.adding = !from;
     this.draw();
   }
 

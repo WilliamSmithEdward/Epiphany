@@ -1079,6 +1079,22 @@ async function exploring() {
     await page.press('Escape');
     await page.waitFor(`!document.querySelector('.dashboard.presenting') && getComputedStyle(document.querySelector('.nav')).display !== 'none'`, 'the dashboard, no longer presented');
   });
+  await step('A dashboard is copied from New, opened to be arranged, saved, and taken away', async () => {
+    const tiles = (await page.api('GET', '/model')).data.model.dashboards.find((each) => each.name === 'Quarter').tiles;
+    await page.goto('/dashboards?name=Quarter');
+    await page.click('button', 'New');
+    await page.click('.menu [role="menuitem"]', 'A copy of Quarter');
+    await page.waitFor(`document.querySelector('dialog[open] #dashboard-name')?.value === 'Copy of Quarter'`, 'the copy, named');
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('.board.editing') && document.querySelectorAll('.dash-tile').length === ${tiles.length}`, 'the copy, to be arranged');
+    await page.click('button', 'Save');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent === 'Saved Copy of Quarter.')`, 'the copy, saved');
+    const copy = (await page.api('GET', '/model')).data.model.dashboards.find((each) => each.name === 'Copy of Quarter');
+    expect(quoted(copy?.tiles) === quoted(tiles), `The copy's tiles are ${quoted(copy?.tiles)}, not Quarter's.`);
+    await page.click('button', 'Delete');
+    await page.click('dialog[open] button', 'Delete');
+    await page.waitFor(`!document.querySelector('dialog[open]') && ![...document.querySelectorAll('.dash-tabs a')].some((tab) => tab.textContent === 'Copy of Quarter')`, 'the copy, taken away');
+  });
   await step('At a phone\'s width no page is wider than the screen, the grid shows on the first, and a name cut short shows whole', async () => {
     // A phone widens the page to what it holds and draws it smaller: the screen is the measure.
     const phone = { width: 390, height: 844 };
