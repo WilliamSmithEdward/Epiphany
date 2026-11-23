@@ -1,7 +1,5 @@
 //! The model snapshot: a validated, immutable form of a definition, indexed for lookup.
 
-use std::collections::BTreeMap;
-
 // Names are looked up for every cell read or written by name, so with the quick hash.
 use rustc_hash::FxHashMap as HashMap;
 
@@ -399,10 +397,26 @@ impl Dimension {
                 kind,
             })
             .collect();
+        // For each element, the last element to take it as a child: a second time is a duplicate.
+        let mut taken = vec![ElementId::MAX; def.elements.len()];
         let mut elements = def
             .elements
             .iter()
-            .map(|e| Element::compile(e, &def.name, &element_ids, &attribute_ids, &attributes))
+            .enumerate()
+            .map(|(id, e)| {
+                let names = Names {
+                    elements: &element_ids,
+                    attributes: &attribute_ids,
+                };
+                Element::compile(
+                    e,
+                    id as ElementId,
+                    &def.name,
+                    names,
+                    &mut taken,
+                    &attributes,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         let links: Vec<(ElementId, ElementId)> = elements
@@ -511,15 +525,25 @@ pub struct Element {
     pub picklist_of: Option<DimensionId>,
 }
 
+/// The indexes of a dimension's element and attribute names, as its elements are compiled.
+#[derive(Clone, Copy)]
+struct Names<'a> {
+    elements: &'a HashMap<String, ElementId>,
+    attributes: &'a HashMap<String, u32>,
+}
+
 impl Element {
+    /// Compiles element `id`. `taken` holds, for each element, the last to take it as a child.
     fn compile(
         def: &ElementDef,
+        id: ElementId,
         dimension: &str,
-        element_ids: &HashMap<String, ElementId>,
-        attribute_ids: &HashMap<String, u32>,
+        names: Names,
+        taken: &mut [ElementId],
         attributes: &[Attribute],
     ) -> Result<Self, ModelError> {
-        let within = format!("element '{}' of dimension '{dimension}'", def.name);
+        // Written out for a refusal only: a model has as many elements as it may have.
+        let within = || format!("element '{}' of dimension '{dimension}'", def.name);
         let consolidated = def.kind == ElementType::Consolidated;
         if consolidated == def.children.is_empty() {
             let (dimension, element) = (dimension.to_owned(), def.name.clone());
@@ -530,39 +554,68 @@ impl Element {
             });
         }
 
-        index(
-            "child",
-            &within,
-            def.children.iter().map(|c| c.name.as_str()),
-        )?;
-        let children = def
-            .children
-            .iter()
-            .map(|c| Ok((resolve(element_ids, "child", &within, &c.name)?, c.weight)))
-            .collect::<Result<_, ModelError>>()?;
-
-        index(
-            "attribute",
-            &within,
-            def.attributes.keys().map(String::as_str),
-        )?;
-        let mut values = vec![None; attributes.len()];
-        for (name, value) in &def.attributes {
-            let id = resolve(attribute_ids, "attribute", &within, name)? as usize;
-            let fits = match attributes[id].kind {
-                AttributeType::Numeric => matches!(value, Scalar::Number(_)),
-                AttributeType::Text | AttributeType::Alias => {
-                    matches!(value, Scalar::Text(_))
+        // Each child is looked up by the key of its name, made where the last was; one named
+        // twice is found by its id, taken already by this element.
+        let mut children = Vec::with_capacity(def.children.len());
+        for child in &def.children {
+            let found = by_key(&child.name, |key| {
+                (!key.is_empty()).then(|| names.elements.get(key).copied())
+            });
+            let name = || child.name.clone();
+            let child_id = match found {
+                None => {
+                    let within = within();
+                    return Err(ModelError::EmptyName {
+                        what: "child",
+                        within,
+                    });
                 }
+                Some(None) => {
+                    let (within, name) = (within(), name());
+                    return Err(ModelError::Unknown {
+                        what: "child",
+                        within,
+                        name,
+                    });
+                }
+                Some(Some(child_id)) => child_id,
             };
-            if !fits {
-                return Err(ModelError::AttributeType {
-                    dimension: dimension.to_owned(),
-                    element: def.name.clone(),
-                    attribute: name.clone(),
+            if std::mem::replace(&mut taken[child_id as usize], id) == id {
+                let (within, name) = (within(), name());
+                return Err(ModelError::Duplicate {
+                    what: "child",
+                    within,
+                    name,
                 });
             }
-            values[id] = Some(value.clone());
+            children.push((child_id, child.weight));
+        }
+
+        let mut values = vec![None; attributes.len()];
+        if !def.attributes.is_empty() {
+            let within = within();
+            index(
+                "attribute",
+                &within,
+                def.attributes.keys().map(String::as_str),
+            )?;
+            for (name, value) in &def.attributes {
+                let id = resolve(names.attributes, "attribute", &within, name)? as usize;
+                let fits = match attributes[id].kind {
+                    AttributeType::Numeric => matches!(value, Scalar::Number(_)),
+                    AttributeType::Text | AttributeType::Alias => {
+                        matches!(value, Scalar::Text(_))
+                    }
+                };
+                if !fits {
+                    return Err(ModelError::AttributeType {
+                        dimension: dimension.to_owned(),
+                        element: def.name.clone(),
+                        attribute: name.clone(),
+                    });
+                }
+                values[id] = Some(value.clone());
+            }
         }
 
         Ok(Self {
@@ -620,20 +673,34 @@ fn roll_up(
     }
 
     let mut level = 0;
-    let mut leaves = BTreeMap::new();
+    let mut leaves = Vec::new();
     if elements[id].children.is_empty() {
-        leaves.insert(id as ElementId, 1.0);
+        leaves.push((id as ElementId, 1.0));
     }
-    for (child, weight) in elements[id].children.clone() {
+    for index in 0..elements[id].children.len() {
+        let (child, weight) = elements[id].children[index];
         roll_up(elements, marks, child as usize, dimension, above + 1)?;
         let child = &elements[child as usize];
         level = level.max(child.level + 1);
         if child.kind != ElementType::Text {
-            for &(leaf, leaf_weight) in &child.leaves {
-                *leaves.entry(leaf).or_insert(0.0) += weight * leaf_weight;
-            }
+            let weighed = child
+                .leaves
+                .iter()
+                .map(|&(leaf, each)| (leaf, weight * each));
+            leaves.extend(weighed);
         }
     }
+    // In order of id, a leaf reached more than one way once, the weights of the ways added in
+    // the order of the children: the sort keeps that order among them, and children whose
+    // leaves follow one another, as they mostly do, are in order already.
+    leaves.sort_by_key(|&(leaf, _)| leaf);
+    leaves.dedup_by(|later, kept| {
+        let same = later.0 == kept.0;
+        if same {
+            kept.1 += later.1;
+        }
+        same
+    });
 
     // Reached from the top the depth is counted on the way down, and from anywhere else it
     // is the level, counted on the way back up.
@@ -646,7 +713,7 @@ fn roll_up(
     }
     let element = &mut elements[id];
     element.level = level;
-    element.leaves = leaves.into_iter().collect();
+    element.leaves = leaves;
     marks[id] = Mark::Done;
     Ok(())
 }

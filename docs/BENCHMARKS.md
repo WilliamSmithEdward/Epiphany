@@ -280,6 +280,21 @@ with each element's parents, children and leaves and an index of names and alias
 reckoning rather than measurement, the two are of a size. A dimension of 100,000 leaves
 takes 60 MB (2026-11-21).
 
+Compiling an element wrote out the words a refusal of it would need, whether or not there
+was one; checked its children for a name given twice by indexing their names afresh, a
+text made for each; and gathered a consolidation's leaves in a sorted map one at a time, a
+million of them for a total over a million leaves. The words are now written for a refusal
+only; the children are looked up by the key of their names, made where the last was, and a
+name given twice is found by its element; and the leaves are gathered in a list put in
+order once, which costs little where they come in order already, as children's mostly do.
+Rerun the same day, before and after (2026-11-23):
+
+| Dimension, compiled | Before | After |
+| --- | --- | --- |
+| 100,000 leaves in groups of 100 | 55 ms | 37 ms |
+| 1,000,000 leaves in groups of 100 | 829 ms | 611 ms |
+| 1,000,000 leaves under the total alone | 3.0 s | 0.64 s |
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions
