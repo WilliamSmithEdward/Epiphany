@@ -63,6 +63,7 @@ const ICONS = {
   plus: 'M12 5v14 M5 12h14',
   minus: 'M5 12h14',
   chevron: 'M9 6l6 6-6 6',
+  back: 'M15 6l-6 6 6 6',
   down: 'M6 9l6 6 6-6',
   up: 'M6 15l6-6 6 6',
   play: 'M6 4l14 8-14 8z',
@@ -109,10 +110,10 @@ const ICONS = {
   publish: 'M12 20V8 M7 13l5-5 5 5 M4 4h16',
 };
 
-/** An icon by name, `size` pixels square. */
 /** The key held with another for a command: Cmd on a Mac, Ctrl elsewhere. */
 export const MOD = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? '') ? '⌘' : 'Ctrl';
 
+/** An icon by name, `size` pixels square. */
 export function icon(name, size = 18) {
   return h('svg', {
     width: size,

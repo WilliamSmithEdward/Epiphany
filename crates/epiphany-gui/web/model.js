@@ -25,12 +25,12 @@ class ModelPage {
     this.editor = null;
     this.list = h('nav', { class: 'model-list', 'aria-label': 'Dimensions and cubes' });
     this.pane = h('section', { class: 'model-pane' });
-    const page = h('div', { class: 'model-page' }, this.list, this.pane);
-    mount(target, page);
+    this.element = h('div', { class: 'model-page' }, this.list, this.pane);
+    mount(target, this.element);
     // As wide as the names it lists need: icon, name, count and padding.
     const width = textWidths();
     const names = [...this.definition.dimensions, ...this.definition.cubes].map((item) => width(item.name));
-    splitter(page, { name: 'model-list', key: 'model', min: 200, max: 520, fit: () => Math.ceil(Math.max(120, ...names) + 130) }).fit();
+    splitter(this.element, { name: 'model-list', key: 'model', min: 200, max: 520, fit: () => Math.ceil(Math.max(120, ...names) + 130) }).fit();
     this.drawList();
     this.update(params);
   }
@@ -48,6 +48,8 @@ class ModelPage {
     this.editor = null;
     if (this.chosen) this.open(...this.chosen);
     else mount(this.pane, empty('model', 'Choose a dimension or a cube', 'Pick one from the list to edit it, or add a new one.'));
+    // Too narrow for both, the page shows the list or the one open, which leads back to it.
+    this.element.classList.toggle('editing', Boolean(this.editor));
   }
 
   /** Asked before the page is left: unsaved edits are discarded only if the user agrees. */
@@ -305,7 +307,10 @@ class Editor {
     this.tabs = h('div');
     mount(page.pane,
       h('div', { class: 'editor-head' },
-        h('div', { class: 'grow' }, h('p', { class: 'muted' }, kind === 'dimension' ? 'Dimension' : 'Cube'), h('h2', {}, original.name)),
+        h('div', { class: 'grow' },
+          h('a', { class: 'editor-back', href: '/model', 'data-link': '' }, icon('back', 14), 'Dimensions and cubes'),
+          h('p', { class: 'muted' }, kind === 'dimension' ? 'Dimension' : 'Cube'),
+          h('h2', {}, original.name)),
         this.tabs,
         h('button', { class: 'button danger', onclick: () => page.remove(kind, original.name) }, icon('trash', 16), 'Remove')),
       this.body,

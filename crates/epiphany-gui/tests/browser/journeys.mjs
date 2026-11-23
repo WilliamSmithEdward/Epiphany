@@ -897,6 +897,20 @@ async function exploring() {
           const below = await page.evaluate(`document.querySelector('td[data-r]').getBoundingClientRect().bottom`) - phone.height;
           expect(below < 0, `The grid's first cell is ${below} pixels below a phone's screen.`);
           await rulesFit('a phone\'s width');
+          // A cell's comments over the whole screen, the grid having no room beside them.
+          await page.click('td[data-r][data-c]');
+          await page.press('F2', SHIFT);
+          await page.waitFor(`document.querySelector('.comment-panel:not([hidden]) textarea')`, 'the comments');
+          const sheet = await page.evaluate(`(() => {
+            const panel = document.querySelector('.comment-panel');
+            const box = panel.getBoundingClientRect();
+            const bottom = Math.max(...[...panel.querySelectorAll('*')].map((each) => each.getBoundingClientRect().bottom));
+            return { left: Math.round(box.left), width: Math.round(box.width), below: Math.round(bottom - box.bottom) };
+          })()`);
+          expect(sheet.left === 0 && sheet.width === phone.width, `The comments are ${sheet.width} pixels wide, ${sheet.left} from the left, on a phone.`);
+          expect(sheet.below <= 0, `The comments reach ${sheet.below} pixels below their panel on a phone.`);
+          await page.click('.comment-panel button', 'Close the panel');
+          await page.waitFor(`document.querySelector('.comment-panel').hidden`, 'the comments, closed');
         }
         if (path === '/admin') {
           // The user's editor, its widest rows in it, no wider than the dialog.
@@ -911,6 +925,15 @@ async function exploring() {
           expect(sideways <= 0, `The user's editor is ${sideways} pixels wider than its dialog on a phone.`);
           await page.press('Escape');
           await page.waitFor(`!document.querySelector('dialog[open]')`, 'the editor, closed');
+        }
+        if (path.startsWith('/model')) {
+          // One at a time: the dimension open leads back to the list, which opens another.
+          await page.click('.editor-back');
+          await page.waitFor(`location.search === '' && [...document.querySelectorAll('.model-item')].some((item) => item.getBoundingClientRect().width > 0)`, 'the list of dimensions and cubes');
+          const beside = await page.evaluate(`document.querySelector('.model-pane').getBoundingClientRect().width`);
+          expect(beside === 0, `The pane beside the list is drawn ${beside} pixels wide on a phone.`);
+          await page.click('.model-item[href="/model?dimension=Entity"]');
+          await page.waitFor(`document.querySelector('.editor-head h2')?.textContent === 'Entity' && !document.querySelector('.model-list').getBoundingClientRect().width`, 'Entity, open in place of the list');
         }
       }
     } finally {
