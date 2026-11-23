@@ -664,7 +664,11 @@ async function exploring() {
     await page.waitFor(`document.querySelector('.comment-panel .detail-lines')`, 'the detail');
     await page.settled();
     await page.audit('A cell\'s detail');
-    await page.click('button', 'Close the panel');
+    // Escape, from the panel's tabs, closes it, and the keys go back to the cell.
+    await page.click('[role="tab"]', 'History');
+    await page.waitFor(`document.activeElement?.getAttribute('role') === 'tab'`, 'the keys on the tabs');
+    await page.press('Escape');
+    await page.waitFor(`document.querySelector('.comment-panel').hidden && document.activeElement?.matches('td[data-r="1"][data-c="1"]')`, 'the panel, closed, and the keys on the cell');
   });
   await step('A calculated member\'s format is what its cells show', async () => {
     // Rent as a share of salaries in the budget: -200 of 1,000 in January, 250 of 1,100.5 in February.

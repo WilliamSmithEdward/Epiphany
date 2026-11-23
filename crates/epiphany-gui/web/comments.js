@@ -267,9 +267,6 @@ export const comments = {
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         working(add, () => this.addComment(text.value));
-      } else if (event.key === 'Escape') {
-        event.preventDefault();
-        this.closeComments();
       }
     });
     return [

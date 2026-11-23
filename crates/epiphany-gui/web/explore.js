@@ -306,7 +306,17 @@ class Explorer {
     this.layoutBar = h('div', { class: 'layout-bar' });
     this.output = h('div', { class: 'output' });
     this.statusLine = h('div', { class: 'status-line', role: 'status', 'aria-live': 'polite' });
-    this.commentPanel = h('aside', { class: 'comment-panel', 'aria-label': 'About the cell', hidden: true });
+    // Escape, anywhere in the panel, closes it, and the keys go back to the grid's cell.
+    this.commentPanel = h('aside', {
+      class: 'comment-panel',
+      'aria-label': 'About the cell',
+      hidden: true,
+      onkeydown: (event) => {
+        if (event.key !== 'Escape' || event.defaultPrevented) return;
+        event.preventDefault();
+        this.closeComments();
+      },
+    });
     this.pendingBar = h('div', { class: 'pending', role: 'status', 'aria-live': 'polite', hidden: true });
     const cubes = h('select', {
       class: 'select',

@@ -30,6 +30,7 @@ const KEYS = [
     [[`${MOD}+Z`, `${MOD}+Y`], 'Take a change back, and make it again'],
     [[`${MOD}+F`], 'Find among the headings; Enter and Shift+Enter go on and back'],
     [['Shift+F2'], 'The cell\'s comments, history and detail'],
+    [['Esc'], 'In the panel of a cell\'s comments: close it, back to the cell'],
     [['Shift+F10', 'Menu'], 'The menu of the cell or the heading'],
   ]],
   ['A heading of the grid', [
