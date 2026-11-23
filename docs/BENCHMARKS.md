@@ -336,6 +336,10 @@ from outside, three saves each (2026-11-23):
 | Time to answer | 1.23 to 1.26 s | 0.24 to 0.26 s |
 | Memory at the most | 1,285 MB | 483 MB, as at the start |
 
+Reading through a dimension's shared elements costs nothing that shows: bench_cells, bench_mdx
+and bench_rules, built from the commit before and after and run alternately, twice or three
+times each, are within a few per cent of each other on every line (2026-11-23).
+
 What is left of a save is writing the model out again, every dimension of it, and keeping the
 model it replaces: 131 MB on disk for a million leaves, laid out, at every save.
 
