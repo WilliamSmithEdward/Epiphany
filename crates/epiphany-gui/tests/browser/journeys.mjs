@@ -1066,6 +1066,9 @@ async function exploring() {
         if (path.startsWith('/explore')) {
           const below = await page.evaluate(`document.querySelector('td[data-r]').getBoundingClientRect().bottom`) - phone.height;
           expect(below < 0, `The grid's first cell is ${below} pixels below a phone's screen.`);
+          // The layout's zones a row each, to leave the grid the height.
+          const zones = await page.evaluate(`[...document.querySelectorAll('.zone')].map((zone) => Math.round(zone.getBoundingClientRect().height))`);
+          expect(zones.every((height) => height <= 56), `The layout's zones are ${quoted(zones)} pixels high on a phone, rather than a row each.`);
           await rulesFit('a phone\'s width');
           // A cell's comments over the whole screen, the grid having no room beside them.
           await page.click('td[data-r][data-c]');

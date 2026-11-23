@@ -1221,6 +1221,11 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
   .page-head, .editor-head, .card-head { flex-wrap: wrap; }
   .editor-head, .work-head { padding: var(--s3); }
   .work-head > .toolbar + .toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+  /* The layout's zones a row each, the label beside the chips and the chips going on across,
+     so that the grid has the height they took. */
+  .layout-bar { gap: var(--s1); }
+  .zone { flex-wrap: nowrap; min-height: 0; padding: var(--s1) var(--s2); overflow-x: auto; scrollbar-width: none; }
+  .zone-label { width: auto; flex: none; min-width: 4.75rem; }
   .tree-tools { flex-wrap: wrap; }
   .tree-tools .search { flex-basis: 100%; }
   /* Fields paired, one above the other; an element role on two lines, its button at the end. */

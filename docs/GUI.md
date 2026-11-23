@@ -96,7 +96,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
 - **Fits a phone.** At a phone's width the bar keeps its marks, the words beside them still
   heard by a screen reader; headings and their buttons stack, as do a dialog's fields set side
   by side, an element role taking two lines; and the explorer's buttons go
-  along one row that scrolls sideways, so that the grid shows on the first screen; a cell's
+  along one row that scrolls sideways, as do the chips of each of its layout's zones, beside
+  the zone's name, so that the grid shows on the first screen with the most room; a cell's
   comments, history and detail open over the whole screen, there being no room beside the
   grid. No page is wider than the screen, nor any dialog. A rule, of the highlights or of the set editor's
   filter, takes two lines where its box is too narrow for one, its fields still lined up with
