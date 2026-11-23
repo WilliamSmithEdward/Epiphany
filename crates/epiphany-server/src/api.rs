@@ -584,6 +584,9 @@ struct ApiError {
     /// The position of the offending cell in a batch.
     #[serde(skip_serializing_if = "Option::is_none")]
     index: Option<usize>,
+    /// Where in an MDX query the problem was found, counted in characters from zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    position: Option<usize>,
 }
 
 impl ApiError {
@@ -593,6 +596,7 @@ impl ApiError {
             code,
             message,
             index: None,
+            position: None,
         }
     }
 }
@@ -622,8 +626,13 @@ impl From<Error> for ApiError {
             Error::Write { index, .. } => Some(index),
             _ => None,
         };
+        let position = match &error {
+            Error::Mdx(mdx) => mdx.position,
+            _ => None,
+        };
         Self {
             index,
+            position,
             ..Self::new(status, error.code(), error.to_string())
         }
     }

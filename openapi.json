@@ -3568,6 +3568,14 @@
           },
           "message": {
             "type": "string"
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Where in an MDX query the problem was found, counted in characters from zero.",
+            "minimum": 0
           }
         }
       },

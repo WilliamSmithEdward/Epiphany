@@ -5,11 +5,13 @@ const CLIENT = { 'x-requested-by': 'epiphany-gui' };
 
 /** An error in the shape the servers give: an HTTP status, a stable code and a message. */
 export class ApiError extends Error {
-  constructor(status, code, message, index) {
+  /** `index`: the cell of a batch at fault; `position`: where in a query, in characters from zero. */
+  constructor(status, code, message, index, position) {
     super(message);
     this.status = status;
     this.code = code;
     this.index = index;
+    this.position = position;
   }
 }
 
@@ -98,7 +100,7 @@ export async function api(method, path, body, { quiet = false, signal } = {}) {
     // The server tells API clients how to sign in; here, the application asks for it.
     const ended = response.status === 401 && !path.startsWith('/gui/');
     const message = ended ? 'Your session has ended.' : data?.message ?? `${response.status} ${response.statusText}`;
-    throw new ApiError(response.status, data?.code ?? 'error', sentence(message), data?.index);
+    throw new ApiError(response.status, data?.code ?? 'error', sentence(message), data?.index, data?.position);
   }
   return data;
 }

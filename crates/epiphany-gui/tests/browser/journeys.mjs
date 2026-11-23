@@ -553,6 +553,20 @@ async function exploring() {
     await page.click('.nav a', 'Explore');
     await page.waitFor(`location.search === '?cube=General%20Ledger' && document.title.startsWith('General Ledger') && document.querySelector('td[data-r]')`, 'the cube explored last');
   });
+  await step('A query typed in that cannot be read is shown where, to be mended there', async () => {
+    const broken = 'SELECT {[Period].[Jan] ON COLUMNS FROM [General Ledger]';
+    const { data } = await page.api('POST', '/mdx', { mdx: broken });
+    expect(Number.isInteger(data.position), `The API says no place for the problem: ${quoted(data)}.`);
+    await page.click('[role="tab"]', 'MDX');
+    await page.fill('textarea.mdx-editor', broken);
+    await page.click('button', 'Run');
+    await page.click('button', 'Show it in the query');
+    await page.waitFor(`document.activeElement?.matches('textarea.mdx-editor') && document.activeElement.selectionStart === ${data.position}`, 'the problem, chosen in the query');
+    const said = await page.evaluate(`document.getElementById(document.querySelector('textarea.mdx-editor').getAttribute('aria-describedby'))?.textContent`);
+    // The GUI says what the API says as a sentence.
+    expect(said?.toLowerCase().replace(/\.$/, '') === data.message.toLowerCase(), `Beneath the query it says ${quoted(said)}, not ${quoted(data.message)}.`);
+    await page.audit('A query mended where it went wrong');
+  });
   await step('An MDX query typed in shows what the API answers to it', async () => {
     await page.click('[role="tab"]', 'MDX');
     await page.fill('textarea.mdx-editor', QUERY);

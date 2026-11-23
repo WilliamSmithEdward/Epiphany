@@ -473,7 +473,9 @@ practice that means:
   only, not a transaction's pending ones.
 - Any data call may carry a transaction id; without one it is its own transaction.
 - One error shape everywhere: a stable code, a message, and the offending coordinate when
-  there is one. The adapter maps codes to worksheet results.
+  there is one: the cell of a batch at fault (`index`), or where in an MDX query the problem
+  was found (`position`, in characters from zero). The adapter maps codes to worksheet
+  results.
 - Checking a password is slow and takes some 19 MiB on purpose, and anybody may ask for
   it. Four are checked at once and 64 sign-ins in all may be waiting or being checked;
   one more is answered 429 with the code `busy` and `Retry-After: 1`. A crowd of

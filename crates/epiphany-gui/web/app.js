@@ -500,11 +500,13 @@ export function empty(iconName, title, text, ...actions) {
   return h('div', { class: 'empty' }, icon(iconName, 40), h('h3', {}, title), text && h('p', {}, text), actions.length ? h('div', { class: 'toolbar' }, actions) : null);
 }
 
-export function failure(problem, retry) {
+/** What went wrong, with a button to try again where `retry` is given, and `also` beside it. */
+export function failure(problem, retry, also = null) {
   const refused = problem instanceof ApiError && problem.status === 403;
   return empty(refused ? 'lock' : 'alert',
     refused ? 'You may not see this' : 'Something went wrong',
     refused ? 'Your role does not allow it. Ask an administrator if you need it.' : problem.message,
+    also,
     retry ? h('button', { class: 'button', onclick: retry }, icon('refresh', 16), 'Try again') : null);
 }
 

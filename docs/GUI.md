@@ -99,7 +99,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
 - **Every state designed.** Loading, empty, error with a retry, and refused for want of
   rights. Moving to another page leaves the one shown, still, until the next is drawn: a
   quick load shows no gap, and a slow one the outline of what is coming. Choosing another
-  dimension, cube or dashboard within a page changes only what it shows. A dialog that
+  dimension, cube or dashboard within a page changes only what it shows. A query written by
+  hand that the server cannot read offers to show where: the character chosen in the query,
+  and what was wrong beneath it, until it is changed. A dialog that
   refuses what a field holds says why beneath it, marks it, invalid to a screen reader and
   described by the refusal, and gives it the keys, until it is changed. A password typed can
   be shown, and hidden again, by the button inside its field, which says beneath it, while

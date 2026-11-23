@@ -908,7 +908,10 @@ class Explorer {
     if (this.view === 'mdx') return this.drawMdx();
     if (this.view === 'chart' && this.result && !this.error) return this.drawChart();
     if (this.error) {
-      mount(this.output, failure(this.error, () => this.run()));
+      // A query written by hand that could not be read says where, to be mended there.
+      const at = this.layout.mdx ? this.error.position : null;
+      const show = at == null ? null : h('button', { class: 'button primary', onclick: () => this.showInQuery(at) }, icon('code', 16), 'Show it in the query');
+      mount(this.output, failure(this.error, () => this.run(), show));
       mount(this.statusLine);
       return;
     }
@@ -1310,9 +1313,37 @@ class Explorer {
   }
 
   /* ---- MDX ---- */
+
+  /** Opens the query where the server found a problem in it, at `position`, with what it said. */
+  showInQuery(position) {
+    this.mended = { position, message: this.error.message };
+    this.view = 'mdx';
+    this.drawTabs();
+    this.draw();
+  }
+
   drawMdx() {
     const editor = h('textarea', { class: 'textarea mdx-editor', spellcheck: 'false', 'aria-label': 'MDX query', rows: 14 }, this.text ?? '');
     editor.value = this.text ?? '';
+    // Where the server found a problem: the character chosen, and what it said beneath, until
+    // the query is changed. Counted in characters, which the text counts in halves of some.
+    const problem = this.mended;
+    this.mended = null;
+    const said = problem ? h('p', { class: 'error-text', id: 'mdx-problem', role: 'alert' }, problem.message) : null;
+    if (problem) {
+      const at = [...editor.value].slice(0, problem.position).join('').length;
+      requestAnimationFrame(() => {
+        editor.focus();
+        editor.setSelectionRange(at, Math.min(at + 1, editor.value.length));
+      });
+      editor.setAttribute('aria-invalid', 'true');
+      editor.setAttribute('aria-describedby', 'mdx-problem');
+      editor.addEventListener('input', () => {
+        said.remove();
+        editor.removeAttribute('aria-invalid');
+        editor.removeAttribute('aria-describedby');
+      }, { once: true });
+    }
     const run = () => {
       const text = editor.value.trim();
       if (!text) return;
@@ -1331,6 +1362,7 @@ class Explorer {
     mount(this.output, h('div', { class: 'mdx-pane' },
       h('p', { class: 'muted' }, this.layout.mdx ? 'This query was written by hand.' : 'The query the layout makes. Edit it and run it to go further than the layout can.'),
       editor,
+      said,
       h('div', { class: 'toolbar' },
         h('button', { class: 'button primary', onclick: run }, icon('play', 16), 'Run'),
         h('span', { class: 'hint' }, `${MOD} Enter runs it`),
