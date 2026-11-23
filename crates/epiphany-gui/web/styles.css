@@ -561,7 +561,7 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .chart .line { fill: none; stroke-width: 2.25; stroke-linejoin: round; stroke-linecap: round; }
 .chart .dot { stroke: var(--surface); stroke-width: 2; }
 .chart-legend { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
-.legend-item { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 var(--s2); border: 1px solid transparent; border-radius: 999px; background: none; color: var(--text-2); font-size: var(--text-s); cursor: pointer; }
+.legend-item { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 28px; white-space: nowrap; padding: 0 var(--s2); border: 1px solid transparent; border-radius: 999px; background: none; color: var(--text-2); font-size: var(--text-s); cursor: pointer; }
 .legend-item:hover { background: var(--surface-2); }
 .legend-item[aria-pressed="false"] { color: var(--text-3); text-decoration: line-through; }
 .legend-item[aria-pressed="false"] .swatch { opacity: .3; }
@@ -836,47 +836,180 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .dash-tabs a { padding: var(--s2) var(--s3); color: var(--text-2); text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; font-weight: 550; }
 .dash-tabs a:hover { color: var(--text); }
 .dash-tabs a[aria-current="page"] { color: var(--accent-text); border-bottom-color: var(--accent); }
-/* As many columns of tiles as the width holds, rather than two stretched across it. */
-.dash-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 480px), 1fr)); gap: var(--s4); align-items: start; }
-.dash-tile { display: flex; flex-direction: column; min-width: 0; }
-.dash-tile.wide { grid-column: span 2; }
-.tile-head { display: flex; align-items: flex-start; gap: var(--s3); padding: var(--s4) var(--s5) var(--s2); }
-.tile-head .grow { flex: 1; min-width: 0; }
-.tile-head h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tile-head p { font-size: var(--text-xs); margin-top: 2px; }
-.tile-body { position: relative; padding: 0 var(--s5) var(--s5); min-height: 120px; display: flex; flex-direction: column; }
-.tile-body > .empty { flex: 1; padding: var(--s5); }
-/* The outline a tile holds until its answer comes, as tall as what it will show. */
-.tile-body > .skeleton { flex: 1; min-height: 300px; }
-.tile-body > .skeleton.figure { min-height: 120px; }
-.tile-body > .skeleton.grid { min-height: 240px; }
-.tile-body.busy > :not(.skeleton) { opacity: .6; transition: opacity .3s .5s; }
-.dash-tile .chart { padding: 0; border: 0; box-shadow: none; background: none; }
-.dash-tile .chart-plot { min-height: 260px; }
-.figure { display: flex; flex-direction: column; justify-content: center; gap: var(--s2); flex: 1; padding: var(--s3) 0; }
-.figure-value { font-size: 44px; line-height: 1.1; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.figure-value.negative { color: var(--bad); }
-.figure-trend { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s2); }
-.sparkline .line { fill: none; stroke-width: 2; }
-.tile-grid { overflow: auto; max-height: 360px; border: 1px solid var(--line); border-radius: var(--radius); }
-.table.compact { font-size: var(--text-s); font-variant-numeric: tabular-nums; }
-.table.compact th, .table.compact td { padding: 6px var(--s3); }
-.table.compact tbody th { position: sticky; left: 0; background: var(--surface); text-align: left; text-transform: none; letter-spacing: 0; font-size: var(--text-s); color: var(--text); font-weight: 550; }
-.table.compact .n { text-align: right; }
-.table.compact td.negative { color: var(--bad); }
-.tile-controls { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
-.tile-controls .input { flex: 1; min-width: 8rem; height: var(--control-small); }
-.tile-controls .select { height: var(--control-small); min-width: 0; }
-/* While a dashboard is edited, a tile's controls take a row beneath its name: neither squeezes the other. */
-.dashboard.editing .tile-head { flex-direction: column; align-items: stretch; gap: var(--s2); }
-.dashboard.editing .dash-tile { outline: 1px dashed var(--line-strong); outline-offset: 3px; cursor: grab; }
-.dash-tile.drop-target { box-shadow: 0 0 0 2px var(--accent); }
 .dash-names { display: flex; flex-direction: column; gap: var(--s2); }
 .dash-names .input { max-width: 520px; }
 .dash-name { font-size: var(--text-xl); font-weight: 650; height: 42px; }
-/* A wide tile spans two columns where there are two, and one where there is one. */
-.dash-grid { container-type: inline-size; }
-@container (max-width: 975px) { .dash-tile.wide { grid-column: auto; } }
+.dash-work { display: flex; align-items: flex-start; gap: var(--s4); }
+.board-frame { flex: 1; min-width: 0; }
+
+/* The board: twelve columns across and rows of a fixed height, a tile standing on them at
+   its --x and --y, --w columns wide and --h rows high. Moved, a tile slides to its place. */
+.board {
+  --dash-row: 40px; --dash-gap: 16px;
+  --col: calc((100% - 11 * var(--dash-gap)) / 12);
+  position: relative;
+  height: calc(var(--rows, 1) * (var(--dash-row) + var(--dash-gap)) - var(--dash-gap));
+  transition: height .2s var(--ease);
+}
+.dash-tile, .board-ghost {
+  position: absolute;
+  left: calc(var(--x) * (var(--col) + var(--dash-gap)));
+  top: calc(var(--y) * (var(--dash-row) + var(--dash-gap)));
+  width: calc(var(--w) * var(--col) + (var(--w) - 1) * var(--dash-gap));
+  height: calc(var(--h) * var(--dash-row) + (var(--h) - 1) * var(--dash-gap));
+}
+.dash-tile {
+  container: tile / size;
+  display: flex; flex-direction: column; min-width: 0;
+  transition: left .22s var(--ease), top .22s var(--ease), width .22s var(--ease), height .22s var(--ease), transform .22s var(--ease), box-shadow .15s;
+}
+/* Too narrow for its columns, the board stands its tiles one above the other, as they are read. */
+.board.stacked { display: flex; flex-direction: column; gap: var(--dash-gap); height: auto; }
+.board.stacked > .dash-tile:not(.focused) { position: relative; left: auto; top: auto; width: auto; order: var(--order); }
+.board.stacked > .board-ghost, .board.stacked > .board-guides { display: none; }
+
+.tile-head { display: flex; align-items: flex-start; gap: var(--s1); padding: var(--s3) var(--s3) var(--s1) var(--s4); }
+.tile-head .grow { flex: 1; min-width: 0; }
+.tile-head h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-head p { font-size: var(--text-xs); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A tile's buttons show as it is pointed at or holds the keys, where there is a pointer to point. */
+@media (hover: hover) {
+  .dash-tile:not(:hover, :focus-within) .tile-head .button, .dash-tile:not(:hover, :focus-within) .tile-corner { opacity: 0; }
+}
+.tile-head .button, .tile-corner { transition: opacity .12s; }
+.tile-corner { position: absolute; top: var(--s2); right: var(--s2); z-index: 3; display: flex; gap: 2px; }
+.tile-body { position: relative; flex: 1; min-height: 0; padding: 0 var(--s4) var(--s4); display: flex; flex-direction: column; overflow: hidden; }
+.tile-body > .empty { flex: 1; padding: var(--s4); }
+/* The outline a tile holds until its answer comes, as tall as the tile. */
+.tile-body > .skeleton { flex: 1; min-height: 0; }
+.tile-body.busy > :not(.skeleton) { opacity: .6; transition: opacity .3s .5s; }
+.dash-tile .chart { padding: 0; border: 0; box-shadow: none; background: none; }
+.dash-tile .chart-legend { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.chart.fill { flex: 1; min-height: 0; gap: var(--s2); }
+.chart.fill .chart-area { flex: 1; min-height: 0; }
+.chart.fill .chart-plot { position: absolute; inset: 0; min-height: 0; }
+
+/* A tile of text: words on the page rather than a card, but where it is arranged. */
+.text-tile { background: transparent; border-color: transparent; box-shadow: none; }
+.text-tile .tile-body { padding: var(--s3) var(--s4); overflow: auto; }
+.board.editing .text-tile { border: 1px dashed var(--line-strong); }
+.prose { display: flex; flex-direction: column; gap: var(--s2); color: var(--text-2); }
+.prose h3 { font-size: var(--text-xl); color: var(--text); }
+.prose ul { margin: 0; padding-left: var(--s5); }
+
+/* A key figure, as large as its tile allows. */
+.figure { display: flex; flex-direction: column; justify-content: center; gap: var(--s1); flex: 1; min-height: 0; }
+.figure-value { font-size: clamp(26px, 22cqmin, 120px); line-height: 1.05; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.figure-value.negative { color: var(--bad); }
+.figure-name { font-size: var(--text-s); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.figure-change { display: flex; align-items: center; gap: 6px; font-size: var(--text-s); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.figure-trend { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s1); min-width: 0; }
+.figure-trend .muted { font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sparkline .line { fill: none; stroke-width: 2; }
+@container tile (max-height: 250px) { .figure-trend { display: none; } }
+@container tile (min-width: 480px) { .figure { align-items: center; text-align: center; } }
+
+/* A table of every row, drawn only where it is seen: names down the left, columns across the
+   top, both kept in sight. */
+.tile-table { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); font-size: var(--text-s); font-variant-numeric: tabular-nums; }
+.tile-table:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.tile-row { display: grid; grid-template-columns: var(--heading) repeat(var(--count), minmax(72px, 1fr)); align-items: stretch; border-top: 1px solid var(--line); }
+.tile-table .rows, .tile-row { min-width: calc(var(--heading) + var(--count) * 72px); }
+.tile-row.head { position: sticky; top: 0; z-index: 2; height: 30px; border-top: 0; background: var(--surface-2); font-weight: 600; color: var(--text-2); }
+.tile-row > span { display: flex; align-items: center; min-width: 0; padding: 0 var(--s2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tile-row > .n { justify-content: flex-end; }
+.tile-row > [role="rowheader"], .tile-row > .corner { position: sticky; left: 0; z-index: 1; background: var(--surface); font-weight: 500; color: var(--text); }
+.tile-row.head > .corner { z-index: 3; background: var(--surface-2); }
+.tile-row.total > span { font-weight: 650; }
+.tile-row .negative { color: var(--bad); }
+.row-pick { all: unset; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.row-pick:hover { color: var(--accent-text); text-decoration: underline; }
+.row-pick:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+.tile-table.pickable .tile-row > [role="cell"]:hover { box-shadow: inset 0 0 0 1px var(--accent); cursor: pointer; }
+.tile-row.picked > span, .tile-row > .picked { background-color: var(--accent-soft); color: var(--accent-text); }
+.tile-table.heat .tile-row { border-top-color: var(--surface); }
+.tile-table.heat .shade { background-color: color-mix(in oklab, var(--accent) calc(var(--shade) * 88%), var(--surface)); }
+.tile-table.heat .shade.deep { color: var(--on-accent); }
+
+/* Editing: the grid's points showing, the tiles taken up anywhere, and moved as one is. */
+.board.editing { min-height: calc(6 * (var(--dash-row) + var(--dash-gap))); }
+.board.editing.gridded {
+  background-image: radial-gradient(circle, var(--line-strong) 1.2px, transparent 1.7px);
+  background-size: calc((100% + var(--dash-gap)) / 12) calc(var(--dash-row) + var(--dash-gap));
+  background-position: calc(var(--dash-gap) / -2) calc(var(--dash-gap) / -2);
+}
+.board.editing .dash-tile { cursor: grab; user-select: none; touch-action: none; }
+.board.editing .tile-body { pointer-events: none; }
+.board.editing .dash-tile:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.board.arranging, .board.arranging .dash-tile { cursor: grabbing; }
+.dash-tile.lifted { z-index: 50 !important; box-shadow: var(--shadow-3); opacity: .96; transition: none; }
+.dash-tile.sizing { z-index: 50 !important; transition: none; }
+.dash-tile.sizing::after { content: attr(data-size); position: absolute; right: 12px; bottom: 12px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: var(--text-xs); font-weight: 600; font-variant-numeric: tabular-nums; }
+.board-ghost { z-index: 0; border: 2px dashed var(--accent); border-radius: var(--radius-l); background: color-mix(in oklab, var(--accent) 10%, transparent); pointer-events: none; transition: left .15s var(--ease), top .15s var(--ease), width .15s var(--ease), height .15s var(--ease); }
+.board-ghost[hidden] { display: none; }
+.board-guides { position: absolute; inset: 0; z-index: 60; pointer-events: none; }
+.board-guide { position: absolute; border: 0 dashed var(--accent); }
+.board-guide.x { top: -8px; bottom: -8px; border-left-width: 1px; }
+.board-guide.y { left: -8px; right: -8px; border-top-width: 1px; }
+.board-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: var(--s3); padding: var(--s5); border: 2px dashed var(--line-strong); border-radius: var(--radius-l); color: var(--text-3); text-align: center; }
+/* The handles a tile is resized by: on its edges, and a grip in its corner. */
+.handle { position: absolute; z-index: 4; opacity: 0; transition: opacity .12s; }
+.board.editing .dash-tile:is(:hover, :focus-within, .sizing) .handle { opacity: 1; }
+.handle.e, .handle.w { top: 14px; bottom: 14px; width: 10px; cursor: ew-resize; }
+.handle.n, .handle.s { left: 14px; right: 14px; height: 10px; cursor: ns-resize; }
+.handle.e { right: -5px; } .handle.w { left: -5px; } .handle.n { top: -5px; } .handle.s { bottom: -5px; }
+.handle.ne, .handle.nw, .handle.se, .handle.sw { width: 16px; height: 16px; }
+.handle.se { right: 2px; bottom: 2px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 0 52%, var(--text-3) 52% 60%, transparent 60% 70%, var(--text-3) 70% 78%, transparent 78%); }
+.handle.nw { left: -4px; top: -4px; cursor: nwse-resize; }
+.handle.ne { right: -4px; top: -4px; cursor: nesw-resize; }
+.handle.sw { left: -4px; bottom: -4px; cursor: nesw-resize; }
+.handle.e::after, .handle.w::after, .handle.n::after, .handle.s::after { content: ""; position: absolute; inset: 0; margin: auto; border-radius: 999px; background: var(--accent); }
+.handle.e::after, .handle.w::after { width: 4px; height: 28px; }
+.handle.n::after, .handle.s::after { width: 28px; height: 4px; }
+
+/* The list of what may be added, beside the board, and what is dragged from it. */
+.dash-drawer { position: sticky; top: 0; flex: none; width: 300px; max-height: calc(100vh - var(--bar) - 2 * var(--s6)); display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); overflow: hidden; animation: rise .2s var(--ease); }
+.drawer-head { display: flex; align-items: center; justify-content: space-between; }
+.drawer-list { display: flex; flex-direction: column; gap: var(--s1); overflow: auto; margin: 0 calc(var(--s2) * -1); padding: 0 var(--s2) var(--s2); }
+.drawer-section { padding: var(--s3) var(--s1) var(--s1); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text-3); }
+.drawer-item { display: flex; align-items: center; gap: var(--s3); width: 100%; padding: var(--s2); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; cursor: grab; touch-action: none; transition: border-color .12s, transform .12s; }
+.drawer-item:hover { border-color: var(--accent); transform: translateX(-2px); }
+.drawer-item .grow { display: flex; flex-direction: column; min-width: 0; }
+.drawer-item strong, .drawer-item .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-item .muted { font-size: var(--text-xs); }
+.drawer-icon { flex: none; width: 34px; height: 34px; display: grid; place-items: center; border-radius: var(--radius); background: var(--accent-soft); color: var(--accent-text); }
+.drag-token { position: fixed; z-index: 80; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3) var(--s2) var(--s2); border: 1px solid var(--accent); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-3); font-weight: 600; pointer-events: none; transform: translate(-50%, -50%) rotate(-2deg); transition: opacity .12s; }
+.drag-token.over { opacity: .7; }
+@media (max-width: 900px) {
+  .dash-work { flex-direction: column-reverse; align-items: stretch; }
+  .dash-drawer { position: static; width: auto; max-height: 45vh; }
+}
+
+/* A tile shown over the whole page, the dashboard dimmed beneath it. */
+.board > .dash-tile.focused { position: fixed; z-index: 70 !important; left: 3vw; top: calc(var(--bar) + 3vh); width: 94vw; height: calc(100vh - var(--bar) - 6vh); box-shadow: var(--shadow-3); transition: none; animation: pop .16s var(--ease); }
+.focus-backdrop { position: fixed; inset: 0; z-index: 69; background: rgb(8 12 20 / 45%); backdrop-filter: blur(2px); animation: appear .15s; }
+
+/* Charts, coming in: bars rise, lines draw themselves and a ring's slices grow, once. */
+.chart .area { stroke: none; opacity: .18; }
+.chart .slice { stroke: var(--surface); stroke-width: 2; }
+.chart .value { fill: var(--text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; }
+.chart .value.on-slice { fill: var(--on-accent); }
+.chart .ring-whole { fill: var(--text); font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.chart .mark { cursor: default; transition: opacity .15s; }
+.chart-plot:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: var(--radius-s); }
+.chart .mark.focused { stroke: var(--text); stroke-width: 2; }
+.chart svg.picking .mark:not(.picked) { opacity: .3; }
+.chart .mark.picked { stroke: var(--text); stroke-width: 1.5; }
+.dash-tile .chart .mark[data-s] { cursor: pointer; }
+.chart svg.entering .bar, .chart svg.entering .dot, .chart svg.entering .slice { transform-box: fill-box; transform-origin: center bottom; animation: grow .45s var(--ease) both; }
+.chart svg.entering .slice { transform-origin: center; }
+.chart svg.entering .line { stroke-dasharray: 1; animation: draw .7s var(--ease) both; }
+.chart svg.entering .area { animation: appear .7s .2s both; }
+@keyframes grow { from { transform: scale(.6, 0); opacity: 0; } }
+@keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .dash-tile, .board-ghost, .board { transition: none; }
+}
 
 /* ---- Cells that may be written, marked as such ---- */
 
@@ -956,13 +1089,13 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 
 /* ---- Highlights: bars, shades and tones ---- */
 
-.pivot td.data-bar:not(.edited) { background-image: linear-gradient(to right, color-mix(in oklab, var(--accent) 28%, transparent) var(--bar), transparent var(--bar)); background-repeat: no-repeat; }
-.pivot td.data-bar.negative:not(.edited) { background-image: linear-gradient(to right, color-mix(in oklab, var(--bad) 28%, transparent) var(--bar), transparent var(--bar)); }
-.pivot td.shade:not(.edited) { background-color: color-mix(in oklab, var(--accent) calc(var(--shade) * 38%), var(--surface)); }
-.pivot td.tone-good:not(.edited) { background-color: color-mix(in oklab, var(--good) 20%, var(--surface)); color: var(--good); font-weight: 600; }
-.pivot td.tone-bad:not(.edited) { background-color: color-mix(in oklab, var(--bad) 18%, var(--surface)); color: var(--bad); font-weight: 600; }
-.pivot td.tone-warn:not(.edited) { background-color: color-mix(in oklab, var(--warn) 22%, var(--surface)); font-weight: 600; }
-.pivot td.tone-accent:not(.edited) { background-color: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+.pivot td.data-bar:not(.edited), .tile-table .data-bar { background-image: linear-gradient(to right, color-mix(in oklab, var(--accent) 28%, transparent) var(--bar), transparent var(--bar)); background-repeat: no-repeat; }
+.pivot td.data-bar.negative:not(.edited), .tile-table .data-bar.negative { background-image: linear-gradient(to right, color-mix(in oklab, var(--bad) 28%, transparent) var(--bar), transparent var(--bar)); }
+.pivot td.shade:not(.edited), .tile-table .shade { background-color: color-mix(in oklab, var(--accent) calc(var(--shade) * 38%), var(--surface)); }
+.pivot td.tone-good:not(.edited), .tile-table .tone-good { background-color: color-mix(in oklab, var(--good) 20%, var(--surface)); color: var(--good); font-weight: 600; }
+.pivot td.tone-bad:not(.edited), .tile-table .tone-bad { background-color: color-mix(in oklab, var(--bad) 18%, var(--surface)); color: var(--bad); font-weight: 600; }
+.pivot td.tone-warn:not(.edited), .tile-table .tone-warn { background-color: color-mix(in oklab, var(--warn) 22%, var(--surface)); font-weight: 600; }
+.pivot td.tone-accent:not(.edited), .tile-table .tone-accent { background-color: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
 
 /* ---- Earlier versions of the model ---- */
 
@@ -1109,11 +1242,11 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
     --shadow-1: none; --shadow-2: none; --shadow-3: none;
   }
   .skip, .bar, .nav, .notices, .fields, .model-list, .work-head > .toolbar, .comment-panel, .pending,
-  .splitter, .dash-tabs, .page-head .toolbar, .tile-controls, .dash-filters button, .tile-head > a,
+  .splitter, .dash-tabs, .page-head .toolbar, .dash-filters button, .tile-head .button, .tile-corner, .dash-drawer, .handle,
   .zone:not(:has(.chip)), .chip-more, .pivot .twisty, .card-head > .button, .editor-head > .button,
   .editor-head .segmented, .tree-tools, .table .actions { display: none !important; }
   html, body, .shell, .main, .explorer, .work, .output-row, .output { display: block; }
-  html, body, .shell, .main, .page, .explorer, .work, .output-row, .output, .pivot-scroll, .tile-grid,
+  html, body, .shell, .main, .page, .explorer, .work, .output-row, .output, .pivot-scroll, .tile-table,
   .mdx-pane, .chart-pane, .editor-body, .element-tree, .element-detail, .card.fit {
     height: auto !important; max-height: none !important; overflow: visible !important;
   }
@@ -1136,6 +1269,10 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
   .pivot tr.spacer { display: none; }
   .rows { height: auto !important; }
   .rows > * { position: static !important; }
+  /* A dashboard's tiles one after another, as they are read, each as high as on screen. */
+  .board { display: flex !important; flex-direction: column; gap: var(--s4); height: auto !important; background: none !important; }
+  .board > .dash-tile { position: relative !important; left: auto !important; top: auto !important; width: auto !important; order: var(--order); }
+  .board-ghost, .board-guides, .focus-backdrop { display: none !important; }
   /* Shading, highlights and the colours of a chart's series say something, where browsers
      leave backgrounds out; charts drawn wider than the paper fit it. */
   .pivot, .chart { print-color-adjust: exact; }

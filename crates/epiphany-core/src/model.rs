@@ -5,9 +5,10 @@ mod error;
 mod snapshot;
 
 pub use definition::{
-    AttributeType, ChildDef, Comparison, CubeDef, DashboardDef, DimensionDef, DimensionType,
-    ElementDef, ElementType, Geometry, HighlightRule, Highlights, MembersDef, ModelDef,
-    NumberFormat, PicklistDef, Scale, SubsetDef, TileDef, TileShow, Tone, ValidationDef, ViewDef,
+    AttributeType, ChildDef, Comparison, CubeDef, DASHBOARD_COLUMNS, DashboardDef, DashboardLayout,
+    DimensionDef, DimensionType, ElementDef, ElementType, Geometry, HighlightRule, Highlights,
+    MembersDef, ModelDef, NumberFormat, PicklistDef, Scale, SubsetDef, TileDef, TilePlace,
+    TileShow, Tone, ValidationDef, ViewDef,
 };
 pub use error::ModelError;
 pub use snapshot::{

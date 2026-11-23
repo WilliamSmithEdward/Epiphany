@@ -281,7 +281,9 @@ impl Query {
             claim(&slicer)?;
         }
         // The members to stand at take the slicer's place for their dimensions. They claim no
-        // dimension: an axis that places one puts its own members in every cell.
+        // dimension: an axis that places one puts its own members in every cell, keeping only
+        // those at the member or beneath it.
+        let mut stood = Vec::new();
         for &(dimension, name) in standing {
             let named = Expr::Name(vec![dimension.to_owned(), name.to_owned()]);
             let Datum::Member(member) = evaluator.evaluate(&evaluator.settled(&named), &context)?
@@ -290,6 +292,7 @@ impl Query {
                     "[{dimension}].[{name}] is not a member to stand at"
                 ));
             };
+            stood.push(member);
             match slicer
                 .iter_mut()
                 .find(|other| other.position == member.position)
@@ -340,6 +343,21 @@ impl Query {
                 })
                 .collect();
             sets.push(evaluator.cut(&laid[index], &beside, &context)?);
+        }
+        // An axis that places a member stood at keeps its tuples at that member or beneath it,
+        // as a page's choice narrows a view whose rows are of its dimension; the query's own
+        // calculated members stay.
+        for set in &mut sets {
+            set.retain(|tuple| {
+                tuple.iter().all(|member| {
+                    stood.iter().all(|at| {
+                        at.position != member.position
+                            || matches!(member.id, Id::Calculated(_))
+                            || member.id == at.id
+                            || evaluator.beneath(*member, *at)
+                    })
+                })
+            });
         }
 
         // One cell per combination of a tuple from each axis, the first axis varying fastest.

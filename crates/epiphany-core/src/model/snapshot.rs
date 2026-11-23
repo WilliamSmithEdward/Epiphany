@@ -5,7 +5,7 @@ use rustc_hash::FxHashMap as HashMap;
 
 use super::definition::{
     AttributeType, CubeDef, DimensionDef, DimensionType, ElementDef, ElementType, MembersDef,
-    ModelDef, PicklistDef, SubsetDef, ViewDef,
+    ModelDef, PicklistDef, SubsetDef, TileShow, ViewDef,
 };
 use super::error::ModelError;
 use crate::Scalar;
@@ -154,7 +154,7 @@ impl Model {
                 })?;
             }
         }
-        // Every tile of a dashboard shows a view that is there.
+        // Every tile of a dashboard shows a view that is there, or text, on the page.
         index(
             "dashboard",
             WITHIN,
@@ -166,15 +166,25 @@ impl Model {
                 resolve(&model.dimension_ids, "dimension", &within, filter)?;
             }
             for tile in &dashboard.tiles {
-                let cube = resolve(&model.cube_ids, "cube", &within, &tile.cube)?;
-                let views = def.cubes[cube as usize].views.keys().map(String::as_str);
-                let within = format!("{within}, cube '{}'", tile.cube);
-                resolve(&index("view", &within, views)?, "view", &within, &tile.view)?;
+                let wrong = |problem| ModelError::Tile {
+                    dashboard: dashboard.name.clone(),
+                    problem,
+                };
+                if tile.show == TileShow::Text {
+                    if tile.text.trim().is_empty() {
+                        return Err(wrong("is of text but says nothing"));
+                    }
+                } else {
+                    let cube = resolve(&model.cube_ids, "cube", &within, &tile.cube)?;
+                    let views = def.cubes[cube as usize].views.keys().map(String::as_str);
+                    let within = format!("{within}, cube '{}'", tile.cube);
+                    resolve(&index("view", &within, views)?, "view", &within, &tile.view)?;
+                }
                 if !(1..=2).contains(&tile.width) {
-                    return Err(ModelError::TileWidth {
-                        dashboard: dashboard.name.clone(),
-                        width: tile.width,
-                    });
+                    return Err(wrong("is neither one column wide nor two"));
+                }
+                if tile.place.is_some_and(|place| !place.on_page()) {
+                    return Err(wrong("is placed off the page"));
                 }
             }
         }

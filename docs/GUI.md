@@ -40,8 +40,11 @@ their practices, not their looks.
 | A menu on a cell: sort, drill, show as a share of the row or column | The cell menu |
 | Moving between the visual builder and MDX | An MDX view of the same query, editable |
 | One query seen as grid or chart | Grid and chart views |
-| KPI cards with sparklines, time presets, readable legends | Dashboards: tiles of saved views as key figures with their trend, bar, stacked and line charts, or small grids, each opening in Explore |
-| A page's selectors that every widget follows (PAW books, Anaplan pages, Power BI slicers) | Dashboard filters: a member chosen above the tiles, which each tile whose cube has the dimension stands at, through the query's `context` |
+| KPI cards with sparklines, time presets, readable legends | Dashboards: tiles of saved views as key figures with their change from the value before and their trend; bar, stacked, ranked, line, area and donut charts filling the tile, values on the marks if asked, a series for each row or each column; tables of every row with the view's highlights; heatmaps; and notes of text. Each opens in Explore, or over the whole page |
+| A page's selectors that every widget follows (PAW books, Anaplan pages, Power BI slicers) | Dashboard filters: a member chosen above the tiles, which each tile whose cube has the dimension stands at, through the query's `context`; a tile whose rows or columns are of the dimension keeps only those at the member or beneath it |
+| Arranging a page's visuals by dragging, on a grid or freely, snapped or lined up (Power BI's snap to grid and smart guides, Tableau's tiled and floating objects, a phone's home screen) | A dashboard's board of twelve columns and rows. A tile is dragged by any part of it and resized by its edges or its corner. On the grid the others change places with it as it passes them and rise into what is free, a ghost showing where it will settle; laid out freely it stands where it is let go, over another if put there, on whole columns and rows when snapping or else lined up with an edge or middle it comes near. Sizes at once from its menu, the arrow keys to move it and with Shift to resize it, Undo and Redo, and views dragged in from a list beside |
+| Clicking one visual to filter the others (Power BI's cross-filtering, Tableau's filter actions) | A bar, point, slice or row of one tile picked shows every other tile at its members, the picked one marked and said above the tiles, until it is picked again or Escape |
+| A page that keeps itself current | Its tiles run again by themselves, every minute to every hour, while the page is in sight |
 | Numbers in the units a reader thinks in: decimals, thousands or millions, negatives in parentheses, zeros as a dash (PAW's Format, Power BI's display units) | A view's number format, set from the toolbar, saved with the view and used by its dashboard tiles; a calculated member's `FORMAT_STRING`, such as a percentage among sums of money, for the cells it decides |
 | Typing into a total spreads it, with TM1's codes (P, S or LS, R or LR, C, + or ~, and P% for a percentage change), but a spread over many cells, or one that empties them, asks first | Typed spreading in the grid, within the edit transaction |
 | Filling a plan across months from one cell: a value repeated, shared out, grown by a percentage or run in a straight line (TM1's R>, S>, P>, GR> and SL>) | The same codes with a direction typed into any cell: > to the end of its row, < to its start, ^ up its column and \| or _ down it; leaves are written and totals spread, held cells passed over, as one change to take back |
@@ -100,7 +103,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
   pixels the set editor's panes go one above the other, each at its own height, its dialog
   scrolling; and a filter too tall for its pane scrolls within it, leaving the tree its room.
   Under 1,100 pixels the model's page shows its list of dimensions and cubes or the one open,
-  not both, the one open leading back to the list.
+  not both, the one open leading back to the list. A dashboard narrower than 720 pixels
+  stands its tiles one above the other, in the order they are read, each its own height; and
+  prints the same way.
 - **Printable.** A page prints as it reads, without the bar, the list of pages or what only
   controls it: in the light palette whatever the screen's, at its full length, the grid's
   headings repeated on every sheet and its shading, highlights and chart colours kept. A grid
@@ -192,7 +197,7 @@ the run.
 | --- | --- |
 | Signing in | A wrong password refused; the overview; a session that ends signed into again over the page, which stays as it was |
 | Exploring and writing back | An MDX query typed in shows what the API answers to it; a value typed into a cell is saved and read back through the API; the tabs over the grid gone along by the arrow keys; a cell's comments, history and detail |
-| A dashboard | Three tiles of a saved view, a key figure, bars and a grid, run and audited; when they were run said, and Refresh runs them again |
+| A dashboard | Three tiles of a saved view, a key figure, bars and a grid, run and audited; when they were run said, and Refresh runs them again. The grid's ways of making room checked; a tile dragged to another's place, made taller by its corner, wider by the keys and back with Ctrl Z; laid out freely, let go between columns and lined up with an edge; a tile of text dragged in from the list, and the arrangement saved; a bar picked to show the others at its members; a tile over the whole page |
 | Changing the model | An element added in the editor is the one the API gives back |
 | Administering | The users; an element hidden from a reader, chosen from its dimension's tree; viewing the server as that reader, who is shown no administration, not the element, and whose writes are refused; back to the administrator, the view kept in the audit |
 | A large grid | 100,000 cells: only those in view drawn, and scrolled to the end at the pace the page keeps at rest; printed, all of them drawn, and the 2,000 elements of its rows' dimension too |

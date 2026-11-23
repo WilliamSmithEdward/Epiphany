@@ -17,7 +17,7 @@ const PRINTED = 200_000;
  * to its highest, and the colour of the first rule the number meets. Totals take no bar or
  * shade, being out of scale with what they add up.
  */
-function highlighter(highlights, rows, columns, value, total) {
+export function highlighter(highlights, rows, columns, value, total) {
   if (!highlights || (!highlights.bars && !highlights.shades && !highlights.rules?.length)) return null;
   // The range of each column's numbers, totals left out.
   const ranges = columns.map((columnTuple, c) => {

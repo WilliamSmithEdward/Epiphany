@@ -33,12 +33,36 @@ pub struct DashboardDef {
     /// places the dimension on an axis.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filters: Vec<String>,
-    /// The tiles, in the order they are laid out.
+    /// How the tiles are laid out.
+    #[serde(default, skip_serializing_if = "DashboardLayout::is_grid")]
+    pub layout: DashboardLayout,
+    /// The tiles, in the order they are laid out; in a free layout, each over those before.
     #[serde(default)]
     pub tiles: Vec<TileDef>,
 }
 
-/// One tile of a dashboard: a view of a cube, and how it is shown.
+/// How a dashboard lays its tiles out.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum DashboardLayout {
+    /// On whole columns and rows, clear of one another, each as high up as there is room.
+    #[default]
+    Grid,
+    /// Each where it was put, over another if it was put there.
+    Free,
+}
+
+impl DashboardLayout {
+    fn is_grid(&self) -> bool {
+        *self == Self::Grid
+    }
+}
+
+/// How many columns a dashboard's page is across.
+pub const DASHBOARD_COLUMNS: f64 = 12.0;
+
+/// One tile of a dashboard: a view of a cube and how it is shown, or a few lines of text.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
@@ -46,14 +70,31 @@ pub struct TileDef {
     /// A title of its own; the view's name unless given.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub title: String,
+    /// The cube of the view shown; none for a tile of text.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cube: String,
     /// A view saved with the cube.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub view: String,
     #[serde(default)]
     pub show: TileShow,
-    /// How many columns of the page the tile takes: one or two.
+    /// Where the tile stands and how large it is. Without one it takes the next place
+    /// there is, as wide as `width` says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<TilePlace>,
+    /// How many of two columns the tile takes where it has no `place`: one or two.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub width: u8,
+    /// A chart's series are the view's columns, rather than its rows.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub by_columns: bool,
+    /// A chart writes each value on its mark.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub labels: bool,
+    /// What a tile of text says: a line that begins `# ` is a heading, one that begins `- `
+    /// an item of a list, and an empty line ends a paragraph.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub text: String,
 }
 
 fn one() -> u8 {
@@ -64,18 +105,58 @@ fn is_one(width: &u8) -> bool {
     *width == 1
 }
 
+/// Where a tile stands on its dashboard's page: in columns from the left, of the twelve
+/// across, and in rows from the top, each of a fixed height. A free layout may place a tile
+/// between them.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct TilePlace {
+    pub x: f64,
+    pub y: f64,
+    /// Columns wide.
+    pub w: f64,
+    /// Rows high.
+    pub h: f64,
+}
+
+impl TilePlace {
+    /// Whether the tile is on the page: from its left edge to its right, and at or below
+    /// its top, some width and height.
+    pub fn on_page(&self) -> bool {
+        [self.x, self.y, self.w, self.h]
+            .iter()
+            .all(|n| n.is_finite())
+            && self.x >= 0.0
+            && self.y >= 0.0
+            && self.w > 0.0
+            && self.h > 0.0
+            && self.x + self.w <= DASHBOARD_COLUMNS + 1e-9
+    }
+}
+
 /// How a tile shows its view.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TileShow {
-    /// The first cell, large, as a key figure.
+    /// The first cell, large, as a key figure, with its change from the cell before it.
     Figure,
     #[default]
     Bars,
     Stacked,
     Lines,
+    /// Lines with the ground beneath them filled.
+    Area,
+    /// Bars across, the largest first.
+    Ranked,
+    /// A ring of each value's share of their whole.
+    Donut,
     Grid,
+    /// The cells as squares, shaded from the lowest value to the highest.
+    Heatmap,
+    /// The tile's own text, no view.
+    Text,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

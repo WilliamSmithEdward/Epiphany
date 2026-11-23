@@ -273,6 +273,18 @@ class Page {
     }
   }
 
+  /** The pointer pressed at `from`, taken to `to` a little at a time, as a hand moves it, and let go there. */
+  async drag(from, to, steps = 8) {
+    const mouse = (type, { x, y }, buttons) => this.call('Input.dispatchMouseEvent', { type, x, y, button: 'left', buttons, clickCount: 1 });
+    await mouse('mouseMoved', from, 0);
+    await mouse('mousePressed', from, 1);
+    for (let step = 1; step <= steps; step += 1) {
+      await mouse('mouseMoved', { x: from.x + ((to.x - from.x) * step) / steps, y: from.y + ((to.y - from.y) * step) / steps }, 1);
+      await sleep(16);
+    }
+    await mouse('mouseReleased', to, 0);
+  }
+
   /** A key pressed and let go, as `Enter`, `ArrowRight` or a letter, with Shift or Ctrl held. */
   async press(key, modifiers = 0) {
     const named = KEYS[key];
@@ -870,17 +882,127 @@ async function exploring() {
     await page.click('button', 'Refresh');
     await page.waitFor(`!document.querySelector('.page-head [aria-busy="true"]') && ${said} === 'now'`, 'the tiles, run again');
   });
+  await step('On a dashboard\'s grid tiles change places as one passes them, rise into what is free, and make room for one made larger', async () => {
+    const engine = await page.evaluate(`(async () => {
+      const { firstFree, moveOnGrid, ontoGrid, overlaps, resizeOnGrid } = await import('/arrange.js');
+      const make = (...rows) => rows.map(([x, y, w, h]) => ({ x, y, w, h }));
+      const clear = (places) => places.every((a, i) => places.every((b, j) => i === j || !overlaps(a, b)));
+      const moved = (places, index, to) => moveOnGrid(places, places[index], to);
+      const placed = [];
+      for (const [w, h] of [[6, 4], [6, 8], [12, 9], [6, 4]]) placed.push(firstFree(placed, { w, h }));
+      const grown = make([0, 0, 6, 4], [6, 0, 6, 4], [0, 4, 12, 4]);
+      resizeOnGrid(grown, grown[0], { w: 8, h: 6 });
+      const loose = ontoGrid(make([0.4, 0.2, 5.6, 7.7], [5.1, 3.4, 6.9, 8.2], [2.2, 1, 4, 4]));
+      return {
+        partway: moved(make([0, 0, 6, 8], [6, 0, 6, 8]), 0, { x: 3, y: 0 }).map((p) => p.x).join(),
+        passed: moved(make([0, 0, 6, 8], [6, 0, 6, 8]), 0, { x: 6, y: 0 }).map((p) => p.x).join(),
+        along: moved(make([0, 0, 4, 8], [4, 0, 4, 8], [8, 0, 4, 8]), 0, { x: 8, y: 0 }).map((p) => p.x).join(),
+        taller: moved(make([0, 0, 12, 4], [0, 4, 12, 8]), 1, { x: 0, y: 0 }).map((p) => p.y).join(),
+        placed: placed.map((p) => p.x + ':' + p.y).join(),
+        grown: clear(grown) && grown[1].y === 6,
+        loose: clear(loose) && loose.every((p) => [p.x, p.y, p.w, p.h].every(Number.isInteger)),
+      };
+    })()`);
+    expect(engine.partway === '0,6', `Dragged part of the way to its neighbour, a tile leaves the row at ${engine.partway}.`);
+    expect(engine.passed === '6,0', `Dragged past its neighbour's middle, a tile leaves the row at ${engine.passed}.`);
+    expect(engine.along === '8,0,4', `Dragged to the end of its row, a tile leaves the row at ${engine.along}.`);
+    expect(engine.taller === '8,0', `A tall tile dragged above a short one leaves them at rows ${engine.taller}.`);
+    expect(engine.placed === '0:0,6:0,0:8,0:4', `Tiles given the first free place in turn stand at ${engine.placed}.`);
+    expect(engine.grown, 'A tile made larger came onto another.');
+    expect(engine.loose, 'Tiles brought onto the grid are not on whole columns and rows, clear of one another.');
+  });
+  await step('A dashboard is arranged by dragging: on its grid a tile takes another\'s place or is made larger by its corner; freely it stands where it is let go, lined up with an edge it came near', async () => {
+    const places = `[...document.querySelectorAll('.dash-tile')].map((tile) => ['x', 'y', 'w', 'h'].map((key) => Number(tile.style.getPropertyValue('--' + key))))`;
+    await page.click('button', 'Edit');
+    await page.waitFor(`document.querySelector('.board.editing .dash-tile')`, 'the dashboard, being edited');
+    await page.settled();
+    await page.audit('A dashboard, being edited');
+    const unit = await page.evaluate(`({ across: (document.querySelector('.board').clientWidth + 16) / 12, down: 56 })`);
+    const before = await page.evaluate(places);
+    // The key figure, dragged across to the bars, takes their place, and they take its.
+    const figure = await page.point('.dash-tile[data-index="0"] h3');
+    await page.drag(figure, { x: figure.x + 6 * unit.across, y: figure.y });
+    const moved = await page.evaluate(places);
+    expect(moved[0][0] === before[1][0] && moved[1][0] === before[0][0], `Dragged across, the figure and the bars stand at ${quoted(moved)}, from ${quoted(before)}.`);
+    expect(await page.evaluate(`document.querySelector('.board-ghost').hidden`), 'Where the tile would go is still shown after it was let go.');
+    // Two rows taller by its corner, the bars push the grid beneath them down.
+    const corner = await page.point('.dash-tile[data-index="1"] .handle.se');
+    await page.drag(corner, { x: corner.x, y: corner.y + 2 * unit.down });
+    const resized = await page.evaluate(places);
+    expect(resized[1][3] === moved[1][3] + 2, `Its corner dragged down two rows, the bars are ${resized[1][3]} rows high, from ${moved[1][3]}.`);
+    expect(resized[2][1] >= resized[1][1] + resized[1][3], `The grid stands at ${quoted(resized[2])}, on the bars at ${quoted(resized[1])}.`);
+    // Shift and the right arrow make the bars a column wider, and Ctrl Z takes it back.
+    await page.evaluate(`document.querySelector('.dash-tile[data-index="1"]').focus()`);
+    await page.press('ArrowRight', SHIFT);
+    expect((await page.evaluate(places))[1][2] === resized[1][2] + 1, 'Shift and the right arrow did not make the bars a column wider.');
+    await page.press('z', CTRL);
+    expect((await page.evaluate(places))[1][2] === resized[1][2], 'Ctrl Z did not take the widening back.');
+    // Laid out freely, snapping off, the bars let go half a column across and a little down
+    // stand there across, and on the line they came near down.
+    await page.click('[role="radio"]', 'Freeform');
+    await page.waitFor(`document.querySelector('.board.free')`, 'the tiles, laid out freely');
+    if (await page.evaluate(`document.querySelector('.page-head .toolbar button[aria-pressed="true"]')?.textContent.trim() === 'Snap to grid'`)) {
+      await page.click('button', 'Snap to grid');
+      await page.waitFor(`document.querySelector('.board.free:not(.gridded)')`, 'snapping, off');
+    }
+    const loose = (await page.evaluate(places))[1];
+    const bars = await page.point('.dash-tile[data-index="1"] h3');
+    await page.drag(bars, { x: bars.x + unit.across / 2, y: bars.y + 5 });
+    const freed = (await page.evaluate(places))[1];
+    expect(Math.abs(freed[0] - loose[0] - 0.5) < 0.08 && Math.abs(freed[1] - loose[1]) < 1e-6, `Let go half a column across and five pixels down, the bars stand at ${quoted(freed)}, from ${quoted(loose)}.`);
+    // A tile of text, dragged from the list onto the board, is added where it is let go.
+    await page.click('button', 'Add');
+    await page.waitFor(`document.querySelector('.dash-drawer .drawer-item')`, 'what may be added');
+    await page.audit('Adding to a dashboard');
+    const text = await page.point('.drawer-item');
+    const board = await page.evaluate(`(() => { const box = document.querySelector('.board').getBoundingClientRect(); return { x: box.left + box.width / 4, y: box.top + 60 }; })()`);
+    await page.drag(text, board, 12);
+    await page.waitFor(`document.querySelectorAll('.dash-tile').length === 4`, 'the tile of text, added');
+    await page.click('button', 'Save');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Saved Quarter'))`, 'the dashboard, saved');
+    const kept = (await page.api('GET', '/model')).data.model.dashboards.find((each) => each.name === 'Quarter');
+    expect(kept.layout === 'free' && kept.tiles.length === 4 && kept.tiles.every((tile) => tile.place) && kept.tiles[3].show === 'text', `The dashboard was kept as ${quoted(kept)}.`);
+  });
+  await step('Clicking a bar of one tile shows every other at its members, until Escape', async () => {
+    // The view is of actuals, which nothing has written: revenue booked in February gives bars.
+    const written = await page.api('POST', '/cells/write', { cells: [{ cube: 'General Ledger', at: ['Product Revenue', 'UK', 'Feb', 'Actual'], value: 4200 }] });
+    expect(written.status < 300, 'The actual revenue was not written.');
+    await page.goto('/dashboards?name=Quarter');
+    await page.waitFor(`document.querySelector('.dash-tile .mark[data-s]') && !document.querySelector('.dash-tile .skeleton')`, 'the tiles, run');
+    await page.click('.dash-tile .mark[data-s]');
+    await page.waitFor(`document.querySelector('.dash-filter.picked')`, 'what was picked, said above the tiles');
+    await page.waitFor(`document.querySelectorAll('.tile-standing').length >= 2 && !document.querySelector('.dash-tile [aria-busy="true"]')`, 'the other tiles, at the members picked');
+    await page.audit('A dashboard, a bar picked');
+    await page.press('Escape');
+    await page.waitFor(`!document.querySelector('.dash-filter.picked') && !document.querySelector('.tile-standing')`, 'every tile as before');
+  });
+  await step('A tile is shown over the whole page, and Escape brings the dashboard back', async () => {
+    await page.click('.dash-tile[data-index="1"] .tile-head .button');
+    await page.waitFor(`document.querySelector('.dash-tile.focused') && document.querySelector('.focus-backdrop')`, 'the tile, over the whole page');
+    const covers = await page.evaluate(`(() => { const box = document.querySelector('.dash-tile.focused').getBoundingClientRect(); return box.width > innerWidth * 0.8 && box.height > innerHeight * 0.7; })()`);
+    expect(covers, 'The tile shown over the whole page is not nearly as large as it.');
+    await page.press('Escape');
+    await page.waitFor(`!document.querySelector('.dash-tile.focused')`, 'the dashboard, back');
+  });
   await step('At a phone\'s width no page is wider than the screen, the grid shows on the first, and a name cut short shows whole', async () => {
     // A phone widens the page to what it holds and draws it smaller: the screen is the measure.
     const phone = { width: 390, height: 844 };
     await page.call('Emulation.setDeviceMetricsOverride', { ...phone, deviceScaleFactor: 1, mobile: true });
     try {
-      for (const [path, ready] of [['/', '.tile'], ['/explore?cube=General%20Ledger', 'td[data-r]'], ['/admin', 'table'], ['/model?dimension=Account', '.tree-row']]) {
+      for (const [path, ready] of [['/', '.tile'], ['/explore?cube=General%20Ledger', 'td[data-r]'], ['/admin', 'table'], ['/model?dimension=Account', '.tree-row'], ['/dashboards?name=Quarter', '.dash-tile']]) {
         await page.goto(path);
         await page.waitFor(`document.querySelector(${quoted(ready)})`, path);
         await page.settled();
         const wider = await page.evaluate('document.documentElement.scrollWidth') - phone.width;
         expect(wider <= 0, `${path} is ${wider} pixels wider than a phone's screen.`);
+        if (path.startsWith('/dashboards')) {
+          // The tiles, laid out freely across, stand one above the other as they are read.
+          const stacked = await page.evaluate(`(() => {
+            const tiles = [...document.querySelectorAll('.dash-tile')].map((tile) => tile.getBoundingClientRect()).sort((a, b) => a.top - b.top);
+            return document.querySelector('.board.stacked') && tiles.every((box, index) => index === 0 || box.top >= tiles[index - 1].bottom - 1);
+          })()`);
+          expect(stacked, 'A dashboard\'s tiles do not stand one above the other on a phone.');
+        }
         if (path === '/') {
           // A place's name cut short shows whole, pointed at.
           const cut = await page.evaluate(`(() => {

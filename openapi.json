@@ -4005,6 +4005,10 @@
             },
             "description": "Dimensions the page offers a choice of member for. Every tile whose cube has one\nstands at the member chosen, in place of the one its view names, unless the view\nplaces the dimension on an axis."
           },
+          "layout": {
+            "$ref": "#/components/schemas/DashboardLayout",
+            "description": "How the tiles are laid out."
+          },
           "name": {
             "type": "string"
           },
@@ -4013,10 +4017,18 @@
             "items": {
               "$ref": "#/components/schemas/TileDef"
             },
-            "description": "The tiles, in the order they are laid out."
+            "description": "The tiles, in the order they are laid out; in a free layout, each over those before."
           }
         },
         "additionalProperties": false
+      },
+      "DashboardLayout": {
+        "type": "string",
+        "description": "How a dashboard lays its tiles out.",
+        "enum": [
+          "grid",
+          "free"
+        ]
       },
       "DashboardPut": {
         "type": "object",
@@ -5000,7 +5012,7 @@
             "items": {
               "$ref": "#/components/schemas/ContextMember"
             },
-            "description": "Members to stand at, each in place of the member the query's WHERE names for its\ndimension, or beside them. An axis that places one of their dimensions decides it.\nA page's selectors use it to show one saved query at other members."
+            "description": "Members to stand at, each in place of the member the query's WHERE names for its\ndimension, or beside them. An axis that places one of their dimensions keeps only its\nmembers at that member or beneath it, and the query's own calculated members. A page's\nselectors use it to show one saved query at other members."
           },
           "mdx": {
             "type": "string",
@@ -5468,17 +5480,37 @@
       },
       "TileDef": {
         "type": "object",
-        "description": "One tile of a dashboard: a view of a cube, and how it is shown.",
-        "required": [
-          "cube",
-          "view"
-        ],
+        "description": "One tile of a dashboard: a view of a cube and how it is shown, or a few lines of text.",
         "properties": {
+          "by_columns": {
+            "type": "boolean",
+            "description": "A chart's series are the view's columns, rather than its rows."
+          },
           "cube": {
-            "type": "string"
+            "type": "string",
+            "description": "The cube of the view shown; none for a tile of text."
+          },
+          "labels": {
+            "type": "boolean",
+            "description": "A chart writes each value on its mark."
+          },
+          "place": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TilePlace",
+                "description": "Where the tile stands and how large it is. Without one it takes the next place\nthere is, as wide as `width` says."
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "show": {
             "$ref": "#/components/schemas/TileShow"
+          },
+          "text": {
+            "type": "string",
+            "description": "What a tile of text says: a line that begins `# ` is a heading, one that begins `- `\nan item of a list, and an empty line ends a paragraph."
           },
           "title": {
             "type": "string",
@@ -5491,8 +5523,39 @@
           "width": {
             "type": "integer",
             "format": "int32",
-            "description": "How many columns of the page the tile takes: one or two.",
+            "description": "How many of two columns the tile takes where it has no `place`: one or two.",
             "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "TilePlace": {
+        "type": "object",
+        "description": "Where a tile stands on its dashboard's page: in columns from the left, of the twelve\nacross, and in rows from the top, each of a fixed height. A free layout may place a tile\nbetween them.",
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "properties": {
+          "h": {
+            "type": "number",
+            "format": "double",
+            "description": "Rows high."
+          },
+          "w": {
+            "type": "number",
+            "format": "double",
+            "description": "Columns wide."
+          },
+          "x": {
+            "type": "number",
+            "format": "double"
+          },
+          "y": {
+            "type": "number",
+            "format": "double"
           }
         },
         "additionalProperties": false
@@ -5505,7 +5568,12 @@
           "bars",
           "stacked",
           "lines",
-          "grid"
+          "area",
+          "ranked",
+          "donut",
+          "grid",
+          "heatmap",
+          "text"
         ]
       },
       "Tone": {

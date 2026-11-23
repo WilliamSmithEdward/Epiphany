@@ -138,7 +138,8 @@ fn members_stood_at_take_the_slicers_place() {
     assert_eq!(numbers(&budget), some(&[90.0]));
 
     // A dimension the WHERE leaves out is added, found by any spelling of its name; one an
-    // axis places stays as the axis has it, and is not reported among the slicer.
+    // axis places keeps only the axis's members at it or beneath it, and is not reported
+    // among the slicer.
     let added = stood(
         "SELECT {[Entity].[US], [Entity].[UK]} ON COLUMNS FROM [General Ledger]
          WHERE [Version].[Actual]",
@@ -157,8 +158,21 @@ fn members_stood_at_take_the_slicers_place() {
             "[Account].[Product Revenue]"
         ]
     );
-    assert_eq!(names(&added, 0), ["US", "UK"]);
-    assert_eq!(numbers(&added), some(&[100.0, 50.0]));
+    assert_eq!(names(&added, 0), ["UK"]);
+    assert_eq!(numbers(&added), some(&[50.0]));
+
+    // Stood at a total, an axis keeps the total and every member beneath it, and drops a member
+    // above it; a query's own calculated member stays.
+    let beneath = stood(
+        "WITH MEMBER [Entity].[Twice US] AS [Entity].[US] * 2
+         SELECT {[Entity].[Total Entity], [Entity].[US], [Entity].[Twice US]} ON COLUMNS,
+                {[Period].[H1], [Period].[Q1], [Period].[Jan], [Period].[Apr]} ON ROWS
+         FROM [General Ledger] WHERE ([Account].[Product Revenue], [Version].[Actual])",
+        &[("Period", "Q1"), ("Entity", "US")],
+    )
+    .unwrap();
+    assert_eq!(names(&beneath, 0), ["US", "Twice US"]);
+    assert_eq!(names(&beneath, 1), ["Q1", "Jan"]);
 
     let unknown = stood(
         "SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]",

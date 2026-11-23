@@ -108,6 +108,17 @@ const ICONS = {
   keyboard: 'M2 5h20v14H2z M6 9h.01 M10 9h.01 M14 9h.01 M18 9h.01 M8 13h.01 M12 13h.01 M16 13h.01 M7 16h10',
   sandbox: 'M12 3l9 4.5-9 4.5-9-4.5z M3 12l9 4.5 9-4.5 M3 16.5l9 4.5 9-4.5',
   publish: 'M12 20V8 M7 13l5-5 5 5 M4 4h16',
+  area: 'M3 20h18 M3 16l5-6 4 3 5-6 4 4v9H3z',
+  ranked: 'M4 5h16 M4 10h11 M4 15h7 M4 20h3',
+  ring: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6',
+  heat: 'M3 3h6v6H3z M15 3h6v6h-6z M9 9h6v6H9z M3 15h6v6H3z M15 15h6v6h-6z',
+  text: 'M4 7V4h16v3 M12 4v16 M9 20h6',
+  focus: 'M8 3H3v5 M16 3h5v5 M8 21H3v-5 M16 21h5v-5',
+  unfocus: 'M3 8h5V3 M21 8h-5V3 M3 16h5v5 M21 16h-5v5',
+  front: 'M9 9h11v11H9z M5 15H4V4h11v1',
+  back: 'M4 4h11v11H4z M20 9v11H9',
+  snap: 'M6 3v8a6 6 0 0 0 12 0V3 M6 7h4 M14 7h4',
+  move: 'M12 3v18 M3 12h18 M9 6l3-3 3 3 M9 18l3 3 3-3 M6 9l-3 3 3 3 M18 9l3 3-3 3',
 };
 
 /** The key held with another for a command: Cmd on a Mac, Ctrl elsewhere. */
@@ -465,7 +476,8 @@ export function choices({ label, kind = 'tablist', options, chosen, choose, into
 /** A number as the reader's locale writes it. */
 export function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return value ?? '';
-  return value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits });
+  // Nothing taken from nothing is nothing, not "-0".
+  return (value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits });
 }
 
 /** What each unit a view may show numbers in divides them by, and how it is said. */

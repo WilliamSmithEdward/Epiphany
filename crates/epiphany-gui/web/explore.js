@@ -1004,7 +1004,7 @@ class Explorer {
         choices({
           kind: 'radiogroup',
           label: 'Kind of chart',
-          options: [['bars', 'Bars'], ['stacked', 'Stacked'], ['lines', 'Lines']],
+          options: [['bars', 'Bars'], ['stacked', 'Stacked'], ['lines', 'Lines'], ['area', 'Area'], ['ranked', 'Ranked'], ['donut', 'Donut']],
           chosen: settings.kind,
           choose: (kind) => set({ kind }),
         }),
@@ -1014,9 +1014,10 @@ class Explorer {
           options: [[false, 'A series for each row'], [true, 'A series for each column']],
           chosen: Boolean(settings.byColumns),
           choose: (byColumns) => set({ byColumns }),
-        })),
+        }),
+        h('button', { class: 'button small quiet', 'aria-pressed': String(Boolean(settings.labels)), onclick: () => set({ labels: !settings.labels }) }, icon('hash', 14), 'Values')),
       plotted
-        ? chart(data, settings.kind)
+        ? chart(data, settings.kind, { labels: settings.labels, format: (value) => formatValue(value, this.layout.format) })
         : empty('chart', 'Nothing to chart', 'The result has no numbers. Choose other members, or show empty rows.')));
   }
 

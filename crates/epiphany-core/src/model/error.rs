@@ -67,10 +67,10 @@ pub enum ModelError {
         element: String,
         most: usize,
     },
-    /// A dashboard tile is not one or two columns wide.
-    TileWidth {
+    /// A dashboard tile cannot be shown as it is: `problem` says why, as "is placed off the page".
+    Tile {
         dashboard: String,
-        width: u8,
+        problem: &'static str,
     },
     /// An element that is not a string element has a picklist.
     Picklist {
@@ -130,10 +130,9 @@ impl fmt::Display for ModelError {
                 f,
                 "the hierarchy of dimension '{dimension}' is more than {most} levels deep at element '{element}'"
             ),
-            Self::TileWidth { dashboard, width } => write!(
-                f,
-                "a tile of dashboard '{dashboard}' is {width} columns wide; a tile is one or two"
-            ),
+            Self::Tile { dashboard, problem } => {
+                write!(f, "a tile of dashboard '{dashboard}' {problem}")
+            }
             Self::Picklist { dimension, element } => write!(
                 f,
                 "element '{element}' in dimension '{dimension}' has a picklist; only a string element takes one"

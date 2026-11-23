@@ -410,11 +410,15 @@ async function route() {
  */
 async function move() {
   if (!(await route())) return;
-  const where = document.title.split(' · ').slice(0, -1).join(', ');
+  announce(document.title.split(' · ').slice(0, -1).join(', '));
+}
+
+/** Says `words` to a screen reader, as it says a change it was not looking at. */
+export function announce(words) {
   announcer.textContent = '';
   // Said again, the same words are said again.
   setTimeout(() => {
-    announcer.textContent = where;
+    announcer.textContent = words;
   }, 100);
 }
 

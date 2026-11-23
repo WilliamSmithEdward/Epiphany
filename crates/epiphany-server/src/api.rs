@@ -826,8 +826,9 @@ struct QueryRequest {
     /// The query text, for example `SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]`.
     mdx: String,
     /// Members to stand at, each in place of the member the query's WHERE names for its
-    /// dimension, or beside them. An axis that places one of their dimensions decides it.
-    /// A page's selectors use it to show one saved query at other members.
+    /// dimension, or beside them. An axis that places one of their dimensions keeps only its
+    /// members at that member or beneath it, and the query's own calculated members. A page's
+    /// selectors use it to show one saved query at other members.
     #[serde(default)]
     context: Vec<ContextMember>,
 }

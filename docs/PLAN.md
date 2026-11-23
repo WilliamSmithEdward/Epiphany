@@ -444,6 +444,17 @@ practice that means:
   view as the user finds none. A user's views, and their subsets, take at most 4 MiB each,
   so that a reader cannot fill the disk. A view as the user sees none of them and changes
   none.
+- A dashboard is kept with the model, as its views are, at `/dashboards/{name}`: tiles each
+  showing a view of a cube, or a few lines of text. A tile's `place` is where it stands, in
+  columns of the twelve across a page and rows of a fixed height. **Decision:** the server
+  keeps the places as given and checks only that each is on the page; laying the tiles out,
+  on the grid (`layout` absent) clear of one another and risen into what is free, or freely
+  (`layout: "free"`) wherever put, is the GUI's. A tile without a place takes the next free
+  one, one or two of two columns wide as its older `width` says.
+- A query's `context` stands it at other members: each in its dimension's place in the
+  slicer, and on an axis that places the dimension, only the tuples at the member or beneath
+  it, so that a dashboard's filter, or a member picked in one tile, narrows a tile whose rows
+  are of the dimension as it does one whose WHERE is.
 
 ## 3. API
 

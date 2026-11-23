@@ -492,9 +492,9 @@ async fn an_mdx_query_is_answered_with_axes_and_cells() {
         json!({ "code": "invalid_mdx", "message": "dimension 'Entity' has no member 'Mars'" })
     );
 
-    // The same query stood at other members: the UK in place of the axis's own is ignored,
-    // and February in place of January, where nothing is stored, totals nothing.
-    let context = json!([{ "dimension": "Period", "member": "Feb" }, { "dimension": "Entity", "member": "UK" }]);
+    // The same query stood at other members: February in place of January, where nothing is
+    // stored, totals nothing; and the US keeps only the axis's own US, not the total above it.
+    let context = json!([{ "dimension": "Period", "member": "Feb" }, { "dimension": "Entity", "member": "US" }]);
     let (status, body) = call(
         &app,
         "POST",
@@ -503,7 +503,8 @@ async fn an_mdx_query_is_answered_with_axes_and_cells() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["cells"], json!([0.0, 0.0]));
+    assert_eq!(body["cells"], json!([0.0]));
+    assert_eq!(body["axes"][0]["tuples"][0][0]["name"], "US");
     let slicer: Vec<&str> = body["slicer"]
         .as_array()
         .unwrap()
@@ -1082,9 +1083,15 @@ async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
     let dashboard = json!({
         "name": "Finance",
         "filters": ["Version", "Period"],
+        "layout": "free",
         "tiles": [
             { "cube": "General Ledger", "view": "By entity", "show": "figure" },
-            { "title": "Entities", "cube": "general ledger", "view": "by entity", "width": 2 }
+            { "title": "Entities", "cube": "general ledger", "view": "by entity", "width": 2 },
+            {
+                "cube": "General Ledger", "view": "By entity", "show": "donut",
+                "place": { "x": 6.5, "y": 2.0, "w": 5.5, "h": 8.0 }, "by_columns": true, "labels": true
+            },
+            { "show": "text", "text": "# Notes\n- Budget is in thousands", "place": { "x": 0.0, "y": 0.0, "w": 12.0, "h": 2.0 } }
         ]
     });
     let put = json!({ "based_on": 2, "dashboard": dashboard });
@@ -1094,23 +1101,29 @@ async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
         (StatusCode::OK, json!(3))
     );
     let (_, served) = call(&app, "GET", "/model", None).await;
-    assert_eq!(served["model"]["dashboards"][0]["tiles"][1]["width"], 2);
-    assert_eq!(
-        served["model"]["dashboards"][0]["tiles"][0]["show"],
-        "figure"
-    );
-    assert_eq!(
-        served["model"]["dashboards"][0]["filters"],
-        json!(["Version", "Period"])
-    );
+    let served = &served["model"]["dashboards"][0];
+    assert_eq!(served["tiles"][1]["width"], 2);
+    assert_eq!(served["tiles"][0]["show"], "figure");
+    assert_eq!(served["filters"], json!(["Version", "Period"]));
+    // Laid out freely, a tile keeps its place and how it is shown, as given.
+    assert_eq!(served["layout"], "free");
+    assert_eq!(served["tiles"][2], dashboard["tiles"][2]);
+    assert_eq!(served["tiles"][3], dashboard["tiles"][3]);
 
-    // A tile must show a view the cube has, one or two columns wide, and a filter must be
-    // a dimension of the model.
+    // A tile must show a view the cube has, one or two columns wide, or else text, and stand
+    // on the page; and a filter must be a dimension of the model.
     let tile = json!({ "cube": "General Ledger", "view": "By entity" });
+    let placed = |place: Value| json!({ "name": "Broken", "tiles": [{ "cube": "General Ledger", "view": "By entity", "place": place }] });
     for broken in [
         json!({ "name": "Broken", "tiles": [{ "cube": "General Ledger", "view": "Nowhere" }] }),
         json!({ "name": "Broken", "tiles": [{ "cube": "Nowhere", "view": "By entity" }] }),
         json!({ "name": "Broken", "tiles": [{ "cube": "General Ledger", "view": "By entity", "width": 3 }] }),
+        json!({ "name": "Broken", "tiles": [{ "view": "By entity" }] }),
+        json!({ "name": "Broken", "tiles": [{ "show": "text", "text": "  " }] }),
+        placed(json!({ "x": 8, "y": 0, "w": 6, "h": 4 })),
+        placed(json!({ "x": -1, "y": 0, "w": 6, "h": 4 })),
+        placed(json!({ "x": 0, "y": 0, "w": 0, "h": 4 })),
+        json!({ "name": "Broken", "layout": "sideways", "tiles": [tile] }),
         json!({ "name": "Broken", "filters": ["Nowhere"], "tiles": [tile] }),
     ] {
         let put = json!({ "based_on": 3, "dashboard": broken });
