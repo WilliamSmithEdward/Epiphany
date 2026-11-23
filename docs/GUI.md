@@ -179,7 +179,10 @@ node crates/epiphany-gui/tests/browser/journeys.mjs
 ```
 
 It needs Node and Chrome or Edge and installs nothing, speaking to the browser over the
-DevTools protocol on a pipe. CI runs it on every push.
+DevTools protocol on a pipe. CI runs it on every push. On Windows, the browser's fresh profile
+is given Chrome's answer to whether the user's password is blank: left to find out, Chrome signs
+in to Windows with an empty password at every run, and the refused sign-ins lock the account
+(and Remote Desktop with it) after ten runs within minutes, as they did on 2026-11-22.
 
 ## Backlog from the survey of OLAP tools (2026-11-21)
 

@@ -105,6 +105,18 @@ function findBrowser() {
  */
 class Browser {
   constructor(profile) {
+    // Chrome on Windows learns whether the user's password is blank by signing in to Windows
+    // with an empty one, and keeps the answer in the profile until the password next changes.
+    // Each refused sign-in counts toward the account's lockout, and a fresh profile asked at
+    // every run: ten runs within minutes locked the account, and Remote Desktop with it
+    // (2026-11-22). The profile is given an answer that stands until the end of time, blank,
+    // so that Chrome never signs in to Windows, nor asks the user for their password.
+    if (process.platform === 'win32') {
+      mkdirSync(profile, { recursive: true });
+      writeFileSync(join(profile, 'Local State'), JSON.stringify({
+        password_manager: { os_password_blank: true, os_password_last_changed: String(2n ** 63n - 1n) },
+      }));
+    }
     const flags = [
       `--user-data-dir=${profile}`,
       '--remote-debugging-pipe',
