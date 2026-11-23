@@ -858,6 +858,20 @@ async function exploring() {
           const below = await page.evaluate(`document.querySelector('td[data-r]').getBoundingClientRect().bottom`) - phone.height;
           expect(below < 0, `The grid's first cell is ${below} pixels below a phone's screen.`);
         }
+        if (path === '/admin') {
+          // The user's editor, its widest rows in it, no wider than the dialog.
+          await page.click('button', 'Add user');
+          await page.waitFor(`document.querySelector('dialog[open] #user-again')`, 'the user\'s editor');
+          await page.click('dialog[open] button', 'Add a cube role');
+          await page.click('dialog[open] button', 'Add an element role');
+          const sideways = await page.evaluate(`(() => {
+            const body = document.querySelector('dialog[open] .dialog-body');
+            return body.scrollWidth - body.clientWidth;
+          })()`);
+          expect(sideways <= 0, `The user's editor is ${sideways} pixels wider than its dialog on a phone.`);
+          await page.press('Escape');
+          await page.waitFor(`!document.querySelector('dialog[open]')`, 'the editor, closed');
+        }
       }
     } finally {
       await page.call('Emulation.clearDeviceMetricsOverride');

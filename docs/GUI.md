@@ -88,7 +88,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
   pages' while the browser is idle once the first page shows, so that going to one waits on
   no files.
 - **Fits a phone.** At a phone's width the bar keeps its marks, the words beside them still
-  heard by a screen reader; headings and their buttons stack; and the explorer's buttons go
+  heard by a screen reader; headings and their buttons stack, as do a dialog's fields set side
+  by side, an element role taking two lines; and the explorer's buttons go
   along one row that scrolls sideways, so that the grid shows on the first screen. No page is
   wider than the screen.
 - **Printable.** A page prints as it reads, without the bar, the list of pages or what only

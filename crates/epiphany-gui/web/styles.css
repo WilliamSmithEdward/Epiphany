@@ -664,7 +664,8 @@ fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(-
 .table td.actions .button + .button { margin-left: var(--s1); }
 .table td.actions { padding-top: var(--s2); padding-bottom: var(--s2); }
 .badge.you { margin-left: var(--s2); }
-.field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); }
+/* Two fields side by side, each as narrow as the room leaves it rather than as wide as it would be. */
+.field-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s3); }
 .cube-roles { display: flex; flex-direction: column; gap: var(--s2); }
 .cube-roles:empty { display: none; }
 .cube-role { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: var(--s2); align-items: center; }
@@ -1054,6 +1055,10 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
   .work-head > .toolbar + .toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
   .tree-tools { flex-wrap: wrap; }
   .tree-tools .search { flex-basis: 100%; }
+  /* Fields paired, one above the other; an element role on two lines, its button at the end. */
+  .field-pair { grid-template-columns: minmax(0, 1fr); }
+  .element-role { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .element-role > .button:last-child { justify-self: end; }
   .status-line { flex-wrap: wrap; gap: var(--s1) var(--s4); padding: var(--s1) var(--s3); }
 }
 
