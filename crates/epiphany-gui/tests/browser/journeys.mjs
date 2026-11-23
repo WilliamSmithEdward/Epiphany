@@ -504,6 +504,9 @@ async function exploring() {
     await page.audit('Explore');
     const title = await page.evaluate('document.title');
     expect(title === 'General Ledger · Explore · Epiphany', `The browser's title is ${quoted(title)}.`);
+    // Explore in the list of pages opens the cube explored last, not the first, and names it.
+    await page.click('.nav a', 'Explore');
+    await page.waitFor(`location.search === '?cube=General%20Ledger' && document.title.startsWith('General Ledger') && document.querySelector('td[data-r]')`, 'the cube explored last');
   });
   await step('An MDX query typed in shows what the API answers to it', async () => {
     await page.click('[role="tab"]', 'MDX');

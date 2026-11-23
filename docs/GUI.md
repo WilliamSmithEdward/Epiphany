@@ -115,7 +115,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
 - **Nothing cut short for good.** A name an ellipsis cuts short shows whole on hover, given
   as a title only while it is cut, never in place of a title of its own.
 - **Back to where one was.** The overview lists the six places visited lately, newest first,
-  each with when; a page opened at a saved view is named by it.
+  each with when; a page opened at a saved view is named by it. Explore and Dashboards, not
+  told which cube or dashboard, open the one shown last, and the address names it.
 
 ## Security
 

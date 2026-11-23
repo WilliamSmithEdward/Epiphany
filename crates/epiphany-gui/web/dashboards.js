@@ -5,7 +5,7 @@
 
 import { del, modelVersion, part, post, put } from './api.js';
 import { chart, shape, sparkline } from './chart.js';
-import { empty, failure, go, model, state } from './app.js';
+import { empty, failure, go, model, readdress, state } from './app.js';
 import { chooseMember, dimension } from './picker.js';
 import { dialog, h, icon, invalid, menu, mount, notify, shownText, working } from './ui.js';
 
@@ -14,6 +14,9 @@ const SHOWS = { figure: 'Key figure', bars: 'Bars', stacked: 'Stacked bars', lin
 
 /** How many rows a grid tile shows before it says there are more. */
 const GRID_ROWS = 60;
+
+/** Where the dashboard shown last is kept, in this browser. */
+const LAST = 'epiphany.dashboards.last';
 
 export async function render(target, { params, titled }) {
   const definition = await model();
@@ -36,7 +39,14 @@ class Dashboards {
     // The dashboard being edited, a copy, and whether it is new; null when only shown.
     this.editing = null;
     this.fresh = false;
-    this.name = this.list().find((dashboard) => dashboard.name === name)?.name ?? this.list()[0]?.name ?? null;
+    // Not told which, or told of one there is not, the page shows the dashboard shown last,
+    // while there is one of that name, or else the first; and the address names it.
+    const named = (wanted) => this.list().find((dashboard) => dashboard.name === wanted)?.name;
+    this.name = named(name) ?? named(localStorage.getItem(LAST)) ?? this.list()[0]?.name ?? null;
+    if (this.name) {
+      localStorage.setItem(LAST, this.name);
+      if (name !== this.name) readdress(`/dashboards?name=${encodeURIComponent(this.name)}`);
+    }
     this.draw();
   }
 

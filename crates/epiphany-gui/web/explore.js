@@ -19,6 +19,9 @@ const said = (entry) => (entry === undefined ? '' : typeof entry === 'string' ? 
 
 /* ---- The page ---- */
 
+/** Where the cube explored last is kept, in this browser. */
+const LAST = 'epiphany.explore.last';
+
 /** The explorer made last, whose transaction is let go when the page is closed. */
 let onPage = null;
 
@@ -37,13 +40,18 @@ export async function render(target, { params, titled }) {
     mount(target, h('div', { class: 'page' }, empty('cube', 'No cubes yet', 'An administrator adds cubes to the model.')));
     return;
   }
-  const name = params.get('cube') ?? definition.cubes[0].name;
+  // Not told which cube, Explore opens the one explored last, while the model has it, and the
+  // address names it.
+  const last = localStorage.getItem(LAST);
+  const name = params.get('cube') ?? (definition.cubes.some((each) => each.name === last) ? last : definition.cubes[0].name);
   const cube = definition.cubes.find((candidate) => candidate.name === name);
   if (!cube) {
     mount(target, h('div', { class: 'page' }, empty('cube', `There is no cube called ${name}`, 'It may have been renamed or removed.',
       h('a', { class: 'button', href: '/explore', 'data-link': '' }, 'Explore another cube'))));
     return;
   }
+  localStorage.setItem(LAST, cube.name);
+  if (!params.has('cube')) readdress(`/explore?cube=${encodeURIComponent(cube.name)}`);
   // The user's sandboxes come with the dimensions, so that the first query runs in the one
   // last worked in.
   const [dims, kept] = await Promise.all([
