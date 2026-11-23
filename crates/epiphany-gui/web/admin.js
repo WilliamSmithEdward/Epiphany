@@ -4,7 +4,7 @@ import { del, get, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { cellQuery, handOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, h, icon, invalid, mount, notify, revealable, when, working } from './ui.js';
+import { dialog, h, icon, invalid, mount, notify, refocus, revealable, when, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
 /** The roles an element takes: hidden, it is not there for the user at all. */
@@ -211,11 +211,17 @@ class AdminPage {
     const again = h('input', { class: 'input', id: 'user-again', type: 'password', autocomplete: 'new-password', required: adding });
     const role = h('select', { class: 'select', id: 'user-role' }, Object.entries(ROLES).map(([value, label]) => h('option', { value, selected: (user?.role ?? 'read') === value }, label)));
     const rows = h('div', { class: 'cube-roles' });
+    // A row taken away, the keys stay in the list.
+    const takeAway = (list, row, otherwise) => {
+      const index = [...list.children].indexOf(row);
+      row.remove();
+      refocus(list, index, otherwise);
+    };
     const addRow = (cube = cubes[0], chosen = 'read') => {
       const cubeSelect = h('select', { class: 'select', 'aria-label': 'Cube' }, cubes.map((name) => h('option', { value: name, selected: name === cube }, name)));
       const roleSelect = h('select', { class: 'select', 'aria-label': 'Role on the cube' }, Object.entries(ROLES).map(([value, label]) => h('option', { value, selected: value === chosen }, label)));
       const row = h('div', { class: 'cube-role' }, cubeSelect, roleSelect,
-        h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this cube role', onclick: () => row.remove() }, icon('close', 14)));
+        h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this cube role', onclick: () => takeAway(rows, row, addCubeRole) }, icon('close', 14)));
       rows.append(row);
     };
     for (const [cube, chosen] of Object.entries(user?.cubes ?? {})) addRow(cube, chosen);
@@ -228,7 +234,7 @@ class AdminPage {
       const elementButton = h('button', { class: 'button', type: 'button' });
       const roleSelect = h('select', { class: 'select', 'aria-label': 'Role on the element' }, Object.entries(ELEMENT_ROLES).map(([value, label]) => h('option', { value, selected: value === chosen }, label)));
       const row = h('div', { class: 'cube-role element-role' }, dimensionSelect, elementButton, roleSelect,
-        h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this element role', onclick: () => row.remove() }, icon('close', 14)));
+        h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this element role', onclick: () => takeAway(elementRows, row, addElementRole) }, icon('close', 14)));
       const pick = (picked) => {
         row.dataset.element = picked ?? '';
         elementButton.textContent = picked ?? 'Choose an element';
@@ -247,6 +253,8 @@ class AdminPage {
     for (const [dimensionName, roles] of Object.entries(user?.elements ?? {})) {
       for (const [element, chosen] of Object.entries(roles)) addElementRow(dimensionName, element, chosen);
     }
+    const addCubeRole = h('button', { class: 'button small', type: 'button', onclick: () => addRow() }, icon('plus', 14), 'Add a cube role');
+    const addElementRole = h('button', { class: 'button small', type: 'button', onclick: () => addElementRow() }, icon('plus', 14), 'Add an element role');
     const saved = await dialog({
       title: adding ? 'Add a user' : `Edit ${user.name}`,
       confirm: adding ? 'Add user' : 'Save',
@@ -261,11 +269,11 @@ class AdminPage {
         h('div', { class: 'field' },
           h('label', {}, 'On particular cubes'),
           rows,
-          cubes.length ? h('div', {}, h('button', { class: 'button small', type: 'button', onclick: () => addRow() }, icon('plus', 14), 'Add a cube role')) : null),
+          cubes.length ? h('div', {}, addCubeRole) : null),
         h('div', { class: 'field' },
           h('label', {}, 'On particular elements'),
           elementRows,
-          dimensions.length ? h('div', {}, h('button', { class: 'button small', type: 'button', onclick: () => addElementRow() }, icon('plus', 14), 'Add an element role')) : null,
+          dimensions.length ? h('div', {}, addElementRole) : null,
           h('span', { class: 'hint' }, 'A role on an element holds for everything beneath it, unless an element nearer has its own. A hidden element is not there for the user at all, though totals still count it. Administrators are bound by none.'))),
       onsubmit: async () => {
         const value = name.value.trim();

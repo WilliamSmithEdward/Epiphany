@@ -603,6 +603,18 @@ export function revealable(input) {
   return h('div', { class: 'revealable' }, h('div', { class: 'reveal-field' }, input, toggle), caps);
 }
 
+/**
+ * Once row `index` of `list` is taken away, gives the keys to the button that takes a row
+ * away in the row now in its place, or else in the row before it, or else to `otherwise`,
+ * so that they stay where they were rather than going back to the start of the page, and
+ * the next row can be taken away as the last was. That button is the last of a row's.
+ */
+export function refocus(list, index, otherwise) {
+  const rows = list ? [...list.children] : [];
+  const button = (rows[index] ?? rows[index - 1])?.querySelector('button:last-of-type:not(:disabled)');
+  (button ?? otherwise)?.focus();
+}
+
 /** Puts text on the clipboard, and says so. */
 export function copyText(text) {
   navigator.clipboard?.writeText(text).then(

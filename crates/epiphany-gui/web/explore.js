@@ -8,7 +8,7 @@ import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, l
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
-import { choices, copyText, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
+import { choices, copyText, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid } from './grid.js';
 import { sandboxes } from './sandboxes.js';
@@ -1146,6 +1146,7 @@ class Explorer {
     const shades = h('input', { type: 'checkbox', checked: Boolean(now.shades) });
     const rules = (now.rules ?? []).map((rule) => ({ ...rule }));
     const list = h('div', { class: 'rules' });
+    const addRule = h('button', { class: 'button small', type: 'button', onclick: () => { rules.push({ test: 'below', value: 0, tone: 'bad' }); draw(); } }, icon('plus', 14), 'Add a rule');
     const TESTS = [['above', 'is above'], ['at_least', 'is at least'], ['below', 'is below'], ['at_most', 'is at most'], ['equals', 'equals']];
     const TONES = [['good', 'Good, in green'], ['bad', 'Bad, in red'], ['warn', 'Watch, in amber'], ['accent', 'Note, in indigo']];
     const draw = () => mount(list, rules.length ? rules.map((rule, index) => h('div', { class: 'rule' },
@@ -1155,7 +1156,7 @@ class Explorer {
       h('input', { class: 'input', 'aria-label': 'Value', inputmode: 'decimal', value: String(rule.value), onchange: (event) => { rule.value = parseNumber(event.target.value); } }),
       h('select', { class: 'select', 'aria-label': 'Colour', onchange: (event) => { rule.tone = event.target.value; } },
         TONES.map(([value, label]) => h('option', { value, selected: rule.tone === value }, label))),
-      h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this rule', onclick: () => { rules.splice(index, 1); draw(); } }, icon('close', 14))))
+      h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this rule', onclick: () => { rules.splice(index, 1); draw(); refocus(list, index, addRule); } }, icon('close', 14))))
       : h('p', { class: 'hint' }, 'No rules: add one to colour the numbers that meet it.'));
     draw();
     const chosen = await dialog({
@@ -1166,7 +1167,7 @@ class Explorer {
         h('label', { class: 'check' }, bars, 'Data bars: each number\'s share of the largest in its column'),
         h('label', { class: 'check' }, shades, 'Shades: from the lowest number in each column to the highest'),
         h('fieldset', { class: 'field' }, h('legend', {}, 'Colours by rule: the first rule a number meets decides'), list,
-          h('div', { class: 'toolbar' }, h('button', { class: 'button small', type: 'button', onclick: () => { rules.push({ test: 'below', value: 0, tone: 'bad' }); draw(); } }, icon('plus', 14), 'Add a rule'))),
+          h('div', { class: 'toolbar' }, addRule)),
         h('p', { class: 'hint' }, 'Totals take no bar or shade, being out of scale with what they add up. A view saved keeps its highlights.')),
       onsubmit: () => {
         const unnumbered = rules.findIndex((rule) => rule.value === null || !Number.isFinite(rule.value));

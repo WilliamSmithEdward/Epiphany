@@ -5,7 +5,7 @@
 import { del, get, part, put } from './api.js';
 import { empty, failure, go } from './app.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, dialog, h, icon, invalid, menu, mount, notify, parseNumber, splitter, textWidths, when, working } from './ui.js';
+import { choices, dialog, h, icon, invalid, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, working } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 
@@ -642,10 +642,11 @@ class DimensionEditor extends Editor {
                 onclick: () => {
                   element.children.splice(index, 1);
                   this.changed();
+                  refocus(this.body.querySelector('.child-list'), index, this.body.querySelector('.child-adding'));
                 },
               }, icon('close', 14)))))
             : h('p', { class: 'muted' }, 'No children yet.'),
-          h('div', { class: 'toolbar' }, h('button', { class: 'button small', onclick: () => this.addChild(element) }, icon('plus', 14), 'Add a child'))) : null,
+          h('div', { class: 'toolbar' }, h('button', { class: 'button small child-adding', onclick: () => this.addChild(element) }, icon('plus', 14), 'Add a child'))) : null,
         attributes.length ? h('div', { class: 'field' },
           h('label', {}, 'Attributes'),
           attributes.map(([attribute, kind]) => {
@@ -1060,6 +1061,7 @@ class CubeEditor extends Editor {
           onclick: () => {
             dims.splice(index, 1);
             this.changed();
+            refocus(this.body.querySelector('.dimension-list'), index, this.body.querySelector('.dimension-list ~ .card-body .select'));
           },
         }, icon('close', 14))))),
       others.length ? h('div', { class: 'card-body toolbar' }, add) : null));

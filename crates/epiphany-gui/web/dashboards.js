@@ -7,7 +7,7 @@ import { del, modelVersion, part, post, put } from './api.js';
 import { chart, shape, sparkline } from './chart.js';
 import { empty, failure, go, model, readdress, state } from './app.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, h, icon, invalid, menu, mount, notify, shownText, when, working } from './ui.js';
+import { dialog, h, icon, invalid, menu, mount, notify, refocus, shownText, when, working } from './ui.js';
 
 /** The ways a tile shows its view. */
 const SHOWS = { figure: 'Key figure', bars: 'Bars', stacked: 'Stacked bars', lines: 'Lines', grid: 'Grid' };
@@ -365,6 +365,7 @@ class Dashboards {
         onclick: () => {
           tiles.splice(index, 1);
           this.draw();
+          refocus(this.target.querySelector('.dash-grid'), index, this.target.querySelector('.page-head .toolbar .button'));
         },
       }, icon('close', 16)));
   }

@@ -3,7 +3,7 @@
 import { del, get, part, put } from './api.js';
 import { state } from './app.js';
 import { beneath, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, copyText, dialog, h, icon, invalid, menu, MOD, mount, notify } from './ui.js';
+import { choices, copyText, dialog, h, icon, invalid, menu, MOD, mount, notify, refocus } from './ui.js';
 
 /**
  * Edits the set of members a dimension shows on an axis. `dim` is the dimension as the
@@ -198,6 +198,7 @@ class SetEditor {
           onclick: () => {
             this.rules.splice(index, 1);
             redraw();
+            refocus(this.filterPanel.querySelector('.rules'), index, this.filterPanel.querySelector(':scope > .toolbar .button'));
           },
         }, icon('close', 14)));
     });

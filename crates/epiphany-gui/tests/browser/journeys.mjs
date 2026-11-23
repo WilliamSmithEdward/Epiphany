@@ -890,6 +890,11 @@ async function administering({ reader }) {
     await page.click('button', `Edit ${reader.name}`);
     await page.waitFor(`document.querySelector('dialog[open]')?.getAttribute('aria-label') === ${quoted(`Edit ${reader.name}`)}`, 'the user\'s editor');
     await page.click('dialog[open] button', 'Add an element role');
+    // A row added and taken away again, the keys stay in the list, on the row left.
+    await page.click('dialog[open] button', 'Add an element role');
+    await page.evaluate(`[...document.querySelectorAll('dialog[open] .element-role')].at(-1).querySelector('button[aria-label="Remove this element role"]').click()`);
+    await page.waitFor(`document.querySelectorAll('dialog[open] .element-role').length === 1
+      && document.activeElement === document.querySelector('dialog[open] .element-role button[aria-label="Remove this element role"]')`, 'the keys, on the row left');
     await page.evaluate(`(() => {
       const select = document.querySelector('dialog[open] .element-role select[aria-label="Dimension"]');
       select.value = 'Entity';
