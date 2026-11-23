@@ -46,8 +46,17 @@ fn main() {
         let model = Model::compile(&definition).unwrap();
         let compiled = start.elapsed().as_secs_f64() * 1000.0;
         let size = model.dimension("Big").unwrap().elements.len();
+        // A dashboard more, as saving one changes the model: its dimensions are as they were.
+        let mut changed = definition.clone();
+        let notes = json!({ "name": "Notes", "tiles": [{ "show": "text", "text": "Hello" }] });
+        changed
+            .dashboards
+            .push(serde_json::from_value(notes).unwrap());
+        let start = Instant::now();
+        Model::compile_change(&changed, &definition, &model).unwrap();
+        let dashboard = start.elapsed().as_secs_f64() * 1000.0;
         println!(
-            "{leaves:>9} leaves in groups of {fan:>7}: {:>5.0} MB of JSON, parsed {parsed:>7.0} ms, compiled {compiled:>7.0} ms, {size} elements",
+            "{leaves:>9} leaves in groups of {fan:>7}: {:>5.0} MB of JSON, parsed {parsed:>7.0} ms, compiled {compiled:>7.0} ms, a dashboard more {dashboard:>5.2} ms, {size} elements",
             text.len() as f64 / 1e6
         );
     }

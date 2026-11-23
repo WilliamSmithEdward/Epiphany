@@ -1,8 +1,11 @@
 //! The model definition: the JSON shape of dimensions and cubes, before validation.
 
 use std::collections::BTreeMap;
+use std::fmt;
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::Scalar;
 
@@ -10,13 +13,78 @@ use crate::Scalar;
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ModelDef {
+    // Each shared by the copies of the model it is unchanged in.
     #[serde(default)]
-    pub dimensions: Vec<DimensionDef>,
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<DimensionDef>))]
+    pub dimensions: Vec<Shared<DimensionDef>>,
     #[serde(default)]
     pub cubes: Vec<CubeDef>,
     /// Pages of saved views, each shown as a chart, a figure or a grid.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dashboards: Vec<DashboardDef>,
+}
+
+/// A part of a model kept once for every copy of the model it is unchanged in. A copy of the
+/// model shares it, and the first change to it in a copy makes it that copy's own: a change to
+/// one dimension of a large model copies that dimension alone, and two copies that share it
+/// are told alike without a look inside it.
+pub struct Shared<T>(Arc<T>);
+
+impl<T> Shared<T> {
+    /// Whether the two are one part, shared, rather than two that may be alike.
+    pub fn same(a: &Self, b: &Self) -> bool {
+        Arc::ptr_eq(&a.0, &b.0)
+    }
+}
+
+impl<T> From<T> for Shared<T> {
+    fn from(value: T) -> Self {
+        Self(Arc::new(value))
+    }
+}
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T> Deref for Shared<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T: Clone> DerefMut for Shared<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl<T: PartialEq> PartialEq for Shared<T> {
+    fn eq(&self, other: &Self) -> bool {
+        Self::same(self, other) || *self.0 == *other.0
+    }
+}
+
+impl<T: fmt::Debug> fmt::Debug for Shared<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl<T: Serialize> Serialize for Shared<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Shared<T> {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        T::deserialize(deserializer).map(Self::from)
+    }
 }
 
 /// A page of tiles, each showing a view saved with a cube.

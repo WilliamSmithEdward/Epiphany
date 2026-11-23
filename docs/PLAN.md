@@ -109,6 +109,9 @@ practice that means:
   the version it was based on. A stale base version is rejected.
 - The new definition is validated and compiled off to the side, then swapped in under the
   exclusive server lock. Readers see the old snapshot or the new one, never a mixture.
+- A dimension the update leaves as it was is not copied or compiled again: its definition is
+  shared by the old model and the new, and so are its compiled elements. Saving a dashboard
+  of a model of a million elements compiles none of them (done).
 - Stored cells are re-keyed to the new element ids, matching cubes, dimensions and elements
   by name. Cells whose element was removed or turned from leaf to consolidated, or whose
   cube changed its dimensions, are dropped, and the response reports how many. A rename is

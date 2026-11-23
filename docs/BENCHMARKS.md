@@ -313,6 +313,32 @@ One parent is now kept in place, and only none or several in a list, each made o
 length, the parents counted first. Best of six, alternated, on a machine busier than for the
 runs above: 29, 507 and 711 ms rather than 30, 534 and 808 (2026-11-23).
 
+The server on the model of a million leaves in groups of a hundred, started again and again,
+says it is listening 0.72 to 0.75 s after it is started, and holds 480 MB. The 3.0 s above
+was a first start by the script that had just written the model and still held it as text:
+started from another process once the writer has gone, the same first start takes 0.75 s.
+Timed by the server's own line rather than by asking it whether it answers (2026-11-23).
+
+Saving a small dashboard on that model took 1.24 s and took the server from 476 MB to 1,285
+MB at the most. Timed inside the server, the save copied the whole definition to change it
+(89 ms), compiled every element again (520 ms), copied the old definition and the new once
+more to see whether any cell had moved (275 ms), wrote the model out (240 ms) and let the old
+one go (115 ms). Each dimension's definition is now kept once for every copy of the model it
+is unchanged in, and the first change to it in a copy copies it; a dimension whose definition
+is as it was keeps its compiled elements and their names, its subsets and picklists worked
+out again; and the old model and the new are compared where they are, a dimension they share
+without a look inside it. `bench_model` compiles a dashboard more in 0.23, 2.5 and 2.7 ms
+for the three dimensions above, where compiling them anew takes 26, 547 and 533 ms. Measured
+from outside, three saves each (2026-11-23):
+
+| Saving a dashboard, a million leaves | Before | After |
+| --- | --- | --- |
+| Time to answer | 1.23 to 1.26 s | 0.24 to 0.26 s |
+| Memory at the most | 1,285 MB | 483 MB, as at the start |
+
+What is left of a save is writing the model out again, every dimension of it, and keeping the
+model it replaces: 131 MB on disk for a million leaves, laid out, at every save.
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions

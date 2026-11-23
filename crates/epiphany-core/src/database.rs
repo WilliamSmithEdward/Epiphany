@@ -41,7 +41,9 @@ use crate::access::{Access, Permit};
 use crate::cells::CellError;
 use crate::cells::{At, Cells, Coordinate, Writes, check, coordinate, offered};
 use crate::mdx::{self, Asker, MdxError, QueryResult};
-use crate::model::{Cube, ElementId, Model, ModelDef, ModelError};
+use crate::model::{
+    Cube, CubeDef, DimensionDef, ElementDef, ElementId, Model, ModelDef, ModelError, Shared,
+};
 use crate::reader::{Fed, Reader, Totals, feed};
 use locks::{Locks, Mode, Resource};
 
@@ -356,6 +358,62 @@ impl serde::Serialize for Names<'_> {
             &self.model.dimensions()[dimension as usize].elements[element as usize].name
         }))
     }
+}
+
+/// Whether two definitions give every cell the same place: the same dimensions, with the same
+/// elements in the same order, each of the same type with the same children, and the same
+/// cubes of the same dimensions. Subsets, attributes, picklists, the names of levels, views,
+/// rules, feeders, checks and dashboards place no cell. A dimension the two share is alike
+/// without a look at its elements, and nothing is copied to be compared.
+fn places_cells_alike(a: &ModelDef, b: &ModelDef) -> bool {
+    let element = |a: &ElementDef, b: &ElementDef| {
+        let ElementDef {
+            name,
+            kind,
+            children,
+            attributes: _,
+            picklist: _,
+        } = a;
+        *name == b.name && *kind == b.kind && *children == b.children
+    };
+    let dimension = |a: &Shared<DimensionDef>, b: &Shared<DimensionDef>| {
+        let DimensionDef {
+            name,
+            kind,
+            elements,
+            attributes: _,
+            subsets: _,
+            levels: _,
+        } = &**a;
+        Shared::same(a, b)
+            || (*name == b.name
+                && *kind == b.kind
+                && elements.len() == b.elements.len()
+                && elements.iter().zip(&b.elements).all(|(a, b)| element(a, b)))
+    };
+    let cube = |a: &CubeDef, b: &CubeDef| {
+        let CubeDef {
+            name,
+            dimensions,
+            views: _,
+            rules: _,
+            feeders: _,
+            validations: _,
+        } = a;
+        *name == b.name && *dimensions == b.dimensions
+    };
+    let ModelDef {
+        dimensions,
+        cubes,
+        dashboards: _,
+    } = a;
+    dimensions.len() == b.dimensions.len()
+        && dimensions
+            .iter()
+            .zip(&b.dimensions)
+            .all(|(a, b)| dimension(a, b))
+        && cubes.len() == b.cubes.len()
+        && cubes.iter().zip(&b.cubes).all(|(a, b)| cube(a, b))
 }
 
 /// A cell and its value, addressed by name.
@@ -1123,32 +1181,9 @@ impl Database {
         self.end(id)?;
         free?;
 
-        let model = Model::compile(&definition)?;
-        // A change to subsets, attributes, picklists, the names of levels, views, rules,
-        // feeders, checks and dashboards alone leaves every cell where it is: it neither adds,
-        // takes away nor reorders an element, nor changes one's type or a cube's dimensions.
+        let model = Model::compile_change(&definition, &self.definition, &self.model)?;
         // Saving a dashboard need not carry millions of cells over and write them all out again.
-        let structure = |definition: &ModelDef| {
-            let mut structure = definition.clone();
-            structure.dashboards.clear();
-            for dimension in &mut structure.dimensions {
-                dimension.subsets.clear();
-                dimension.attributes.clear();
-                dimension.levels.clear();
-                for element in &mut dimension.elements {
-                    element.attributes.clear();
-                    element.picklist = None;
-                }
-            }
-            for cube in &mut structure.cubes {
-                cube.views.clear();
-                cube.rules.clear();
-                cube.feeders.clear();
-                cube.validations.clear();
-            }
-            structure
-        };
-        let moved = (structure(&definition) != structure(&self.definition))
+        let moved = (!places_cells_alike(&definition, &self.definition))
             .then(|| migrate::migrate(&self.model, &model, &self.cells));
         if let Some(mut journal) = self.journal() {
             journal.model(self.model_version + 1, &definition)?;

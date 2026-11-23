@@ -1155,8 +1155,8 @@ async fn put_dimension(
 ) -> Result<Json<ModelUpdate>, ApiError> {
     change(&database, request.based_on, |database, definition| {
         match dimension_at(database, definition, &name) {
-            Some(at) => definition.dimensions[at] = request.dimension,
-            None => definition.dimensions.push(request.dimension),
+            Some(at) => definition.dimensions[at] = request.dimension.into(),
+            None => definition.dimensions.push(request.dimension.into()),
         }
         Ok(())
     })

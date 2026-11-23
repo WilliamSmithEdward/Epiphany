@@ -1,5 +1,7 @@
 //! The model snapshot: a validated, immutable form of a definition, indexed for lookup.
 
+use std::sync::Arc;
+
 // Names are looked up for every cell read or written by name, so with the quick hash.
 use rustc_hash::FxHashMap as HashMap;
 
@@ -27,11 +29,35 @@ pub struct Model {
 impl Model {
     /// Validates a definition and compiles it, or reports the first problem found.
     pub fn compile(def: &ModelDef) -> Result<Self, ModelError> {
+        Self::compile_from(def, None)
+    }
+
+    /// Compiles a change to a model: a dimension whose definition is as it was in `before`,
+    /// which `compiled` was compiled from, has its elements taken from `compiled` rather than
+    /// compiled again. Saving a view or a dashboard of a million elements compiles none of them.
+    pub fn compile_change(
+        def: &ModelDef,
+        before: &ModelDef,
+        compiled: &Model,
+    ) -> Result<Self, ModelError> {
+        Self::compile_from(def, Some((before, compiled)))
+    }
+
+    fn compile_from(
+        def: &ModelDef,
+        before: Option<(&ModelDef, &Model)>,
+    ) -> Result<Self, ModelError> {
         const WITHIN: &str = "the model";
         let dimension_names = def.dimensions.iter().map(|d| d.name.as_str());
         let dimension_ids = index("dimension", WITHIN, dimension_names)?;
         let cube_ids = index("cube", WITHIN, def.cubes.iter().map(|c| c.name.as_str()))?;
-        let dimensions = def.dimensions.iter().map(Dimension::compile);
+        let dimensions = def.dimensions.iter().map(|dimension| {
+            let unchanged = before.and_then(|(before, compiled)| {
+                let id = compiled.dimension_id(&dimension.name)? as usize;
+                (before.dimensions[id] == *dimension).then(|| compiled.dimensions[id].again())
+            });
+            unchanged.map_or_else(|| Dimension::compile(dimension), Ok)
+        });
         let cubes = def.cubes.iter().map(|c| Cube::compile(c, &dimension_ids));
         let mut model = Self {
             dimensions: dimensions.collect::<Result<_, _>>()?,
@@ -363,7 +389,7 @@ impl Cube {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Attribute {
     pub name: String,
     pub kind: AttributeType,
@@ -375,13 +401,14 @@ pub struct Dimension {
     pub kind: DimensionType,
     /// The names given to the levels, from the leaves up.
     pub levels: Vec<String>,
-    /// Elements in declaration order.
-    pub elements: Vec<Element>,
+    /// Elements in declaration order: shared, with their names, by the models compiled from
+    /// a definition that leaves the dimension as it was.
+    pub elements: Arc<Vec<Element>>,
     pub attributes: Vec<Attribute>,
     /// Reusable selections of elements, in name order.
     pub subsets: Vec<Subset>,
     /// Element ids by the key of every name and alias.
-    element_ids: HashMap<String, ElementId>,
+    element_ids: Arc<HashMap<String, ElementId>>,
     attribute_ids: HashMap<String, u32>,
     /// The picklists of the few string elements that have one, by element.
     picklists: HashMap<ElementId, Picklist>,
@@ -505,13 +532,30 @@ impl Dimension {
             name: def.name.clone(),
             kind: def.kind,
             levels: def.levels.clone(),
-            elements,
+            elements: Arc::new(elements),
             attributes,
             subsets: Vec::new(),
-            element_ids,
+            element_ids: Arc::new(element_ids),
             attribute_ids,
             picklists: HashMap::default(),
         })
+    }
+
+    /// The dimension for a model compiled from a definition that leaves it as it was: its
+    /// elements and their names shared. Its subsets and picklists are worked out again with
+    /// the rest of the model, as they may build on other dimensions.
+    fn again(&self) -> Self {
+        Self {
+            name: self.name.clone(),
+            kind: self.kind,
+            levels: self.levels.clone(),
+            elements: Arc::clone(&self.elements),
+            attributes: self.attributes.clone(),
+            subsets: Vec::new(),
+            element_ids: Arc::clone(&self.element_ids),
+            attribute_ids: self.attribute_ids.clone(),
+            picklists: HashMap::default(),
+        }
     }
 
     /// Finds a level by the name the dimension gives it, ignoring case and spaces.

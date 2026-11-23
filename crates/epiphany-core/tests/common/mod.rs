@@ -80,7 +80,9 @@ pub fn random_model(rng: &mut Rng, dimensions: usize, shape: &Shape) -> ModelDef
     };
 
     ModelDef {
-        dimensions: (0..dimensions).map(&mut dimension).collect(),
+        dimensions: (0..dimensions)
+            .map(|index| dimension(index).into())
+            .collect(),
         cubes: vec![CubeDef {
             name: "C".to_owned(),
             dimensions: (0..dimensions).map(|index| format!("d{index}")).collect(),
