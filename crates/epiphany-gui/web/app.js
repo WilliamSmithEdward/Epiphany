@@ -204,6 +204,22 @@ let announcer;
 const isAdmin = () => state.user?.role === 'admin';
 const visible = () => PAGES.filter((entry) => !entry.admin || isAdmin());
 
+let fetchedAhead = false;
+
+/**
+ * Once a page is shown, the other pages' modules are fetched while the browser has nothing
+ * else to do, so that going to one does not wait for its files, fetched one import after
+ * another.
+ */
+function fetchPagesAhead() {
+  if (fetchedAhead) return;
+  fetchedAhead = true;
+  const idle = window.requestIdleCallback ?? ((then) => setTimeout(then, 1000));
+  idle(() => {
+    for (const entry of visible()) entry.load().catch(() => {});
+  });
+}
+
 /** The application around the page; `signedIn` as the user has just signed in, to be told where they are. */
 function shell(signedIn = false) {
   const narrow = localStorage.getItem('epiphany.nav') === 'narrow';
@@ -379,6 +395,7 @@ async function route() {
     if (ticket === rendering) {
       active = shown;
       visited(entry);
+      fetchPagesAhead();
     }
   } catch (problem) {
     if (ticket !== rendering) return false;

@@ -80,7 +80,10 @@ only way to do something, and modal dialogs where a side panel would keep the da
   without its elements; a dimension is fetched whole the first time a page shows it. On a
   release build that takes about 0.7 s for half a million elements and 2 s for a million,
   fetched, read and made ready (2026-11-22). Members fetched only as a tree is opened would
-  take that time away, but every page now reads a dimension as held whole.
+  take that time away, but every page now reads a dimension as held whole. The modules the
+  application imports are fetched beside it rather than once it has come, and the other
+  pages' while the browser is idle once the first page shows, so that going to one waits on
+  no files.
 - **Fits a phone.** At a phone's width the bar keeps its marks, the words beside them still
   heard by a screen reader; headings and their buttons stack; and the explorer's buttons go
   along one row that scrolls sideways, so that the grid shows on the first screen. No page is

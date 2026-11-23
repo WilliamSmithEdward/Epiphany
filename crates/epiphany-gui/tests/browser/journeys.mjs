@@ -394,6 +394,14 @@ async function signingIn({ admin }) {
     const shown = await page.evaluate(`[...document.querySelectorAll('.tile')].find((tile) => tile.textContent.includes('Elements'))?.querySelector('.stat')?.textContent`);
     expect(shown === elements.toLocaleString('en-US'), `The overview counts ${shown} elements; the model has ${elements}.`);
     await page.audit('The overview');
+    // What app.js imports came beside it, by the page's hints; the other pages' files, while
+    // the overview stands, before any is asked for.
+    const fetched = await page.evaluate(`Object.fromEntries(performance.getEntriesByType('resource')
+      .filter((entry) => /\\/(app|api|ui|tree)\\.js$/.test(entry.name))
+      .map((entry) => [entry.name.split('/').pop(), [entry.startTime, entry.responseEnd]]))`);
+    const beside = ['api.js', 'ui.js', 'tree.js'].every((name) => fetched[name]?.[0] < fetched['app.js']?.[1]);
+    expect(beside, `What app.js imports was asked for only once it had come: ${quoted(fetched)}.`);
+    await page.waitFor(`performance.getEntriesByType('resource').some((entry) => entry.name.endsWith('/explore.js'))`, 'the other pages\' files, fetched ahead');
   });
   await step('The first key offers a way past the bar to the page', async () => {
     await page.evaluate('document.activeElement?.blur()');
