@@ -88,7 +88,7 @@ class AdminPage {
       this.usersCard.hidden = false;
       this.auditCard.hidden = !users.signing_in;
       this.transactionsCard.hidden = false;
-      this.updated.textContent = `Updated ${new Date().toLocaleTimeString()}`;
+      mount(this.updated, 'Updated ', when(Date.now() / 1000));
     } catch (problem) {
       if (quietly) return;
       // What could not be fetched is not shown as if it were coming.

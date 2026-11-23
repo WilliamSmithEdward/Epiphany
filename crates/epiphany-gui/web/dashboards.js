@@ -7,7 +7,7 @@ import { del, modelVersion, part, post, put } from './api.js';
 import { chart, shape, sparkline } from './chart.js';
 import { empty, failure, go, model, readdress, state } from './app.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, h, icon, invalid, menu, mount, notify, shownText, working } from './ui.js';
+import { dialog, h, icon, invalid, menu, mount, notify, shownText, when, working } from './ui.js';
 
 /** The ways a tile shows its view. */
 const SHOWS = { figure: 'Key figure', bars: 'Bars', stacked: 'Stacked bars', lines: 'Lines', grid: 'Grid' };
@@ -168,6 +168,7 @@ class Dashboards {
       return;
     }
     const editing = Boolean(this.editing);
+    let updated = when(Date.now() / 1000);
     // Links from one dashboard to the next, the one shown marked as the page it is.
     const tabs = h('nav', { class: 'dash-tabs', 'aria-label': 'Dashboards' }, this.list().map((dashboard) => h('a', {
       href: `/dashboards?name=${encodeURIComponent(dashboard.name)}`,
@@ -181,10 +182,15 @@ class Dashboards {
         h('button', { class: 'button primary', onclick: (event) => working(event.currentTarget, () => this.save()) }, icon('save', 16), 'Save'),
       ]
       : [
+        // When the tiles were run, as long ago as it was.
+        h('span', { class: 'muted' }, 'Updated ', updated),
         h('button', {
           class: 'button quiet',
           title: 'Run every tile again',
-          onclick: (event) => working(event.currentTarget, () => Promise.all(this.filling.map((fill) => fill()))),
+          onclick: (event) => working(event.currentTarget, async () => {
+            await Promise.all(this.filling.map((fill) => fill()));
+            updated.replaceWith(updated = when(Date.now() / 1000));
+          }),
         }, icon('refresh', 16), 'Refresh'),
         this.admin ? h('button', { class: 'button', onclick: () => this.edit() }, icon('edit', 16), 'Edit') : null,
         this.admin ? h('button', { class: 'button', onclick: () => this.create() }, icon('plus', 16), 'New') : null,

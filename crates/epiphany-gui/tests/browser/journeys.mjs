@@ -786,6 +786,25 @@ async function exploring() {
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('This link is damaged'))`, 'the damaged link, said');
     await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid, as it was last');
   });
+  await step('A dashboard shows its tiles, says when they were run, and runs them again', async () => {
+    const view = 'Quarterly income by entity';
+    const tiles = [
+      { cube: 'General Ledger', view, show: 'figure' },
+      { cube: 'General Ledger', view, show: 'bars' },
+      { cube: 'General Ledger', view, show: 'grid', width: 2 },
+    ];
+    const based = (await page.api('GET', '/model')).data.version;
+    const put = await page.api('PUT', '/dashboards/Quarter', { based_on: based, dashboard: { name: 'Quarter', description: 'Income by entity, by quarter', tiles } });
+    expect(put.status === 200, `The dashboard was not kept: ${quoted(put.data)}`);
+    await page.goto('/dashboards?name=Quarter');
+    await page.waitFor(`document.querySelectorAll('.dash-tile').length === 3 && !document.querySelector('.dash-tile .skeleton')`, 'the tiles, run');
+    await page.settled();
+    await page.audit('A dashboard');
+    const said = `document.querySelector('.page-head time .ago')?.textContent`;
+    expect(await page.evaluate(said) === 'now', `The dashboard says its tiles were run ${quoted(await page.evaluate(said))}.`);
+    await page.click('button', 'Refresh');
+    await page.waitFor(`!document.querySelector('.page-head [aria-busy="true"]') && ${said} === 'now'`, 'the tiles, run again');
+  });
   await step('At a phone\'s width no page is wider than the screen, the grid shows on the first, and a name cut short shows whole', async () => {
     // A phone widens the page to what it holds and draws it smaller: the screen is the measure.
     const phone = { width: 390, height: 844 };
@@ -853,6 +872,9 @@ async function administering({ reader }) {
     await page.goto('/admin');
     await page.waitFor(`[...document.querySelectorAll('td strong')].some((name) => name.textContent === ${quoted(reader.name)})`, 'the users');
     await page.audit('Administration');
+    // When its figures were fetched, as long ago as it was.
+    const fetched = await page.evaluate(`document.querySelector('.page-head time .ago')?.textContent`);
+    expect(fetched === 'now', `Administration says its figures are from ${quoted(fetched)}.`);
   });
   await step('An administrator hides an element from a user, chosen from its tree', async () => {
     await page.click('button', `Edit ${reader.name}`);

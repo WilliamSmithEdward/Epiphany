@@ -171,6 +171,7 @@ the run.
 | --- | --- |
 | Signing in | A wrong password refused; the overview; a session that ends signed into again over the page, which stays as it was |
 | Exploring and writing back | An MDX query typed in shows what the API answers to it; a value typed into a cell is saved and read back through the API; the tabs over the grid gone along by the arrow keys; a cell's comments, history and detail |
+| A dashboard | Three tiles of a saved view, a key figure, bars and a grid, run and audited; when they were run said, and Refresh runs them again |
 | Changing the model | An element added in the editor is the one the API gives back |
 | Administering | The users; an element hidden from a reader, chosen from its dimension's tree; viewing the server as that reader, who is shown no administration, not the element, and whose writes are refused; back to the administrator, the view kept in the audit |
 | A large grid | 100,000 cells: only those in view drawn, and scrolled to the end at the pace the page keeps at rest; printed, all of them drawn, and the 2,000 elements of its rows' dimension too |
