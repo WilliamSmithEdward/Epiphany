@@ -1095,6 +1095,29 @@ async function exploring() {
     await page.click('dialog[open] button', 'Delete');
     await page.waitFor(`!document.querySelector('dialog[open]') && ![...document.querySelectorAll('.dash-tabs a')].some((tab) => tab.textContent === 'Copy of Quarter')`, 'the copy, taken away');
   });
+  await step('A query is pinned from Explore to a new dashboard, a tile showing it as Explore does', async () => {
+    await page.goto('/explore?cube=General%20Ledger');
+    await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
+    await page.click('button', 'Views');
+    await page.click('.menu [role="menuitem"]', 'Pin to a dashboard…');
+    await page.fill('#pin-view', 'Pinned');
+    await page.fill('#pin-dashboard', 'Pins');
+    await page.press('Enter');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.startsWith('Pinned to Pins.'))`, 'the query, pinned');
+    const { data } = await page.api('GET', '/model');
+    const [tile, ...more] = data.model.dashboards.find((each) => each.name === 'Pins')?.tiles ?? [];
+    expect(!more.length && tile?.cube === 'General Ledger' && tile.view === 'Pinned' && tile.show === 'grid', `Pins has the tiles ${quoted([tile, ...more])}.`);
+    await page.click('.notice a', 'Open it');
+    await page.waitFor(`location.search === '?name=Pins' && document.querySelector('.dash-tile .tile-table [role="cell"]')`, 'the pinned tile');
+    await page.click('button', 'Delete');
+    await page.click('dialog[open] button', 'Delete');
+    await page.waitFor(`!document.querySelector('dialog[open]') && ![...document.querySelectorAll('.dash-tabs a')].some((tab) => tab.textContent === 'Pins')`, 'Pins, taken away');
+    // The view it showed, taken away too.
+    const cube = (await page.api('GET', `/cubes/General%20Ledger`)).data;
+    delete cube.views.Pinned;
+    const based = (await page.api('GET', '/model')).data.version;
+    expect((await page.api('PUT', `/cubes/General%20Ledger`, { based_on: based, cube })).status === 200, 'The pinned view was not taken away.');
+  });
   await step('At a phone\'s width no page is wider than the screen, the grid shows on the first, and a name cut short shows whole', async () => {
     // A phone widens the page to what it holds and draws it smaller: the screen is the measure.
     const phone = { width: 390, height: 844 };

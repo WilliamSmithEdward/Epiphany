@@ -7,6 +7,7 @@ import { chart, shape } from './chart.js';
 import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, linkOf, mdx, namesOf, pathKey, pathsBeneath, quote, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { csvOf } from './selection.js';
+import { KINDS } from './tiles.js';
 import { editSet } from './sets.js';
 import { choices, copyText, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
@@ -1230,6 +1231,7 @@ class Explorer {
       '-',
       { label: 'Copy a link to this query', icon: 'link', disabled: !this.text, action: () => copyText(linkOf(this.cube.name, this.asView())) },
       saving ? { label: 'Save this query as a view…', icon: 'save', disabled: !this.text, action: () => this.saveView() } : null,
+      !viewing && state.user?.role === 'admin' ? { label: 'Pin to a dashboard…', icon: 'dashboard', disabled: !this.text, action: () => this.pin() } : null,
       saving && mine.length ? { label: 'Take one of your views away…', icon: 'trash', action: () => this.removeOwnViews(mine) } : null,
     ], button);
   }
@@ -1286,6 +1288,52 @@ class Explorer {
       },
     });
     if (saved) notify(saved, 'good');
+  }
+
+  /**
+   * Pins the query shown to a dashboard, as Power BI pins a visual: saved as a view for
+   * everyone, under the name given, and a tile showing it added to the dashboard named, or to
+   * a new one of that name. The tile shows it as the page does: as the chart shown, or a grid.
+   */
+  async pin() {
+    const dashboards = (await model()).dashboards ?? [];
+    const name = h('input', { class: 'input', id: 'pin-view', required: true, maxlength: 120 });
+    const board = h('input', { class: 'input', id: 'pin-dashboard', required: true, maxlength: 120, list: 'pin-dashboards' });
+    const shown = this.view === 'chart' ? this.layout.chart?.kind ?? 'bars' : 'grid';
+    const show = h('select', { class: 'select', id: 'pin-show' },
+      Object.entries(KINDS).filter(([kind]) => kind !== 'text').map(([kind, [label]]) => h('option', { value: kind, selected: kind === shown }, label)));
+    board.value = dashboards[0]?.name ?? '';
+    const pinned = await dialog({
+      title: 'Pin to a dashboard',
+      confirm: 'Pin',
+      body: h('div', { class: 'facts' },
+        h('div', { class: 'field' }, h('label', { for: 'pin-view' }, 'The view it shows'), name,
+          h('span', { class: 'hint' }, `Saved with ${this.cube.name} for everyone. A view of the same name is replaced.`)),
+        h('div', { class: 'field' }, h('label', { for: 'pin-dashboard' }, 'The dashboard'), board,
+          h('datalist', { id: 'pin-dashboards' }, dashboards.map((dashboard) => h('option', { value: dashboard.name }))),
+          h('span', { class: 'hint' }, 'A name no dashboard has makes a new one.')),
+        h('div', { class: 'field' }, h('label', { for: 'pin-show' }, 'Shown as'), show)),
+      onsubmit: async () => {
+        const view = name.value.trim();
+        if (!view) throw invalid(name, 'Give the view a name.');
+        const to = board.value.trim();
+        if (!to) throw invalid(board, 'Name the dashboard.');
+        // The view, saved with the cube as it is now, against the version it was read at.
+        const cube = await get(`/cubes/${part(this.cube.name)}`);
+        const views = { ...(cube.views ?? {}), [view]: this.asView() };
+        await put(`/cubes/${part(this.cube.name)}`, { based_on: Number(modelVersion), cube: { ...cube, views } });
+        this.cube.views = views;
+        // The tile, added to the dashboard as it is now, where the board has room for it.
+        const outline = await get('/model/outline');
+        const tile = { cube: this.cube.name, view, show: show.value };
+        const had = outline.dashboards.find((dashboard) => dashboard.name.toLowerCase() === to.toLowerCase());
+        const dashboard = had ? { ...had, tiles: [...had.tiles, tile] } : { name: to, tiles: [tile] };
+        await put(`/dashboards/${part(dashboard.name)}`, { based_on: outline.version, dashboard });
+        return dashboard.name;
+      },
+    });
+    if (!pinned) return;
+    notify(h('span', {}, `Pinned to ${pinned}. `, h('a', { href: `/dashboards?name=${encodeURIComponent(pinned)}`, 'data-link': '' }, 'Open it')), 'good');
   }
 
   /** Lists the user's own views of the cube, each to be taken away. */
