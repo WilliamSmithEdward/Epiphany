@@ -207,7 +207,7 @@ the run.
 
 | Journey | What it shows |
 | --- | --- |
-| Signing in | A wrong password refused; the overview; a session that ends signed into again over the page, which stays as it was |
+| Signing in | A wrong password refused; the overview; a session that ends signed into again over the page, which stays as it was, and what failed meanwhile fetched again by itself |
 | Exploring and writing back | An MDX query typed in shows what the API answers to it; a value typed into a cell is saved and read back through the API; the tabs over the grid gone along by the arrow keys; a cell's comments, history and detail |
 | A dashboard | Three tiles of a saved view, a key figure, bars and a grid, run and audited; when they were run said, and Refresh runs them again; the bars' legend, on one line, gone along by its arrows to its last series. The grid's ways of making room checked; a tile dragged to another's place, made taller by its corner, wider by the keys and back with Ctrl Z; laid out freely, let go between columns and lined up with an edge; a tile of text dragged in from the list, and the arrangement saved; a bar picked to show the others at its members; a tile over the whole page; a tile's numbers shown in place of its bars, copied, and the bars again; a key figure in the colour of its view's rule; presented, on to the next dashboard by the arrow, and Escape; copied from New, saved with Quarter's tiles, and deleted; a query pinned from Explore to a new dashboard, opened from the notice, and deleted |
 | Changing the model | An element added in the editor is the one the API gives back; a consolidation's children listed to weigh or take out, the keys staying on the list, and the change discarded; an element found by a word of its name |

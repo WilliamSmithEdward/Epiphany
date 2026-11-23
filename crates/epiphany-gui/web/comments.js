@@ -261,7 +261,7 @@ export const comments = {
     const me = state.user?.name ?? '';
     const admin = state.user?.role === 'admin';
     const mayWrite = this.mayWrite();
-    const text = h('textarea', { class: 'textarea', rows: 3, maxlength: 10000, placeholder: 'Say what explains the number', 'aria-label': 'A new comment', disabled: !mayWrite });
+    const text = h('textarea', { class: 'textarea words', rows: 3, maxlength: 10000, placeholder: 'Say what explains the number', 'aria-label': 'A new comment', disabled: !mayWrite });
     const add = h('button', { class: 'button small primary', type: 'button', disabled: !mayWrite, onclick: () => working(add, () => this.addComment(text.value)) }, 'Comment');
     text.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {

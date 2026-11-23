@@ -993,7 +993,7 @@ class Dashboards {
     const tile = this.editing.tiles[index];
     const text = tile.show === 'text';
     const field = text
-      ? h('textarea', { class: 'textarea', id: 'tile-text', rows: 8 }, tile.text)
+      ? h('textarea', { class: 'textarea words', id: 'tile-text', rows: 8 }, tile.text)
       : h('input', { class: 'input', id: 'tile-title', maxlength: 120, placeholder: tile.view, value: tile.title ?? '' });
     const told = await dialog({
       title: text ? 'The tile\'s text' : 'Name the tile',

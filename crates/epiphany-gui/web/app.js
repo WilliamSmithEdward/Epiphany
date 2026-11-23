@@ -186,8 +186,13 @@ async function reauthenticate() {
     return;
   }
   notify('Signed in again. Carry on where you were.', 'good');
-  // A page that could not be drawn for want of a session is drawn now.
+  // A page that could not be drawn for want of a session is drawn now, and what failed on the
+  // page for want of one, and is shown still, is tried again.
   if (!active) move();
+  for (const failed of [...unsigned]) {
+    unsigned.delete(failed);
+    if (failed.shown.isConnected) failed.retry();
+  }
 }
 
 events.addEventListener('model-changed', () => {
@@ -504,14 +509,20 @@ export function empty(iconName, title, text, ...actions) {
   return h('div', { class: 'empty' }, icon(iconName, 40), h('h3', {}, title), text && h('p', {}, text), actions.length ? h('div', { class: 'toolbar' }, actions) : null);
 }
 
+/** What failed for want of a session, each with its way to be tried again. */
+const unsigned = new Set();
+
 /** What went wrong, with a button to try again where `retry` is given, and `also` beside it. */
 export function failure(problem, retry, also = null) {
   const refused = problem instanceof ApiError && problem.status === 403;
-  return empty(refused ? 'lock' : 'alert',
+  const shown = empty(refused ? 'lock' : 'alert',
     refused ? 'You may not see this' : 'Something went wrong',
     refused ? 'Your role does not allow it. Ask an administrator if you need it.' : problem.message,
     also,
     retry ? h('button', { class: 'button', onclick: retry }, icon('refresh', 16), 'Try again') : null);
+  // Failed for want of a session, it is tried again by itself once the user signs in again.
+  if (retry && problem instanceof ApiError && problem.status === 401) unsigned.add({ shown, retry });
+  return shown;
 }
 
 /**

@@ -527,6 +527,8 @@ async function signingIn({ admin }) {
     await page.press('Enter');
     await page.waitFor(`!document.querySelector('dialog[open]') && [...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Signed in again'))`, 'signing in again');
     await page.waitFor(`document.querySelector('h1')?.textContent === 'Administration'`, 'the page as it was');
+    // What failed while the session was ended is fetched again by itself: the server's state.
+    await page.waitFor(`!document.body.textContent.includes('Your session has ended') && document.querySelector('.stat')`, 'the status, fetched again');
   });
   await step('The palette finds a saved view by a word of its name, the best first, and offers again what was chosen', async () => {
     const options = `[...document.querySelectorAll('dialog.palette [role="option"]')].map((option) => ({

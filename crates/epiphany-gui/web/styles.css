@@ -258,6 +258,8 @@ main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: co
   transition: border-color .12s, box-shadow .12s;
 }
 .textarea { height: auto; padding: var(--s3); resize: vertical; font-family: var(--mono); font-size: var(--text-s); line-height: 1.6; }
+/* Words to read, a comment or a tile's text, in the page's type; queries and lists in code's. */
+.textarea.words { font-family: inherit; font-size: var(--text-m); line-height: 1.5; }
 /* The arrow stands as far in from the right as the text does from the left. */
 .select { appearance: none; padding-right: 38px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right var(--s3) center; background-size: 14px; text-overflow: ellipsis; cursor: pointer; }
 /* The open list's choices, given room from its edges. */
