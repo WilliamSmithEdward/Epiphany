@@ -11,5 +11,5 @@ pub use definition::{
 };
 pub use error::ModelError;
 pub use snapshot::{
-    Attribute, Cube, Dimension, DimensionId, Element, ElementId, Model, Validation, key,
+    Attribute, Cube, Dimension, DimensionId, Element, ElementId, Model, Picklist, Validation, key,
 };

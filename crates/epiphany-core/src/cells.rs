@@ -911,13 +911,13 @@ pub fn offered(
     let Scalar::Text(text) = value else {
         return Ok(());
     };
-    let picklist = elements(model, cube, at)
-        .next_back()
-        .and_then(|element| element.picklist.as_ref());
+    assert_eq!(at.len(), cube.dimensions.len(), "one element per dimension");
+    let last = cube.dimensions.last().zip(at.last());
+    let picklist = last.and_then(|(&d, &e)| model.dimensions()[d as usize].picklist(e));
     match picklist {
-        Some(offered) if !text.is_empty() && !offered.contains(text) => {
+        Some(offered) if !text.is_empty() && !offered.values.contains(text) => {
             Err(CellError::NotOffered {
-                offered: offered.clone(),
+                offered: offered.values.clone(),
             })
         }
         _ => Ok(()),

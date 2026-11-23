@@ -89,9 +89,10 @@ impl Model {
                     PicklistDef::Members(members) => model.dimension_id(&members.dimension),
                     PicklistDef::Values(_) => None,
                 };
-                let element = &mut model.dimensions[id].elements[element];
-                element.picklist = Some(values);
-                element.picklist_of = of;
+                let picklist = Picklist { values, of };
+                model.dimensions[id]
+                    .picklists
+                    .insert(element as ElementId, picklist);
             }
         }
         // Rules and feeders may refer to other cubes, so every cube is in place first.
@@ -372,9 +373,26 @@ pub struct Dimension {
     /// Element ids by the key of every name and alias.
     element_ids: HashMap<String, ElementId>,
     attribute_ids: HashMap<String, u32>,
+    /// The picklists of the few string elements that have one, by element.
+    picklists: HashMap<ElementId, Picklist>,
+}
+
+/// What a string element's text cells may be given: worked out with the model, from a list or
+/// a dimension's or subset's elements.
+#[derive(Debug)]
+pub struct Picklist {
+    pub values: Vec<String>,
+    /// The dimension whose elements it offers, where it offers a dimension's or a subset's:
+    /// for those it offers to be told by what each user may see of them.
+    pub of: Option<DimensionId>,
 }
 
 impl Dimension {
+    /// A string element's picklist, where it has one.
+    pub fn picklist(&self, element: ElementId) -> Option<&Picklist> {
+        self.picklists.get(&element)
+    }
+
     fn compile(def: &DimensionDef) -> Result<Self, ModelError> {
         let within = format!("dimension '{}'", def.name);
         if def.elements.is_empty() {
@@ -470,6 +488,7 @@ impl Dimension {
             subsets: Vec::new(),
             element_ids,
             attribute_ids,
+            picklists: HashMap::default(),
         })
     }
 
@@ -515,14 +534,9 @@ pub struct Element {
     /// The numeric leaves this element aggregates and the net weight of each, ordered by id.
     /// A leaf lists itself with weight one.
     pub leaves: Vec<(ElementId, f64)>,
-    /// One value per attribute of the dimension, in [`Dimension::attributes`] order.
+    /// One value per attribute of the dimension, in [`Dimension::attributes`] order. A
+    /// picklist is the dimension's, by [`Dimension::picklist`]: few elements have one.
     pub attributes: Vec<Option<Scalar>>,
-    /// For a string element, the values its text cells may be given, where it has a
-    /// picklist: worked out with the model, from a list or a dimension's or subset's elements.
-    pub picklist: Option<Vec<String>>,
-    /// The dimension whose elements the picklist offers, where it offers a dimension's or a
-    /// subset's: for those it offers to be told by what each user may see of them.
-    pub picklist_of: Option<DimensionId>,
 }
 
 /// The indexes of a dimension's element and attribute names, as its elements are compiled.
@@ -626,8 +640,6 @@ impl Element {
             level: 0,
             leaves: Vec::new(),
             attributes: values,
-            picklist: None,
-            picklist_of: None,
         })
     }
 }

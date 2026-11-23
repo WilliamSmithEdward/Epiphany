@@ -27,7 +27,7 @@ use epiphany_core::database::{
 use epiphany_core::mdx::{Asker, QueryResult};
 use epiphany_core::model::{
     AttributeType, ChildDef, CubeDef, DashboardDef, DimensionDef, DimensionId, DimensionType,
-    Element, ElementId, ElementType, Model, ModelDef, SubsetDef, ViewDef, key,
+    ElementId, ElementType, Model, ModelDef, SubsetDef, ViewDef, key,
 };
 use serde::{Deserialize, Serialize};
 
@@ -725,18 +725,18 @@ impl DimensionView {
             weight,
         };
         // A picklist that offers another dimension's elements offers those the user may see.
-        let offered = |element: &Element| {
-            let values = element.picklist.as_ref()?;
-            let Some(of) = element.picklist_of.filter(|_| access.is_some()) else {
-                return Some(values.clone());
+        let offered = |element: ElementId| {
+            let picklist = dimension.picklist(element)?;
+            let Some(of) = picklist.of.filter(|_| access.is_some()) else {
+                return Some(picklist.values.clone());
             };
             let from = &model.dimensions()[of as usize];
             let seen = |value: &&String| from.element_id(value).is_none_or(|e| sees(access, of, e));
-            Some(values.iter().filter(seen).cloned().collect())
+            Some(picklist.values.iter().filter(seen).cloned().collect())
         };
         let elements = dimension.elements.iter().enumerate();
         let elements = elements.filter(|&(element, _)| seen(element as ElementId));
-        let elements = elements.map(|(_, element)| {
+        let elements = elements.map(|(id, element)| {
             let values = dimension.attributes.iter().zip(&element.attributes);
             ElementView {
                 name: element.name.clone(),
@@ -758,7 +758,7 @@ impl DimensionView {
                 attributes: values
                     .filter_map(|(attribute, value)| Some((attribute.name.clone(), value.clone()?)))
                     .collect(),
-                picklist: offered(element),
+                picklist: offered(id as ElementId),
             }
         });
         Self {

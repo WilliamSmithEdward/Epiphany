@@ -295,6 +295,12 @@ Rerun the same day, before and after (2026-11-23):
 | 1,000,000 leaves in groups of 100 | 829 ms | 611 ms |
 | 1,000,000 leaves under the total alone | 3.0 s | 0.64 s |
 
+Every compiled element held a picklist and the dimension it offers, which few elements have:
+an element took 160 bytes in place. Picklists are now kept beside a dimension's elements, by
+element, and an element takes 128 bytes, 32 MB less for a dimension of a million. Compiling
+is as quick, if anything quicker: best of three, alternated, 36, 594 and 592 ms before and 34,
+579 and 592 ms after for the three dimensions above (2026-11-23).
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions
