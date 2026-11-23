@@ -929,6 +929,34 @@ fn earlier_models_are_kept_and_can_be_read_back() {
 }
 
 #[test]
+fn a_dimension_too_large_to_edit_by_hand_is_written_close() {
+    let home = Home::new("close");
+    let mut database = home.open();
+    let mut definition = database.definition().clone();
+    // 100,001 leaves under one total: more than a person edits in a file.
+    let names = (0..100_001).map(|leaf| format!("l{leaf}"));
+    let children: Vec<Json> = names.clone().map(|name| json!({ "name": name })).collect();
+    let leaves = names.map(|name| json!({ "name": name, "type": "numeric" }));
+    let total = json!({ "name": "All", "type": "consolidated", "children": children });
+    let elements: Vec<Json> = std::iter::once(total).chain(leaves).collect();
+    let big = json!({ "name": "Big", "elements": elements });
+    definition.dimensions.push(
+        serde_json::from_value::<epiphany_core::model::DimensionDef>(big)
+            .unwrap()
+            .into(),
+    );
+    database.update_model(1, definition).unwrap();
+    drop(database);
+    // That one on a line of its own; the others laid out, to be read and edited.
+    let lines = |file: &str| fs::read_to_string(home.path(file)).unwrap().lines().count();
+    assert_eq!(lines("model/dimensions/big.json"), 1);
+    assert!(lines("model/dimensions/account.json") > 1);
+    let reopened = home.open();
+    let big = reopened.model().dimension("Big").unwrap();
+    assert_eq!(big.elements.len(), 100_002);
+}
+
+#[test]
 fn a_dashboard_is_kept_with_the_model_on_disk() {
     let home = Home::new("dashboards");
     let mut database = home.open();

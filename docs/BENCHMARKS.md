@@ -339,6 +339,15 @@ from outside, three saves each (2026-11-23):
 What is left of a save is writing the model out again, every dimension of it, and keeping the
 model it replaces: 131 MB on disk for a million leaves, laid out, at every save.
 
+A dimension of more than 100,000 elements is now written close rather than laid out, as a
+snapshot is: no one edits one by hand, and the million leaves take 65 MB rather than 131. The
+same saves, three each, measured from outside (2026-11-23):
+
+| Saving a dashboard, a million leaves | Laid out | Close |
+| --- | --- | --- |
+| Time to answer | 0.24 to 0.27 s | 0.13 to 0.14 s |
+| The model on disk, and kept again at every save | 131 MB | 65 MB |
+
 `GET /dimensions/{name}`, which the model's editor and the Excel add-in ask for, sends that
 dimension as 94 MB of JSON. It took 0.66 s and took the server from 476 MB to 916 MB: each
 element's name, its parents' and its children's were copied out of the model, then written.

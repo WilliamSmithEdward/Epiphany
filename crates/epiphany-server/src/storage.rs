@@ -34,12 +34,17 @@ use epiphany_core::database::{
     Asked, CellChange, CellDetail, CellWrite, Changes, CommentChange, Database, EarlierModel,
     History, Journal, KeptSandbox, NamedCells, NamedDetails, NamedWrites, OnDisk, TransactionId,
 };
-use epiphany_core::model::ModelDef;
+use epiphany_core::model::{DimensionDef, ModelDef, Shared};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// The log is replaced by a snapshot once it grows beyond this many bytes.
 const LOG_LIMIT: u64 = 64 * 1024 * 1024;
+
+/// A dimension of more elements than this is written close rather than laid out. No one edits
+/// one of a hundred thousand elements by hand, and laid out it is two and a half times the
+/// size: a million took 131 MB rather than 53, slower to write, and kept again at every save.
+const LAID_OUT_MOST: usize = 100_000;
 
 #[derive(Serialize, Deserialize)]
 struct ModelFile {
@@ -494,16 +499,18 @@ fn settle(folder: &Path) -> io::Result<()> {
     }
 }
 
-/// Writes each item to its own JSON file in a new folder, named after the item.
+/// Writes each item to its own JSON file in a new folder, named after the item, and laid out
+/// where `laid_out` says.
 fn write_each<T: Serialize>(
     folder: &Path,
     items: &[T],
     name: impl Fn(&T) -> &str,
+    laid_out: impl Fn(&T) -> bool,
 ) -> io::Result<()> {
     fs::create_dir_all(folder)?;
     let files = file_names(items.iter().map(name));
     let mut written = files.iter().zip(items);
-    written.try_for_each(|(file, item)| write_json(&folder.join(file), item))
+    written.try_for_each(|(file, item)| write_whole(&folder.join(file), item, laid_out(item)))
 }
 
 /// A file name for each name: lower case, with anything but letters and digits as a hyphen,
@@ -626,14 +633,18 @@ impl Journal for Files {
         if next.exists() {
             fs::remove_dir_all(&next)?;
         }
-        write_each(&next.join("dimensions"), &definition.dimensions, |d| {
-            &d.name
-        })?;
-        write_each(&next.join("cubes"), &definition.cubes, |c| &c.name)?;
+        let dimensions = &definition.dimensions;
+        let small = |d: &Shared<DimensionDef>| d.elements.len() <= LAID_OUT_MOST;
+        write_each(&next.join("dimensions"), dimensions, |d| &d.name, small)?;
+        write_each(
+            &next.join("cubes"),
+            &definition.cubes,
+            |c| &c.name,
+            |_| true,
+        )?;
         if !definition.dashboards.is_empty() {
-            write_each(&next.join("dashboards"), &definition.dashboards, |d| {
-                &d.name
-            })?;
+            let dashboards = &definition.dashboards;
+            write_each(&next.join("dashboards"), dashboards, |d| &d.name, |_| true)?;
         }
         write_json(&next.join("model.json"), &ModelFile { version })?;
 
