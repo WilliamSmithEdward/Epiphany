@@ -15,8 +15,8 @@ import { choices, dialog, h, icon, invalid, menu, MOD, mount, notify, when, work
 /** A row's height and the gap between tiles, in pixels: as the styles have them. */
 const ROW = 40;
 const GAP = 16;
-/** A page narrower than this stands its tiles one above the other, in reading order. */
-const NARROW = 720;
+/** A board narrower than this, as on a phone, stands its tiles one above the other, in reading order. */
+const NARROW = 600;
 /** How near, in pixels, an edge comes to a line before it is put on it. */
 const NEAR = 8;
 
@@ -39,7 +39,7 @@ const sizeOf = (tile) => SIZES[tile.show ?? 'bars'] ?? SIZES.bars;
 const PRESETS = [['Small', 3, 4], ['Medium', 6, 8], ['Large', 8, 12], ['Full width', 12, 8]];
 
 /** How often the tiles may run again by themselves, in minutes. */
-const EVERY = [[0, 'Not by itself'], [1, 'Every minute'], [5, 'Every 5 minutes'], [15, 'Every 15 minutes'], [60, 'Every hour']];
+const EVERY = [[0, 'By hand'], [1, 'Every minute'], [5, 'Every 5 minutes'], [15, 'Every 15 minutes'], [60, 'Every hour']];
 
 /** Where the dashboard shown last, a dashboard's refreshing and freeform snapping are kept, in this browser. */
 const LAST = 'epiphany.dashboards.last';
@@ -294,6 +294,8 @@ class Dashboards {
     this.fitHeight();
     if (editing) this.board.addEventListener('pointerdown', (event) => this.grab(event));
     const frame = h('div', { class: 'board-frame' },
+      // Stood one above the other, the tiles cannot be arranged here, and the page says where.
+      editing ? h('p', { class: 'hint stack-hint' }, 'The tiles stand one above the other at this width: arrange them in a wider window. Their options are here as well.') : null,
       shown.tiles.length || editing
         ? this.board
         : h('div', { class: 'card' }, empty('dashboard', 'No tiles yet', 'An administrator adds tiles that show saved views.')));
@@ -417,7 +419,8 @@ class Dashboards {
       ];
     const head = title || editing || !text
       ? h('div', { class: 'tile-head' },
-        h('div', { class: 'grow' }, h('h3', {}, title || h('span', { class: 'muted' }, 'Text')), text ? null : h('p', { class: 'muted' }, `${tile.cube} · ${tile.view}`,
+        // Edited, a tile is named, or its text changed, by a double-click on its name.
+        h('div', { class: 'grow' }, h('h3', { ondblclick: editing ? () => this.retell(index) : null, title: editing ? (text ? 'Double-click to change the text' : 'Double-click to rename') : null }, title || h('span', { class: 'muted' }, 'Text')), text ? null : h('p', { class: 'muted' }, `${tile.cube} · ${tile.view}`,
           standing.length ? h('span', { class: 'tile-standing' }, ` · at ${standing.join(', ')}`) : null)),
         actions)
       : null;

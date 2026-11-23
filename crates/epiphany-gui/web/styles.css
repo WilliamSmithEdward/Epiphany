@@ -840,6 +840,8 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .dash-name { font-size: var(--text-xl); font-weight: 650; height: 42px; }
 .dash-work { display: flex; align-items: flex-start; gap: var(--s4); }
 .board-frame { flex: 1; min-width: 0; }
+.stack-hint { display: none; margin-bottom: var(--s3); }
+.board-frame:has(> .board.editing.stacked) > .stack-hint { display: block; }
 
 /* The board: twelve columns across and rows of a fixed height, a tile standing on them at
    its --x and --y, --w columns wide and --h rows high. Moved, a tile slides to its place. */
@@ -871,9 +873,10 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .tile-head .grow { flex: 1; min-width: 0; }
 .tile-head h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tile-head p { font-size: var(--text-xs); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* A tile's buttons show as it is pointed at or holds the keys, where there is a pointer to point. */
+/* Shown, a tile's buttons show as it is pointed at or holds the keys, where there is a pointer to
+   point; edited, they show always, as what a tile can do should be in sight while it is arranged. */
 @media (hover: hover) {
-  .dash-tile:not(:hover, :focus-within) .tile-head .button, .dash-tile:not(:hover, :focus-within) .tile-corner { opacity: 0; }
+  .board:not(.editing) .dash-tile:not(:hover, :focus-within) :is(.tile-head .button, .tile-corner) { opacity: 0; }
 }
 .tile-head .button, .tile-corner { transition: opacity .12s; }
 .tile-corner { position: absolute; top: var(--s2); right: var(--s2); z-index: 3; display: flex; gap: 2px; }
@@ -898,7 +901,7 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 
 /* A key figure, as large as its tile allows. */
 .figure { display: flex; flex-direction: column; justify-content: center; gap: var(--s1); flex: 1; min-height: 0; }
-.figure-value { font-size: clamp(26px, 22cqmin, 120px); line-height: 1.05; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.figure-value { font-size: clamp(20px, min(22cqmin, 13cqi), 120px); line-height: 1.05; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .figure-value.negative { color: var(--bad); }
 .figure-name { font-size: var(--text-s); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .figure-change { display: flex; align-items: center; gap: 6px; font-size: var(--text-s); color: var(--text-2); font-variant-numeric: tabular-nums; }

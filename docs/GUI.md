@@ -103,7 +103,7 @@ only way to do something, and modal dialogs where a side panel would keep the da
   pixels the set editor's panes go one above the other, each at its own height, its dialog
   scrolling; and a filter too tall for its pane scrolls within it, leaving the tree its room.
   Under 1,100 pixels the model's page shows its list of dimensions and cubes or the one open,
-  not both, the one open leading back to the list. A dashboard narrower than 720 pixels
+  not both, the one open leading back to the list. A dashboard narrower than 600 pixels
   stands its tiles one above the other, in the order they are read, each its own height; and
   prints the same way.
 - **Printable.** A page prints as it reads, without the bar, the list of pages or what only
