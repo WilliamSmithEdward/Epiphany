@@ -12,6 +12,7 @@ const KEYS = [
     [['?'], 'These keys'],
     [['Tab'], 'Its first press offers a way past the bar, straight to the page'],
     [['Esc'], 'Close a dialog or a menu'],
+    [[`${MOD}+S`], 'Save the changes the page holds'],
   ]],
   ['The grid', [
     [['←', '↑', '→', '↓'], 'Move; past the first row or column, on into the headings'],

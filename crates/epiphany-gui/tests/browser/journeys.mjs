@@ -863,8 +863,11 @@ async function changingTheModel() {
     await page.waitFor(`document.querySelector('[role="treeitem"][data-name="FR"]') && !document.querySelector('dialog[open]')`, 'FR in the tree');
     expect(await page.evaluate('document.title') === '• Entity · Model · Epiphany', 'The browser\'s title does not mark the dimension unsaved.');
     expect(await page.evaluate(ASKS_TO_CLOSE), 'The browser would close the page, the dimension unsaved, without asking.');
-    await page.click('.pending button', 'Save');
+    // Saved by the keys, as by the strip's button; pressed again, with nothing to save, it says so.
+    await page.press('s', CTRL);
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Saved'))`, 'the model, saved');
+    await page.press('s', CTRL);
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent === 'Nothing to save.')`, 'nothing left to save');
     const { data } = await page.api('GET', '/model');
     const entity = data.model.dimensions.find((dimension) => dimension.name === 'Entity');
     const total = entity.elements.find((element) => element.name === 'Total Entity');

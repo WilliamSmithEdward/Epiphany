@@ -114,6 +114,11 @@ class Explorer {
     return Boolean(this.tx && !this.sandbox && this.changes);
   }
 
+  /** Saves the changes held, as the strip's Save button does. */
+  saveChanges() {
+    return this.save();
+  }
+
   /** Asked before the page is left: unsaved changes are discarded only if the user agrees. */
   async leave() {
     if (!this.tx || this.sandbox) return true;

@@ -113,6 +113,10 @@ only way to do something, and modal dialogs where a side panel would keep the da
   first about changes not saved, as do closing the page and loading it afresh.
 - **Tabs told apart.** The browser's title names what the page shows before the page itself,
   as "General Ledger · Explore · Epiphany", marked with • while it holds changes not saved.
+- **Saved by the keys.** Ctrl+S (⌘S on a Mac) saves the changes a page holds, values in
+  Explore, a dimension or cube in the model's editor, a dashboard being edited, as its Save
+  button does; with nothing to save it says so, rather than offering to save the page as a
+  file.
 - **Shared by a link.** The Views menu copies a link to the query shown, with its number
   format, highlights and sizes, which opens it as it was shown for anyone who may read the
   cube, each seeing only what they may read. What a link carries is held to what a view may

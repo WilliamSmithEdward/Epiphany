@@ -151,6 +151,11 @@ class Dashboards {
     return Boolean(this.editing) && (this.fresh || JSON.stringify(this.editing) !== JSON.stringify(this.current()));
   }
 
+  /** Saves the dashboard being edited, as its Save button does. */
+  saveChanges() {
+    return this.save();
+  }
+
   /** Names the dashboard shown in the browser's title, marked while changes to it are not saved. */
   retitle() {
     this.titled((this.editing ?? this.current())?.name, this.unsaved());

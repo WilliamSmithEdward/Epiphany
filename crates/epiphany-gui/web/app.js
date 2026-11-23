@@ -741,8 +741,23 @@ addEventListener('keydown', (event) => {
   } else if (event.key === '?' && !typing && !document.querySelector('dialog[open]')) {
     event.preventDefault();
     shortcuts();
+  } else if (event.key.toLowerCase() === 's' && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) {
+    // The page's changes are saved, as its Save button saves them: saving the page as a file,
+    // as the browser would, is of no use here. Pressed again while it saves, nothing more.
+    event.preventDefault();
+    if (saving || document.querySelector('dialog[open]')) return;
+    if (!active?.unsaved?.()) {
+      notify('Nothing to save.');
+      return;
+    }
+    saving = Promise.resolve(active.saveChanges()).finally(() => {
+      saving = null;
+    });
   }
 });
+
+/** The changes being saved by the keys, while they are. */
+let saving = null;
 
 /** Lists the keys the application takes; the list is fetched the first time it is asked for. */
 function shortcuts() {

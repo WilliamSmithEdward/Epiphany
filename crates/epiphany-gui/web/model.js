@@ -59,6 +59,11 @@ class ModelPage {
     return Boolean(this.editor?.dirty);
   }
 
+  /** Saves the dimension or cube being edited, as its strip's Save button does. */
+  saveChanges() {
+    return this.editor?.save();
+  }
+
   drawList() {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Find', 'aria-label': 'Find a dimension or cube' });
     const items = h('div', { class: 'model-items' });
