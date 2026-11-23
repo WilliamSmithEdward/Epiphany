@@ -576,7 +576,8 @@ export function download(name, text, type = 'text/plain') {
 /**
  * A password field with a button inside its end that shows what was typed, and hides it
  * again: the field keeps its label and has the keys back; the button is named for what it
- * does, pressed while the password shows.
+ * does, pressed while the password shows. Beneath it, while it is typed in with Caps Lock on,
+ * it says so, to a screen reader too.
  */
 export function revealable(input) {
   const toggle = h('button', {
@@ -592,7 +593,14 @@ export function revealable(input) {
       input.focus();
     },
   }, icon('eye', 16));
-  return h('div', { class: 'revealable' }, input, toggle);
+  const caps = h('span', { class: 'hint caps', role: 'status' });
+  const check = (event) => {
+    caps.textContent = event.getModifierState?.('CapsLock') ? 'Caps Lock is on' : '';
+  };
+  input.addEventListener('keydown', check);
+  input.addEventListener('keyup', check);
+  input.addEventListener('blur', () => { caps.textContent = ''; });
+  return h('div', { class: 'revealable' }, h('div', { class: 'reveal-field' }, input, toggle), caps);
 }
 
 /** Puts text on the clipboard, and says so. */

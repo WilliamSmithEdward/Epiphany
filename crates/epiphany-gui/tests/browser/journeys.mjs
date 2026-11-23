@@ -380,6 +380,13 @@ async function signingIn({ admin }) {
     expect(await page.evaluate(shown) === 'text,true,password', `Shown, the password is ${await page.evaluate(shown)}.`);
     await page.click('button', 'Show password');
     expect(await page.evaluate(shown) === 'password,false,password', `Hidden again, the password is ${await page.evaluate(shown)}.`);
+    // Typed in with Caps Lock on, the field says so beneath it, and no more once it is off.
+    const capsLock = (on) => page.evaluate(`document.querySelector('#password').dispatchEvent(new KeyboardEvent('keyup', { key: 'a', modifierCapsLock: ${on} }))`);
+    await capsLock(true);
+    await page.waitFor(`document.querySelector('.caps')?.textContent === 'Caps Lock is on'`, 'Caps Lock, said');
+    await page.audit('Caps Lock, said');
+    await capsLock(false);
+    await page.waitFor(`document.querySelector('.caps')?.textContent === ''`, 'Caps Lock, said no more');
     await page.press('Enter');
     await page.waitFor(`document.querySelector('.error-text:not([hidden])')?.textContent.includes('do not match')`, 'the refusal');
   });

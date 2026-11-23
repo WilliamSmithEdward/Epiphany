@@ -99,7 +99,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
   dimension, cube or dashboard within a page changes only what it shows. A dialog that
   refuses what a field holds says why beneath it, marks it, invalid to a screen reader and
   described by the refusal, and gives it the keys, until it is changed. A password typed can
-  be shown, and hidden again, by the button inside its field.
+  be shown, and hidden again, by the button inside its field, which says beneath it, while
+  it is typed in, that Caps Lock is on.
 - **Notices that can be read.** A notice stands as long as its words take to read, an error
   twice as long, and waits while it is pointed at, has the keys or the page is out of sight.
   The same notice again takes the place of the first, and four at most stand at once.
