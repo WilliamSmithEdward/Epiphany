@@ -154,7 +154,13 @@ export class Rows {
     this.count = 0;
     this.drawn = new Map();
     this.element = h('div', { class: 'rows' });
-    printsWhole(this.element, () => this.drawWhole(), () => this.update());
+    // While the page prints, every row stays drawn: laid out for paper, the scroller changes
+    // size, which would otherwise let go of the rows out of its view.
+    this.printing = false;
+    printsWhole(this.element, () => this.drawWhole(), () => {
+      this.printing = false;
+      this.update();
+    });
     let queued = false;
     scroller.addEventListener('scroll', () => {
       if (queued) return;
@@ -173,7 +179,8 @@ export class Rows {
     this.drawn.clear();
     this.count = count;
     this.element.style.height = `${count * this.row}px`;
-    this.update();
+    if (this.printing) this.drawWhole();
+    else this.update();
   }
 
   /** How many rows the scroller shows at once. */
@@ -191,7 +198,7 @@ export class Rows {
 
   /** Draws the rows in view, a few beyond, and lets go of the rest but the one with the focus. */
   update() {
-    if (!this.element.isConnected) return;
+    if (!this.element.isConnected || this.printing) return;
     const top = this.scroller.scrollTop - this.offset();
     const first = Math.max(0, Math.floor(top / this.row) - 8);
     const last = Math.min(this.count, Math.ceil((top + this.scroller.clientHeight) / this.row) + 8);
@@ -210,6 +217,7 @@ export class Rows {
    * Those drawn stay where they are, the focus with them.
    */
   drawWhole() {
+    this.printing = true;
     const whole = this.count <= PRINTED;
     this.element.toggleAttribute('data-part', !whole);
     this.element.dataset.rows = this.count.toLocaleString();

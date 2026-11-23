@@ -1407,12 +1407,16 @@ async function aLargeGrid() {
     await page.waitFor(`document.querySelector('.element-tree .tree-row')`, 'the elements');
     const drawn = `document.querySelectorAll('.element-tree .rows > *').length`;
     await page.evaluate(`dispatchEvent(new Event('beforeprint'))`);
+    // Laid out for paper, the list changes size, as a page printing does: every row stays.
+    await page.evaluate(`document.querySelector('.element-tree').style.height = '300px'`);
+    await page.evaluate('new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))');
     const printed = await page.evaluate(`(() => {
       const rows = [...document.querySelectorAll('.element-tree .rows > *')];
       return { count: rows.length, ordered: rows.every((row, index) => !index || parseFloat(row.style.top) > parseFloat(rows[index - 1].style.top)) };
     })()`);
     expect(printed.count === 2000 && printed.ordered, `${printed.count} elements are drawn for paper, of 2,000${printed.ordered ? '' : ', out of order'}.`);
     await page.evaluate(`dispatchEvent(new Event('afterprint'))`);
+    await page.evaluate(`document.querySelector('.element-tree').style.height = ''`);
     const after = await page.evaluate(drawn);
     expect(after < 200, `${after} elements are still drawn after printing.`);
   });
