@@ -339,6 +339,18 @@ from outside, three saves each (2026-11-23):
 What is left of a save is writing the model out again, every dimension of it, and keeping the
 model it replaces: 131 MB on disk for a million leaves, laid out, at every save.
 
+`GET /dimensions/{name}`, which the model's editor and the Excel add-in ask for, sends that
+dimension as 94 MB of JSON. It took 0.66 s and took the server from 476 MB to 916 MB: each
+element's name, its parents' and its children's were copied out of the model, then written.
+The answer is now written straight from the model, the names borrowed, as it is sent, and is
+the same byte for byte for every dimension of the sample model and one more with what they
+lack. Measured from outside, twice each (2026-11-23):
+
+| A dimension of a million leaves, whole | Before | After |
+| --- | --- | --- |
+| Time to answer | 0.65 to 0.67 s | 0.32 s |
+| Memory at the most | 916 MB | 597 MB |
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions

@@ -10,7 +10,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use axum::Extension;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, FromRef, FromRequest, Path, Query, Request, State};
-use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
+use axum::http::header::{AUTHORIZATION, CONTENT_TYPE, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{IntoResponse, Response};
@@ -25,8 +25,9 @@ use epiphany_core::database::{
 };
 use epiphany_core::mdx::{Asker, QueryResult};
 use epiphany_core::model::{
-    AttributeType, ChildDef, CubeDef, DashboardDef, DimensionDef, DimensionId, DimensionType,
-    ElementId, ElementType, Model, ModelDef, SubsetDef, ViewDef, key,
+    Attribute, AttributeType, ChildDef, CubeDef, DashboardDef, Dimension, DimensionDef,
+    DimensionId, DimensionType, Element, ElementId, ElementType, Model, ModelDef, SubsetDef,
+    ViewDef, key,
 };
 use serde::{Deserialize, Serialize};
 
@@ -672,117 +673,221 @@ struct ModelPut {
 
 /// A dimension with the hierarchy facts derived from its definition.
 #[derive(Serialize, ToSchema)]
-struct DimensionView {
-    name: String,
+struct DimensionView<'a> {
+    name: &'a str,
     #[serde(rename = "type")]
     kind: DimensionType,
     /// The names of the levels, from the leaves up, where the model gives them.
-    levels: Vec<String>,
-    attributes: BTreeMap<String, AttributeType>,
+    #[schema(value_type = Vec<String>)]
+    levels: &'a [String],
+    #[schema(value_type = BTreeMap<String, AttributeType>)]
+    attributes: BTreeMap<&'a str, AttributeType>,
     /// Elements in declaration order.
-    elements: Vec<ElementView>,
+    #[schema(value_type = Vec<ElementView>)]
+    elements: Elements<'a>,
     /// The element names each subset selects, in the subset's order; for a subset that reads
     /// cells, as the stored cells stand now.
-    subsets: BTreeMap<String, Vec<String>>,
+    #[schema(value_type = BTreeMap<String, Vec<String>>)]
+    subsets: BTreeMap<&'a str, Names<'a>>,
     /// The subsets that read cells, which select what the cells say when they are used.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    subsets_reading_cells: Vec<String>,
+    subsets_reading_cells: Vec<&'a str>,
 }
 
 /// An element and its place in the hierarchy. Its parents, children and attributes are left
 /// out where it has none, as a leaf has no children: in a large dimension, most of the
 /// elements are leaves, and the empty lists were half of what was sent.
 #[derive(Serialize, ToSchema)]
-struct ElementView {
-    name: String,
+struct ElementView<'a> {
+    name: &'a str,
     #[serde(rename = "type")]
     kind: ElementType,
     /// Zero for a leaf, otherwise one more than the highest child level.
     level: u32,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    parents: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    children: Vec<ChildDef>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    attributes: BTreeMap<String, Scalar>,
+    #[serde(skip_serializing_if = "Names::is_empty")]
+    #[schema(value_type = Vec<String>)]
+    parents: Names<'a>,
+    #[serde(skip_serializing_if = "Children::is_empty")]
+    #[schema(value_type = Vec<ChildDef>)]
+    children: Children<'a>,
+    #[serde(skip_serializing_if = "Values::is_empty")]
+    #[schema(value_type = BTreeMap<String, Scalar>)]
+    attributes: Values<'a>,
     /// For a string element with a picklist, the values its text cells may be given.
     #[serde(skip_serializing_if = "Option::is_none")]
     picklist: Option<Vec<String>>,
 }
 
-impl DimensionView {
+impl<'a> DimensionView<'a> {
     /// A dimension as a user may see it: the elements hidden from them left out, as
     /// elements, parents, children, the members of subsets and the values of picklists.
-    fn of(model: &Model, id: DimensionId, access: Option<&Access>) -> Self {
-        let dimension = &model.dimensions()[id as usize];
-        let seen = |element: ElementId| sees(access, id, element);
-        let name = |element: ElementId| dimension.elements[element as usize].name.clone();
-        let child = |&(element, weight): &(ElementId, f64)| ChildDef {
-            name: name(element),
-            weight,
-        };
-        // A picklist that offers another dimension's elements offers those the user may see.
-        let offered = |element: ElementId| {
-            let picklist = dimension.picklist(element)?;
-            let Some(of) = picklist.of.filter(|_| access.is_some()) else {
-                return Some(picklist.values.clone());
-            };
-            let from = &model.dimensions()[of as usize];
-            let seen = |value: &&String| from.element_id(value).is_none_or(|e| sees(access, of, e));
-            Some(picklist.values.iter().filter(seen).cloned().collect())
-        };
-        let elements = dimension.elements.iter().enumerate();
-        let elements = elements.filter(|&(element, _)| seen(element as ElementId));
-        let elements = elements.map(|(id, element)| {
-            let values = dimension.attributes.iter().zip(&element.attributes);
-            ElementView {
-                name: element.name.clone(),
-                kind: element.kind,
-                level: element.level,
-                parents: element
-                    .parents()
-                    .iter()
-                    .copied()
-                    .filter(|&p| seen(p))
-                    .map(name)
-                    .collect(),
-                children: element
-                    .children
-                    .iter()
-                    .filter(|(c, _)| seen(*c))
-                    .map(child)
-                    .collect(),
-                attributes: values
-                    .filter_map(|(attribute, value)| Some((attribute.name.clone(), value.clone()?)))
-                    .collect(),
-                picklist: offered(id as ElementId),
-            }
+    /// `read` holds what each subset that reads cells selects now. Nothing is copied: each
+    /// part is written out from the model as it is sent, where copies of a dimension of a
+    /// million elements came to 440 MB, held for a moment by everyone who asked for it.
+    fn of(seen: Seen<'a>, read: &'a [(&'a str, Vec<ElementId>)]) -> Self {
+        let dimension = seen.dimension();
+        let subsets = dimension.subsets.iter().map(|subset| {
+            let now = read.iter().find(|(name, _)| *name == subset.name);
+            let ids = now.map_or(subset.elements.as_slice(), |(_, ids)| ids.as_slice());
+            (subset.name.as_str(), Names { seen, ids })
         });
+        let reading = dimension
+            .subsets
+            .iter()
+            .filter(|subset| subset.reads_cells());
         Self {
-            name: dimension.name.clone(),
+            name: &dimension.name,
             kind: dimension.kind,
-            levels: dimension.levels.clone(),
+            levels: &dimension.levels,
             attributes: dimension
                 .attributes
                 .iter()
-                .map(|attribute| (attribute.name.clone(), attribute.kind))
+                .map(|attribute| (attribute.name.as_str(), attribute.kind))
                 .collect(),
-            elements: elements.collect(),
-            subsets: dimension
-                .subsets
-                .iter()
-                .map(|subset| {
-                    let seen = subset.elements.iter().copied().filter(|&e| seen(e));
-                    (subset.name.clone(), seen.map(name).collect())
-                })
-                .collect(),
-            subsets_reading_cells: dimension
-                .subsets
-                .iter()
-                .filter(|subset| subset.reads_cells())
-                .map(|subset| subset.name.clone())
-                .collect(),
+            elements: Elements(seen),
+            subsets: subsets.collect(),
+            subsets_reading_cells: reading.map(|subset| subset.name.as_str()).collect(),
         }
+    }
+}
+
+/// What a dimension's view is written from: the model, the dimension, and what the user may
+/// see of it.
+#[derive(Clone, Copy)]
+struct Seen<'a> {
+    model: &'a Model,
+    dimension: DimensionId,
+    access: Option<&'a Access>,
+}
+
+impl<'a> Seen<'a> {
+    fn dimension(self) -> &'a Dimension {
+        &self.model.dimensions()[self.dimension as usize]
+    }
+
+    fn sees(self, element: ElementId) -> bool {
+        sees(self.access, self.dimension, element)
+    }
+
+    fn name(self, element: ElementId) -> &'a str {
+        &self.dimension().elements[element as usize].name
+    }
+
+    /// The values a string element's picklist offers. One that offers another dimension's
+    /// elements offers those the user may see.
+    fn offered(self, element: ElementId) -> Option<Vec<String>> {
+        let picklist = self.dimension().picklist(element)?;
+        let Some(of) = picklist.of.filter(|_| self.access.is_some()) else {
+            return Some(picklist.values.clone());
+        };
+        let from = &self.model.dimensions()[of as usize];
+        let seen = |value: &&String| {
+            from.element_id(value)
+                .is_none_or(|e| sees(self.access, of, e))
+        };
+        Some(picklist.values.iter().filter(seen).cloned().collect())
+    }
+}
+
+/// The elements the user sees, in declaration order, each written out as it is reached.
+struct Elements<'a>(Seen<'a>);
+
+impl<'a> Serialize for Elements<'a> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let seen = self.0;
+        let dimension = seen.dimension();
+        let view = |(id, element): (usize, &'a Element)| ElementView {
+            name: &element.name,
+            kind: element.kind,
+            level: element.level,
+            parents: Names {
+                seen,
+                ids: element.parents(),
+            },
+            children: Children {
+                seen,
+                children: &element.children,
+            },
+            attributes: Values {
+                attributes: &dimension.attributes,
+                values: &element.attributes,
+            },
+            picklist: seen.offered(id as ElementId),
+        };
+        let elements = dimension.elements.iter().enumerate();
+        serializer.collect_seq(
+            elements
+                .filter(|&(id, _)| seen.sees(id as ElementId))
+                .map(view),
+        )
+    }
+}
+
+/// Elements by id, written out by name: those the user sees, in their order.
+struct Names<'a> {
+    seen: Seen<'a>,
+    ids: &'a [ElementId],
+}
+
+impl Names<'_> {
+    fn is_empty(&self) -> bool {
+        !self.ids.iter().any(|&id| self.seen.sees(id))
+    }
+}
+
+impl Serialize for Names<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let seen = self.ids.iter().filter(|&&id| self.seen.sees(id));
+        serializer.collect_seq(seen.map(|&id| self.seen.name(id)))
+    }
+}
+
+/// An element's children with their weights: those the user sees, in their order.
+struct Children<'a> {
+    seen: Seen<'a>,
+    children: &'a [(ElementId, f64)],
+}
+
+impl Children<'_> {
+    fn is_empty(&self) -> bool {
+        !self.children.iter().any(|&(id, _)| self.seen.sees(id))
+    }
+}
+
+impl Serialize for Children<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Child<'a> {
+            name: &'a str,
+            weight: f64,
+        }
+        let seen = self.children.iter().filter(|&&(id, _)| self.seen.sees(id));
+        let child = |&(id, weight): &(ElementId, f64)| Child {
+            name: self.seen.name(id),
+            weight,
+        };
+        serializer.collect_seq(seen.map(child))
+    }
+}
+
+/// An element's attribute values by the attributes' names, in their order: those it has.
+struct Values<'a> {
+    attributes: &'a [Attribute],
+    values: &'a [Option<Scalar>],
+}
+
+impl Values<'_> {
+    fn is_empty(&self) -> bool {
+        self.values.iter().all(Option::is_none)
+    }
+}
+
+impl Serialize for Values<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let named = self.attributes.iter().zip(self.values);
+        serializer.collect_map(
+            named.filter_map(|(attribute, value)| Some((&attribute.name, value.as_ref()?))),
+        )
     }
 }
 
@@ -1047,7 +1152,7 @@ async fn get_dimension(
     State(database): State<Shared>,
     Extension(grants): Held,
     Path(name): Path<String>,
-) -> Result<Json<DimensionView>, ApiError> {
+) -> Result<Response, ApiError> {
     let database = database.read().unwrap();
     let unknown = || {
         let message = format!("unknown dimension '{name}'");
@@ -1056,21 +1161,28 @@ async fn get_dimension(
     let id = database.model().dimension_id(&name).ok_or_else(unknown)?;
     let dimension = &database.model().dimensions()[id as usize];
     let access = access(&grants, &database);
-    let mut view = DimensionView::of(database.model(), id, access.as_deref());
     // A subset that reads cells selects what the stored cells say now.
-    for subset in dimension
-        .subsets
-        .iter()
-        .filter(|subset| subset.reads_cells())
-    {
-        let elements = database.subset_elements(&name, &subset.name)?;
-        let seen = elements
-            .into_iter()
-            .filter(|&e| sees(access.as_deref(), id, e));
-        let names = seen.map(|e| dimension.elements[e as usize].name.clone());
-        view.subsets.insert(subset.name.clone(), names.collect());
+    let mut read = Vec::new();
+    for subset in dimension.subsets.iter().filter(|s| s.reads_cells()) {
+        read.push((
+            subset.name.as_str(),
+            database.subset_elements(&name, &subset.name)?,
+        ));
     }
-    Ok(Json(view))
+    let seen = Seen {
+        model: database.model(),
+        dimension: id,
+        access: access.as_deref(),
+    };
+    // Written out from the model while it is held, rather than copied out of it first.
+    let body = serde_json::to_vec(&DimensionView::of(seen, &read)).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            error.to_string(),
+        )
+    })?;
+    Ok(([(CONTENT_TYPE, "application/json")], body).into_response())
 }
 
 #[derive(Deserialize, ToSchema)]
