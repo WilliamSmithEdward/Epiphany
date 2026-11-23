@@ -436,7 +436,7 @@ impl Cells {
         if !elements.clone().any(is_consolidated) {
             return Scalar::Number(self.numbers.get(at).copied().unwrap_or(0.0));
         }
-        let leaves: Vec<Leaves> = elements.map(|e| e.leaves.as_slice()).collect();
+        let leaves: Vec<Leaves> = elements.map(|e| e.leaves()).collect();
         let combinations = leaves
             .iter()
             .try_fold(1usize, |product, l| product.checked_mul(l.len()));
@@ -462,9 +462,7 @@ impl Cells {
             Scalar::Number(stored) => stored,
             text => return text,
         };
-        let leaves: Vec<Leaves> = elements(model, cube, at)
-            .map(|e| e.leaves.as_slice())
-            .collect();
+        let leaves: Vec<Leaves> = elements(model, cube, at).map(|e| e.leaves()).collect();
         let change = |(leaf, value): (&Coordinate, &Scalar)| {
             let Scalar::Number(number) = value else {
                 return None;
@@ -665,7 +663,7 @@ impl Cells {
     /// How many stored cells reading a numeric cell looks at or looks up.
     pub(crate) fn work(&self, model: &Model, cube: &Cube, at: &[ElementId]) -> usize {
         let combinations = elements(model, cube, at)
-            .try_fold(1usize, |product, e| product.checked_mul(e.leaves.len()));
+            .try_fold(1usize, |product, e| product.checked_mul(e.leaves().len()));
         combinations.map_or(self.numbers.len(), |n| n.min(self.numbers.len()))
     }
 
@@ -714,7 +712,7 @@ impl Cells {
                 let number = asked[dimension].len() as u64;
                 if let Entry::Vacant(new) = asked[dimension].entry(element) {
                     new.insert(number);
-                    for &(leaf, weight) in &dimensions[dimension][element as usize].leaves {
+                    for &(leaf, weight) in dimensions[dimension][element as usize].leaves() {
                         towards[dimension][leaf as usize].push((number, weight));
                     }
                 }

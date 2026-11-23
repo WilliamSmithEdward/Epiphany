@@ -103,7 +103,7 @@ impl Access {
             .zip(at)
             .find_map(|(&dimension, &element)| {
                 let leaves =
-                    &model.dimensions()[dimension as usize].elements[element as usize].leaves;
+                    model.dimensions()[dimension as usize].elements[element as usize].leaves();
                 let unwritable = leaves.iter().map(|&(leaf, _)| leaf);
                 let mut unwritable =
                     unwritable.filter(|&leaf| self.of(dimension, leaf) < Permit::Write);

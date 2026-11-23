@@ -531,9 +531,8 @@ pub struct Element {
     pub parents: Vec<ElementId>,
     /// Zero for a leaf, otherwise one more than the highest child level.
     pub level: u32,
-    /// The numeric leaves this element aggregates and the net weight of each, ordered by id.
-    /// A leaf lists itself with weight one.
-    pub leaves: Vec<(ElementId, f64)>,
+    /// What the element counts, by [`Element::leaves`].
+    leaves: LeafWeights,
     /// One value per attribute of the dimension, in [`Dimension::attributes`] order. A
     /// picklist is the dimension's, by [`Dimension::picklist`]: few elements have one.
     pub attributes: Vec<Option<Scalar>>,
@@ -546,7 +545,24 @@ struct Names<'a> {
     attributes: &'a HashMap<String, u32>,
 }
 
+/// What an element counts: a leaf, itself, with weight one, kept in place, as most elements are
+/// leaves and a model may have a million; a consolidation, the numeric leaves beneath it.
+#[derive(Debug)]
+enum LeafWeights {
+    Itself([(ElementId, f64); 1]),
+    Many(Box<[(ElementId, f64)]>),
+}
+
 impl Element {
+    /// The numeric leaves this element aggregates and the net weight of each, ordered by id.
+    /// A leaf lists itself with weight one.
+    pub fn leaves(&self) -> &[(ElementId, f64)] {
+        match &self.leaves {
+            LeafWeights::Itself(itself) => itself,
+            LeafWeights::Many(many) => many,
+        }
+    }
+
     /// Compiles element `id`. `taken` holds, for each element, the last to take it as a child.
     fn compile(
         def: &ElementDef,
@@ -638,7 +654,7 @@ impl Element {
             children,
             parents: Vec::new(),
             level: 0,
-            leaves: Vec::new(),
+            leaves: LeafWeights::Many(Box::default()),
             attributes: values,
         })
     }
@@ -684,11 +700,13 @@ fn roll_up(
         Mark::New => marks[id] = Mark::Open,
     }
 
+    if elements[id].children.is_empty() {
+        elements[id].leaves = LeafWeights::Itself([(id as ElementId, 1.0)]);
+        marks[id] = Mark::Done;
+        return Ok(());
+    }
     let mut level = 0;
     let mut leaves = Vec::new();
-    if elements[id].children.is_empty() {
-        leaves.push((id as ElementId, 1.0));
-    }
     for index in 0..elements[id].children.len() {
         let (child, weight) = elements[id].children[index];
         roll_up(elements, marks, child as usize, dimension, above + 1)?;
@@ -696,7 +714,7 @@ fn roll_up(
         level = level.max(child.level + 1);
         if child.kind != ElementType::Text {
             let weighed = child
-                .leaves
+                .leaves()
                 .iter()
                 .map(|&(leaf, each)| (leaf, weight * each));
             leaves.extend(weighed);
@@ -725,7 +743,7 @@ fn roll_up(
     }
     let element = &mut elements[id];
     element.level = level;
-    element.leaves = leaves;
+    element.leaves = LeafWeights::Many(leaves.into_boxed_slice());
     marks[id] = Mark::Done;
     Ok(())
 }

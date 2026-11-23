@@ -174,7 +174,7 @@ impl Evaluator<'_> {
                 let Id::Element(id) = *id else {
                     return Ok(None);
                 };
-                for &(leaf, _) in &elements[id as usize].leaves {
+                for &(leaf, _) in elements[id as usize].leaves() {
                     let above = leaves[leaf as usize].get_or_insert_default();
                     if own.contains(&position) {
                         above.push(index as u32);

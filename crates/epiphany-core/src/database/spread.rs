@@ -106,7 +106,7 @@ impl Database {
             let element = |(&d, &e): (&u32, &ElementId)| {
                 &self.model.dimensions()[d as usize].elements[e as usize]
             };
-            pairs.map(|pair| element(pair).leaves.as_slice()).collect()
+            pairs.map(|pair| element(pair).leaves()).collect()
         };
         let leaves = leaves_of(&at);
         // A leaf is held where it lies beneath a cell held, in every dimension.

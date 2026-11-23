@@ -288,10 +288,7 @@ impl<'a> Reader<'a> {
         if definition.rules.is_empty() {
             return Some(true);
         }
-        let leaves: Vec<Leaves> = self
-            .elements(definition, at)
-            .map(|e| e.leaves.as_slice())
-            .collect();
+        let leaves: Vec<Leaves> = self.elements(definition, at).map(|e| e.leaves()).collect();
         let covered = definition
             .rules
             .iter()
@@ -508,10 +505,7 @@ impl<'a> Reader<'a> {
     /// Adds up a consolidated cell that no rule has decided.
     fn consolidate(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {
         let definition = &self.model.cubes()[cube];
-        let leaves: Vec<Leaves> = self
-            .elements(definition, at)
-            .map(|e| e.leaves.as_slice())
-            .collect();
+        let leaves: Vec<Leaves> = self.elements(definition, at).map(|e| e.leaves()).collect();
         let leaf_rules = || definition.rules.iter().filter(|rule| rule.decides_leaves());
         if !self.reached(definition, &leaves) {
             return Ok(self.stored(cube, at));
@@ -571,7 +565,7 @@ impl<'a> Reader<'a> {
     fn beneath(&self, cube: &Cube, cells: &[&[ElementId]]) -> Option<Vec<Vec<(ElementId, f64)>>> {
         let mut one_by_one = 0usize;
         for &at in cells {
-            let mut leaves = self.elements(cube, at).map(|e| e.leaves.len());
+            let mut leaves = self.elements(cube, at).map(|e| e.leaves().len());
             let visits = leaves.try_fold(1usize, usize::checked_mul);
             one_by_one = one_by_one.saturating_add(visits.unwrap_or(usize::MAX));
         }
@@ -581,7 +575,7 @@ impl<'a> Reader<'a> {
             let elements: FxHashSet<ElementId> = cells.iter().map(|at| at[position]).collect();
             let mut leaves: Vec<(ElementId, f64)> = elements
                 .into_iter()
-                .flat_map(|element| &dimension[element as usize].leaves)
+                .flat_map(|element| dimension[element as usize].leaves())
                 .map(|&(leaf, _)| (leaf, 1.0))
                 .collect();
             leaves.sort_unstable_by_key(|&(leaf, _)| leaf);
@@ -654,7 +648,7 @@ fn within(model: &Model, cube: &Cube, area: &[Option<ElementId>], at: &[ElementI
     let fits = |(position, (wanted, &element)): (usize, (&Option<ElementId>, &ElementId))| {
         let dimension = &model.dimensions()[cube.dimensions[position] as usize];
         wanted.is_none_or(|wanted| {
-            let beneath = &dimension.elements[wanted as usize].leaves;
+            let beneath = dimension.elements[wanted as usize].leaves();
             wanted == element || beneath.iter().any(|&(leaf, _)| leaf == element)
         })
     };
@@ -678,7 +672,7 @@ pub(crate) fn feed(model: &Model, cells: &[Cells], pending: Option<&[Writes]>) -
     }
     let leaves = |cube: &Cube, position: usize, element: ElementId| -> Leaves {
         let dimension = &model.dimensions()[cube.dimensions[position] as usize];
-        &dimension.elements[element as usize].leaves
+        dimension.elements[element as usize].leaves()
     };
     let mut count = 0;
     while let Some((id, at)) = active.pop() {

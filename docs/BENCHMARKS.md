@@ -301,6 +301,13 @@ element, and an element takes 128 bytes, 32 MB less for a dimension of a million
 is as quick, if anything quicker: best of three, alternated, 36, 594 and 592 ms before and 34,
 579 and 592 ms after for the three dimensions above (2026-11-23).
 
+A leaf's leaves are itself, with weight one, yet each leaf kept them in a list of its own, a
+small allocation for every leaf of a model. That one leaf is now kept in place, and only a
+consolidation's leaves in a list. Best of three, alternated, the three dimensions compile in
+31, 530 and 532 ms rather than 33, 577 and 581, and a million leaves allocate a million
+times less; reading cells is unchanged, a consolidation by combinations 38.9 µs against 39.6
+(2026-11-23).
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions

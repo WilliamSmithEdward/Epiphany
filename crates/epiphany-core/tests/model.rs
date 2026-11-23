@@ -39,7 +39,7 @@ fn names(dimension: &Dimension, ids: &[u32]) -> Vec<String> {
 fn leaves(dimension: &Dimension, element: &str) -> Vec<(String, f64)> {
     let element = dimension.element(element).expect("element exists");
     element
-        .leaves
+        .leaves()
         .iter()
         .map(|&(id, weight)| (dimension.elements[id as usize].name.clone(), weight))
         .collect()
