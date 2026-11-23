@@ -573,6 +573,28 @@ export function download(name, text, type = 'text/plain') {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+/**
+ * A password field with a button inside its end that shows what was typed, and hides it
+ * again: the field keeps its label and has the keys back; the button is named for what it
+ * does, pressed while the password shows.
+ */
+export function revealable(input) {
+  const toggle = h('button', {
+    class: 'reveal',
+    type: 'button',
+    'aria-label': 'Show password',
+    'aria-pressed': 'false',
+    onclick: () => {
+      const showing = input.type === 'password';
+      input.type = showing ? 'text' : 'password';
+      toggle.setAttribute('aria-pressed', String(showing));
+      toggle.replaceChildren(icon(showing ? 'eyeOff' : 'eye', 16));
+      input.focus();
+    },
+  }, icon('eye', 16));
+  return h('div', { class: 'revealable' }, input, toggle);
+}
+
 /** Puts text on the clipboard, and says so. */
 export function copyText(text) {
   navigator.clipboard?.writeText(text).then(

@@ -4,7 +4,7 @@ import { del, get, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { cellQuery, handOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, h, icon, invalid, mount, notify, when, working } from './ui.js';
+import { dialog, h, icon, invalid, mount, notify, revealable, when, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
 /** The roles an element takes: hidden, it is not there for the user at all. */
@@ -253,8 +253,8 @@ class AdminPage {
       body: h('div', { class: 'facts' },
         h('div', { class: 'field' }, h('label', { for: 'user-name' }, 'Name'), name),
         h('div', { class: 'field-pair' },
-          h('div', { class: 'field' }, h('label', { for: 'user-password' }, adding ? 'Password' : 'New password'), password),
-          h('div', { class: 'field' }, h('label', { for: 'user-again' }, 'The same again'), again)),
+          h('div', { class: 'field' }, h('label', { for: 'user-password' }, adding ? 'Password' : 'New password'), revealable(password)),
+          h('div', { class: 'field' }, h('label', { for: 'user-again' }, 'The same again'), revealable(again))),
         adding ? null : h('p', { class: 'hint' }, 'Leave the password empty to keep the one they have.'),
         h('div', { class: 'field' }, h('label', { for: 'user-role' }, 'Role'), role,
           h('span', { class: 'hint' }, 'What they may do on every cube, unless a cube below says otherwise. Only an administrator may change the model or manage users.')),

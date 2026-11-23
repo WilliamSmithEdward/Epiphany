@@ -2,7 +2,7 @@
 
 import { ApiError, api, events, get } from './api.js';
 import { marked } from './tree.js';
-import { dialog, h, icon, invalid, menu, MOD, mount, notify, when, working } from './ui.js';
+import { dialog, h, icon, invalid, menu, MOD, mount, notify, revealable, when, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
@@ -97,7 +97,7 @@ function signIn(reason) {
     },
   },
   h('div', { class: 'field' }, h('label', { for: 'name' }, 'Name'), name),
-  h('div', { class: 'field' }, h('label', { for: 'password' }, 'Password'), password),
+  h('div', { class: 'field' }, h('label', { for: 'password' }, 'Password'), revealable(password)),
   error,
   submit);
   mount(root, h('div', { class: 'sign-in' },
@@ -164,7 +164,7 @@ async function reauthenticate() {
     body: h('div', { class: 'facts' },
       h('p', { class: 'muted' }, 'Sign in again to carry on. The page stays as it was, unsaved changes and all.'),
       h('div', { class: 'field' }, h('label', { for: 'again-name' }, 'Name'), name),
-      h('div', { class: 'field' }, h('label', { for: 'again-password' }, 'Password'), password)),
+      h('div', { class: 'field' }, h('label', { for: 'again-password' }, 'Password'), revealable(password))),
     onsubmit: async () => {
       try {
         return await api('POST', '/gui/session', { name: name.value.trim(), password: password.value });

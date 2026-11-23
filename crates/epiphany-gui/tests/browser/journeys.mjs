@@ -374,6 +374,12 @@ async function signingIn({ admin }) {
   await step('A wrong password is refused, and says so', async () => {
     await page.fill('#name', admin.name);
     await page.fill('#password', 'not the password');
+    // The password typed can be shown, and hidden again, the keys back in its field.
+    const shown = `[document.querySelector('#password').type, document.querySelector('.reveal').getAttribute('aria-pressed'), document.activeElement?.id].join()`;
+    await page.click('button', 'Show password');
+    expect(await page.evaluate(shown) === 'text,true,password', `Shown, the password is ${await page.evaluate(shown)}.`);
+    await page.click('button', 'Show password');
+    expect(await page.evaluate(shown) === 'password,false,password', `Hidden again, the password is ${await page.evaluate(shown)}.`);
     await page.press('Enter');
     await page.waitFor(`document.querySelector('.error-text:not([hidden])')?.textContent.includes('do not match')`, 'the refusal');
   });

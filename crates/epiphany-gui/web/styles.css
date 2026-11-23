@@ -270,6 +270,11 @@ main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: co
 :is(.input, .select, .textarea, .button)[data-refused] { border-color: var(--bad); }
 :is(.input, .select, .textarea, .button)[data-refused]:focus { box-shadow: 0 0 0 3px var(--bad-soft); }
 input[type="checkbox"][data-refused] { outline: 2px solid var(--bad); outline-offset: 2px; }
+/* A password field and, inside its end, the button that shows what was typed. */
+.revealable { position: relative; display: flex; }
+.revealable > .input { flex: 1; min-width: 0; padding-right: 40px; }
+.revealable > .reveal { position: absolute; top: 50%; right: 4px; display: grid; place-items: center; width: 30px; height: 28px; padding: 0; border: 0; border-radius: var(--radius-s); background: none; color: var(--text-3); cursor: pointer; transform: translateY(-50%); }
+.revealable > .reveal:hover { color: var(--text); background: var(--surface-2); }
 .hint { font-size: var(--text-xs); color: var(--text-3); }
 .error-text { font-size: var(--text-s); color: var(--bad); }
 
