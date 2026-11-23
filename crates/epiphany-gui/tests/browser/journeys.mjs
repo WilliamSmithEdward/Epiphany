@@ -321,6 +321,9 @@ class Page {
 
   /** The page as it stands, checked by audit.js in the light theme and the dark. */
   async audit(what) {
+    // What the next frames draw is on the page first, such as the rows a table has in sight:
+    // a reader sees them, and the check is to see what a reader does.
+    await this.evaluate('new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))');
     const found = [];
     const was = await this.evaluate('document.documentElement.dataset.theme');
     for (const theme of ['light', 'dark']) {
@@ -1033,14 +1036,18 @@ async function exploring() {
   });
   await step('A dashboard is presented over the whole screen, the arrows going on to the next, and Escape ends it', async () => {
     const based = (await page.api('GET', '/model')).data.version;
-    const put = await page.api('PUT', '/dashboards/Notes', { based_on: based, dashboard: { name: 'Notes', tiles: [{ show: 'text', text: '# Notes\nWhat the quarter showed.' }] } });
+    const notes = { name: 'Notes', tiles: [{ show: 'text', text: '# Notes\nWhat the quarter showed.' }, { cube: 'General Ledger', view: 'Quarterly income by entity', show: 'heatmap' }] };
+    const put = await page.api('PUT', '/dashboards/Notes', { based_on: based, dashboard: notes });
     expect(put.status === 200, `A second dashboard was not kept: ${quoted(put.data)}`);
     await page.goto('/dashboards?name=Quarter');
     await page.click('button', 'Present');
     await page.waitFor(`document.querySelector('.dashboard.presenting') && getComputedStyle(document.querySelector('.nav')).display === 'none'`, 'the dashboard, presented alone');
+    // Its grid's cells are judged in the rule's colour, so their rows are waited for.
+    await page.waitFor(`document.querySelector('.dashboard.presenting .tile-table .tile-row:not(.head) .tone-good')`, 'the grid, in the rule\'s colour');
     await page.audit('A dashboard, presented');
     await page.press('ArrowRight');
-    await page.waitFor(`location.search === '?name=Notes' && document.querySelector('.dashboard.presenting .text-tile')`, 'the next dashboard, presented');
+    await page.waitFor(`location.search === '?name=Notes' && document.querySelector('.dashboard.presenting .text-tile') && document.querySelector('.tile-table.heat .shade')`, 'the next dashboard, presented, its heatmap shaded');
+    await page.audit('A heatmap, presented');
     await page.press('Escape');
     await page.waitFor(`!document.querySelector('.dashboard.presenting') && getComputedStyle(document.querySelector('.nav')).display !== 'none'`, 'the dashboard, no longer presented');
   });

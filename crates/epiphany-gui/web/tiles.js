@@ -163,10 +163,8 @@ function heatShades(rowTuples, count, value) {
   return (cell, r, c, number) => {
     const [low, high] = range(r);
     if (typeof number !== 'number' || !(high > low)) return;
-    const shade = (number - low) / (high - low);
     cell.classList.add('shade');
-    cell.classList.toggle('deep', shade > 0.6);
-    cell.style.setProperty('--shade', shade.toFixed(3));
+    cell.style.setProperty('--shade', ((number - low) / (high - low)).toFixed(3));
   };
 }
 
