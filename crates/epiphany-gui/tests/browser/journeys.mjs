@@ -1213,6 +1213,32 @@ async function changingTheModel() {
     await page.waitFor(`[...document.querySelectorAll('.element-row.match')].map((row) => row.dataset.name).join() === 'FR'`, 'FR, found');
     await page.clear('input[placeholder="Find an element"]');
   });
+  await step('An earlier version of the model is compared with the model as it is', async () => {
+    await page.click('button', 'Earlier versions of the model');
+    await page.click('dialog[open] .history-list button');
+    // The newest earlier version is the model before FR was added: Entity alone differs.
+    await page.waitFor(`document.querySelector('dialog[open] .plain-list')?.textContent === 'Dimensions put back as they were: Entity'`, 'the comparison');
+    await page.press('Escape');
+    await page.waitFor(`!document.querySelector('dialog[open]')`, 'the comparison, closed');
+  });
+  await step('A text element\'s picklist offers another dimension\'s elements, or one of its subsets', async () => {
+    const choose = (css, value) => page.evaluate(`(() => {
+      const select = document.querySelector(${quoted(css)});
+      select.value = ${quoted(value)};
+      select.dispatchEvent(new Event('change'));
+    })()`);
+    await page.click('[role="treeitem"][data-name="FR"]');
+    await page.waitFor(`document.querySelector('#element-name')?.value === 'FR'`, 'FR, chosen');
+    await choose('#element-type', 'string');
+    await page.waitFor(`document.querySelector('#picklist-kind')`, 'the picklist');
+    await choose('#picklist-kind', 'members');
+    await page.waitFor(`document.querySelector('.field-pair select')`, 'the dimension to offer');
+    await choose('.field-pair select', 'Period');
+    const offered = `[...document.querySelectorAll('.field-pair select:last-of-type option')].map((option) => option.textContent).join()`;
+    await page.waitFor(`${offered} === 'Every element,The subset First half,The subset Months,The subset Quarters'`, 'Period\'s subsets, offered');
+    await page.click('button', 'Discard');
+    await page.waitFor(`!document.querySelector('.pending:not([hidden])') && !document.querySelector('#picklist-kind')`, 'the change, discarded');
+  });
 }
 
 async function administering({ reader }) {

@@ -163,6 +163,7 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_model, put_model))
         .routes(routes!(get_outline))
         .routes(routes!(get_dimension, put_dimension, delete_dimension))
+        .routes(routes!(get_dimension_definition))
         .routes(routes!(get_cube, put_cube, delete_cube))
         .routes(routes!(read_cells))
         .routes(routes!(write_cells))
@@ -1021,7 +1022,8 @@ struct LockRequest {
     mode: LockMode,
 }
 
-/// A dimension as the outline of the model gives it: by its name, type and size.
+/// A dimension as the outline of the model gives it: by its name, type and size, and the
+/// names of its subsets.
 #[derive(Serialize, ToSchema)]
 struct DimensionOutline {
     name: String,
@@ -1029,6 +1031,8 @@ struct DimensionOutline {
     kind: DimensionType,
     /// How many elements it has.
     element_count: usize,
+    /// The names of its subsets, in name order.
+    subsets: Vec<String>,
 }
 
 /// The model in outline: its cubes and dashboards whole, and its dimensions without their
@@ -1068,6 +1072,7 @@ async fn get_outline(
             name: dimension.name.clone(),
             kind: dimension.kind,
             element_count: count(id, dimension.elements.len()),
+            subsets: dimension.subsets.keys().cloned().collect(),
         });
     Json(ModelOutline {
         version: database.model_version(),
@@ -1136,6 +1141,36 @@ async fn put_model(
     Ok(Json(
         database.update_model(request.based_on, request.model)?,
     ))
+}
+
+/// One dimension's definition, as it is edited and put back with `PUT /dimensions/{name}`:
+/// what the model's editor asks for, rather than the whole model. The elements hidden from
+/// the user are left out, as `GET /model` leaves them out.
+#[utoipa::path(
+    get,
+    path = "/dimensions/{name}/definition",
+    params(("name" = String, Path, description = "Dimension name, ignoring case and spaces")),
+    responses(
+        (status = OK, body = DimensionDef, description = "The dimension's definition"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown dimension")
+    )
+)]
+async fn get_dimension_definition(
+    State(database): State<Shared>,
+    Extension(grants): Held,
+    Path(name): Path<String>,
+) -> Result<Json<epiphany_core::model::Shared<DimensionDef>>, ApiError> {
+    let database = database.read().unwrap();
+    let definition = database.definition();
+    let at =
+        dimension_at(&database, definition, &name).ok_or_else(|| unknown("dimension", &name))?;
+    // Shared with the model, and written out once the model is let go of; copied only to take
+    // out what the user may not see.
+    let mut dimension = definition.dimensions[at].clone();
+    if let Some(access) = access(&grants, &database) {
+        hide_elements(database.model(), &access, &mut dimension);
+    }
+    Ok(Json(dimension))
 }
 
 /// One dimension, with each element's level, parents, children and attributes.

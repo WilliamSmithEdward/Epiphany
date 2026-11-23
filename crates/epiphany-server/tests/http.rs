@@ -194,7 +194,7 @@ async fn the_outline_gives_the_model_but_its_dimensions_elements() {
     let (_, whole) = call(&app, "GET", "/model", None).await;
     let (status, outline) = call(&app, "GET", "/model/outline", None).await;
     assert_eq!(status, StatusCode::OK);
-    // Each dimension by its name, type and size; the cubes and dashboards whole.
+    // Each dimension by its name, type, size and subsets' names; the cubes and dashboards whole.
     let sized: Vec<Value> = whole["model"]["dimensions"]
         .as_array()
         .unwrap()
@@ -202,13 +202,29 @@ async fn the_outline_gives_the_model_but_its_dimensions_elements() {
         .map(|dimension| {
             let kind = dimension.get("type").cloned().unwrap_or(json!("standard"));
             let count = dimension["elements"].as_array().unwrap().len();
-            json!({ "name": dimension["name"], "type": kind, "element_count": count })
+            let subsets: Vec<&String> = dimension
+                .get("subsets")
+                .and_then(Value::as_object)
+                .map(|subsets| subsets.keys().collect())
+                .unwrap_or_default();
+            json!({ "name": dimension["name"], "type": kind, "element_count": count, "subsets": subsets })
         })
         .collect();
     assert_eq!(outline["dimensions"], json!(sized));
     assert_eq!(outline["cubes"], whole["model"]["cubes"]);
     assert_eq!(outline["dashboards"], json!([]));
     assert_eq!(outline["version"], whole["version"]);
+
+    // One dimension's definition, by its name in any case, as the model has it.
+    let (status, period) = call(&app, "GET", "/dimensions/period/definition", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let dimensions = whole["model"]["dimensions"].as_array().unwrap();
+    let named = dimensions
+        .iter()
+        .find(|dimension| dimension["name"] == "Period");
+    assert_eq!(Some(&period), named);
+    let (status, _) = call(&app, "GET", "/dimensions/Colour/definition", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -549,6 +565,12 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["cells"], json!([0.0, 25.0]));
+    // The outline names the subsets, in name order.
+    let (_, outline) = call(&app, "GET", "/model/outline", None).await;
+    assert_eq!(
+        outline["dimensions"][2]["subsets"],
+        json!(["Months", "Winter"])
+    );
 
     let (_, body) = call(&app, "GET", "/dimensions/Period", None).await;
     assert_eq!(

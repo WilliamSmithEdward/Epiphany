@@ -1464,6 +1464,15 @@ async fn a_users_roles_on_elements_hide_them_and_keep_them_from_being_changed() 
     );
     let (_, _, outline) = send(&app, "GET", "/model/outline", Some(&lin), None).await;
     assert_eq!(named(&outline["dimensions"], "Entity")["element_count"], 2);
+    let (_, _, definition) = send(
+        &app,
+        "GET",
+        "/dimensions/Entity/definition",
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!(names(&definition), ["Total Entity", "US"]);
     let (_, _, model) = send(&app, "GET", "/model", Some(&lin), None).await;
     assert_eq!(
         names(&named(&model["model"]["dimensions"], "Entity")),
@@ -1472,6 +1481,15 @@ async fn a_users_roles_on_elements_hide_them_and_keep_them_from_being_changed() 
     // No role on an element binds the administrator.
     let (_, _, entity) = send(&app, "GET", "/dimensions/Entity", Some(&admin), None).await;
     assert_eq!(names(&entity), ["Total Entity", "US", "UK"]);
+    let (_, _, definition) = send(
+        &app,
+        "GET",
+        "/dimensions/Entity/definition",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(names(&definition), ["Total Entity", "US", "UK"]);
 
     // Its cells are refused as cells of an element there is not, but totals still count them.
     let read = json!({ "cells": [

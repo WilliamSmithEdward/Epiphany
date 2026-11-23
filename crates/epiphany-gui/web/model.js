@@ -3,7 +3,7 @@
 // made from, so that nobody's change is overwritten unseen.
 
 import { del, get, part, put } from './api.js';
-import { empty, failure, go } from './app.js';
+import { empty, failure, go, loading } from './app.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
 import { choices, dialog, h, icon, invalid, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, widest, working } from './ui.js';
 
@@ -12,9 +12,9 @@ const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation'
 const CHILD_ROW = 36;
 
 export async function render(target, { params, titled }) {
-  const view = await get('/model');
-  const page = new ModelPage(target, view, params, titled);
-  return page;
+  // The model in outline: a dimension's elements are fetched as it is opened, however many.
+  const view = await get('/model/outline');
+  return new ModelPage(target, view, params, titled);
 }
 
 class ModelPage {
@@ -23,7 +23,8 @@ class ModelPage {
     this.titled = titled;
     this.target = target;
     this.version = view.version;
-    this.definition = view.model;
+    // Each dimension in outline, by its name, type, size and subsets' names; each cube whole.
+    this.definition = { dimensions: view.dimensions, cubes: view.cubes };
     this.editor = null;
     this.list = h('nav', { class: 'model-list', 'aria-label': 'Dimensions and cubes' });
     this.pane = h('section', { class: 'model-pane' });
@@ -48,10 +49,10 @@ class ModelPage {
     this.titled(this.chosen?.[1]);
     this.drawItems();
     this.editor = null;
+    this.opening = null;
+    this.element.classList.remove('editing');
     if (this.chosen) this.open(...this.chosen);
     else mount(this.pane, empty('model', 'Choose a dimension or a cube', 'Pick one from the list to edit it, or add a new one.'));
-    // Too narrow for both, the page shows the list or the one open, which leads back to it.
-    this.element.classList.toggle('editing', Boolean(this.editor));
   }
 
   /** Asked before the page is left: unsaved edits are discarded only if the user agrees. */
@@ -86,7 +87,7 @@ class ModelPage {
       mount(items,
         h('div', { class: 'model-section' }, h('span', {}, 'Dimensions'),
           h('button', { class: 'button quiet small icon', 'aria-label': 'Add a dimension', onclick: () => this.addDimension() }, icon('plus', 16))),
-        this.definition.dimensions.map((d) => entry('dimension', d.name, d.type === 'time' ? 'chart' : 'dimension', d.elements.length.toLocaleString())),
+        this.definition.dimensions.map((d) => entry('dimension', d.name, d.type === 'time' ? 'chart' : 'dimension', d.element_count.toLocaleString())),
         h('div', { class: 'model-section' }, h('span', {}, 'Cubes'),
           h('button', { class: 'button quiet small icon', 'aria-label': 'Add a cube', onclick: () => this.addCube() }, icon('plus', 16))),
         this.definition.cubes.map((c) => entry('cube', c.name, 'cube', `${c.dimensions.length}`)));
@@ -113,7 +114,21 @@ class ModelPage {
       mount(this.pane, empty('search', `There is no ${kind} called ${name}`, 'It may have been renamed or removed.'));
       return;
     }
-    this.editor = kind === 'dimension' ? new DimensionEditor(this, found) : new CubeEditor(this, found);
+    // Too narrow for both, the page shows the list or the one open, which leads back to it.
+    this.element.classList.add('editing');
+    if (kind === 'cube') {
+      this.editor = new CubeEditor(this, found);
+      return;
+    }
+    // A dimension's definition is fetched as it is opened, the pane saying so meanwhile; one
+    // chosen after it is opened in its place.
+    const opening = (this.opening = {});
+    mount(this.pane, loading('panes'));
+    get(`/dimensions/${part(name)}/definition`).then((dimension) => {
+      if (this.opening === opening) this.editor = new DimensionEditor(this, dimension);
+    }, (problem) => {
+      if (this.opening === opening) mount(this.pane, failure(problem, () => this.open(kind, name)));
+    });
   }
 
   /** Saves a change to the model; says what it did, and when the model had moved on. */
@@ -132,12 +147,18 @@ class ModelPage {
     }
   }
 
-  /** Keeps the page's copy of the model as saved, and its list current. */
+  /**
+   * Keeps the page's outline of the model as saved, and its list current: a cube whole, and a
+   * dimension by its name, type, size and subsets' names, its elements being the editor's.
+   */
   replace(kind, item) {
     const list = kind === 'cube' ? this.definition.cubes : this.definition.dimensions;
+    const kept = kind === 'cube'
+      ? structuredClone(item)
+      : { name: item.name, type: item.type ?? 'standard', element_count: item.elements.length, subsets: Object.keys(item.subsets ?? {}).sort() };
     const at = list.findIndex((entry) => entry.name === item.name);
-    if (at >= 0) list[at] = structuredClone(item);
-    else list.push(structuredClone(item));
+    if (at >= 0) list[at] = kept;
+    else list.push(kept);
     this.drawItems();
   }
 
@@ -198,18 +219,21 @@ class ModelPage {
 
   /** Shows what restoring an earlier model would change, and restores it if asked to. */
   async compare(kept, button) {
+    // The model now whole, to compare with the earlier one, which only this asks for.
     let earlier;
+    let current;
     try {
-      earlier = (await working(button, () => get(`/admin/models/${part(kept.name)}`)))?.model;
+      const both = await working(button, () => Promise.all([get(`/admin/models/${part(kept.name)}`), get('/model')]));
+      [earlier, current] = [both?.[0]?.model, both?.[1]?.model];
     } catch (problem) {
       notify(problem.message, 'bad');
       return;
     }
-    if (!earlier) return;
+    if (!earlier || !current) return;
     document.querySelector('dialog[open]')?.close();
     const said = [['dimensions', 'Dimensions'], ['cubes', 'Cubes'], ['dashboards', 'Dashboards']].flatMap(([key, label]) => {
       const byName = (list) => new Map((list ?? []).map((item) => [item.name, JSON.stringify(item)]));
-      const [now, then] = [byName(this.definition[key]), byName(earlier[key])];
+      const [now, then] = [byName(current[key]), byName(earlier[key])];
       const added = [...then.keys()].filter((name) => !now.has(name));
       const removed = [...now.keys()].filter((name) => !then.has(name));
       const changed = [...then.keys()].filter((name) => now.has(name) && now.get(name) !== then.get(name));
@@ -771,7 +795,10 @@ class DimensionEditor extends Editor {
   picklistField(element) {
     const picklist = element.picklist;
     const kind = !picklist ? '' : Array.isArray(picklist) ? 'values' : 'members';
-    const dimensions = this.page.definition.dimensions.map((dimension) => (dimension.name === this.working.name ? this.working : dimension));
+    // Each dimension in outline, with its subsets' names: this one's as it is being edited.
+    const dimensions = this.page.definition.dimensions.map((dimension) => (dimension.name === this.working.name
+      ? { name: dimension.name, subsets: Object.keys(this.working.subsets ?? {}) }
+      : dimension));
     const how = h('select', {
       class: 'select',
       id: 'picklist-kind',
@@ -815,7 +842,7 @@ class DimensionEditor extends Editor {
           },
         },
         h('option', { value: '' }, 'Every element'),
-        Object.keys(from?.subsets ?? {}).map((name) => h('option', { value: name, selected: same(name, picklist.subset) }, `The subset ${name}`))));
+        (from?.subsets ?? []).map((name) => h('option', { value: name, selected: same(name, picklist.subset) }, `The subset ${name}`))));
     }
     return h('div', { class: 'field' },
       h('label', { for: 'picklist-kind' }, 'Picklist'),

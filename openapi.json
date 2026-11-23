@@ -2675,6 +2675,65 @@
         }
       }
     },
+    "/dimensions/{name}/definition": {
+      "get": {
+        "summary": "One dimension's definition, as it is edited and put back with `PUT /dimensions/{name}`:\nwhat the model's editor asks for, rather than the whole model. The elements hidden from\nthe user are left out, as `GET /model` leaves them out.",
+        "operationId": "get_dimension_definition",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Dimension name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dimension's definition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DimensionDef"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, or the session has ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dimension",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/mdx": {
       "post": {
         "summary": "Answers an MDX query.",
@@ -4137,11 +4196,12 @@
       },
       "DimensionOutline": {
         "type": "object",
-        "description": "A dimension as the outline of the model gives it: by its name, type and size.",
+        "description": "A dimension as the outline of the model gives it: by its name, type and size, and the\nnames of its subsets.",
         "required": [
           "name",
           "type",
-          "element_count"
+          "element_count",
+          "subsets"
         ],
         "properties": {
           "element_count": {
@@ -4151,6 +4211,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "subsets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of its subsets, in name order."
           },
           "type": {
             "$ref": "#/components/schemas/DimensionType"
