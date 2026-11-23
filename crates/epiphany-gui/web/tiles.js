@@ -5,7 +5,7 @@
 
 import { empty } from './app.js';
 import { chart, shape, sparkline } from './chart.js';
-import { highlighter } from './grid.js';
+import { highlighter, toneOf } from './grid.js';
 import { Rows } from './tree.js';
 import { formatValue, h, shownText, textWidths } from './ui.js';
 
@@ -33,7 +33,7 @@ const label = (tuple) => tuple.map((m) => m.name).join(' · ');
 export function present(result, tile, view, { pick = null, picked = null, fresh = true } = {}) {
   const how = tile.show ?? 'bars';
   const format = view?.format;
-  if (how === 'figure') return figure(result, format);
+  if (how === 'figure') return figure(result, format, view?.highlights);
   if (how === 'grid' || how === 'heatmap') return table(result, { format, highlights: view?.highlights, heat: how === 'heatmap', pick, picked });
   const data = shape(result, Boolean(tile.by_columns));
   if (!data.series.some((entry) => entry.values.some((value) => value !== null))) {
@@ -53,8 +53,10 @@ export function present(result, tile, view, { pick = null, picked = null, fresh 
 /**
  * The latest value of the first row, large, with its change from the value before it and the
  * row's trend beneath: the row is taken to run through time, as a key figure's mostly does.
+ * It takes the colour of the first of the view's highlight rules it meets, as its cell would
+ * in the grid: green at or above a target, say.
  */
-function figure(result, format) {
+function figure(result, format, highlights) {
   const [columns, rows] = result.axes;
   const columnTuples = columns?.tuples ?? [];
   const row = columnTuples.map((_, c) => (typeof result.cells[c] === 'number' ? result.cells[c] : null));
@@ -73,8 +75,9 @@ function figure(result, format) {
       h('span', { 'aria-hidden': 'true' }, by > 0 ? '▲' : by < 0 ? '▼' : '='),
       h('span', {}, `${said} from ${label(columnTuples[before.c])}`));
   }
+  const tone = toneOf(highlights, value);
   return h('div', { class: 'figure' },
-    h('div', { class: `figure-value${typeof value === 'number' && value < 0 ? ' negative' : ''}` }, value === null || value === undefined ? '–' : latest ? formatValue(value, format) : shownText(result, 0, format)),
+    h('div', { class: `figure-value${tone ? ` tone-${tone}` : typeof value === 'number' && value < 0 ? ' negative' : ''}` }, value === null || value === undefined ? '–' : latest ? formatValue(value, format) : shownText(result, 0, format)),
     h('div', { class: 'muted figure-name' }, name),
     change,
     known.length > 1 ? h('div', { class: 'figure-trend' }, sparkline(row), h('span', { class: 'muted' }, `${label(columnTuples[0])} to ${label(columnTuples.at(-1))}`)) : null);

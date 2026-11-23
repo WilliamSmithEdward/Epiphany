@@ -902,7 +902,10 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 /* A key figure, as large as its tile allows. */
 .figure { display: flex; flex-direction: column; justify-content: center; gap: var(--s1); flex: 1; min-height: 0; }
 .figure-value { font-size: clamp(20px, min(22cqmin, 13cqi), 120px); line-height: 1.05; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-.figure-value.negative { color: var(--bad); }
+.figure-value.negative, .figure-value.tone-bad { color: var(--bad); }
+.figure-value.tone-good { color: var(--good); }
+.figure-value.tone-warn { color: var(--warn); }
+.figure-value.tone-accent { color: var(--accent-text); }
 .figure-name { font-size: var(--text-s); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .figure-change { display: flex; align-items: center; gap: 6px; font-size: var(--text-s); color: var(--text-2); font-variant-numeric: tabular-nums; }
 .figure-trend { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s1); min-width: 0; }
@@ -986,6 +989,13 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
   .dash-work { flex-direction: column-reverse; align-items: stretch; }
   .dash-drawer { position: static; width: auto; max-height: 45vh; }
 }
+
+/* Presenting: the dashboard alone over the whole screen, or the whole window where the
+   browser allows no more, with what only works it put away. */
+body:has(.dashboard.presenting) .shell { grid-template: "main" 1fr / 1fr; }
+body:has(.dashboard.presenting) :is(.bar, .nav) { display: none; }
+.main:fullscreen { background: var(--bg); }
+.dashboard.presenting :is(.tile-head .button, .tile-corner) { display: none; }
 
 /* A tile shown over the whole page, the dashboard dimmed beneath it. */
 .board > .dash-tile.focused { position: fixed; z-index: 70 !important; left: 3vw; top: calc(var(--bar) + 3vh); width: 94vw; height: calc(100vh - var(--bar) - 6vh); box-shadow: var(--shadow-3); transition: none; animation: pop .16s var(--ease); }

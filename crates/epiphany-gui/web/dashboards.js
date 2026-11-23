@@ -299,9 +299,10 @@ class Dashboards {
       shown.tiles.length || editing
         ? this.board
         : h('div', { class: 'card' }, empty('dashboard', 'No tiles yet', 'An administrator adds tiles that show saved views.')));
-    mount(this.target, h('div', { class: `page dashboard${editing ? ' editing' : ''}${this.adding ? ' adding' : ''}`, onkeydown: (event) => this.key(event) },
-      this.list().length > 1 && !editing ? tabs : null,
-      h('div', { class: 'page-head' }, head, h('div', { class: 'toolbar' }, editing ? this.editActions(shown) : this.viewActions())),
+    const presenting = this.presenting && !editing;
+    mount(this.target, h('div', { class: `page dashboard${editing ? ' editing' : ''}${this.adding ? ' adding' : ''}${presenting ? ' presenting' : ''}`, onkeydown: (event) => this.key(event) },
+      this.list().length > 1 && !editing && !presenting ? tabs : null,
+      h('div', { class: 'page-head' }, head, h('div', { class: 'toolbar' }, editing ? this.editActions(shown) : presenting ? this.presentActions() : this.viewActions())),
       this.drawFilters(shown),
       h('div', { class: 'dash-work' }, frame, this.adding ? this.drawer() : null),
       h('p', { class: 'visually-hidden', id: 'tile-keys' }, 'The arrow keys move the tile, and with Shift make it larger or smaller; Enter opens its options, and Delete removes it.'),
@@ -311,6 +312,8 @@ class Dashboards {
     this.everyMinutes();
     const card = this.cards[holding];
     if (card) (held && card.querySelector(held) || card.querySelector('.tile-head .button') || card).focus({ preventScroll: true });
+    // Presented, the keys stay on the page, for the arrows to go on from one dashboard to the next.
+    else if (presenting && !this.target.contains(document.activeElement)) this.target.querySelector('.page-head .toolbar .button')?.focus({ preventScroll: true });
   }
 
   /** The buttons over a dashboard shown: when it was run, Refresh and its pace, and for an administrator, Edit, New and Delete. */
@@ -334,10 +337,74 @@ class Dashboards {
           this.everyMinutes();
         },
       }, EVERY.map(([minutes, text]) => h('option', { value: minutes, selected: minutes === pace }, text))),
+      h('button', { class: 'button', title: 'Show the dashboard over the whole screen, as on a wall', onclick: () => this.present(true) }, icon('monitor', 16), 'Present'),
       this.admin ? h('button', { class: 'button', onclick: () => this.edit() }, icon('edit', 16), 'Edit') : null,
       this.admin ? h('button', { class: 'button', onclick: () => this.create() }, icon('plus', 16), 'New') : null,
       this.admin ? h('button', { class: 'button danger quiet', onclick: () => this.remove() }, icon('trash', 16), 'Delete') : null,
     ];
+  }
+
+  /**
+   * The buttons over a dashboard presented: to the one before and the next, each by itself in
+   * turn, and the end. Escape ends it too, and the arrow keys go along.
+   */
+  presentActions() {
+    const list = this.list();
+    const several = list.length > 1;
+    const at = list.findIndex((dashboard) => dashboard.name === this.name);
+    return [
+      several ? h('button', { class: 'button quiet icon', 'aria-label': 'The dashboard before (Left arrow)', title: 'The dashboard before', onclick: () => this.step(-1) }, icon('back', 16)) : null,
+      several ? h('span', { class: 'muted' }, `${at + 1} of ${list.length}`) : null,
+      several ? h('button', { class: 'button quiet icon', 'aria-label': 'The next dashboard (Right arrow)', title: 'The next dashboard', onclick: () => this.step(1) }, icon('chevron', 16)) : null,
+      several ? h('button', {
+        class: 'button small quiet',
+        'aria-pressed': String(Boolean(this.advancing)),
+        title: 'Go on to the next dashboard every 30 seconds, as a screen on a wall does',
+        onclick: () => {
+          if (this.advancing) {
+            clearInterval(this.advancing);
+            this.advancing = null;
+          } else {
+            this.advancing = setInterval(() => (this.board?.isConnected && this.presenting ? this.step(1) : clearInterval(this.advancing)), 30_000);
+          }
+          this.draw();
+        },
+      }, icon('play', 14), 'Every 30 seconds') : null,
+      h('button', { class: 'button', onclick: () => this.present(false) }, icon('unfocus', 16), 'End'),
+    ];
+  }
+
+  /**
+   * Presents the dashboard over the whole screen, or ends it: the screen's own, where the
+   * browser allows, and the page's otherwise. Leaving the browser's whole screen ends it.
+   */
+  async present(on) {
+    this.presenting = on;
+    if (!on) {
+      clearInterval(this.advancing);
+      this.advancing = null;
+    }
+    this.draw();
+    if (on) {
+      this.target.querySelector('.page-head .toolbar .button:last-child')?.focus();
+      if (!document.fullscreenElement) await this.target.requestFullscreen?.().catch(() => {});
+      this.leaving ??= () => {
+        if (!document.fullscreenElement && this.presenting && this.board?.isConnected) this.present(false);
+      };
+      document.addEventListener('fullscreenchange', this.leaving);
+    } else {
+      document.removeEventListener('fullscreenchange', this.leaving);
+      if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+    }
+    announce(on ? `Presenting ${this.name}. The arrow keys go from one dashboard to the next, and Escape ends it.` : 'No longer presenting');
+  }
+
+  /** Goes to the dashboard `by` places along, round from the last to the first. */
+  step(by) {
+    const list = this.list();
+    const at = list.findIndex((dashboard) => dashboard.name === this.name);
+    const next = list[(at + by + list.length) % list.length];
+    if (next && next.name !== this.name) go(`/dashboards?name=${encodeURIComponent(next.name)}`);
   }
 
   /** The buttons over a dashboard being edited: back and again, how it is laid out, adding tiles, Cancel and Save. */
@@ -512,12 +579,22 @@ class Dashboards {
     this.cards?.[index ?? was]?.querySelector('.tile-head .button, .tile-corner .button')?.focus({ preventScroll: true });
   }
 
+  /**
+   * The page's keys: Escape puts back a tile shown over the page, then what was picked, then
+   * ends presenting; presented, the arrows go from one dashboard to the next, but in a chart or
+   * a table, which they go along; edited, Ctrl Z and Ctrl Y take a change back and make it again.
+   */
   key(event) {
     if (event.target.closest('input, textarea, select')) return;
-    if (event.key === 'Escape' && (this.focused !== null || this.selection) && !document.querySelector('dialog[open], .menu')) {
+    const presenting = this.presenting && !this.editing;
+    if (event.key === 'Escape' && (this.focused !== null || this.selection || presenting) && !document.querySelector('dialog[open], .menu')) {
       event.preventDefault();
       if (this.focused !== null) this.focus(null);
-      else this.select(null);
+      else if (this.selection) this.select(null);
+      else this.present(false);
+    } else if (presenting && (event.key === 'ArrowLeft' || event.key === 'ArrowRight') && !event.target.closest('.chart-plot, .tile-table')) {
+      event.preventDefault();
+      this.step(event.key === 'ArrowRight' ? 1 : -1);
     } else if (this.editing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') {
       event.preventDefault();
       if (event.shiftKey) this.redo();

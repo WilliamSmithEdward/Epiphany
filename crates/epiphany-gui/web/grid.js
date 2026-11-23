@@ -11,6 +11,15 @@ import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, noti
 /** The most cells a grid draws whole for printing: every row draws all its columns. */
 const PRINTED = 200_000;
 
+/** How a highlight rule tests a number against its value. */
+const TESTS = { above: (a, b) => a > b, at_least: (a, b) => a >= b, below: (a, b) => a < b, at_most: (a, b) => a <= b, equals: (a, b) => a === b };
+
+/** The tone of the first of a view's highlight rules a number meets, as 'good' or 'bad'; null where it meets none. */
+export function toneOf(highlights, number) {
+  if (typeof number !== 'number') return null;
+  return highlights?.rules?.find((rule) => TESTS[rule.test]?.(number, rule.value))?.tone ?? null;
+}
+
 /**
  * What a view's highlights do to a cell of its grid, or null when it has none: a bar as
  * long as the number's share of the largest in its column, a shade from the column's lowest
@@ -35,7 +44,6 @@ export function highlighter(highlights, rows, columns, value, total) {
     }
     return { low, high, widest };
   });
-  const tests = { above: (a, b) => a > b, at_least: (a, b) => a >= b, below: (a, b) => a < b, at_most: (a, b) => a <= b, equals: (a, b) => a === b };
   return (td, r, c, number) => {
     if (typeof number !== 'number') return;
     const { low, high, widest } = ranges[c];
@@ -48,8 +56,8 @@ export function highlighter(highlights, rows, columns, value, total) {
       td.classList.add('shade');
       td.style.setProperty('--shade', ((number - low) / (high - low)).toFixed(3));
     }
-    const rule = highlights.rules?.find((each) => tests[each.test]?.(number, each.value));
-    if (rule) td.classList.add(`tone-${rule.tone}`);
+    const tone = toneOf(highlights, number);
+    if (tone) td.classList.add(`tone-${tone}`);
   };
 }
 

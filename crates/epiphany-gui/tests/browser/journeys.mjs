@@ -1008,6 +1008,30 @@ async function exploring() {
     await page.press('Escape');
     await page.waitFor(`!document.querySelector('.dash-tile.focused')`, 'the dashboard, back');
   });
+  await step('A key figure takes the colour of the first of its view\'s rules its value meets', async () => {
+    // The view coloured green at nought or more, as a target met.
+    const { data } = await page.api('GET', '/model');
+    const cube = data.model.cubes.find((each) => each.name === 'General Ledger');
+    const view = cube.views['Quarterly income by entity'];
+    cube.views['Quarterly income by entity'] = { ...view, highlights: { rules: [{ test: 'at_least', value: 0, tone: 'good' }] } };
+    const put = await page.api('PUT', '/cubes/General%20Ledger', { based_on: data.version, cube });
+    expect(put.status === 200, `The view's rule was not kept: ${quoted(put.data)}`);
+    await page.goto('/dashboards?name=Quarter');
+    await page.waitFor(`document.querySelector('.figure-value.tone-good')`, 'the key figure, in the rule\'s colour');
+  });
+  await step('A dashboard is presented over the whole screen, the arrows going on to the next, and Escape ends it', async () => {
+    const based = (await page.api('GET', '/model')).data.version;
+    const put = await page.api('PUT', '/dashboards/Notes', { based_on: based, dashboard: { name: 'Notes', tiles: [{ show: 'text', text: '# Notes\nWhat the quarter showed.' }] } });
+    expect(put.status === 200, `A second dashboard was not kept: ${quoted(put.data)}`);
+    await page.goto('/dashboards?name=Quarter');
+    await page.click('button', 'Present');
+    await page.waitFor(`document.querySelector('.dashboard.presenting') && getComputedStyle(document.querySelector('.nav')).display === 'none'`, 'the dashboard, presented alone');
+    await page.audit('A dashboard, presented');
+    await page.press('ArrowRight');
+    await page.waitFor(`location.search === '?name=Notes' && document.querySelector('.dashboard.presenting .text-tile')`, 'the next dashboard, presented');
+    await page.press('Escape');
+    await page.waitFor(`!document.querySelector('.dashboard.presenting') && getComputedStyle(document.querySelector('.nav')).display !== 'none'`, 'the dashboard, no longer presented');
+  });
   await step('At a phone\'s width no page is wider than the screen, the grid shows on the first, and a name cut short shows whole', async () => {
     // A phone widens the page to what it holds and draws it smaller: the screen is the measure.
     const phone = { width: 390, height: 844 };
