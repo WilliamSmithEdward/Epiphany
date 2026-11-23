@@ -610,8 +610,10 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .element-detail .card-head { border-bottom: 1px solid var(--line); }
 .json-card { flex: 1; min-height: 0; }
 .json-card .json-editor { flex: 1; resize: none; }
-.child-list { display: flex; flex-direction: column; gap: 4px; }
-.child-row { display: flex; align-items: center; gap: var(--s2); }
+/* A consolidation's children, drawn as they come into view: each row its controls and a gap. */
+.child-list { position: relative; max-height: min(60vh, 540px); overflow: auto; }
+.child-list .rows > * { height: 36px; }
+.child-row { display: flex; align-items: center; gap: var(--s2); padding-bottom: 4px; }
 .child-row .grow { flex: 1; }
 .input.weight { width: 90px; height: var(--control-small); text-align: right; }
 .attribute-row { display: grid; grid-template-columns: 160px 1fr; align-items: center; gap: var(--s3); }
@@ -1273,7 +1275,7 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
   .editor-head .segmented, .tree-tools, .table .actions { display: none !important; }
   html, body, .shell, .main, .explorer, .work, .output-row, .output { display: block; }
   html, body, .shell, .main, .page, .explorer, .work, .output-row, .output, .pivot-scroll, .tile-table,
-  .mdx-pane, .chart-pane, .editor-body, .element-tree, .element-detail, .card.fit {
+  .mdx-pane, .chart-pane, .editor-body, .element-tree, .element-detail, .child-list, .card.fit {
     height: auto !important; max-height: none !important; overflow: visible !important;
   }
   .work-head { border: 0; padding: 0 0 var(--s3); }

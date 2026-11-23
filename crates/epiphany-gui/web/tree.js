@@ -18,8 +18,8 @@ export const INDENT = 18;
  * them, which are `context` unless they match too; a match that is opened shows every
  * child. `position` and `siblings` place a row among the rows shown beside it.
  */
-export function treeRows({ roots, children, open, matches = null }) {
-  const leads = leadsTo(children, matches);
+export function treeRows({ roots, children, open, matches = null, parents = null }) {
+  const leads = parents && matches ? climbedTo(parents, matches) : leadsTo(children, matches);
   const rows = [];
   const visit = (name, parent, depth, trail, whole) => {
     if (trail.has(name)) return;
@@ -45,8 +45,25 @@ export function treeRows({ roots, children, open, matches = null }) {
   return { rows };
 }
 
-/** The members to open so that every match shows: each with a match beneath it. */
-export function reveal({ roots, children, matches }) {
+/**
+ * The members to open so that every match shows: each with a match beneath it. Where each
+ * member's `parents` are known, those above the matches, climbed to from them alone: a search
+ * of a million elements need not look beneath every one. Where members are beneath themselves,
+ * as no saved hierarchy is, the climb opens a member of the loop the walk down leaves shut.
+ */
+export function reveal({ roots, children, matches, parents = null }) {
+  if (parents) {
+    const open = new Set();
+    const climb = (name) => {
+      for (const parent of parents(name)) {
+        if (open.has(parent)) continue;
+        open.add(parent);
+        climb(parent);
+      }
+    };
+    for (const name of matches) climb(name);
+    return open;
+  }
   const leads = leadsTo(children, matches);
   const open = new Set();
   const visit = (name) => {
@@ -58,6 +75,12 @@ export function reveal({ roots, children, matches }) {
   };
   for (const root of roots) if (leads(root)) visit(root);
   return open;
+}
+
+/** Whether a member is a match or above one: the members above them climbed to from the matches. */
+function climbedTo(parents, matches) {
+  const above = reveal({ matches, parents });
+  return (name) => matches.has(name) || above.has(name);
 }
 
 /** Whether a member, or any beneath it, is a match: worked out once for each. */
@@ -117,14 +140,15 @@ const PRINTED = 10_000;
 
 /**
  * The rows of a long list, drawn only where they can be seen in `scroller`, so that a list of
- * any length shows at once and scrolls smoothly. Every row is `ROW` pixels tall; `draw(index)`
+ * any length shows at once and scrolls smoothly. Every row is `row` pixels tall, `ROW` unless said; `draw(index)`
  * makes a row's element. The row holding the focus is kept, wherever it is, so that the keys
  * stay on it as the list scrolls. `covered()` is how much of the scroller's top a heading
  * pinned there hides.
  */
 export class Rows {
-  constructor(scroller, draw, { covered = () => 0 } = {}) {
+  constructor(scroller, draw, { covered = () => 0, row = ROW } = {}) {
     this.scroller = scroller;
+    this.row = row;
     this.draw = draw;
     this.covered = covered;
     this.count = 0;
@@ -148,13 +172,13 @@ export class Rows {
     for (const element of this.drawn.values()) element.remove();
     this.drawn.clear();
     this.count = count;
-    this.element.style.height = `${count * ROW}px`;
+    this.element.style.height = `${count * this.row}px`;
     this.update();
   }
 
   /** How many rows the scroller shows at once. */
   get page() {
-    return Math.max(1, Math.floor(this.scroller.clientHeight / ROW) - 1);
+    return Math.max(1, Math.floor(this.scroller.clientHeight / this.row) - 1);
   }
 
   /**
@@ -169,8 +193,8 @@ export class Rows {
   update() {
     if (!this.element.isConnected) return;
     const top = this.scroller.scrollTop - this.offset();
-    const first = Math.max(0, Math.floor(top / ROW) - 8);
-    const last = Math.min(this.count, Math.ceil((top + this.scroller.clientHeight) / ROW) + 8);
+    const first = Math.max(0, Math.floor(top / this.row) - 8);
+    const last = Math.min(this.count, Math.ceil((top + this.scroller.clientHeight) / this.row) + 8);
     for (const [index, element] of this.drawn) {
       if ((index < first || index >= last) && !element.contains(document.activeElement)) {
         element.remove();
@@ -198,7 +222,7 @@ export class Rows {
         continue;
       }
       const element = this.draw(index);
-      element.style.top = `${index * ROW}px`;
+      element.style.top = `${index * this.row}px`;
       this.element.insertBefore(element, next);
       this.drawn.set(index, element);
     }
@@ -207,7 +231,7 @@ export class Rows {
   /** Draws a row in its place, among the others in order, so that the page reads in order. */
   place(index) {
     const element = this.draw(index);
-    element.style.top = `${index * ROW}px`;
+    element.style.top = `${index * this.row}px`;
     let next = null;
     for (const [other, drawn] of this.drawn) if (other > index && (!next || other < next.index)) next = { index: other, drawn };
     this.element.insertBefore(element, next?.drawn ?? null);
@@ -218,10 +242,10 @@ export class Rows {
   /** A row's element, scrolled into view and drawn if it was not; null past the ends. */
   reveal(index) {
     if (index < 0 || index >= this.count) return null;
-    const top = this.offset() + index * ROW;
+    const top = this.offset() + index * this.row;
     const covered = this.covered();
     if (top < this.scroller.scrollTop + covered) this.scroller.scrollTop = top - covered;
-    else if (top + ROW > this.scroller.scrollTop + this.scroller.clientHeight) this.scroller.scrollTop = top + ROW - this.scroller.clientHeight;
+    else if (top + this.row > this.scroller.scrollTop + this.scroller.clientHeight) this.scroller.scrollTop = top + this.row - this.scroller.clientHeight;
     this.update();
     return this.drawn.get(index) ?? this.place(index);
   }

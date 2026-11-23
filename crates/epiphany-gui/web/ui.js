@@ -297,6 +297,56 @@ export function textWidths(element = document.body) {
   return (text) => context.measureText(String(text)).width;
 }
 
+/** The lowest and the highest of `values`, by a loop: very many are too many to spread as arguments. */
+export function extent(values) {
+  let low = Infinity;
+  let high = -Infinity;
+  for (const value of values) {
+    if (value < low) low = value;
+    if (value > high) high = value;
+  }
+  return [low, high];
+}
+
+/**
+ * How wide the widest of `items` is: `text(item)` as `measure` sizes text, and `extra(item)`
+ * pixels more. Each is reckoned first from its characters, each character measured once, and
+ * only those that could be the widest are measured whole: a text is no wider than its
+ * characters side by side, kerning and joined letters drawing them closer. A million names
+ * took two seconds to measure; their characters are a few dozen.
+ */
+export function widest(items, text, extra = () => 0, measure = textWidths()) {
+  const characters = new Map();
+  const reckoned = (value) => {
+    let sum = 0;
+    for (const character of String(value)) {
+      let width = characters.get(character);
+      if (width === undefined) characters.set(character, (width = measure(character)));
+      sum += width;
+    }
+    return sum;
+  };
+  const bounds = new Float64Array(items.length);
+  let top = -1;
+  items.forEach((item, index) => {
+    bounds[index] = extra(item) + reckoned(text(item));
+    if (top < 0 || bounds[index] > bounds[top]) top = index;
+  });
+  if (top < 0) return 0;
+  let most = extra(items[top]) + measure(text(items[top]));
+  // Only one reckoned wider than the widest measured can be wider: those, the widest first.
+  const rest = [];
+  bounds.forEach((bound, index) => {
+    if (bound > most + 1e-6) rest.push(index);
+  });
+  rest.sort((a, b) => bounds[b] - bounds[a]);
+  for (const index of rest) {
+    if (bounds[index] <= most + 1e-6) break;
+    most = Math.max(most, extra(items[index]) + measure(text(items[index])));
+  }
+  return most;
+}
+
 /**
  * A handle on the edge of a pane that sets its width, as `--name` on `container`, which lays
  * the pane out by it. Dragging it or the arrow keys change the width, kept in this browser

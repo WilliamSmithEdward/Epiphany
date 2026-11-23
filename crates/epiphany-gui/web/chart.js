@@ -3,7 +3,7 @@
 // again as either changes. Its marks say what they are when pointed at, or gone through with
 // the arrow keys, and may be picked.
 
-import { formatNumber, h, icon } from './ui.js';
+import { extent, formatNumber, h, icon } from './ui.js';
 
 /** How many series are drawn at most; the rest are left out and said to be. */
 const MOST_SERIES = 12;
@@ -63,8 +63,7 @@ export function shape(result, byColumns) {
  */
 export function sparkline(values, { width = 180, height = 40 } = {}) {
   const known = values.filter((value) => value !== null);
-  const low = Math.min(...known);
-  const high = Math.max(...known);
+  const [low, high] = extent(known);
   const x = (index) => 2 + (index / Math.max(values.length - 1, 1)) * (width - 4);
   const y = (value) => 2 + (high === low ? (height - 4) / 2 : (1 - (value - low) / (high - low)) * (height - 4));
   const last = values.length - 1 - [...values].reverse().findIndex((value) => value !== null);

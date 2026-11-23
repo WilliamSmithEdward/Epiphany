@@ -1189,6 +1189,18 @@ async function changingTheModel() {
     expect(total.children.some((child) => child.name === 'FR'), `Total Entity's children are ${quoted(total.children)}.`);
     expect(entity.elements.find((element) => element.name === 'FR')?.type === 'numeric', 'FR is not a numeric element.');
   });
+  await step('An element\'s children are listed to weigh or take out, the keys staying on the list, and the change discarded', async () => {
+    const children = `[...document.querySelectorAll('.child-list .child-row .grow')].map((name) => name.textContent).join()`;
+    await page.waitFor(`${children} === 'US,UK,FR'`, 'Total Entity\'s children');
+    await page.click('.child-list button', 'Take FR out of Total Entity');
+    await page.waitFor(`${children} === 'US,UK' && document.activeElement?.getAttribute('aria-label') === 'Take UK out of Total Entity'`, 'FR taken out, the keys on the child before it');
+    await page.click('button', 'Discard');
+    await page.waitFor(`${children} === 'US,UK,FR' && !document.querySelector('.pending:not([hidden])')`, 'the change, discarded');
+    // Found by a word of its name, beneath the member above it.
+    await page.fill('input[placeholder="Find an element"]', 'fr');
+    await page.waitFor(`[...document.querySelectorAll('.element-row.match')].map((row) => row.dataset.name).join() === 'FR'`, 'FR, found');
+    await page.fill('input[placeholder="Find an element"]', '');
+  });
 }
 
 async function administering({ reader }) {

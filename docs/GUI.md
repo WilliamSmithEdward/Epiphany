@@ -87,8 +87,14 @@ only way to do something, and modal dialogs where a side panel would keep the da
   100,000 cells scrolls as smoothly as one of a hundred. Pages ask for the model in outline,
   without its elements; a dimension is fetched whole the first time a page shows it. On a
   release build that takes about 0.7 s for half a million elements and 2 s for a million,
-  fetched, read and made ready (2026-11-22). Members fetched only as a tree is opened would
-  take that time away, but every page now reads a dimension as held whole. The modules the
+  fetched, read and made ready (2026-11-22), and 1 s for a million once the server wrote a
+  dimension straight from its model (2026-11-23). Members fetched only as a tree is opened
+  would take that time away, but every page now reads a dimension as held whole. The
+  model's editor opens a dimension of a million elements in 1.8 s, where it took 5.8, and
+  shows an element chosen or found in it in 0.15 s, where it took 1.2 and 1.5: its tree, its
+  widest name and each element's level are worked out once for each change rather than at
+  every click, the widest name reckoned from the widths of its characters, and a search
+  climbs from what it finds to the members above (2026-11-23). The modules the
   application imports are fetched beside it rather than once it has come, and the other
   pages' while the browser is idle once the first page shows, so that going to one waits on
   no files. What the GUI's server sends, its files and the API's answers, goes gzipped to a
@@ -202,7 +208,7 @@ the run.
 | Signing in | A wrong password refused; the overview; a session that ends signed into again over the page, which stays as it was |
 | Exploring and writing back | An MDX query typed in shows what the API answers to it; a value typed into a cell is saved and read back through the API; the tabs over the grid gone along by the arrow keys; a cell's comments, history and detail |
 | A dashboard | Three tiles of a saved view, a key figure, bars and a grid, run and audited; when they were run said, and Refresh runs them again; the bars' legend, on one line, gone along by its arrows to its last series. The grid's ways of making room checked; a tile dragged to another's place, made taller by its corner, wider by the keys and back with Ctrl Z; laid out freely, let go between columns and lined up with an edge; a tile of text dragged in from the list, and the arrangement saved; a bar picked to show the others at its members; a tile over the whole page; a tile's numbers shown in place of its bars, copied, and the bars again; a key figure in the colour of its view's rule; presented, on to the next dashboard by the arrow, and Escape |
-| Changing the model | An element added in the editor is the one the API gives back |
+| Changing the model | An element added in the editor is the one the API gives back; a consolidation's children listed to weigh or take out, the keys staying on the list, and the change discarded; an element found by a word of its name |
 | Administering | The users; an element hidden from a reader, chosen from its dimension's tree; viewing the server as that reader, who is shown no administration, not the element, and whose writes are refused; back to the administrator, the view kept in the audit |
 | A large grid | 100,000 cells: only those in view drawn, and scrolled to the end at the pace the page keeps at rest; printed, all of them drawn, and the 2,000 elements of its rows' dimension too |
 

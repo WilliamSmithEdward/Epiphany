@@ -47,9 +47,10 @@ export async function chooseMember(dim, { title, current, hint = 'Double-click a
   const name = dim.name;
   let chosen = current ?? dim.roots[0];
   const children = (element) => (dim.byName.get(element)?.children ?? []).map((child) => child.name).filter((child) => dim.byName.has(child));
+  const parents = (element) => dim.byName.get(element)?.parents ?? [];
   const roots = dim.roots;
   // Open at the top members' children, and down to the member chosen.
-  let open = new Set([...roots, ...reveal({ roots, children, matches: new Set([chosen]) })]);
+  let open = new Set([...roots, ...reveal({ roots, children, parents, matches: new Set([chosen]) })]);
   let found = null;
   let words = '';
   let rows = [];
@@ -117,7 +118,7 @@ export async function chooseMember(dim, { title, current, hint = 'Double-click a
   });
   const draw = (focus) => {
     const matches = words ? new Set(dim.elements.filter((element) => element.name.toLowerCase().includes(words)).map((element) => element.name)) : null;
-    ({ rows } = treeRows({ roots, children, open: found ?? open, matches }));
+    ({ rows } = treeRows({ roots, children, parents, open: found ?? open, matches }));
     at = rows.findIndex((row) => row.name === (focus ?? chosen));
     if (at < 0) at = Math.max(0, rows.findIndex((row) => row.match));
     list.show(rows.length);
@@ -129,7 +130,7 @@ export async function chooseMember(dim, { title, current, hint = 'Double-click a
     label: `Find in ${name}`,
     onsearch: (next) => {
       words = next;
-      found = words ? reveal({ roots, children, matches: new Set(dim.elements.filter((element) => element.name.toLowerCase().includes(words)).map((element) => element.name)) }) : null;
+      found = words ? reveal({ roots, children, parents, matches: new Set(dim.elements.filter((element) => element.name.toLowerCase().includes(words)).map((element) => element.name)) }) : null;
       draw();
     },
     // Down goes to the first member found, or, with no search, to the one chosen.

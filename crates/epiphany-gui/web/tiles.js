@@ -7,7 +7,7 @@ import { empty } from './app.js';
 import { chart, shape, sparkline } from './chart.js';
 import { highlighter, toneOf } from './grid.js';
 import { Rows } from './tree.js';
-import { formatValue, h, shownText, textWidths } from './ui.js';
+import { extent, formatValue, h, shownText, widest } from './ui.js';
 
 /** The ways a tile shows its view, by name: what each is called, and its icon. */
 export const KINDS = {
@@ -114,10 +114,9 @@ function table(result, { format, highlights, heat, pick, picked }) {
   const total = (tuple) => tuple.some((m) => m.type === 'consolidated');
   const mark = heat ? heatShades(rowTuples, count, value) : highlighter(highlights, rowTuples, columnTuples, value, total);
   const scroller = h('div', { class: `tile-table${heat ? ' heat' : ''}${pick ? ' pickable' : ''}`, role: 'table', 'aria-rowcount': rowTuples.length + 1, tabindex: '0' });
-  // The names' column as wide as the widest name needs, of the first few thousand.
-  const width = textWidths();
-  const widest = Math.max(48, ...rowTuples.slice(0, 2000).map((tuple) => width(label(tuple))));
-  scroller.style.setProperty('--heading', `${Math.ceil(Math.min(widest + 28, 320))}px`);
+  // The names' column as wide as the widest name needs.
+  const names = Math.max(48, widest(rowTuples, label));
+  scroller.style.setProperty('--heading', `${Math.ceil(Math.min(names + 28, 320))}px`);
   scroller.style.setProperty('--count', String(Math.max(count, 1)));
   const choose = (members, key) => pick?.(members, key);
   const head = h('div', { class: 'tile-row head', role: 'row', 'aria-rowindex': 1 },
@@ -156,7 +155,7 @@ function heatShades(rowTuples, count, value) {
   const range = (r) => {
     if (!ranges.has(r)) {
       const numbers = Array.from({ length: count }, (_, c) => value(r, c)).filter((number) => typeof number === 'number');
-      ranges.set(r, [Math.min(...numbers), Math.max(...numbers)]);
+      ranges.set(r, extent(numbers));
     }
     return ranges.get(r);
   };

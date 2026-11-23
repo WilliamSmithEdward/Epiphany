@@ -927,18 +927,19 @@ class SetEditor {
   drawLeft(focus) {
     const keep = focus ?? (this.left.contains(document.activeElement) ? document.activeElement.closest?.('.set-row')?.dataset.name : null);
     const children = (name) => this.children(name);
+    const parents = (name) => this.dim.byName.get(name)?.parents ?? [];
     const roots = this.dim.roots;
     const matches = this.searching() ? new Set(this.matches().map((element) => element.name)) : null;
     // A new search opens the tree to what it finds, and from there the reader opens and
     // closes it; when the search is cleared, the tree opens to the members picked.
     const asked = matches ? JSON.stringify([this.words, this.filtering && this.activeRules(), this.matchAll, this.showAttributes, this.withDescendants]) : null;
     if (asked !== this.asked) {
-      if (!asked) for (const name of reveal({ roots, children, matches: this.picked })) this.open.add(name);
-      this.found = matches ? reveal({ roots, children, matches }) : null;
+      if (!asked) for (const name of reveal({ roots, children, parents, matches: this.picked })) this.open.add(name);
+      this.found = matches ? reveal({ roots, children, parents, matches }) : null;
       if (matches && this.withDescendants) for (const name of [...matches, ...beneath(matches, children)]) this.found.add(name);
       this.asked = asked;
     }
-    ({ rows: this.shown } = treeRows({ roots, children, open: this.found ?? this.open, matches }));
+    ({ rows: this.shown } = treeRows({ roots, children, parents, open: this.found ?? this.open, matches }));
     this.inSet = new Set(this.set);
     // The member keys act on is the one last picked, or else the first found or shown.
     this.at = this.shown.findIndex((row) => row.name === this.anchor);

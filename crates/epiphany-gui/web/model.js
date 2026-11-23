@@ -5,9 +5,11 @@
 import { del, get, part, put } from './api.js';
 import { empty, failure, go } from './app.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, dialog, h, icon, invalid, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, working } from './ui.js';
+import { choices, dialog, h, icon, invalid, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, widest, working } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
+/** How tall a child's row is in an element's detail: its controls and the gap below them. */
+const CHILD_ROW = 36;
 
 export async function render(target, { params, titled }) {
   const view = await get('/model');
@@ -300,7 +302,13 @@ class Editor {
     this.page = page;
     this.kind = kind;
     this.original = JSON.stringify(original);
-    this.working = structuredClone(original);
+    // Copied by way of its JSON: a dimension of a million elements in a third of the time
+    // structuredClone takes.
+    this.working = JSON.parse(this.original);
+    // Whether the working copy has been changed since it was the original, and what is
+    // worked out from it, kept until it changes.
+    this.edited = false;
+    this.worked = new Map();
     this.tab = 'main';
     this.strip = h('div', { class: 'pending', role: 'status', hidden: true });
     this.body = h('div', { class: 'editor-body' });
@@ -317,12 +325,27 @@ class Editor {
       this.strip);
   }
 
+  /** What `work()` gives for the working copy as it is: worked out again once it changes. */
+  kept(name, work) {
+    if (!this.worked.has(name)) this.worked.set(name, work());
+    return this.worked.get(name);
+  }
+
+  /** The working copy as the original again, as it is after it is saved or discarded. */
+  unchanged() {
+    this.edited = false;
+    this.worked.clear();
+  }
+
   get dirty() {
-    return JSON.stringify(this.working) !== this.original;
+    // Unchanged, it is the original: a million elements need not be written out to say so.
+    return this.edited && this.kept('dirty', () => JSON.stringify(this.working) !== this.original);
   }
 
   /** Marks the working copy changed and draws it again. */
   changed() {
+    this.edited = true;
+    this.worked.clear();
     this.draw();
   }
 
@@ -352,6 +375,7 @@ class Editor {
 
   discard() {
     this.working = JSON.parse(this.original);
+    this.unchanged();
     this.draw();
   }
 
@@ -359,6 +383,7 @@ class Editor {
     const path = `/${this.kind === 'cube' ? 'cubes' : 'dimensions'}/${part(this.working.name)}`;
     if (await this.page.save(path, { [this.kind]: this.working })) {
       this.original = JSON.stringify(this.working);
+      this.unchanged();
       this.page.replace(this.kind, this.working);
       this.draw();
     }
@@ -418,12 +443,12 @@ class DimensionEditor extends Editor {
       label: 'Find an element',
       onsearch: (words) => {
         this.words = words;
-        const { roots, children } = this.hierarchy();
+        const { roots, children, parents } = this.hierarchy();
         if (words) {
-          this.found = reveal({ roots, children, matches: this.matching() });
+          this.found = reveal({ roots, children, parents, matches: this.matching() });
         } else {
           // Back to browsing, opened to the element chosen while searching.
-          if (this.selected) for (const name of reveal({ roots, children, matches: new Set([this.selected]) })) this.open.add(name);
+          if (this.selected) for (const name of reveal({ roots, children, parents, matches: new Set([this.selected]) })) this.open.add(name);
           this.found = null;
         }
         this.drawTree();
@@ -438,18 +463,37 @@ class DimensionEditor extends Editor {
 
   /** The tree's roots, and each element's children, as the working copy has them. */
   hierarchy() {
-    const byName = this.byName;
-    const named = new Set(this.working.elements.flatMap((element) => (element.children ?? []).map((child) => child.name)));
-    return {
-      byName,
-      roots: this.working.elements.filter((element) => !named.has(element.name)).map((element) => element.name),
-      children: (name) => (byName.get(name)?.children ?? []).map((child) => child.name).filter((child) => byName.has(child)),
-    };
+    return this.kept('hierarchy', () => {
+      const byName = this.byName;
+      // Each element's parents, in the order they are declared: one by its name, as most
+      // have, and several in a list.
+      const above = new Map();
+      for (const element of this.working.elements) {
+        for (const child of element.children ?? []) {
+          const had = above.get(child.name);
+          if (had === undefined) above.set(child.name, element.name);
+          else if (typeof had === 'string') {
+            if (had !== element.name) above.set(child.name, [had, element.name]);
+          } else if (had.at(-1) !== element.name) had.push(element.name);
+        }
+      }
+      return {
+        byName,
+        roots: this.working.elements.filter((element) => !above.has(element.name)).map((element) => element.name),
+        children: (name) => (byName.get(name)?.children ?? []).map((child) => child.name).filter((child) => byName.has(child)),
+        parents: (name) => [above.get(name) ?? []].flat(),
+      };
+    });
   }
 
   /** The elements whose names have the words searched for. */
   matching() {
-    return new Set(this.working.elements.filter((element) => element.name.toLowerCase().includes(this.words)).map((element) => element.name));
+    const lowered = this.kept('lowered', () => this.working.elements.map((element) => element.name.toLowerCase()));
+    const found = new Set();
+    lowered.forEach((name, index) => {
+      if (name.includes(this.words)) found.add(this.working.elements[index].name);
+    });
+    return found;
   }
 
   /** Chooses an element to edit, keeping the keys on it in the tree. */
@@ -481,24 +525,25 @@ class DimensionEditor extends Editor {
    * its type beside it.
    */
   listWidth() {
-    const { roots, children } = this.hierarchy();
-    const depths = new Map();
-    const queue = roots.map((name) => [name, 0]);
-    for (const [name, depth] of queue) {
-      if (depths.has(name)) continue;
-      depths.set(name, depth);
-      for (const child of children(name)) queue.push([child, depth + 1]);
-    }
-    const width = textWidths();
-    const widest = this.working.elements.reduce((most, element) => Math.max(most, (depths.get(element.name) ?? 0) * INDENT + width(element.name)), 0);
-    const type = Math.max(...Object.values(TYPES).map(width));
-    const weighted = this.working.elements.some((element) => element.children?.some((child) => (child.weight ?? 1) !== 1));
-    // The row's indent, button, icon, gaps and type, the tree's padding and its scroll bar.
-    return Math.ceil(widest + type + (weighted ? 56 : 0) + 120);
+    return this.kept('width', () => {
+      const { roots, children } = this.hierarchy();
+      const depths = new Map();
+      const queue = roots.map((name) => [name, 0]);
+      for (const [name, depth] of queue) {
+        if (depths.has(name)) continue;
+        depths.set(name, depth);
+        for (const child of children(name)) queue.push([child, depth + 1]);
+      }
+      const names = widest(this.working.elements, (element) => element.name, (element) => (depths.get(element.name) ?? 0) * INDENT);
+      const type = Math.max(...Object.values(TYPES).map(textWidths()));
+      const weighted = this.working.elements.some((element) => element.children?.some((child) => (child.weight ?? 1) !== 1));
+      // The row's indent, button, icon, gaps and type, the tree's padding and its scroll bar.
+      return Math.ceil(names + type + (weighted ? 56 : 0) + 120);
+    });
   }
 
   get byName() {
-    return new Map(this.working.elements.map((element) => [element.name, element]));
+    return this.kept('byName', () => new Map(this.working.elements.map((element) => [element.name, element])));
   }
 
   draw() {
@@ -576,10 +621,10 @@ class DimensionEditor extends Editor {
 
   /** The tree of elements: as browsed, or showing what the search found in its place. */
   drawTree() {
-    const { byName, roots, children } = this.hierarchy();
+    const { byName, roots, children, parents } = this.hierarchy();
     const matches = this.words ? this.matching() : null;
     this.shown = byName;
-    ({ rows: this.rows } = treeRows({ roots, children, open: this.found ?? this.open, matches }));
+    ({ rows: this.rows } = treeRows({ roots, children, parents, open: this.found ?? this.open, matches }));
     // The row the keys act on: the element chosen, or else the first found or shown.
     this.at = this.rows.findIndex((row) => row.name === this.selected);
     if (this.at < 0) this.at = Math.max(0, this.rows.findIndex((row) => row.match));
@@ -613,7 +658,7 @@ class DimensionEditor extends Editor {
     name.addEventListener('change', () => this.rename(element.name, name.value.trim()));
     const type = h('select', { class: 'select', id: 'element-type', onchange: (event) => this.retype(element, event.target.value) },
       Object.entries(TYPES).map(([value, label]) => h('option', { value, selected: element.type === value }, label)));
-    const parents = this.working.elements.filter((other) => other.children?.some((child) => child.name === element.name));
+    const parents = this.hierarchy().parents(element.name);
     const attributes = Object.entries(this.working.attributes ?? {});
     return h('div', { class: 'facts' },
       h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, element.name),
@@ -622,35 +667,10 @@ class DimensionEditor extends Editor {
         h('div', { class: 'field' }, h('label', { for: 'element-name' }, 'Name'), name),
         h('div', { class: 'field' }, h('label', { for: 'element-type' }, 'Type'), type),
         element.type === 'string' ? this.picklistField(element) : null,
-        parents.length ? h('p', { class: 'muted' }, `Part of ${parents.map((parent) => parent.name).join(', ')}.`) : null,
+        parents.length ? h('p', { class: 'muted' }, `Part of ${parents.join(', ')}.`) : null,
         element.type === 'consolidated' ? h('div', { class: 'field' },
           h('label', {}, 'Children and their weights'),
-          (element.children ?? []).length
-            ? h('div', { class: 'child-list' }, element.children.map((child, index) => h('div', { class: 'child-row' },
-              icon(byName.get(child.name)?.type === 'consolidated' ? 'sigma' : 'member', 14),
-              h('span', { class: 'grow' }, child.name),
-              h('input', {
-                class: 'input weight',
-                type: 'number',
-                step: 'any',
-                value: child.weight ?? 1,
-                'aria-label': `Weight of ${child.name}`,
-                onchange: (event) => {
-                  const weight = Number(event.target.value);
-                  if (Number.isFinite(weight)) element.children[index].weight = weight;
-                  this.changed();
-                },
-              }),
-              h('button', {
-                class: 'button quiet small icon',
-                'aria-label': `Take ${child.name} out of ${element.name}`,
-                onclick: () => {
-                  element.children.splice(index, 1);
-                  this.changed();
-                  refocus(this.body.querySelector('.child-list'), index, this.body.querySelector('.child-adding'));
-                },
-              }, icon('close', 14)))))
-            : h('p', { class: 'muted' }, 'No children yet.'),
+          (element.children ?? []).length ? this.childList(element, byName) : h('p', { class: 'muted' }, 'No children yet.'),
           h('div', { class: 'toolbar' }, h('button', { class: 'button small child-adding', onclick: () => this.addChild(element) }, icon('plus', 14), 'Add a child'))) : null,
         attributes.length ? h('div', { class: 'field' },
           h('label', {}, 'Attributes'),
@@ -673,6 +693,47 @@ class DimensionEditor extends Editor {
             input.value = element.attributes?.[attribute] ?? '';
             return h('div', { class: 'attribute-row' }, h('span', { class: 'muted' }, `${attribute}${kind === 'alias' ? ' (alias)' : ''}`), input);
           })) : null));
+  }
+
+  /**
+   * A consolidation's children, each with its weight to change and a button to take it out:
+   * drawn only where they can be seen in the list, as a total may have a million.
+   */
+  childList(element, byName) {
+    const list = h('div', { class: 'child-list' });
+    const rows = new Rows(list, (index) => {
+      const child = element.children[index];
+      return h('div', { class: 'child-row' },
+        icon(byName.get(child.name)?.type === 'consolidated' ? 'sigma' : 'member', 14),
+        h('span', { class: 'grow' }, child.name),
+        h('input', {
+          class: 'input weight',
+          type: 'number',
+          step: 'any',
+          value: child.weight ?? 1,
+          'aria-label': `Weight of ${child.name}`,
+          onchange: (event) => {
+            const weight = Number(event.target.value);
+            if (Number.isFinite(weight)) element.children[index].weight = weight;
+            this.changed();
+          },
+        }),
+        h('button', {
+          class: 'button quiet small icon',
+          'aria-label': `Take ${child.name} out of ${element.name}`,
+          onclick: () => {
+            element.children.splice(index, 1);
+            this.changed();
+            // The keys go to the child that took its place, or the one before, or to Add.
+            const next = this.childRows.reveal(index) ?? this.childRows.reveal(index - 1);
+            (next?.querySelector('button:last-of-type') ?? this.body.querySelector('.child-adding'))?.focus();
+          },
+        }, icon('close', 14)));
+    }, { row: CHILD_ROW });
+    list.append(rows.element);
+    rows.show(element.children.length);
+    this.childRows = rows;
+    return list;
   }
 
   rename(from, to) {
@@ -871,7 +932,7 @@ class DimensionEditor extends Editor {
     const chosen = byName.get(this.selected);
     if (!chosen) return null;
     if (chosen.type === 'consolidated') return chosen;
-    return this.working.elements.find((element) => element.children?.some((child) => child.name === chosen.name)) ?? null;
+    return byName.get(this.hierarchy().parents(chosen.name)[0]) ?? null;
   }
 
   /**
@@ -885,7 +946,7 @@ class DimensionEditor extends Editor {
     if (!lines.length) return;
     // Spaces indent too: the narrowest indent of spaces is one level.
     const spaces = lines.map((line) => line.match(/^ */)[0].length).filter(Boolean);
-    const unit = spaces.length ? Math.min(...spaces) : 1;
+    const unit = spaces.length ? spaces.reduce((least, count) => Math.min(least, count)) : 1;
     const parsed = lines.map((line) => {
       const indent = line.match(/^[\t ]*/)[0];
       const [name, weight] = line.slice(indent.length).split('\t');
@@ -894,8 +955,11 @@ class DimensionEditor extends Editor {
     });
     const least = parsed.reduce((low, line) => Math.min(low, line.depth), Infinity);
     const target = this.pasteTarget();
+    // The elements by name, and their children, kept as the outline adds to them.
+    const byName = new Map(this.byName);
+    const children = (name) => (byName.get(name)?.children ?? []).map((child) => child.name).filter((child) => byName.has(child));
     const parents = [];
-    const added = [];
+    const added = new Set();
     const placed = [];
     const left = [];
     let previous = -1;
@@ -905,12 +969,12 @@ class DimensionEditor extends Editor {
       previous = depth;
       parents[depth] = line.name;
       const deeper = parsed[index + 1] && parsed[index + 1].depth - least > depth;
-      const byName = this.byName;
       let element = byName.get(line.name);
       if (!element) {
         element = deeper ? { name: line.name, type: 'consolidated', children: [] } : { name: line.name, type: 'numeric' };
         this.working.elements.push(element);
-        added.push(line.name);
+        byName.set(line.name, element);
+        added.add(line.name);
       }
       const parent = depth === 0 ? target : byName.get(parents[depth - 1]);
       if (!parent) return;
@@ -919,18 +983,17 @@ class DimensionEditor extends Editor {
         return;
       }
       if (parent.children?.some((child) => child.name === line.name)) return;
-      const { children } = this.hierarchy();
       if (line.name === parent.name || beneath([line.name], children).has(parent.name)) {
         left.push(`${line.name} (it would contain itself)`);
         return;
       }
       parent.children ??= [];
       parent.children.push(line.weight === 1 ? { name: line.name } : { name: line.name, weight: line.weight });
-      if (!added.includes(line.name)) placed.push(line.name);
+      if (!added.has(line.name)) placed.push(line.name);
       this.open.add(parent.name);
     });
     const said = [
-      added.length ? `Added ${added.length.toLocaleString()} element${added.length === 1 ? '' : 's'}.` : null,
+      added.size ? `Added ${added.size.toLocaleString()} element${added.size === 1 ? '' : 's'}.` : null,
       placed.length ? `Placed ${placed.length.toLocaleString()} the dimension had already.` : null,
       left.length ? `Left out ${left.slice(0, 3).join(', ')}${left.length > 3 ? ` and ${left.length - 3} more` : ''}.` : null,
     ].filter(Boolean).join(' ');
@@ -1004,19 +1067,23 @@ class DimensionEditor extends Editor {
 
   /** The level of each element: zero for a leaf, one above its highest child otherwise. */
   levelsOf() {
-    const byName = this.byName;
-    const memo = new Map();
-    const level = (name, trail = new Set()) => {
-      if (memo.has(name)) return memo.get(name);
-      const element = byName.get(name);
-      if (!element?.children?.length || trail.has(name)) return 0;
-      trail.add(name);
-      const value = 1 + Math.max(...element.children.map((child) => level(child.name, trail)));
-      trail.delete(name);
-      memo.set(name, value);
-      return value;
-    };
-    return this.working.elements.map((element) => level(element.name));
+    return this.kept('levels', () => {
+      const byName = this.byName;
+      const memo = new Map();
+      const level = (name, trail = new Set()) => {
+        if (memo.has(name)) return memo.get(name);
+        const element = byName.get(name);
+        if (!element?.children?.length || trail.has(name)) return 0;
+        trail.add(name);
+        // A loop, not a spread: a total over a million children is too many arguments.
+        let highest = 0;
+        for (const child of element.children) highest = Math.max(highest, level(child.name, trail));
+        trail.delete(name);
+        memo.set(name, highest + 1);
+        return highest + 1;
+      };
+      return this.working.elements.map((element) => level(element.name));
+    });
   }
 }
 
