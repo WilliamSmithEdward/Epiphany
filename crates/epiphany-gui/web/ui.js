@@ -615,12 +615,36 @@ export function refocus(list, index, otherwise) {
   (button ?? otherwise)?.focus();
 }
 
-/** Puts text on the clipboard, and says so. */
+/**
+ * Puts text on the clipboard, and says so. A page not served securely, as over plain HTTP from
+ * another machine, is given no clipboard to write to; there the text is copied the older way.
+ */
 export function copyText(text) {
-  navigator.clipboard?.writeText(text).then(
-    () => notify('Copied.', 'good'),
-    () => notify(`The browser kept the page from the clipboard. Press ${MOD} C instead.`, 'bad'),
-  );
+  const copied = () => notify('Copied.', 'good');
+  const refused = () => notify(`The browser kept the page from the clipboard. Press ${MOD} C instead.`, 'bad');
+  if (!navigator.clipboard) {
+    (copiedTheOlderWay(text) ? copied : refused)();
+    return;
+  }
+  navigator.clipboard.writeText(text).then(copied, () => (copiedTheOlderWay(text) ? copied : refused)());
+}
+
+/** Copies text by choosing it in a field of its own, out of sight, the keys going back where they were. */
+function copiedTheOlderWay(text) {
+  const had = document.activeElement;
+  const field = h('textarea', { class: 'visually-hidden', readonly: true, 'aria-hidden': 'true', tabindex: '-1' });
+  field.value = text;
+  document.body.append(field);
+  field.select();
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  }
+  field.remove();
+  had?.focus?.({ preventScroll: true });
+  return copied;
 }
 
 /** What draws only the part of itself in view, by its element: how to draw it for paper, and back. */

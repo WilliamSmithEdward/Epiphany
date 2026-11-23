@@ -126,7 +126,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
   format, highlights and sizes, which opens it as it was shown for anyone who may read the
   cube, each seeing only what they may read. What a link carries is held to what a view may
   say, and a damaged link says so. Shown, the view is the cube's last layout, and the address
-  the cube's again.
+  the cube's again. Copying, a link or anything else, works on a page not served securely
+  too, as one over plain HTTP from another machine, which browsers give no clipboard.
 - **Nothing cut short for good.** A name an ellipsis cuts short shows whole on hover, given
   as a title only while it is cut, and a button shown as an icon alone says on hover the name
   a screen reader hears; neither takes the place of a title of its own.

@@ -1367,13 +1367,7 @@ class Explorer {
         h('button', { class: 'button primary', onclick: run }, icon('play', 16), 'Run'),
         h('span', { class: 'hint' }, `${MOD} Enter runs it`),
         h('div', { class: 'grow' }),
-        h('button', {
-          class: 'button',
-          onclick: async () => {
-            await navigator.clipboard?.writeText(editor.value);
-            notify('The query is copied.', 'good');
-          },
-        }, 'Copy'))));
+        h('button', { class: 'button', onclick: () => copyText(editor.value) }, icon('copy', 16), 'Copy'))));
     mount(this.statusLine);
   }
 

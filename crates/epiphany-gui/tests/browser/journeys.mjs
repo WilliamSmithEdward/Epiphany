@@ -566,6 +566,11 @@ async function exploring() {
     // The GUI says what the API says as a sentence.
     expect(said?.toLowerCase().replace(/\.$/, '') === data.message.toLowerCase(), `Beneath the query it says ${quoted(said)}, not ${quoted(data.message)}.`);
     await page.audit('A query mended where it went wrong');
+    // A page given no clipboard, as one not served securely is, still copies, the older way.
+    await page.evaluate(`Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })`);
+    await page.click('button', 'Copy');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent === 'Copied.')`, 'the query, copied the older way');
+    await page.evaluate(`delete navigator.clipboard`);
   });
   await step('An MDX query typed in shows what the API answers to it', async () => {
     await page.click('[role="tab"]', 'MDX');
