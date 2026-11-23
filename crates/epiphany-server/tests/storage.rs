@@ -888,6 +888,8 @@ fn a_sandbox_outlives_the_process_until_it_is_deleted() {
 fn earlier_models_are_kept_and_can_be_read_back() {
     let home = Home::new("earlier-models");
     let mut database = home.open();
+    let before = database.journal_bytes().unwrap();
+    assert!(before.model > 0 && before.earlier_models == 0, "{before:?}");
     let first = database.definition().clone();
     let mut second = first.clone();
     second.cubes[0].rules = vec!["[Account].[Rent] = 1".to_owned()];
@@ -895,6 +897,12 @@ fn earlier_models_are_kept_and_can_be_read_back() {
     let mut third = second.clone();
     third.cubes[0].rules.clear();
     database.update_model(2, third).unwrap();
+    // What the models kept take on disk is counted: the first of them, and the second.
+    let after = database.journal_bytes().unwrap();
+    assert!(
+        after.earlier_models > before.model,
+        "{before:?} then {after:?}"
+    );
 
     let kept: Vec<(String, u64)> = database
         .earlier_models()

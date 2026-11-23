@@ -5205,6 +5205,15 @@
             },
             "description": "The cells each cube stores."
           },
+          "earlier_models_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bytes of every model kept from before it.",
+            "minimum": 0
+          },
           "log_bytes": {
             "type": [
               "integer",
@@ -5221,6 +5230,15 @@
             ],
             "format": "int64",
             "description": "The memory the server holds, where the operating system says.",
+            "minimum": 0
+          },
+          "model_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bytes of the model as it is.",
             "minimum": 0
           },
           "model_version": {

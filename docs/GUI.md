@@ -169,8 +169,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
 
 - **Users:** list users and their roles, add or change one, and remove one, for admins,
   taking effect at once rather than after a restart.
-- **Status:** version, cubes and cells stored, memory held, log and snapshot sizes, open
-  sessions and transactions.
+- **Status:** version, cubes and cells stored, memory held, what is kept on disk (the log, the
+  snapshot, the model and every earlier model, each said apart), open sessions and
+  transactions.
 - **Sessions and transactions:** list those open, end a session, roll back a transaction.
 
 Each is added to the OpenAPI contract, with the existing route tests.

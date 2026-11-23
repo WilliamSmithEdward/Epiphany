@@ -167,9 +167,8 @@ pub trait Journal: Send + Sync + fmt::Debug {
     /// Records every stored cell, replacing the commits recorded so far.
     fn snapshot(&mut self, model_version: u64, cells: &NamedCells<'_>) -> io::Result<()>;
 
-    /// How many bytes the journal keeps: its recorded commits, then its snapshot. Nothing
-    /// if it keeps none it can count.
-    fn bytes(&self) -> Option<(u64, u64)> {
+    /// How many bytes the journal keeps. Nothing if it keeps none it can count.
+    fn bytes(&self) -> Option<OnDisk> {
         None
     }
 
@@ -222,6 +221,19 @@ pub struct EarlierModel {
     pub version: u64,
     /// When it was saved, in seconds since 1970, where the journal can say.
     pub saved: Option<u64>,
+}
+
+/// What a journal keeps on disk, in bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OnDisk {
+    /// The commits recorded since the last snapshot.
+    pub log: u64,
+    /// The last snapshot.
+    pub snapshot: u64,
+    /// The model as it is.
+    pub model: u64,
+    /// Every model kept from before it.
+    pub earlier_models: u64,
 }
 
 /// An open transaction, as an administrator sees it.
@@ -690,8 +702,8 @@ impl Database {
         open
     }
 
-    /// How many bytes the journal keeps on disk: its log, then its snapshot.
-    pub fn journal_bytes(&self) -> Option<(u64, u64)> {
+    /// How many bytes the journal keeps on disk.
+    pub fn journal_bytes(&self) -> Option<OnDisk> {
         self.journal()?.bytes()
     }
 

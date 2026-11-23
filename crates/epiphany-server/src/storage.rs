@@ -32,7 +32,7 @@ use std::time::UNIX_EPOCH;
 use epiphany_core::Scalar;
 use epiphany_core::database::{
     Asked, CellChange, CellDetail, CellWrite, Changes, CommentChange, Database, EarlierModel,
-    History, Journal, KeptSandbox, NamedCells, NamedDetails, NamedWrites, TransactionId,
+    History, Journal, KeptSandbox, NamedCells, NamedDetails, NamedWrites, OnDisk, TransactionId,
 };
 use epiphany_core::model::ModelDef;
 use serde::de::DeserializeOwned;
@@ -440,6 +440,18 @@ pub(crate) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, S
     }
 }
 
+/// The bytes of every file under a folder, its folders' too; none where there is no folder.
+fn bytes_under(folder: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(folder) else {
+        return 0;
+    };
+    let bytes = |entry: fs::DirEntry| match entry.file_type() {
+        Ok(kind) if kind.is_dir() => bytes_under(&entry.path()),
+        _ => entry.metadata().map_or(0, |file| file.len()),
+    };
+    entries.flatten().map(bytes).sum()
+}
+
 /// An error message that names the file it is about.
 fn at(path: &Path, error: &dyn Error) -> String {
     format!("{}: {error}", path.display())
@@ -644,9 +656,15 @@ impl Journal for Files {
         self.log_bytes > LOG_LIMIT
     }
 
-    fn bytes(&self) -> Option<(u64, u64)> {
-        let snapshot = fs::metadata(self.directory.join("data").join("snapshot.json"));
-        Some((self.log_bytes, snapshot.map_or(0, |file| file.len())))
+    fn bytes(&self) -> Option<OnDisk> {
+        let data = self.directory.join("data");
+        let snapshot = fs::metadata(data.join("snapshot.json"));
+        Some(OnDisk {
+            log: self.log_bytes,
+            snapshot: snapshot.map_or(0, |file| file.len()),
+            model: bytes_under(&self.directory.join("model")),
+            earlier_models: bytes_under(&data.join("models")),
+        })
     }
 
     /// The numbered copies under `data/models`, each a model's folder, newest first.

@@ -114,7 +114,9 @@ class AdminPage {
         tile('Cells stored', cells.toLocaleString(), 'cube', `In ${status.cubes.length} cube${status.cubes.length === 1 ? '' : 's'}`),
         tile('Sessions open', status.sessions === null ? '—' : status.sessions.toLocaleString(), 'users', status.sessions === null ? 'No one needs to sign in' : null),
         tile('Transactions open', status.transactions.toLocaleString(), 'lock', null),
-        tile('On disk', bytes((status.log_bytes ?? 0) + (status.snapshot_bytes ?? 0)), 'save', `Log ${bytes(status.log_bytes)} · snapshot ${bytes(status.snapshot_bytes)}`),
+        // Every save of the model keeps the one it replaces: what they take is said apart.
+        tile('On disk', bytes(status.log_bytes === null ? null : status.log_bytes + status.snapshot_bytes + status.model_bytes + status.earlier_models_bytes), 'save',
+          `Log ${bytes(status.log_bytes)} · snapshot ${bytes(status.snapshot_bytes)} · model ${bytes(status.model_bytes)} · earlier models ${bytes(status.earlier_models_bytes)}`),
         status.memory_bytes !== null ? tile('Memory held', bytes(status.memory_bytes), 'server', null) : null),
       status.cubes.length ? h('div', { class: 'card fit' },
         h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Cells by cube')),

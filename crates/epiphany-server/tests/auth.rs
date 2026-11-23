@@ -1363,6 +1363,8 @@ async fn the_status_counts_cells_sessions_and_transactions() {
         (json!(1), json!(1))
     );
     assert!(status["log_bytes"].as_u64().unwrap() > 0);
+    assert!(status["model_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(status["earlier_models_bytes"], 0);
     let (_, _, open) = send(&app, "GET", "/admin/transactions", Some(&admin), None).await;
     assert_eq!(open[0]["transaction"], begun["transaction"]);
     assert_eq!(open[0]["pending"], 0);

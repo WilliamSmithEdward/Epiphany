@@ -2311,6 +2311,10 @@ struct ServerStatus {
     log_bytes: Option<u64>,
     /// The bytes of the last snapshot.
     snapshot_bytes: Option<u64>,
+    /// The bytes of the model as it is.
+    model_bytes: Option<u64>,
+    /// The bytes of every model kept from before it.
+    earlier_models_bytes: Option<u64>,
     /// The memory the server holds, where the operating system says.
     memory_bytes: Option<u64>,
 }
@@ -2402,8 +2406,10 @@ async fn server_status(State(state): State<AppState>) -> Json<ServerStatus> {
             .collect(),
         transactions: database.open_transactions().len(),
         sessions: state.auth.as_ref().map(|auth| auth.open_sessions()),
-        log_bytes: journal.map(|(log, _)| log),
-        snapshot_bytes: journal.map(|(_, snapshot)| snapshot),
+        log_bytes: journal.map(|kept| kept.log),
+        snapshot_bytes: journal.map(|kept| kept.snapshot),
+        model_bytes: journal.map(|kept| kept.model),
+        earlier_models_bytes: journal.map(|kept| kept.earlier_models),
         memory_bytes: memory(),
     })
 }
