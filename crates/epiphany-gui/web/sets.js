@@ -548,7 +548,7 @@ class SetEditor {
     this.left.addEventListener('keydown', (event) => this.leftKey(event));
     this.right = h('div', { class: 'set-list', role: 'listbox', 'aria-label': 'Current set', 'aria-multiselectable': 'true', tabindex: '-1' });
     this.rightRows = new Rows(this.right, (index) => this.drawItem(index));
-    this.rightEmpty = h('p', { class: 'set-empty', hidden: true }, icon('plus', 18), 'Drag members here from the left, double-click one, or pick some and choose Add.');
+    this.rightEmpty = h('p', { class: 'set-empty', hidden: true }, icon('plus', 18), 'Drag members here from those available, double-click one, or pick some and choose Add.');
     this.right.append(this.rightRows.element, this.rightEmpty);
     this.right.addEventListener('keydown', (event) => this.rightKey(event));
     // Members dragged from the tree, or within the set, or names dropped from elsewhere, go
@@ -729,7 +729,7 @@ class SetEditor {
           h('button', { class: 'button small quiet', type: 'button', title: 'Add members by name or alias, from a list', onclick: () => this.pasteList() }, icon('paste', 14), 'Paste'),
           h('button', { class: 'button small quiet', type: 'button', onclick: () => this.change(() => { this.set = []; }) }, 'Clear')),
         this.right,
-        h('p', { class: 'hint' }, `Drag members in from the left, or within the set to reorder; drag them back to take them out. Right-click a member for more. Alt with the arrow keys moves those marked, Delete removes them, and ${MOD} C and ${MOD} V copy and paste names.`)));
+        h('p', { class: 'hint' }, `Drag members in from those available, or within the set to reorder; drag them back to take them out. Right-click a member for more. Alt with the arrow keys moves those marked, Delete removes them, and ${MOD} C and ${MOD} V copy and paste names.`)));
     this.dialogBody = body;
     this.draw();
     const asked = dialog({

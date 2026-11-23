@@ -710,8 +710,12 @@ dialog.wide .dialog-body { max-height: none; }
 .set-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); height: 100%; padding: var(--s5); text-align: center; color: var(--text-3); }
 .set-empty[hidden] { display: none; }
 .set-none { padding: var(--s3); }
+/* One pane above the other, each at its own height, and the dialog's body scrolling as any
+   dialog's does: in a height shared, the first would be drawn over the second. */
 @media (max-width: 900px) {
-  .set-editor { grid-template-columns: 1fr; }
+  dialog.wide .dialog-body { max-height: 65vh; }
+  .set-editor { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; height: auto; }
+  .set-tree, .set-list { flex: none; height: min(45vh, 420px); }
   .set-moves { flex-direction: row; flex-wrap: wrap; }
   .set-moves .button { width: auto; }
   .set-moves hr { display: none; }
@@ -719,13 +723,25 @@ dialog.wide .dialog-body { max-height: none; }
 
 /* ---- Filtering the set editor by rules ---- */
 
-.filter-panel { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); }
+/* In a pane too short for it and the tree beneath, it scrolls, leaving the tree its room. */
+.filter-panel { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); overflow: auto; container: rules / inline-size; }
 .filter-panel[hidden] { display: none; }
 /* The rules share one grid, so that their fields line up and the words that join them take
    the room they need on one line. */
 .rules { display: grid; grid-template-columns: max-content minmax(7.5rem, 1fr) minmax(4.5rem, 0.7fr) minmax(9.5rem, 1.2fr) auto; gap: var(--s2); align-items: center; }
 .rule { display: contents; }
 .rules > .hint { grid-column: 1 / -1; }
+/* In a box too narrow for that line, as a pane of the set editor or a phone's dialog, a rule
+   takes two, its fields still lined up with the other rules': its first choice beside the
+   word that joins it and its button at the end of that line, the rest beneath. */
+@container rules (max-width: 31rem) {
+  .rules { grid-template-columns: max-content minmax(0, 1fr) minmax(0, 1fr) auto; row-gap: var(--s3); }
+  .rule { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; row-gap: var(--s1); align-items: center; }
+  .rule > :nth-child(2) { grid-column: 2 / 4; }
+  .rule > :nth-child(3) { grid-column: 1 / 3; }
+  .rule > :nth-child(4) { grid-column: 3 / 5; }
+  .rule > :last-child { grid-area: 1 / 4; }
+}
 .rule .select, .rule .input { width: 100%; height: var(--control-small); font-size: var(--text-s); }
 .rule-join { font-size: var(--text-s); white-space: nowrap; }
 .filter-count:empty { display: none; }
@@ -1059,6 +1075,9 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
   .field-pair { grid-template-columns: minmax(0, 1fr); }
   .element-role { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .element-role > .button:last-child { justify-self: end; }
+  /* On a phone the highlight rules' box decides too, as the filter's always does. Wider, the
+     dialog grows to fit each rule on one line, which it could not were the box to decide. */
+  .field:has(> .rules) { container: rules / inline-size; }
   .status-line { flex-wrap: wrap; gap: var(--s1) var(--s4); padding: var(--s1) var(--s3); }
 }
 

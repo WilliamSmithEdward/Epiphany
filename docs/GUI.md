@@ -93,7 +93,11 @@ only way to do something, and modal dialogs where a side panel would keep the da
   heard by a screen reader; headings and their buttons stack, as do a dialog's fields set side
   by side, an element role taking two lines; and the explorer's buttons go
   along one row that scrolls sideways, so that the grid shows on the first screen. No page is
-  wider than the screen.
+  wider than the screen, nor any dialog. A rule, of the highlights or of the set editor's
+  filter, takes two lines where its box is too narrow for one, its fields still lined up with
+  the other rules': on a phone, and in a pane of the set editor on any screen. Under 900
+  pixels the set editor's panes go one above the other, each at its own height, its dialog
+  scrolling; and a filter too tall for its pane scrolls within it, leaving the tree its room.
 - **Printable.** A page prints as it reads, without the bar, the list of pages or what only
   controls it: in the light palette whatever the screen's, at its full length, the grid's
   headings repeated on every sheet and its shading, highlights and chart colours kept. A grid

@@ -362,6 +362,40 @@ const ASKS_TO_CLOSE = `(() => {
   return closing.defaultPrevented;
 })()`;
 
+/**
+ * How far the open dialog reaches sideways beyond what it shows, its body scrolled or a rule's
+ * field past the rules' box; and how far a part of a set editor in it is drawn over the next.
+ */
+const OVERDRAWN = `(() => {
+  const body = [...document.querySelectorAll('dialog[open] .dialog-body')].pop();
+  const fields = [...body.querySelectorAll('.rule > *')].map((field) => field.getBoundingClientRect().right - field.closest('.rules').getBoundingClientRect().right);
+  const parts = [...body.querySelectorAll('.set-editor > *')].map((part) => Math.max(...[...part.children].map((each) => each.getBoundingClientRect().bottom)) - part.getBoundingClientRect().bottom);
+  return { sideways: Math.round(Math.max(body.scrollWidth - body.clientWidth, ...fields)), over: Math.round(Math.max(0, ...parts)) };
+})()`;
+
+/** Two highlight rules, then two of the set editor's filter rules, drawn within their dialogs. */
+async function rulesFit(where) {
+  await page.click('button', 'Highlight');
+  await page.waitFor(`document.querySelector('dialog[open]')?.getAttribute('aria-label') === 'Highlights'`, 'the highlights');
+  await page.click('dialog[open] button', 'Add a rule');
+  await page.click('dialog[open] button', 'Add a rule');
+  await page.waitFor(`document.querySelectorAll('dialog[open] .rule').length === 2`, 'two highlight rules');
+  const highlights = await page.evaluate(OVERDRAWN);
+  expect(highlights.sideways <= 0, `The highlight rules reach ${highlights.sideways} pixels beyond their dialog at ${where}.`);
+  await page.click('dialog[open] button', 'Cancel');
+  await page.waitFor(`!document.querySelector('dialog[open]')`, 'the highlights, closed');
+  await page.click('.zone[data-place="rows"] .chip-main');
+  await page.waitFor(`document.querySelector('dialog[open] .set-editor')`, 'the set editor');
+  await page.click('dialog[open] button', 'Filter');
+  await page.click('dialog[open] button', 'Add a rule');
+  await page.waitFor(`document.querySelectorAll('dialog[open] .rule').length === 2`, 'two filter rules');
+  const filter = await page.evaluate(OVERDRAWN);
+  expect(filter.sideways <= 0, `The set editor's filter rules reach ${filter.sideways} pixels beyond their box at ${where}.`);
+  expect(filter.over <= 0, `A part of the set editor is drawn ${filter.over} pixels over the next at ${where}.`);
+  await page.click('dialog[open] button', 'Cancel');
+  await page.waitFor(`!document.querySelector('dialog[open]')`, 'the set editor, closed');
+}
+
 /** A number as the grid shows it, or null for an empty cell. */
 const shownNumber = (text) => (text === '' ? null : Number(text.replace(/,/g, '').replace(/−/g, '-')));
 
@@ -862,6 +896,7 @@ async function exploring() {
         if (path.startsWith('/explore')) {
           const below = await page.evaluate(`document.querySelector('td[data-r]').getBoundingClientRect().bottom`) - phone.height;
           expect(below < 0, `The grid's first cell is ${below} pixels below a phone's screen.`);
+          await rulesFit('a phone\'s width');
         }
         if (path === '/admin') {
           // The user's editor, its widest rows in it, no wider than the dialog.
@@ -878,6 +913,16 @@ async function exploring() {
           await page.waitFor(`!document.querySelector('dialog[open]')`, 'the editor, closed');
         }
       }
+    } finally {
+      await page.call('Emulation.clearDeviceMetricsOverride');
+    }
+  });
+  await step('In a laptop\'s window the set editor\'s filter rules fit its narrower pane, and push nothing over the tree', async () => {
+    await page.call('Emulation.setDeviceMetricsOverride', { width: 1100, height: 800, deviceScaleFactor: 1, mobile: false });
+    try {
+      await page.goto('/explore?cube=General%20Ledger');
+      await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
+      await rulesFit('a laptop\'s width');
     } finally {
       await page.call('Emulation.clearDeviceMetricsOverride');
     }
