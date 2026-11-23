@@ -4,7 +4,7 @@ import { del, get, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
 import { cellQuery, handOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, h, icon, mount, notify, when, working } from './ui.js';
+import { dialog, h, icon, invalid, mount, notify, when, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
 /** The roles an element takes: hidden, it is not there for the user at all. */
@@ -269,9 +269,9 @@ class AdminPage {
           h('span', { class: 'hint' }, 'A role on an element holds for everything beneath it, unless an element nearer has its own. A hidden element is not there for the user at all, though totals still count it. Administrators are bound by none.'))),
       onsubmit: async () => {
         const value = name.value.trim();
-        if (!value) throw new Error('Give the user a name.');
-        if (password.value !== again.value) throw new Error('The two passwords differ.');
-        if (adding && !password.value) throw new Error('A new user needs a password.');
+        if (!value) throw invalid(name, 'Give the user a name.');
+        if (password.value !== again.value) throw invalid(again, 'The two passwords differ.');
+        if (adding && !password.value) throw invalid(password, 'A new user needs a password.');
         const cubeRoles = {};
         for (const row of rows.children) {
           const [cube, chosen] = row.querySelectorAll('select');
@@ -280,7 +280,7 @@ class AdminPage {
         const elements = {};
         for (const row of elementRows.children) {
           const [dimensionSelect, roleSelect] = row.querySelectorAll('select');
-          if (!row.dataset.element) throw new Error('Choose an element for each element role, or take the role away.');
+          if (!row.dataset.element) throw invalid(row.querySelector('button'), 'Choose an element for each element role, or take the role away.');
           (elements[dimensionSelect.value] ??= {})[row.dataset.element] = roleSelect.value;
         }
         const body = { role: role.value, cubes: cubeRoles, elements };

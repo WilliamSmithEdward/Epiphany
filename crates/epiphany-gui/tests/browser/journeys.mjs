@@ -557,7 +557,20 @@ async function exploring() {
     await page.click('.menu [role="menuitem"]', 'Save this query as a view…');
     await page.waitFor(`document.querySelector('dialog[open] #view-name')`, 'the dialog that saves a view');
     await page.audit('Saving a view');
+    // A name of spaces is refused at its field: marked, described by the refusal beneath it, and
+    // given the keys; changed, it is marked no more.
+    await page.fill('#view-name', '   ');
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('#view-name')?.getAttribute('aria-invalid') === 'true'`, 'the name, refused');
+    const refusal = await page.evaluate(`(() => {
+      const field = document.querySelector('#view-name');
+      const said = document.getElementById(field.getAttribute('aria-describedby'));
+      return { said: said?.textContent, beneath: Boolean(said && field.closest('.field').contains(said)), keys: document.activeElement === field };
+    })()`);
+    expect(refusal.said === 'Give the view a name.' && refusal.beneath && refusal.keys, `The refusal is ${quoted(refusal)}.`);
+    await page.audit('A view\'s name, refused');
     await page.fill('#view-name', 'Budget detail');
+    expect(await page.evaluate(`!document.querySelector('#view-name').hasAttribute('aria-invalid')`), 'The name stays marked once changed.');
     await page.press('Enter');
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('for you alone'))`, 'the view, saved');
     const kept = (await page.api('GET', views)).data;

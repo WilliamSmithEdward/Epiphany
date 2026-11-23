@@ -3,7 +3,7 @@
 import { del, get, part, put } from './api.js';
 import { state } from './app.js';
 import { beneath, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, copyText, dialog, h, icon, menu, MOD, mount, notify } from './ui.js';
+import { choices, copyText, dialog, h, icon, invalid, menu, MOD, mount, notify } from './ui.js';
 
 /**
  * Edits the set of members a dimension shows on an axis. `dim` is the dimension as the
@@ -788,7 +788,7 @@ class SetEditor {
         h('p', { class: 'hint' }, `The ${this.set.length.toLocaleString()} member${this.set.length === 1 ? '' : 's'} of the set, in order, kept for you alone: nobody else sees it. One of yours of the same name is replaced.`)),
       onsubmit: async () => {
         const subset = name.value.trim();
-        if (!subset) throw new Error('Give the subset a name.');
+        if (!subset) throw invalid(name, 'Give the subset a name.');
         await put(`/dimensions/${part(this.dim.name)}/private-subsets/${part(subset)}`, { elements: this.set });
         return subset;
       },

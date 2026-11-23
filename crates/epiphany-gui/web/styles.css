@@ -265,6 +265,11 @@ main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: co
 .input:hover, .select:hover, .textarea:hover { border-color: var(--text-3); }
 .input:focus, .select:focus, .textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .input[aria-invalid="true"] { border-color: var(--bad); }
+/* A field a dialog refused, until it is changed: in the colour of the refusal beneath it, with
+   the ring of the keys in that colour while it has them. */
+:is(.input, .select, .textarea, .button)[data-refused] { border-color: var(--bad); }
+:is(.input, .select, .textarea, .button)[data-refused]:focus { box-shadow: 0 0 0 3px var(--bad-soft); }
+input[type="checkbox"][data-refused] { outline: 2px solid var(--bad); outline-offset: 2px; }
 .hint { font-size: var(--text-xs); color: var(--text-3); }
 .error-text { font-size: var(--text-s); color: var(--bad); }
 

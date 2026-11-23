@@ -7,7 +7,7 @@ import { del, modelVersion, part, post, put } from './api.js';
 import { chart, shape, sparkline } from './chart.js';
 import { empty, failure, go, model, state } from './app.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, h, icon, menu, mount, notify, shownText, working } from './ui.js';
+import { dialog, h, icon, invalid, menu, mount, notify, shownText, working } from './ui.js';
 
 /** The ways a tile shows its view. */
 const SHOWS = { figure: 'Key figure', bars: 'Bars', stacked: 'Stacked bars', lines: 'Lines', grid: 'Grid' };
@@ -283,8 +283,8 @@ class Dashboards {
         h('div', { class: 'field' }, h('label', { for: 'dashboard-description' }, 'What it is for'), description)),
       onsubmit: () => {
         const value = name.value.trim();
-        if (!value) throw new Error('Give the dashboard a name.');
-        if (this.list().some((dashboard) => dashboard.name.toLowerCase() === value.toLowerCase())) throw new Error(`There is a dashboard called ${value} already.`);
+        if (!value) throw invalid(name, 'Give the dashboard a name.');
+        if (this.list().some((dashboard) => dashboard.name.toLowerCase() === value.toLowerCase())) throw invalid(name, `There is a dashboard called ${value} already.`);
         return { name: value, description: description.value.trim(), tiles: [] };
       },
     });

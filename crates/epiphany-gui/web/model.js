@@ -5,7 +5,7 @@
 import { del, get, part, put } from './api.js';
 import { empty, failure, go } from './app.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, dialog, h, icon, menu, mount, notify, parseNumber, splitter, textWidths, when, working } from './ui.js';
+import { choices, dialog, h, icon, invalid, menu, mount, notify, parseNumber, splitter, textWidths, when, working } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 
@@ -249,8 +249,8 @@ class ModelPage {
         h('p', { class: 'hint' }, 'It starts with one consolidation, Total, to build from.')),
       onsubmit: async () => {
         const value = name.value.trim();
-        if (!value) throw new Error('Give the dimension a name.');
-        if (this.definition.dimensions.some((d) => d.name.toLowerCase() === value.toLowerCase())) throw new Error('There is already a dimension of that name.');
+        if (!value) throw invalid(name, 'Give the dimension a name.');
+        if (this.definition.dimensions.some((d) => d.name.toLowerCase() === value.toLowerCase())) throw invalid(name, 'There is already a dimension of that name.');
         const dimension = { name: value, type: type.value, elements: [{ name: 'Total', type: 'consolidated', children: [] }] };
         if (!(await this.save(`/dimensions/${part(value)}`, { dimension }))) throw new Error('It was not added.');
         this.replace('dimension', dimension);
@@ -273,8 +273,8 @@ class ModelPage {
         h('fieldset', { class: 'field' }, h('legend', {}, 'Dimensions, in order'), h('div', { class: 'checks' }, boxes))),
       onsubmit: async () => {
         const value = name.value.trim();
-        if (!value) throw new Error('Give the cube a name.');
-        if (chosen.size < 1) throw new Error('Choose at least one dimension.');
+        if (!value) throw invalid(name, 'Give the cube a name.');
+        if (chosen.size < 1) throw invalid(boxes[0]?.querySelector('input'), 'Choose at least one dimension.');
         const dimensions = this.definition.dimensions.map((d) => d.name).filter((d) => chosen.has(d));
         const cube = { name: value, dimensions };
         if (!(await this.save(`/cubes/${part(value)}`, { cube }))) throw new Error('It was not added.');
@@ -777,9 +777,9 @@ class DimensionEditor extends Editor {
         withWeight ? h('div', { class: 'field' }, h('label', { for: 'element-new-weight' }, 'Weight'), weight) : null),
       onsubmit: () => {
         const value = name.value.trim();
-        if (!value) throw new Error('Give the element a name.');
+        if (!value) throw invalid(name, 'Give the element a name.');
         const w = Number(weight.value);
-        if (withWeight && !Number.isFinite(w)) throw new Error('The weight must be a number.');
+        if (withWeight && !Number.isFinite(w)) throw invalid(weight, 'The weight must be a number.');
         return { name: value, type: type.value, weight: w };
       },
     });

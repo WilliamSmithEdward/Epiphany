@@ -181,14 +181,53 @@ export function notify(message, kind = 'plain') {
  * Shows a modal dialog and resolves with what `onsubmit` returns, or null if it is
  * dismissed. `body` is the content; `actions` the label of the confirming button.
  */
+let dialogs = 0;
+
+/**
+ * A refusal of what `field` holds, to throw from a dialog's `onsubmit`: the dialog says it
+ * beneath the field, marks the field, and gives it the keys.
+ */
+export function invalid(field, message) {
+  return Object.assign(new Error(message), { field });
+}
+
 export function dialog({ title, body, confirm = 'OK', cancel = 'Cancel', danger = false, wide = false, onsubmit = () => true }) {
   return new Promise((resolve) => {
-    const error = h('p', { class: 'error-text', role: 'alert', hidden: true });
+    const error = h('p', { class: 'error-text', role: 'alert', id: `dialog-error-${++dialogs}`, hidden: true });
     const submit = h('button', { class: `button ${danger ? 'danger' : 'primary'}`, type: 'submit' }, confirm);
+    const content = h('div', { class: 'dialog-body' }, body, error);
+    // The field refused last: marked, and described by the refusal, until it is changed.
+    let refused = null;
+    const unmark = () => {
+      if (!refused) return;
+      const { field, listening } = refused;
+      listening.abort();
+      field.removeAttribute('aria-invalid');
+      delete field.dataset.refused;
+      const others = (field.getAttribute('aria-describedby') ?? '').split(' ').filter((id) => id && id !== error.id);
+      if (others.length) field.setAttribute('aria-describedby', others.join(' '));
+      else field.removeAttribute('aria-describedby');
+      refused = null;
+    };
+    const refuse = (problem) => {
+      const { field } = problem;
+      error.textContent = problem.message;
+      error.hidden = false;
+      (field?.closest('.field') ?? content).append(error);
+      if (!field) return;
+      refused = { field, listening: new AbortController() };
+      // A button, as one that chooses, is not a field that can be invalid, but is marked to the eye.
+      const control = field.matches('input, select, textarea');
+      if (control) field.setAttribute('aria-invalid', 'true');
+      field.dataset.refused = '';
+      field.setAttribute('aria-describedby', [field.getAttribute('aria-describedby'), error.id].filter(Boolean).join(' '));
+      for (const kind of control ? ['input', 'change'] : ['click']) field.addEventListener(kind, unmark, { signal: refused.listening.signal });
+      field.focus();
+    };
     const form = h('form', { method: 'dialog' },
       h('div', { class: 'dialog-head' }, h('h2', {}, title),
         h('button', { class: 'button quiet icon small', type: 'button', 'aria-label': 'Close', onclick: () => element.close() }, icon('close', 16))),
-      h('div', { class: 'dialog-body' }, body, error),
+      content,
       h('div', { class: 'dialog-foot' },
         cancel ? h('button', { class: 'button', type: 'button', onclick: () => element.close() }, cancel) : null,
         submit));
@@ -198,12 +237,12 @@ export function dialog({ title, body, confirm = 'OK', cancel = 'Cancel', danger 
       event.preventDefault();
       working(submit, async () => {
         error.hidden = true;
+        unmark();
         try {
           result = await onsubmit(form);
           element.close();
         } catch (problem) {
-          error.textContent = problem.message;
-          error.hidden = false;
+          refuse(problem);
         }
       });
     });

@@ -3,7 +3,7 @@
 // each part readable.
 
 import { get, post } from './api.js';
-import { dialog, h, MOD, notify, parseNumber } from './ui.js';
+import { dialog, h, invalid, MOD, notify, parseNumber } from './ui.js';
 
 /** A spread typed into a total asks first when it reaches more leaf cells than this. */
 const SPREAD_ASKS = 1000;
@@ -522,7 +522,7 @@ export const writeback = {
         h('p', { class: 'hint' }, 'You can also type into a total: a number spreads in proportion, and P, S or R before it spreads in proportion, equally, or the whole into each. Nothing is saved until you save your changes.')),
       onsubmit: () => {
         const value = parseNumber(amount.value);
-        if (value === null) throw new Error('Enter a number.');
+        if (value === null) throw invalid(amount, 'Enter a number.');
         return { value, method: method.value };
       },
     });

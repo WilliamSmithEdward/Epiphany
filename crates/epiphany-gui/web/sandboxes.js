@@ -4,7 +4,7 @@
 
 import { del, get, part, post } from './api.js';
 import { state } from './app.js';
-import { dialog, formatValue, h, icon, menu, mount, notify } from './ui.js';
+import { dialog, formatValue, h, icon, invalid, menu, mount, notify } from './ui.js';
 
 /** Where the sandbox someone last worked in is remembered, by their name. */
 const remembered = () => `epiphany.sandbox.${state.user?.name ?? ''}`;
@@ -124,7 +124,7 @@ export const sandboxes = {
         h('p', { class: 'hint' }, 'Changes made in a sandbox are yours alone, kept on the server, across every cube, until you publish them to the stored values or discard them. Totals in it include them.')),
       onsubmit: async () => {
         const wanted = name.value.trim();
-        if (!wanted) throw new Error('Give the sandbox a name.');
+        if (!wanted) throw invalid(name, 'Give the sandbox a name.');
         return post('/sandboxes', { name: wanted });
       },
     });

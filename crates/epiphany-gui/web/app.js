@@ -2,7 +2,7 @@
 
 import { ApiError, api, events, get } from './api.js';
 import { marked } from './tree.js';
-import { dialog, h, icon, menu, MOD, mount, notify, when, working } from './ui.js';
+import { dialog, h, icon, invalid, menu, MOD, mount, notify, when, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
@@ -170,7 +170,7 @@ async function reauthenticate() {
         return await api('POST', '/gui/session', { name: name.value.trim(), password: password.value });
       } catch (problem) {
         password.select();
-        throw new Error(problem.status === 401 ? 'That name and password do not match.' : problem.message);
+        throw problem.status === 401 ? invalid(password, 'That name and password do not match.') : new Error(problem.message);
       }
     },
   });

@@ -8,7 +8,7 @@ import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, l
 import { chooseMember, dimension } from './picker.js';
 import { editSet } from './sets.js';
 import { beneath } from './tree.js';
-import { choices, copyText, dialog, download, formatValue, h, icon, menu, MOD, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
+import { choices, copyText, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid } from './grid.js';
 import { sandboxes } from './sandboxes.js';
@@ -1010,7 +1010,7 @@ class Explorer {
         h('p', { class: 'hint' }, `By ${columnTuple.map((m) => m.name).join(' · ')}. Show every row again from the toolbar.`)),
       onsubmit: () => {
         const n = Math.floor(Number(count.value));
-        if (!(n >= 1)) throw new Error('Keep at least one row.');
+        if (!(n >= 1)) throw invalid(count, 'Keep at least one row.');
         return { count: n, bottom: which.value === 'smallest' };
       },
     });
@@ -1063,8 +1063,8 @@ class Explorer {
         h('p', { class: 'hint' }, `It stands after the members of ${dimension}, worked out by the query for every cell; it is kept with the layout and any view saved from it.`)),
       onsubmit: () => {
         const label = named.value.trim();
-        if (!label) throw new Error('Give the calculation a name.');
-        if (dim.byName.has(label) || this.calculated(dimension, label)) throw new Error(`${dimension} has a member called ${label} already.`);
+        if (!label) throw invalid(named, 'Give the calculation a name.');
+        if (dim.byName.has(label) || this.calculated(dimension, label)) throw invalid(named, `${dimension} has a member called ${label} already.`);
         return { dimension, name: label, kind: kind.value, a: name, ...(kind.value === 'share' ? {} : { b: other.value }) };
       },
     });
@@ -1146,7 +1146,8 @@ class Explorer {
           h('div', { class: 'toolbar' }, h('button', { class: 'button small', type: 'button', onclick: () => { rules.push({ test: 'below', value: 0, tone: 'bad' }); draw(); } }, icon('plus', 14), 'Add a rule'))),
         h('p', { class: 'hint' }, 'Totals take no bar or shade, being out of scale with what they add up. A view saved keeps its highlights.')),
       onsubmit: () => {
-        if (rules.some((rule) => rule.value === null || !Number.isFinite(rule.value))) throw new Error('Give every rule a number.');
+        const unnumbered = rules.findIndex((rule) => rule.value === null || !Number.isFinite(rule.value));
+        if (unnumbered >= 0) throw invalid(list.children[unnumbered].querySelector('input'), 'Give every rule a number.');
         const next = { ...(bars.checked ? { bars: true } : {}), ...(shades.checked ? { shades: true } : {}), ...(rules.length ? { rules } : {}) };
         return { highlights: Object.keys(next).length ? next : null };
       },
@@ -1236,7 +1237,7 @@ class Explorer {
           : 'A view of the same name is replaced.')),
       onsubmit: async () => {
         const view = name.value.trim();
-        if (!view) throw new Error('Give the view a name.');
+        if (!view) throw invalid(name, 'Give the view a name.');
         if (keepsOwn && (!shares || own.checked)) {
           await put(`/cubes/${part(this.cube.name)}/private-views/${part(view)}`, this.asView());
           return `Saved the view “${view}” for you alone.`;
