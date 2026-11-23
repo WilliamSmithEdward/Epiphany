@@ -310,6 +310,13 @@ class Page {
     await this.call('Input.insertText', { text });
   }
 
+  /** A field clicked into and emptied: its text chosen, and Backspace pressed. */
+  async clear(css) {
+    await this.click(css);
+    await this.evaluate('document.activeElement.select?.()');
+    await this.press('Backspace');
+  }
+
   /** A call to the Epiphany server through the GUI's, as the signed-in user. */
   api(method, path, body) {
     return this.evaluate(`fetch(${quoted(`/api${path}`)}, {
@@ -606,6 +613,11 @@ async function exploring() {
     // Explore in the list of pages opens the cube explored last, not the first, and names it.
     await page.click('.nav a', 'Explore');
     await page.waitFor(`location.search === '?cube=General%20Ledger' && document.title.startsWith('General Ledger') && document.querySelector('td[data-r]')`, 'the cube explored last');
+    // The fields found by a word of an element's name, with the elements that have it.
+    await page.fill('input[placeholder="Find a dimension or element"]', 'rent');
+    await page.waitFor(`[...document.querySelectorAll('.field-list .field')].map((field) => field.textContent).join('|').includes('Rent') && document.querySelectorAll('.field-list .field').length === 1`, 'Account, with Rent');
+    await page.clear('input[placeholder="Find a dimension or element"]');
+    await page.waitFor(`document.querySelectorAll('.field-list .field').length === 4`, 'every field again');
   });
   await step('A query typed in that cannot be read is shown where, to be mended there', async () => {
     const broken = 'SELECT {[Period].[Jan] ON COLUMNS FROM [General Ledger]';
@@ -1199,7 +1211,7 @@ async function changingTheModel() {
     // Found by a word of its name, beneath the member above it.
     await page.fill('input[placeholder="Find an element"]', 'fr');
     await page.waitFor(`[...document.querySelectorAll('.element-row.match')].map((row) => row.dataset.name).join() === 'FR'`, 'FR, found');
-    await page.fill('input[placeholder="Find an element"]', '');
+    await page.clear('input[placeholder="Find an element"]');
   });
 }
 

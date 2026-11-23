@@ -506,7 +506,11 @@ class Explorer {
       const words = search.value.trim().toLowerCase();
       mount(list, this.cube.dimensions.map((name) => {
         const dim = this.dims.get(name);
-        const matches = words ? dim.elements.filter((element) => element.name.toLowerCase().includes(words)).slice(0, 8) : [];
+        // The first eight found: the rest of a large dimension is not looked through.
+        const matches = [];
+        for (const element of words ? dim.elements : []) {
+          if (element.name.toLowerCase().includes(words) && matches.push(element) === 8) break;
+        }
         if (words && !name.toLowerCase().includes(words) && !matches.length) return null;
         const place = this.placeOf(name);
         // Dragged by the mouse; its Place button is the way to the same places by the keys.
