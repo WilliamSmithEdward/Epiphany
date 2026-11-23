@@ -6,6 +6,7 @@ import { empty, failure, go, loading, model, readdress, state } from './app.js';
 import { chart, shape } from './chart.js';
 import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, linkOf, mdx, namesOf, pathKey, pathsBeneath, quote, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
+import { csvOf } from './selection.js';
 import { editSet } from './sets.js';
 import { choices, copyText, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
@@ -1375,12 +1376,7 @@ class Explorer {
 
   /* ---- Export ---- */
   exportCsv() {
-    const field = (value) => {
-      const text = value === null || value === undefined ? '' : String(value);
-      return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
-    };
-    const lines = this.tableOf().map((cells) => cells.map(field).join(','));
-    download(`${this.cube.name}.csv`, `${lines.join('\r\n')}\r\n`, 'text/csv');
+    download(`${this.cube.name}.csv`, csvOf(this.tableOf()), 'text/csv');
   }
 
   /**

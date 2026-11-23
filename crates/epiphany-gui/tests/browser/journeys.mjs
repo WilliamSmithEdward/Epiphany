@@ -1008,6 +1008,18 @@ async function exploring() {
     await page.press('Escape');
     await page.waitFor(`!document.querySelector('.dash-tile.focused')`, 'the dashboard, back');
   });
+  await step('A tile\'s menu shows its numbers in place of its chart, copies them, and shows the chart again', async () => {
+    const more = '.dash-tile[data-index="1"] .tile-head [aria-haspopup="menu"]';
+    await page.click(more);
+    await page.click('.menu [role="menuitem"]', 'Show its numbers');
+    await page.waitFor(`document.querySelector('.dash-tile[data-index="1"] .tile-table [role="cell"]')`, 'the bars, as their numbers');
+    await page.click(more);
+    await page.click('.menu [role="menuitem"]', 'Copy its numbers');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent === 'Copied.')`, 'the numbers, copied');
+    await page.click(more);
+    await page.click('.menu [role="menuitem"]', 'Show the bars again');
+    await page.waitFor(`document.querySelector('.dash-tile[data-index="1"] .chart') && !document.querySelector('.dash-tile[data-index="1"] .tile-table')`, 'the bars again');
+  });
   await step('A key figure takes the colour of the first of its view\'s rules its value meets', async () => {
     // The view coloured green at nought or more, as a target met.
     const { data } = await page.api('GET', '/model');

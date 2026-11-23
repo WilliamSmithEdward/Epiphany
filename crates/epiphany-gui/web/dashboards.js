@@ -9,8 +9,9 @@ import { del, modelVersion, part, post, put } from './api.js';
 import { announce, empty, failure, go, model, readdress, state } from './app.js';
 import { COLUMNS, firstFree, inReadingOrder, linesOf, moveOnGrid, nearest, onPage, ontoGrid, resizeOnGrid } from './arrange.js';
 import { chooseMember, dimension } from './picker.js';
-import { KINDS, present, prose } from './tiles.js';
-import { choices, dialog, h, icon, invalid, menu, MOD, mount, notify, when, working } from './ui.js';
+import { csvOf, tsvOf } from './selection.js';
+import { KINDS, numbersOf, present, prose } from './tiles.js';
+import { choices, copyText, dialog, download, h, icon, invalid, menu, MOD, mount, notify, when, working } from './ui.js';
 
 /** A row's height and the gap between tiles, in pixels: as the styles have them. */
 const ROW = 40;
@@ -83,6 +84,8 @@ class Dashboards {
     // the one each tile showed last, by its place in the dashboard.
     this.answers = new Map();
     this.lastShown = new Map();
+    // The tiles shown as their numbers for now, in place of how they show them, by place.
+    this.tabled = new Set();
     this.snapping = localStorage.getItem(SNAP) !== 'off';
     // A page too narrow for its columns stands the tiles one above the other.
     this.watcher = new ResizeObserver(() => {
@@ -104,6 +107,7 @@ class Dashboards {
     this.selection = null;
     this.focused = null;
     this.lastShown.clear();
+    this.tabled.clear();
     // Not told which, or told of one there is not, the page shows the dashboard shown last,
     // while there is one of that name, or else the first; and the address names it.
     const named = (wanted) => this.list().find((dashboard) => dashboard.name === wanted)?.name;
@@ -482,7 +486,7 @@ class Dashboards {
       ]
       : [
         h('button', { class: 'button small quiet icon', 'aria-label': focused ? `Back to the dashboard from ${named}` : `Show ${named} on the whole page`, title: focused ? 'Back (Escape)' : 'Show on the whole page', onclick: () => this.focus(focused ? null : index) }, icon(focused ? 'unfocus' : 'focus', 16)),
-        text ? null : h('a', { class: 'button small quiet icon', href: open, 'data-link': '', title: 'Open in Explore', 'aria-label': `Open ${named} in Explore` }, icon('explore', 16)),
+        text ? null : h('button', { class: 'button small quiet icon', 'aria-label': `More of ${named}`, 'aria-haspopup': 'menu', title: 'Its numbers, copied or downloaded, and its view in Explore', onclick: (event) => this.viewMenu(index, event.currentTarget, open) }, icon('more', 16)),
       ];
     const head = title || editing || !text
       ? h('div', { class: 'tile-head' },
@@ -527,7 +531,7 @@ class Dashboards {
     // Stood at members none of its rows or columns are, a view has nothing to show, and says so.
     const shown = (result, fresh) => mount(body, context.length && result.axes.some((axis) => !axis.tuples.length)
       ? empty('filter', 'Nothing here at these members', `None of the view's rows or columns stand at ${context.map((at) => at.member).join(', ')}.`)
-      : present(result, tile, view, {
+      : present(result, this.tabled.has(index) ? { ...tile, show: 'grid' } : tile, view, {
         pick: this.editing ? null : (members, key) => this.select({ tile: index, key, members }),
         picked: this.selection?.tile === index ? this.selection.key : null,
         fresh,
@@ -569,6 +573,34 @@ class Dashboards {
     this.selection = same || !selection || !members.length ? null : { ...selection, members };
     this.draw();
     announce(this.selection ? `Every other tile at ${this.selection.members.map((m) => m.name).join(', ')}` : 'Every tile as before');
+  }
+
+  /**
+   * A shown tile's menu: its numbers in place of its chart, or its chart again; its numbers
+   * copied, to paste into a spreadsheet, or downloaded as CSV; and its view in Explore.
+   */
+  viewMenu(index, at, open) {
+    const tile = this.shown().tiles[index];
+    const result = this.lastShown.get(index)?.result;
+    const name = tile.title || tile.view;
+    const tabled = this.tabled.has(index);
+    const [kind, kindIcon] = KINDS[tile.show ?? 'bars'];
+    menu([
+      { heading: name },
+      tile.show === 'grid' ? null : {
+        label: tabled ? `Show the ${kind.toLowerCase()} again` : 'Show its numbers',
+        icon: tabled ? kindIcon : 'grid',
+        action: () => {
+          if (tabled) this.tabled.delete(index);
+          else this.tabled.add(index);
+          this.draw();
+        },
+      },
+      { label: 'Copy its numbers', icon: 'copy', disabled: !result, action: () => copyText(tsvOf(numbersOf(result))) },
+      { label: 'Download them as CSV', icon: 'download', disabled: !result, action: () => download(`${name}.csv`, csvOf(numbersOf(result)), 'text/csv') },
+      '-',
+      { label: 'Open in Explore', icon: 'explore', action: () => go(open) },
+    ], at);
   }
 
   /** Shows a tile over the whole page, or the dashboard again: its button keeps the keys either way. */

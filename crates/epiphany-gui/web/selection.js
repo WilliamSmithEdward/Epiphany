@@ -263,6 +263,20 @@ export function cellText(value) {
   return String(value ?? '').replace(/[\t\r\n]+/g, ' ');
 }
 
+/** Rows of cells as a spreadsheet takes them pasted: tabs between, a line each. */
+export function tsvOf(table) {
+  return table.map((cells) => cells.map(cellText).join('\t')).join('\n');
+}
+
+/** Rows of cells as CSV, a field quoted where it holds a comma, a quote or a line break. */
+export function csvOf(table) {
+  const field = (value) => {
+    const text = value === null || value === undefined ? '' : String(value);
+    return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+  };
+  return `${table.map((cells) => cells.map(field).join(',')).join('\r\n')}\r\n`;
+}
+
 function union(a, b) {
   return { r1: Math.min(a.r1, b.r1), r2: Math.max(a.r2, b.r2), c1: Math.min(a.c1, b.c1), c2: Math.max(a.c2, b.c2) };
 }

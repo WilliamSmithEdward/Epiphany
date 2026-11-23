@@ -26,6 +26,22 @@ export const KINDS = {
 const label = (tuple) => tuple.map((m) => m.name).join(' · ');
 
 /**
+ * A view's answer as rows of cells, to copy or download: its rows' dimensions over their
+ * names, its columns' names across the top, and each value as it is, not as it is shown.
+ */
+export function numbersOf(result) {
+  const [columns, rows] = result.axes;
+  const columnTuples = columns?.tuples ?? [];
+  const rowTuples = rows?.tuples ?? [[]];
+  const count = columnTuples.length;
+  const lead = (rowTuples[0] ?? []).map((m) => m.dimension);
+  return [
+    [...(lead.length ? lead : ['']), ...columnTuples.map(label)],
+    ...rowTuples.map((tuple, r) => [...(tuple.length ? tuple.map((m) => m.name) : ['']), ...Array.from({ length: count }, (_, c) => result.cells[r * count + c])]),
+  ];
+}
+
+/**
  * A view's answer as `tile` shows it, in the view's number format and with its highlights.
  * `pick(members, key)` is called with the members of what is clicked, and `picked` is the key
  * of the one picked, to be marked. `fresh`: the answer is new, rather than shown again.
