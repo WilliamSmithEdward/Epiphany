@@ -3,14 +3,12 @@ use std::error::Error;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
 
-use epiphany_server::{Auth, Grants, Role, app_with, open, openapi, set_user, with_lab};
+use epiphany_server::{Auth, Grants, Role, app_with, open, openapi, set_user};
 use tokio::net::TcpListener;
 
 const ADDRESS: &str = "127.0.0.1:8080";
 const USAGE: &str = "usage:
   epiphany-server serve <directory> [address]   serve the database kept in a directory
-  epiphany-server lab <directory> [address]     the same, plus the test page
-                                                <directory>/index.html at /lab
   epiphany-server user <directory> <name> [role] [cube=role ...]
                                                 add a user, or change a user's password and
                                                 roles; the password is read from standard input.
@@ -28,7 +26,7 @@ server asks for no sign-in and only listens on this machine.";
 async fn main() -> Result<(), Box<dyn Error>> {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let arguments: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    let (command, directory, address) = match arguments.as_slice() {
+    let (directory, address) = match arguments.as_slice() {
         ["openapi"] => {
             println!("{}", openapi().to_pretty_json()?);
             return Ok(());
@@ -36,10 +34,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ["user", directory, name, grants @ ..] => {
             return user(Path::new(directory), name, &granted(grants)?);
         }
-        [command @ ("serve" | "lab"), directory] => (*command, Path::new(directory), ADDRESS),
-        [command @ ("serve" | "lab"), directory, address] => {
-            (*command, Path::new(directory), *address)
-        }
+        ["serve", directory] => (Path::new(directory), ADDRESS),
+        ["serve", directory, address] => (Path::new(directory), *address),
         _ => {
             eprintln!("{USAGE}");
             std::process::exit(2);
@@ -60,11 +56,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         None => "no sign-in",
     };
     let application = app_with(open(directory)?, auth);
-    let (application, page) = match command {
-        "lab" => (with_lab(application, directory.join("index.html")), "/lab"),
-        _ => (application, ""),
-    };
-    println!("listening on http://{local}{page} ({signing})");
+    println!("listening on http://{local} ({signing})");
     axum::serve(listener, application).await?;
     Ok(())
 }

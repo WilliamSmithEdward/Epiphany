@@ -18,15 +18,34 @@ The server runs as an ordinary program: no administrator rights, no installer, n
 
 ## Try it
 
-You need [Rust](https://rustup.rs). On Windows, double-click `lab\start.cmd`; anywhere, run
+You need [Rust](https://rustup.rs). On Windows, double-click `start.cmd`: it builds the
+server and the GUI, starts both on the sample model and opens the GUI. Anywhere, build them,
 
 ```
-cargo run --release -p epiphany-server -- lab lab
+cargo build --release -p epiphany-server -p epiphany-gui
 ```
 
-and open <http://127.0.0.1:8080/lab>. The lab is a page for trying the server by hand: drag
-dimensions onto rows and columns, type into cells, write MDX, begin and commit transactions.
-[lab/README.md](lab/README.md) says what everything on it does.
+start the server on the sample, and the GUI beside it, each in a terminal of its own,
+
+```
+target/release/epiphany-server serve sample
+target/release/epiphany-gui --listen 127.0.0.1:8090
+```
+
+and open <http://127.0.0.1:8090>: explore the cubes, write values back, make dashboards,
+change the model and manage users. [docs/GUI.md](docs/GUI.md) says what the GUI does.
+
+## Run the GUI
+
+```
+epiphany-gui [--listen <address>] [--server <url>] [--web <folder>]
+```
+
+The GUI is a program of its own: it serves the application, built into it, and passes the
+browser's API calls on to a server. It listens on `0.0.0.0:80` and passes calls to
+`http://127.0.0.1:8080` unless told otherwise; `--web` serves the application's files
+from a folder instead, read afresh on every request, while they are worked on. What it
+sends goes gzipped to a browser that takes it.
 
 ## Run a server
 
@@ -102,7 +121,7 @@ model/
 }
 ```
 
-[lab/model](lab/model) is a complete example. Names are matched ignoring case and spaces, and
+[sample/model](sample/model) is a complete example. Names are matched ignoring case and spaces, and
 an element answers to its aliases as well as its name. A dimension may also name its levels,
 from the leaves up, and say that it is the cube's calendar:
 
@@ -294,7 +313,7 @@ node crates/epiphany-gui/tests/browser/journeys.mjs
 | `crates/epiphany-server` | The program: routes, sign-in, files on disk |
 | `crates/epiphany-gui` | The browser application, and the program that serves it and passes its calls on; its journeys in a browser in `tests/browser` |
 | `adapter` | The Excel add-in and its tests |
-| `lab` | The page for trying things by hand, and its model |
+| `sample` | A complete model to try, which `start.cmd` serves with the GUI; the journeys run on a copy |
 | `docs/PLAN.md` | How it is built, what was decided and why, and what is not done |
 | `docs/GUI.md` | The GUI: what was decided, what it learnt from other tools, and how it is checked |
 | `docs/BENCHMARKS.md` | Timings, and how to repeat them |

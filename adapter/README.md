@@ -29,7 +29,7 @@ installed beside Excel, and no administrator rights.
 
 ## Use
 
-1. Start a server, for example the lab: `lab\start.cmd`.
+1. Start a server, for example the sample with `start.cmd`, which starts the GUI beside it.
 2. In Excel, open the `.xll` file (File, Open), and allow the add-in for the session.
 3. Enter a formula:
 

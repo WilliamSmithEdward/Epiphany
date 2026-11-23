@@ -1,6 +1,6 @@
 # Shared by the checks that run the add-in inside Excel; each loads it with a dot. It gives
 # them a server on a copy of the example model and an Excel of their own with the add-in
-# loaded, and takes both away again. Nothing here touches the lab or any Excel but its own.
+# loaded, and takes both away again. Nothing here touches the sample or any Excel but its own.
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot
 # The add-in's default address, which is where it looks unless Connect has named another.

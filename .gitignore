@@ -12,8 +12,8 @@
 
 # Server runtime data: snapshots, commit logs and earlier model versions
 /data/
-/lab/data/
-/lab/model.next/
+/sample/data/
+/sample/model.next/
 
 # Secrets and local configuration
 users.json

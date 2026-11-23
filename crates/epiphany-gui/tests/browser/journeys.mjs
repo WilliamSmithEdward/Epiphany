@@ -9,7 +9,7 @@
 //
 // Nothing is installed. Node drives Chrome, or Edge, over the DevTools protocol on a pipe;
 // the browser is found where it is usually installed, or named by CHROME. The servers run
-// the builds in target/debug, the GUI with the files built into it, on a copy of lab/model
+// the builds in target/debug, the GUI with the files built into it, on a copy of sample/model
 // in a folder of their own under target, on ports of their own, with users made for the run
 // whose passwords are new each time. A run that fails keeps its folder, with a picture of
 // the page as it failed, failed.png; --keep keeps it anyway, and --headed shows the browser.
@@ -1099,7 +1099,7 @@ async function main() {
   mkdirSync(join(ROOT, 'target'), { recursive: true });
   folder = mkdtempSync(join(ROOT, 'target', 'browser-journeys-'));
   const data = join(folder, 'server');
-  cpSync(join(ROOT, 'lab', 'model'), join(data, 'model'), { recursive: true });
+  cpSync(join(ROOT, 'sample', 'model'), join(data, 'model'), { recursive: true });
   const users = { admin: { name: 'ada', password: secret() }, reader: { name: 'lin', password: secret() } };
   await addUser(data, users.admin.name, 'admin', users.admin.password);
   await addUser(data, users.reader.name, 'read', users.reader.password);

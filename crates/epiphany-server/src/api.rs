@@ -1,7 +1,6 @@
 //! The routes, their request and response shapes, and the OpenAPI document generated from them.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{
     Arc, LockResult, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
@@ -14,7 +13,7 @@ use axum::extract::{DefaultBodyLimit, FromRef, FromRequest, Path, Query, Request
 use axum::http::header::{AUTHORIZATION, RETRY_AFTER, WWW_AUTHENTICATE};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::middleware::{Next, from_fn_with_state};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use epiphany_core::Scalar;
@@ -344,17 +343,6 @@ async fn survive(State(state): State<AppState>, request: Request, next: Next) ->
     }
     let message = "the server failed to answer this request".to_owned();
     ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", message).into_response()
-}
-
-/// Adds a test page at `/lab` to an application, read from disk on every request so that it
-/// can be edited while the server runs.
-pub fn with_lab(application: Router, page: PathBuf) -> Router {
-    let serve = move || {
-        let page = std::fs::read_to_string(&page);
-        let missing = |error: std::io::Error| (StatusCode::NOT_FOUND, error.to_string());
-        async move { page.map(Html).map_err(missing) }
-    };
-    application.route("/lab", get(serve))
 }
 
 /// The session token a request carries, if it carries one.

@@ -178,7 +178,7 @@ Every stage is done; the journeys below are how G8's are kept done.
 ## Checked in a browser
 
 `crates/epiphany-gui/tests/browser/journeys.mjs` takes the main journeys in Chrome, as a person
-takes them, against the builds in `target/debug`, on a copy of `lab/model` with users made for
+takes them, against the builds in `target/debug`, on a copy of `sample/model` with users made for
 the run.
 
 | Journey | What it shows |

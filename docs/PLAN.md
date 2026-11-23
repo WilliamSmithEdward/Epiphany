@@ -215,8 +215,8 @@ practice that means:
   not fed, which is how missing feeders are found.
 - `POST /cells/explain` says how each cell comes by its value: its kind, what is stored,
   whether it can be written, the rule that decides it, whether it is fed, and on request the
-  feeders that feed it with the cell each fed it from. The lab uses it to colour cells and
-  for its right-click inspector.
+  feeders that feed it with the cell each fed it from. The GUI uses it to mark the cells that
+  can be written, and to explain a cell from its menu.
 - Once any feeder feeds a cube, every leaf rule of that cube needs feeders: its
   consolidations then count stored and fed cells only.
 - Not done: feeders whose target depends on cell values.
@@ -511,7 +511,7 @@ practice that means:
     reading the password from standard input so that it is in no command line.
   - `POST /sessions` with a name and password gives a random token; every other route
     needs it as `Authorization: Bearer <token>` and answers 401 without a live one.
-    `DELETE /sessions` signs out. The contract and the lab's test page need no session.
+    `DELETE /sessions` signs out. The contract needs no session.
   - A session ends when unused for thirty minutes. Sessions are in memory, so they also
     end when the server stops.
   - A directory with no users asks for no sign-in, and then the server refuses to listen
