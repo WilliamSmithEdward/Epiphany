@@ -513,6 +513,15 @@ async function signingIn({ admin }) {
     await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
     await page.waitFor(`!document.querySelector('.notice')`, 'the notice, gone once let go');
   });
+  await step('A button shown as an icon alone says its name, pointed at', async () => {
+    const middle = await page.evaluate(`(() => {
+      const box = document.querySelector('#theme-button').getBoundingClientRect();
+      return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    })()`);
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...middle });
+    await page.waitFor(`document.querySelector('#theme-button').title === 'Theme'`, 'the theme button, named');
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+  });
 }
 
 async function exploring() {

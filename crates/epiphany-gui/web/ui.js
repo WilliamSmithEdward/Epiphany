@@ -622,11 +622,18 @@ for (const [event, then] of [['beforeprint', 'whole'], ['afterprint', 'after']])
 }
 
 /**
- * What an ellipsis cuts short, pointed at, is shown whole as its title: the text, or the
- * nearest of the two around it that cuts it, given a title only while it is cut, and never
- * in place of one of its own.
+ * What the pointer rests on says itself whole, as a title, never in place of one of its own:
+ * a button or link shown as an icon alone, the name it has for a screen reader, kept to it as
+ * the name changes; and what an ellipsis cuts short, the text, or the nearest of the two
+ * around it that cuts it, only while it is cut.
  */
 document.addEventListener('pointerover', ({ target }) => {
+  const iconic = target instanceof Element ? target.closest('button, a') : null;
+  const name = iconic?.getAttribute('aria-label');
+  if (name && !iconic.textContent.trim() && (!iconic.title || 'named' in iconic.dataset)) {
+    iconic.title = name;
+    iconic.dataset.named = '';
+  }
   let element = target instanceof HTMLElement ? target : null;
   for (let up = 0; element && up < 2 && getComputedStyle(element).textOverflow !== 'ellipsis'; up += 1) element = element.parentElement;
   if (!element || element.matches('input, select, textarea') || (element.title && !('cut' in element.dataset))) return;
