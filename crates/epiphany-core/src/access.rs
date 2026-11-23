@@ -53,7 +53,7 @@ impl Access {
             order.sort_by_key(|&element| std::cmp::Reverse(dimension.elements[element].level));
             for element in order {
                 if held[element].is_none() {
-                    let parents = dimension.elements[element].parents.iter();
+                    let parents = dimension.elements[element].parents().iter();
                     held[element] = parents.filter_map(|&parent| held[parent as usize]).max();
                 }
             }

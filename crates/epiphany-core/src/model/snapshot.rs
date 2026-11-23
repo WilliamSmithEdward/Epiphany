@@ -437,17 +437,29 @@ impl Dimension {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let links: Vec<(ElementId, ElementId)> = elements
-            .iter()
-            .enumerate()
-            .flat_map(|(parent, e)| {
-                e.children
-                    .iter()
-                    .map(move |&(child, _)| (parent as u32, child))
-            })
-            .collect();
-        for (parent, child) in links {
-            elements[child as usize].parents.push(parent);
+        // Each element's parents, in the order of the elements that take it: counted first,
+        // so that one is kept in place and several are gathered into a list made at its length.
+        let mut counts = vec![0u32; elements.len()];
+        for element in &elements {
+            for &(child, _) in &element.children {
+                counts[child as usize] += 1;
+            }
+        }
+        let mut several: HashMap<ElementId, Vec<ElementId>> = HashMap::default();
+        for parent in 0..elements.len() {
+            for index in 0..elements[parent].children.len() {
+                let child = elements[parent].children[index].0;
+                match counts[child as usize] {
+                    1 => elements[child as usize].parents = ParentIds::One([parent as ElementId]),
+                    count => several
+                        .entry(child)
+                        .or_insert_with(|| Vec::with_capacity(count as usize))
+                        .push(parent as ElementId),
+                }
+            }
+        }
+        for (child, parents) in several {
+            elements[child as usize].parents = ParentIds::Many(parents.into_boxed_slice());
         }
 
         for (id, element) in elements.iter().enumerate() {
@@ -527,8 +539,8 @@ pub struct Element {
     pub kind: ElementType,
     /// Direct children and their weights, in declaration order.
     pub children: Vec<(ElementId, f64)>,
-    /// Direct parents, in declaration order.
-    pub parents: Vec<ElementId>,
+    /// Direct parents, by [`Element::parents`].
+    parents: ParentIds,
     /// Zero for a leaf, otherwise one more than the highest child level.
     pub level: u32,
     /// What the element counts, by [`Element::leaves`].
@@ -545,6 +557,14 @@ struct Names<'a> {
     attributes: &'a HashMap<String, u32>,
 }
 
+/// An element's direct parents: one, as most elements have, kept in place; none or several,
+/// in a list.
+#[derive(Debug)]
+enum ParentIds {
+    One([ElementId; 1]),
+    Many(Box<[ElementId]>),
+}
+
 /// What an element counts: a leaf, itself, with weight one, kept in place, as most elements are
 /// leaves and a model may have a million; a consolidation, the numeric leaves beneath it.
 #[derive(Debug)]
@@ -554,6 +574,14 @@ enum LeafWeights {
 }
 
 impl Element {
+    /// Direct parents, in declaration order.
+    pub fn parents(&self) -> &[ElementId] {
+        match &self.parents {
+            ParentIds::One(one) => one,
+            ParentIds::Many(many) => many,
+        }
+    }
+
     /// The numeric leaves this element aggregates and the net weight of each, ordered by id.
     /// A leaf lists itself with weight one.
     pub fn leaves(&self) -> &[(ElementId, f64)] {
@@ -652,7 +680,7 @@ impl Element {
             name: def.name.clone(),
             kind: def.kind,
             children,
-            parents: Vec::new(),
+            parents: ParentIds::Many(Box::default()),
             level: 0,
             leaves: LeafWeights::Many(Box::default()),
             attributes: values,

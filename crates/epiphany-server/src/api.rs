@@ -743,7 +743,7 @@ impl DimensionView {
                 kind: element.kind,
                 level: element.level,
                 parents: element
-                    .parents
+                    .parents()
                     .iter()
                     .copied()
                     .filter(|&p| seen(p))

@@ -103,10 +103,10 @@ fn children_and_parents_keep_declaration_order() {
         .collect();
     assert_eq!(names(period, &children), ["Jan", "Feb", "Mar"]);
     assert_eq!(
-        names(period, &period.element("Jan").unwrap().parents),
+        names(period, period.element("Jan").unwrap().parents()),
         ["Q1"]
     );
-    assert!(period.element("H1").unwrap().parents.is_empty());
+    assert!(period.element("H1").unwrap().parents().is_empty());
 }
 
 #[test]

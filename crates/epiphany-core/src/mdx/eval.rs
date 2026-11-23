@@ -184,7 +184,7 @@ pub(super) fn elements(
         .dimension(0)
         .elements
         .iter()
-        .position(|e| e.parents.is_empty());
+        .position(|e| e.parents().is_empty());
     let context = vec![Id::Element(top.unwrap_or(0) as ElementId)];
     let element = |tuple: Tuple| match tuple.as_slice() {
         [
@@ -582,13 +582,16 @@ impl<'a> Evaluator<'a> {
             // A top element is one with no parent the one asking may see.
             let sees = |element: ElementId| self.sees(position, element);
             let tops = (0..dimension.elements.len() as ElementId).filter(|&element| {
-                let parents = &dimension.elements[element as usize].parents;
+                let parents = dimension.elements[element as usize].parents();
                 parents.iter().all(|&parent| !sees(parent))
             });
             let mut seen = tops.filter(|&element| sees(element));
             // Where they may see none, the model's own top, which no cell is read at.
             let top = seen.next().or_else(|| {
-                let tops = dimension.elements.iter().position(|e| e.parents.is_empty());
+                let tops = dimension
+                    .elements
+                    .iter()
+                    .position(|e| e.parents().is_empty());
                 tops.map(|top| top as ElementId)
             });
             Id::Element(top.unwrap_or(0))
@@ -2109,12 +2112,12 @@ impl<'a> Evaluator<'a> {
             return false;
         };
         let elements = &self.dimension(member.position).elements;
-        let mut waiting = elements[id as usize].parents.to_vec();
+        let mut waiting = elements[id as usize].parents().to_vec();
         while let Some(next) = waiting.pop() {
             if next == other {
                 return true;
             }
-            waiting.extend(&elements[next as usize].parents);
+            waiting.extend(elements[next as usize].parents());
         }
         false
     }
@@ -2218,7 +2221,7 @@ impl<'a> Evaluator<'a> {
             if element.level == level {
                 return Ok(Some(member));
             }
-            if element.level > level || element.parents.is_empty() {
+            if element.level > level || element.parents().is_empty() {
                 return Ok(None);
             }
             member = self.parent(member)?;
@@ -2469,7 +2472,7 @@ impl<'a> Evaluator<'a> {
                     .filter(|(id, _)| seen(id));
                 Datum::Number(seen.count() as f64)
             }
-            ("PARENT_UNIQUE_NAME", Some((_, element))) => first(&element.parents),
+            ("PARENT_UNIQUE_NAME", Some((_, element))) => first(element.parents()),
             (_, Some((id, _))) => match self.dimension(member.position).attribute_value(id, name) {
                 Some(Scalar::Number(number)) => Datum::Number(*number),
                 Some(Scalar::Text(text)) => Datum::Text(text.clone()),
@@ -2484,14 +2487,14 @@ impl<'a> Evaluator<'a> {
     fn siblings(&self, member: Member) -> Evaluated<Vec<ElementId>> {
         let (_, element) = self.element(member)?;
         let elements = &self.dimension(member.position).elements;
-        Ok(match element.parents.first() {
+        Ok(match element.parents().first() {
             Some(&parent) => {
                 let children = elements[parent as usize].children.iter();
                 children.map(|&(id, _)| id).collect()
             }
             None => {
                 let tops = elements.iter().enumerate();
-                let tops = tops.filter(|(_, element)| element.parents.is_empty());
+                let tops = tops.filter(|(_, element)| element.parents().is_empty());
                 tops.map(|(id, _)| id as ElementId).collect()
             }
         })
@@ -2566,7 +2569,7 @@ impl<'a> Evaluator<'a> {
 
     fn parent(&self, member: Member) -> Evaluated<Member> {
         let (_, element) = self.element(member)?;
-        let parent = element.parents.first().ok_or_else(|| {
+        let parent = element.parents().first().ok_or_else(|| {
             MdxError::new(format!("member '{}' has no parent", self.name(member)))
         })?;
         Ok(Member {
@@ -2689,7 +2692,7 @@ impl<'a> Evaluator<'a> {
             }
         }
         for (id, element) in elements.iter().enumerate() {
-            if element.parents.is_empty() {
+            if element.parents().is_empty() {
                 walk(elements, id, post, &mut places, &mut next);
             }
         }

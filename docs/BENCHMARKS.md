@@ -308,6 +308,11 @@ consolidation's leaves in a list. Best of three, alternated, the three dimension
 times less; reading cells is unchanged, a consolidation by combinations 38.9 µs against 39.6
 (2026-11-23).
 
+Each element kept its parents in a list of its own too, though nearly every element has one.
+One parent is now kept in place, and only none or several in a list, each made once at its
+length, the parents counted first. Best of six, alternated, on a machine busier than for the
+runs above: 29, 507 and 711 ms rather than 30, 534 and 808 (2026-11-23).
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions
