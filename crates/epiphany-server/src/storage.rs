@@ -26,7 +26,10 @@ use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
+use std::num::NonZero;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 use std::time::UNIX_EPOCH;
 
 use epiphany_core::Scalar;
@@ -503,7 +506,7 @@ pub fn load_model(directory: &Path) -> Result<ModelDef, Box<dyn Error>> {
     })
 }
 
-fn load_all<T: DeserializeOwned>(directory: &Path) -> Result<Vec<T>, Box<dyn Error>> {
+fn load_all<T: DeserializeOwned + Send>(directory: &Path) -> Result<Vec<T>, Box<dyn Error>> {
     let entries = fs::read_dir(directory).map_err(|e| at(directory, &e))?;
     let mut paths: Vec<PathBuf> = entries
         .map(|entry| entry.map(|entry| entry.path()))
@@ -514,8 +517,42 @@ fn load_all<T: DeserializeOwned>(directory: &Path) -> Result<Vec<T>, Box<dyn Err
             .is_some_and(|extension| extension == "json")
     });
     paths.sort();
-    let load = |path: &PathBuf| Ok(read_json(path)?.expect("listed above"));
-    paths.iter().map(load).collect()
+    let load = |file: Result<Option<T>, String>| Ok(file?.expect("listed above"));
+    at_once(&paths, |path| read_json(path))
+        .into_iter()
+        .map(load)
+        .collect()
+}
+
+/// Does `work` on every item, many at once, and gives back what came of each, in order.
+/// Reading or writing a model's files one after another waits on each in turn: a model of
+/// ten thousand dimensions, its files new to a disk that scans each as it is first opened,
+/// took 78 s to read one at a time and takes 4 s so (2026-11-24).
+fn at_once<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    // Twice as many threads as run at once: much of the time goes in waiting on the disk.
+    let threads = thread::available_parallelism().map_or(1, NonZero::get) * 2;
+    let next = AtomicUsize::new(0);
+    let work_through = || {
+        let mut done = Vec::new();
+        loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let Some(item) = items.get(index) else {
+                return done;
+            };
+            done.push((index, work(item)));
+        }
+    };
+    let mut done: Vec<(usize, R)> = thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads.min(items.len()))
+            .map(|_| scope.spawn(work_through))
+            .collect();
+        let joined = workers.into_iter().map(|worker| worker.join());
+        joined
+            .flat_map(|done| done.unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+            .collect()
+    });
+    done.sort_unstable_by_key(|(index, _)| *index);
+    done.into_iter().map(|(_, result)| result).collect()
 }
 
 /// Reads a JSON file, or nothing if the file does not exist.
@@ -554,6 +591,12 @@ pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> 
 /// and edited by hand; a snapshot of a million cells is not, and laid out it is twice the
 /// size on disk.
 fn write_whole(path: &Path, value: &impl Serialize, laid_out: bool) -> io::Result<()> {
+    write_file(path, value, laid_out)?;
+    path.parent().map_or(Ok(()), settle)
+}
+
+/// The same, its folder left for the caller to settle: once, for a folder of many files.
+fn write_file(path: &Path, value: &impl Serialize, laid_out: bool) -> io::Result<()> {
     let temporary = path.with_extension("tmp");
     // JSON is written a few bytes at a time, and each piece handed straight to the file
     // would be a call to the operating system: a snapshot of a million cells took two
@@ -566,8 +609,7 @@ fn write_whole(path: &Path, value: &impl Serialize, laid_out: bool) -> io::Resul
     file.write_all(b"\n")?;
     let file = file.into_inner().map_err(|error| error.into_error())?;
     file.sync_all()?;
-    fs::rename(&temporary, path)?;
-    path.parent().map_or(Ok(()), settle)
+    fs::rename(&temporary, path)
 }
 
 /// Makes what has been created, renamed or removed in a folder last through a loss of power.
@@ -582,17 +624,24 @@ fn settle(folder: &Path) -> io::Result<()> {
 }
 
 /// Writes each item to its own JSON file in a new folder, named after the item, and laid out
-/// where `laid_out` says.
-fn write_each<T: Serialize>(
+/// where `laid_out` says: many at once, as a model of ten thousand dimensions has as many
+/// files, and the folder settled once they all are.
+fn write_each<T: Serialize + Sync>(
     folder: &Path,
     items: &[T],
     name: impl Fn(&T) -> &str,
-    laid_out: impl Fn(&T) -> bool,
+    laid_out: impl Fn(&T) -> bool + Sync,
 ) -> io::Result<()> {
     fs::create_dir_all(folder)?;
-    let files = file_names(items.iter().map(name));
-    let mut written = files.iter().zip(items);
-    written.try_for_each(|(file, item)| write_whole(&folder.join(file), item, laid_out(item)))
+    let files: Vec<(String, &T)> = file_names(items.iter().map(name))
+        .into_iter()
+        .zip(items)
+        .collect();
+    let write = |(file, item): &(String, &T)| write_file(&folder.join(file), item, laid_out(item));
+    at_once(&files, write)
+        .into_iter()
+        .collect::<io::Result<()>>()?;
+    settle(folder)
 }
 
 /// A file name for each name: lower case, with anything but letters and digits as a hyphen,

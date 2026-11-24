@@ -530,6 +530,32 @@ brought down from 446 MB to 182 MB for a million and a half cells, and a quarter
 time is not worth giving that back. A buffer of a megabyte in place of eight kilobytes
 opens them in 0.32 s. Neither change is made.
 
+### A wide model
+
+```
+cargo run --release -p epiphany-server --example bench_wide [dimensions]
+```
+
+Ten thousand dimensions of twenty leaves and 500 cubes of five of them, each a file of its
+own: opened while its files are new, opened again, then a dashboard saved, which writes every
+file of the model out again, and opened once more (2026-11-24):
+
+| | One file at a time | Many at once |
+| --- | --- | --- |
+| Opened first | 0.58 s | 0.37 s |
+| Opened again | 0.50 s | 0.30 s |
+| A dashboard saved | 13.30 s | 9.95 s |
+| Opened after the save | 0.69 s | 0.38 s |
+
+Files are read and written by twice as many threads as the machine runs at once. On this
+machine a disk scanned for malware as files are first read makes the difference greatest:
+a model of 10,000 dimensions and 10,800 files (71 MB), written by another program, took 78 s
+to read the first time one file at a time, 7.6 s with 8 threads, 3.9 s with 32, and no
+less with 64 or 128; read again, 0.87 s one at a time and 0.26 s with 8. A server starting on
+it waited 83 s before it answered, and waits 4 s now. Writing gains less: a save's files,
+written, flushed and renamed, took 13.9 s one at a time, 8.8 s with 4 threads and no less
+with more. Every save still writes every file of the model, unchanged or not.
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.
