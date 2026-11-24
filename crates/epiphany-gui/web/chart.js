@@ -3,7 +3,7 @@
 // again as either changes. Its marks say what they are when pointed at, or gone through with
 // the arrow keys, and may be picked.
 
-import { extent, formatNumber, h, icon } from './ui.js';
+import { extent, formatNumber, h, icon, textWidths } from './ui.js';
 
 /** How many series are drawn at most; the rest are left out and said to be. */
 const MOST_SERIES = 12;
@@ -39,6 +39,16 @@ function ticks(low, high, count = 5) {
 const paint = (index, value, tone) => {
   const rule = tone?.(value);
   return rule ? `tone-${rule}` : `c${index}`;
+};
+
+/**
+ * How wide text is as a chart writes it, 11 pixels high: its steps and names, or `bold` its
+ * values. Its figures are tabular, each as wide as a nought, which a canvas cannot draw: each
+ * is measured as one.
+ */
+const measured = (bold = false) => {
+  const measure = textWidths(document.body, { size: '11px', weight: bold ? 600 : 400 });
+  return (text) => measure(String(text).replace(/\d/g, '0'));
 };
 
 /** A name cut to `most` characters, marked where it was cut. */
@@ -385,20 +395,20 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   const leftTicks = steps.map((step) => compact.format(step));
   const rightTicks = apart ? rightSteps.map(stepWriter(right)) : [];
 
-  // Beside the plot, as much room as the steps written there take, at some 6.5 pixels a
-  // character.
-  const room = (texts) => Math.ceil(texts.reduce((most, text) => Math.max(most, text.length), 0) * 6.5) + 12;
+  // Beside the plot, as much room as the steps written there take.
+  const tickWidth = measured();
+  const room = (texts) => Math.ceil(texts.reduce((most, text) => Math.max(most, tickWidth(text)), 0)) + 12;
   const margin = { top: labels ? 24 : 16, right: apart ? room(rightTicks) : 16, bottom: 40, left: Math.max(room(leftTicks), 32) };
   const bandOf = () => Math.max(width - margin.left - margin.right, 1) / Math.max(categories.length, 1);
-  // The names along the bottom go aslant where they would not fit side by side, at some 6
-  // pixels a character: beneath them as much room as the longest takes, aslant, and before
-  // them as much as the first reaches to the left of its place. Only every so many are
-  // written where even aslant they would run into one another.
-  const longest = categories.reduce((most, name) => Math.max(most, short(name).length), 0) * 6;
+  // The names along the bottom go aslant where they would not fit side by side: beneath them
+  // as much room as the longest takes, aslant, and before them as much as the first reaches
+  // to the left of its place, its length and its height turned forty degrees. Only every so
+  // many are written where even aslant they would run into one another.
+  const longest = categories.reduce((most, name) => Math.max(most, tickWidth(short(name))), 0);
   const crowded = bandOf() < longest + 8;
   if (crowded) {
     margin.bottom = Math.min(Math.max(Math.ceil(longest * 0.65) + 26, 40), 84);
-    margin.left = Math.max(margin.left, Math.ceil(longest * 0.77 - bandOf() / 2) + 4);
+    margin.left = Math.max(margin.left, Math.ceil(longest * 0.77 + 8 - bandOf() / 2) + 4);
   }
   const band = bandOf();
   const every = crowded ? Math.ceil(18 / band) : 1;
@@ -411,11 +421,12 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   // the view's format has it in a tip, and briefly on its mark, otherwise.
   const tipOf = (entry, c, value) => [entry.texts?.[c] ?? format(value), entry.name, categories[c]];
   const said = (entry, c) => entry.texts?.[c] ?? compact.format(entry.values[c]);
-  // A value written on its mark, at some 6.5 pixels a character, unless it would run into one
-  // written already: those first written stand, as Power BI hides the labels that collide.
+  // A value written on its mark, unless it would run into one written already: those first
+  // written stand, as Power BI hides the labels that collide.
+  const valueWidth = measured(true);
   const written = [];
   const label = (text, cx, cy, anchor = 'middle') => {
-    const wide = String(text).length * 6.5;
+    const wide = valueWidth(text);
     const left = anchor === 'middle' ? cx - wide / 2 : anchor === 'end' ? cx - wide : cx;
     const box = { left, right: left + wide, top: cy - 10, bottom: cy + 2 };
     if (written.some((other) => box.left < other.right + 2 && other.left < box.right + 2 && box.top < other.bottom && other.top < box.bottom)) return;
@@ -515,8 +526,13 @@ function drawRanked({ svg, width, height, data, labels, format, mark, colour, sh
   const entry = data.series.slice(0, MOST_SERIES).map((each, index) => ({ ...each, index })).find((each) => shown(each.index));
   const ranked = data.categories.map((name, c) => ({ name, c, value: entry?.values[c] })).filter((item) => item.value !== null && item.value !== undefined)
     .sort((a, b) => b.value - a.value);
-  const longest = Math.max(0, ...ranked.map((item) => short(item.name, 28).length));
-  const margin = { top: 8, right: labels ? 56 : 16, bottom: 28, left: Math.min(longest * 6.6 + 16, width * 0.4) };
+  // Before the bars as much room as the longest name takes, up to two fifths of the chart, and
+  // after them, where they are written, as much as the widest value.
+  const written = (item) => entry.texts?.[item.c] ?? compact.format(item.value);
+  const [tickWidth, valueWidth] = [measured(), measured(true)];
+  const longest = ranked.reduce((most, item) => Math.max(most, tickWidth(short(item.name, 28))), 0);
+  const widest = labels ? ranked.reduce((most, item) => Math.max(most, valueWidth(written(item))), 0) : 0;
+  const margin = { top: 8, right: labels ? Math.ceil(widest) + 14 : 16, bottom: 28, left: Math.min(longest + 16, width * 0.4) };
   const inner = { width: Math.max(width - margin.left - margin.right, 20), height: Math.max(height - margin.top - margin.bottom, 20) };
   const steps = ticks(Math.min(0, ...ranked.map((item) => item.value)), Math.max(0, ...ranked.map((item) => item.value)), 4);
   const low = steps[0];
@@ -533,7 +549,7 @@ function drawRanked({ svg, width, height, data, labels, format, mark, colour, sh
     if (band >= 11) svg.append(h('text', { class: 'tick', x: margin.left - 8, y: top + thick / 2 + 4, 'text-anchor': 'end' }, short(item.name, 28)));
     svg.append(mark(h('rect', { class: `bar ${paint(colour(entry.index), item.value, tone)}`, x: Math.min(x(0), x(item.value)), y: top, width: Math.max(Math.abs(x(item.value) - x(0)), 1), height: thick, rx: 2 }),
       { s: entry.index, c: item.c, lines: [entry.texts?.[item.c] ?? format(item.value), item.name, `${rank + 1} of ${ranked.length}`] }));
-    if (labels && band >= 11) svg.append(h('text', { class: 'value', x: x(Math.max(item.value, 0)) + 6, y: top + thick / 2 + 4 }, entry.texts?.[item.c] ?? compact.format(item.value)));
+    if (labels && band >= 11) svg.append(h('text', { class: 'value', x: x(Math.max(item.value, 0)) + 6, y: top + thick / 2 + 4 }, written(item)));
   });
   return `Bars of ${entry?.name ?? 'nothing'} across ${ranked.length} categories, the largest first`;
 }
@@ -547,6 +563,7 @@ function drawRing({ svg, width, height, labels, format, mark, colour, shown }, s
   const outer = Math.max(Math.min(width, height) / 2 - 8, 10);
   const inner = outer * 0.62;
   const point = (angle, radius) => [cx + radius * Math.sin(angle), cy - radius * Math.cos(angle)];
+  const shareWidth = measured(true);
   let angle = 0;
   for (const slice of drawn) {
     const sweep = whole ? (slice.value / whole) * Math.PI * 2 : 0;
@@ -561,7 +578,7 @@ function drawRing({ svg, width, height, labels, format, mark, colour, shown }, s
       { s: slice.s, c: slice.c, lines: [format(slice.value), slice.name, `${percent.format(slice.value / whole)} of ${format(whole)}`] }));
     // A slice's share written on it where its arc, through the middle of the ring, holds it.
     const share = percent.format(slice.value / whole);
-    if (labels && sweep * ((outer + inner) / 2) >= share.length * 6.5 + 6) {
+    if (labels && sweep * ((outer + inner) / 2) >= shareWidth(share) + 6) {
       const [lx, ly] = point(angle + sweep / 2, (outer + inner) / 2);
       svg.append(h('text', { class: 'value on-slice', x: lx, y: ly + 4, 'text-anchor': 'middle' }, share));
     }

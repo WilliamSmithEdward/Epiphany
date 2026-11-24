@@ -288,13 +288,15 @@ export async function working(button, task) {
 
 /* ---- Sizes ---- */
 
-let canvas;
-
-/** Measures text as `element`'s font draws it: returns how wide, in pixels, a text is. */
-export function textWidths(element = document.body) {
+/**
+ * Measures text as `element`'s font draws it, or as its family does at another `size` and
+ * `weight`: returns how wide, in pixels, a text is. Each measure has a canvas of its own, so
+ * that one made for another font leaves it as it was.
+ */
+export function textWidths(element = document.body, { size, weight } = {}) {
   const style = getComputedStyle(element);
-  const context = (canvas ??= document.createElement('canvas')).getContext('2d');
-  context.font = `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  const context = document.createElement('canvas').getContext('2d');
+  context.font = `${weight ?? style.fontWeight} ${size ?? style.fontSize} ${style.fontFamily}`;
   return (text) => context.measureText(String(text)).width;
 }
 
