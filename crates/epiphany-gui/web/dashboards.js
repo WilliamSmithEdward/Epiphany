@@ -484,6 +484,8 @@ class Dashboards {
     const view = text ? null : this.viewOf(tile);
     const title = tile.title || (text ? '' : tile.view);
     const named = title || 'Text';
+    // Beneath its name, where it comes from: its cube, and its view where the tile is named otherwise.
+    const source = tile.title && tile.title !== tile.view ? `${tile.cube} · ${tile.view}` : tile.cube;
     const standing = text ? [] : this.standing(tile, index).map((at) => at.member);
     // Until its answer comes, a tile holds the outline of what it shows.
     const body = h('div', { class: 'tile-body' }, text ? prose(tile.text) : h('div', { class: `skeleton ${tile.show ?? 'bars'}` }));
@@ -501,7 +503,7 @@ class Dashboards {
     const head = title || editing || !text
       ? h('div', { class: 'tile-head' },
         // Edited, a tile is named, or its text changed, by a double-click on its name.
-        h('div', { class: 'grow' }, h('h3', { ondblclick: editing ? () => this.retell(index) : null, title: editing ? (text ? 'Double-click to change the text' : 'Double-click to rename') : null }, title || h('span', { class: 'muted' }, 'Text')), text ? null : h('p', { class: 'muted' }, `${tile.cube} · ${tile.view}`,
+        h('div', { class: 'grow' }, h('h3', { ondblclick: editing ? () => this.retell(index) : null, title: editing ? (text ? 'Double-click to change the text' : 'Double-click to rename') : null }, title || h('span', { class: 'muted' }, 'Text')), text ? null : h('p', { class: 'muted' }, source,
           standing.length ? h('span', { class: 'tile-standing' }, ` · at ${standing.join(', ')}`) : null)),
         actions)
       : null;
