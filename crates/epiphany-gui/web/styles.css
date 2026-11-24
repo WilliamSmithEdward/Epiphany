@@ -716,7 +716,7 @@ fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(-
 @media (max-width: 1280px) {
   .table th, .table td { padding-left: var(--s3); padding-right: var(--s3); }
   .table .num-col { width: auto; }
-  .table td.actions { white-space: normal; }
+  .table td:is(.actions, .nowrap) { white-space: normal; }
 }
 .badge.you { margin-left: var(--s2); }
 /* Two fields side by side, each as narrow as the room leaves it rather than as wide as it would be. */
