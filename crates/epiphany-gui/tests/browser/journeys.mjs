@@ -697,17 +697,22 @@ async function exploring() {
   });
   await step('A chart\'s names along its bottom never run into one another nor out of it, however narrow', async () => {
     // Months, short, and names cut short at their longest, charted from 260 pixels wide to
-    // 1,600: those side by side apart, those aslant far enough apart for their lines.
+    // 1,600: those side by side apart, those aslant far enough apart for their lines; and the
+    // steps of its scales, from below nought to past a million at the left and in percent at
+    // the right, within it.
     const crowding = await page.evaluate(`(async () => {
       const { chart } = await import('/chart.js');
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       const problems = [];
       for (const categories of [months, months.map((name) => name + ' · Total Entity · Revenue')]) {
-        const data = { categories, tuples: categories.map(() => []), series: [{ name: 'Revenue', tuple: [], values: categories.map((_, c) => c + 1), texts: null }] };
+        const data = { categories, tuples: categories.map(() => []), series: [
+          { name: 'Revenue', tuple: [], values: categories.map((_, c) => (c - 3) * 123456), texts: null },
+          { name: 'Margin %', tuple: [], values: categories.map((_, c) => c / 100), texts: categories.map((_, c) => c + '.0%') },
+        ] };
         for (const width of [260, 400, 700, 1000, 1600]) {
           const box = document.body.appendChild(document.createElement('div'));
           box.style.width = width + 'px';
-          const element = box.appendChild(chart(data, 'bars', { fresh: false }));
+          const element = box.appendChild(chart(data, 'bars', { fresh: false, second: ['Margin %'] }));
           let svg;
           for (let tries = 0; tries < 100 && !svg; tries += 1) {
             await new Promise((done) => requestAnimationFrame(done));
@@ -724,6 +729,11 @@ async function exploring() {
             if (each.bottom > bottom.bottom || each.left < bottom.left) problems.push(width + ': ' + names[index].textContent + ' runs out of the chart');
           });
           if (!names.length) problems.push(width + ': no names along the bottom');
+          // Nor does anything else the chart writes, such as its scale's steps.
+          for (const text of svg.querySelectorAll('text')) {
+            const at = text.getBoundingClientRect();
+            if (at.left < bottom.left - 0.5 || at.right > bottom.right + 0.5) problems.push(width + ': ' + text.textContent + ' runs out at the side');
+          }
           box.remove();
         }
       }

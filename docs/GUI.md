@@ -122,7 +122,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
   stands its tiles one above the other, in the order they are read, each its own height; and
   prints the same way. A chart's names along its bottom stand level where they fit side by
   side, aslant where they do not, with only as much room beneath as the longest takes, and
-  only every second or third of them where even aslant they would run into one another.
+  only every second or third of them where even aslant they would run into one another;
+  beside it, each scale takes as much room as its steps do, and the chart is as narrow as
+  its place.
 - **Printable.** A page prints as it reads, without the bar, the list of pages or what only
   controls it: in the light palette whatever the screen's, at its full length, the grid's
   headings repeated on every sheet and its shading, highlights and chart colours kept. A grid

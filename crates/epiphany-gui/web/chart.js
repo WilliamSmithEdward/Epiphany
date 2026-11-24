@@ -183,7 +183,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   };
 
   const draw = () => {
-    const width = Math.max(plot.clientWidth, 200);
+    const width = Math.max(plot.clientWidth, 100);
     const tall = fill ? Math.max(plot.clientHeight, 120) : height;
     const svg = h('svg', { width, height: tall, viewBox: `0 0 ${width} ${tall}`, role: 'img', class: [entering ? 'entering' : '', picked ? 'picking' : ''].join(' ').trim() || null });
     marks = [];
@@ -321,21 +321,6 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   const lined = left.filter((entry) => over.has(entry.name));
   const series = left.filter((entry) => !over.has(entry.name));
   const categories = data.categories;
-  const margin = { top: labels ? 24 : 16, right: apart ? 60 : 16, bottom: 40, left: 64 };
-  const bandOf = () => (width - margin.left - margin.right) / Math.max(categories.length, 1);
-  // The names along the bottom go aslant where they would not fit side by side, at some 6
-  // pixels a character: beneath them as much room as the longest takes, aslant, and before
-  // them as much as the first reaches to the left of its place. Only every so many are
-  // written where even aslant they would run into one another.
-  const longest = categories.reduce((most, name) => Math.max(most, short(name).length), 0) * 6;
-  const crowded = bandOf() < longest + 8;
-  if (crowded) {
-    margin.bottom = Math.min(Math.max(Math.ceil(longest * 0.65) + 26, 40), 84);
-    margin.left = Math.max(margin.left, Math.ceil(longest * 0.77 - bandOf() / 2) + 4);
-  }
-  const band = bandOf();
-  const every = crowded ? Math.ceil(18 / band) : 1;
-  const inner = { width: width - margin.left - margin.right, height: Math.max(height - margin.top - margin.bottom, 20) };
 
   // The range the values reach: stacks add up their positives and negatives apart.
   const stack = (c) => {
@@ -359,10 +344,30 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
     const step = list[1] - list[0];
     while (list.length < Math.max(steps.length, rightSteps.length)) list.push(Number((list.at(-1) + step).toFixed(10)));
   }
+  const leftTicks = steps.map((step) => compact.format(step));
+  const rightTicks = apart ? rightSteps.map(stepWriter(right)) : [];
+
+  // Beside the plot, as much room as the steps written there take, at some 6.5 pixels a
+  // character.
+  const room = (texts) => Math.ceil(texts.reduce((most, text) => Math.max(most, text.length), 0) * 6.5) + 12;
+  const margin = { top: labels ? 24 : 16, right: apart ? room(rightTicks) : 16, bottom: 40, left: Math.max(room(leftTicks), 32) };
+  const bandOf = () => Math.max(width - margin.left - margin.right, 1) / Math.max(categories.length, 1);
+  // The names along the bottom go aslant where they would not fit side by side, at some 6
+  // pixels a character: beneath them as much room as the longest takes, aslant, and before
+  // them as much as the first reaches to the left of its place. Only every so many are
+  // written where even aslant they would run into one another.
+  const longest = categories.reduce((most, name) => Math.max(most, short(name).length), 0) * 6;
+  const crowded = bandOf() < longest + 8;
+  if (crowded) {
+    margin.bottom = Math.min(Math.max(Math.ceil(longest * 0.65) + 26, 40), 84);
+    margin.left = Math.max(margin.left, Math.ceil(longest * 0.77 - bandOf() / 2) + 4);
+  }
+  const band = bandOf();
+  const every = crowded ? Math.ceil(18 / band) : 1;
+  const inner = { width: Math.max(width - margin.left - margin.right, 1), height: Math.max(height - margin.top - margin.bottom, 20) };
   const scale = (list) => (value) => margin.top + inner.height - ((value - list[0]) / (list.at(-1) - list[0])) * inner.height;
   const y = scale(steps);
   const yRight = apart ? scale(rightSteps) : y;
-  const writeRight = apart ? stepWriter(right) : null;
   const x = (c) => margin.left + band * c;
   // A value as the query writes it, where it does, as a calculated member's format has it; as
   // the view's format has it in a tip, and briefly on its mark, otherwise.
@@ -372,8 +377,8 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
 
   steps.forEach((step, s) => {
     svg.append(h('line', { class: step === 0 ? 'axis' : 'gridline', x1: margin.left, x2: width - margin.right, y1: y(step), y2: y(step) }),
-      h('text', { class: 'tick', x: margin.left - 8, y: y(step) + 4, 'text-anchor': 'end' }, compact.format(step)));
-    if (apart) svg.append(h('text', { class: 'tick right', x: width - margin.right + 8, y: y(step) + 4, 'text-anchor': 'start' }, writeRight(rightSteps[s])));
+      h('text', { class: 'tick', x: margin.left - 8, y: y(step) + 4, 'text-anchor': 'end' }, leftTicks[s]));
+    if (apart) svg.append(h('text', { class: 'tick right', x: width - margin.right + 8, y: y(step) + 4, 'text-anchor': 'start' }, rightTicks[s]));
   });
   categories.forEach((name, c) => {
     if (c % every) return;
