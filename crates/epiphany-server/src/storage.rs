@@ -22,10 +22,10 @@
 //! A commit is appended to the log and flushed to disk before it is acknowledged. Opening the
 //! directory loads the snapshot, replays the log, and replaces both with a fresh snapshot.
 
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
 use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, BufWriter, Write};
+use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -354,17 +354,17 @@ struct RecordedCell {
 struct HistoryFile(PathBuf);
 
 impl History for HistoryFile {
-    /// Reads the file through, keeping the newest changes as asked, `most` at a time. A line
-    /// is read as JSON only if it holds every name asked about, as JSON writes them, so that
-    /// most lines are passed over at a glance; a user's name may be written in another case,
-    /// and is looked for once the line is read. A line cut short, the last after a crash, is
-    /// left out.
+    /// Reads the file from its end, the newest commit first, until the changes asked for are
+    /// found, so that the newest of a long history are found without reading the rest: read
+    /// from its start, a history of two million commits took 1.2 s for each part asked for. A
+    /// line newer than any asked for is passed over by the time it begins with; one is read as
+    /// JSON only if it holds every name asked about, as JSON writes them, so that most lines
+    /// are passed over at a glance; a user's name may be written in another case, and is
+    /// looked for once the line is read. A line cut short, the last after a crash, is left out.
     fn find(&self, asked: &Asked, skip: usize, most: usize) -> io::Result<Vec<CellChange>> {
         if most == 0 {
             return Ok(Vec::new());
         }
-        // The newest of all, those passed over among them, read forward.
-        let kept = skip.saturating_add(most);
         let file = match File::open(&self.0) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -376,10 +376,18 @@ impl History for HistoryFile {
             .collect::<Result<Vec<_>, _>>()?;
         let holds =
             |line: &[u8], needle: &[u8]| line.windows(needle.len()).any(|part| part == needle);
-        let mut found = VecDeque::with_capacity(kept.min(1024));
-        for line in io::BufRead::split(io::BufReader::new(file), b'\n') {
+        let newer = |line: &[u8]| {
+            let time = time_of(line);
+            asked
+                .until
+                .zip(time)
+                .is_some_and(|(until, time)| time > until)
+        };
+        let mut passed = 0;
+        let mut found = Vec::with_capacity(most.min(1024));
+        for line in Backwards::new(file)? {
             let line = line?;
-            if !needles.iter().all(|needle| holds(&line, needle)) {
+            if newer(&line) || !needles.iter().all(|needle| holds(&line, needle)) {
                 continue;
             }
             let Ok(commit) = serde_json::from_slice::<Recorded>(&line) else {
@@ -388,14 +396,16 @@ impl History for HistoryFile {
             if !asked.takes_commit(commit.time, commit.author.as_deref()) {
                 continue;
             }
-            for cell in commit.cells {
+            // A commit's cells, the last first, as the newest are given first.
+            for cell in commit.cells.into_iter().rev() {
                 if !asked.takes_cell(&cell.cube, &cell.at) {
                     continue;
                 }
-                if found.len() == kept {
-                    found.pop_front();
+                if passed < skip {
+                    passed += 1;
+                    continue;
                 }
-                found.push_back(CellChange {
+                found.push(CellChange {
                     time: commit.time,
                     author: commit.author.clone(),
                     cube: cell.cube,
@@ -403,9 +413,79 @@ impl History for HistoryFile {
                     before: cell.before,
                     after: cell.after,
                 });
+                if found.len() == most {
+                    return Ok(found);
+                }
             }
         }
-        Ok(found.into_iter().rev().skip(skip).collect())
+        Ok(found)
+    }
+}
+
+/// The time a line of the history begins with, read without the rest of it: each is
+/// written `{"time":…`, and one written otherwise is read whole.
+fn time_of(line: &[u8]) -> Option<u64> {
+    let digits = line.strip_prefix(b"{\"time\":")?;
+    let end = digits.iter().position(|byte| !byte.is_ascii_digit())?;
+    std::str::from_utf8(&digits[..end]).ok()?.parse().ok()
+}
+
+/// How much of a file is read at a time from its end.
+const BLOCK: u64 = 64 * 1024;
+
+/// The lines of a file, the last first, read from its end a block at a time.
+struct Backwards {
+    file: File,
+    /// How much of the file, from its start, is left to read.
+    left: u64,
+    /// The end of a line whose start is in what is left to read.
+    carry: Vec<u8>,
+    /// The lines whole in what has been read, the last given first.
+    lines: Vec<Vec<u8>>,
+}
+
+impl Backwards {
+    fn new(file: File) -> io::Result<Self> {
+        let left = file.metadata()?.len();
+        Ok(Self {
+            file,
+            left,
+            carry: Vec::new(),
+            lines: Vec::new(),
+        })
+    }
+}
+
+impl Iterator for Backwards {
+    type Item = io::Result<Vec<u8>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(line) = self.lines.pop() {
+                return Some(Ok(line));
+            }
+            if self.left == 0 {
+                // The file's first line, whole once nothing is left before it.
+                return (!self.carry.is_empty()).then(|| Ok(std::mem::take(&mut self.carry)));
+            }
+            let size = BLOCK.min(self.left);
+            self.left -= size;
+            let mut block = vec![0; size as usize];
+            let read = self.file.seek(SeekFrom::Start(self.left));
+            if let Err(error) = read.and_then(|_| self.file.read_exact(&mut block)) {
+                self.left = 0;
+                self.carry.clear();
+                return Some(Err(error));
+            }
+            // The block, and after it the end of the line it ends in the middle of.
+            block.append(&mut self.carry);
+            let mut parts = block.split(|&byte| byte == b'\n');
+            self.carry = parts.next().unwrap_or_default().to_vec();
+            self.lines = parts
+                .filter(|line| !line.is_empty())
+                .map(<[u8]>::to_vec)
+                .collect();
+        }
     }
 }
 
@@ -735,5 +815,64 @@ impl Journal for Files {
             Err(error) => eprintln!("warning: the snapshot could not be written: {error}"),
         }
         written
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The lines a file of this text gives read from its end, the last first.
+    fn backwards(text: &[u8]) -> Vec<Vec<u8>> {
+        let path = std::env::temp_dir().join(format!(
+            "epiphany-backwards-{}-{}",
+            std::process::id(),
+            text.len()
+        ));
+        fs::write(&path, text).unwrap();
+        let lines = Backwards::new(File::open(&path).unwrap()).unwrap();
+        let lines = lines.collect::<io::Result<Vec<_>>>().unwrap();
+        fs::remove_file(&path).unwrap();
+        lines
+    }
+
+    #[test]
+    fn a_file_is_read_from_its_end_a_line_at_a_time_whatever_its_lines_lengths() {
+        // Lines of every length about a block's, so that a block ends before, at and after a
+        // line's end, and one line longer than three blocks.
+        let block = BLOCK as usize;
+        let lengths = [1, 7, block - 1, block, block + 1, 3 * block + 5, 2, 0, 9];
+        let lines: Vec<Vec<u8>> = lengths
+            .iter()
+            .enumerate()
+            .filter(|&(_, &length)| length > 0)
+            .map(|(index, &length)| vec![b'a' + index as u8; length])
+            .collect();
+        let mut text = lengths
+            .iter()
+            .enumerate()
+            .map(|(index, &length)| vec![b'a' + index as u8; length])
+            .collect::<Vec<_>>()
+            .join(&b'\n');
+        text.push(b'\n');
+        let mut last_first = lines.clone();
+        last_first.reverse();
+        assert_eq!(backwards(&text), last_first);
+        // A last line cut short is given as it is, to be passed over as no JSON; nothing is
+        // given of an empty file.
+        text.extend_from_slice(b"{\"time\":12");
+        assert_eq!(backwards(&text)[0], b"{\"time\":12");
+        assert!(backwards(b"").is_empty());
+        assert_eq!(backwards(b"only"), [b"only".to_vec()]);
+    }
+
+    #[test]
+    fn a_lines_time_is_read_from_its_start_alone() {
+        assert_eq!(
+            time_of(b"{\"time\":1779999985,\"author\":null,\"cells\":[]}"),
+            Some(1779999985)
+        );
+        assert_eq!(time_of(b"{\"author\":null,\"time\":5}"), None);
+        assert_eq!(time_of(b"{\"time\":12"), None);
     }
 }

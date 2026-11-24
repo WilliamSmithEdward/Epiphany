@@ -465,6 +465,23 @@ the 1.5 million cells to the new model and writes a snapshot: 1.1 s, and no more
 at its height than loading the cells took. One that adds a view moves no cells and takes
 14 ms (2026-11-21).
 
+The history of cells is kept for good, a line for each commit, and was read from its start
+for every question asked of it. On a history of two million commits, 287 MB, against a
+release server, the best of three, read from its end instead (2026-11-23):
+
+| Asked | From its start | From its end |
+| --- | ---: | ---: |
+| The newest 200 changes | 1,209 ms | 1.1 ms |
+| The next 200 | 1,254 ms | 1.0 ms |
+| 200 from a month back | 1,232 ms | 20 ms |
+| One cell's newest 100 | 1,073 ms | 1.4 ms |
+| One user's newest 200 | 1,275 ms | 1.2 ms |
+
+The answers to twelve questions, of the newest, of parts far back and of the very first
+commits, by time, by user and by cell, are the same from both, byte for byte. A part far
+back passes over the lines newer than it by the time each begins with, without reading
+them as JSON.
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.

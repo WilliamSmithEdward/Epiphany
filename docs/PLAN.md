@@ -145,8 +145,9 @@ practice that means:
   value: when, who began its transaction, and each cell's value before and after. A
   snapshot does not replace it. It is written after the commit is safe in the log, without
   waiting on the disk again, and read through for one cell at a time, apart from the
-  database, so that reading a long history holds up no one. It is read back a part at a
-  time, the newest first: each part asked until the time of the oldest change given, passing
+  database, so that reading a long history holds up no one. It is read from its end, a
+  block at a time, until what is asked for is found, so that its newest are found without
+  reading the rest. It is read back a part at a time, the newest first: each part asked until the time of the oldest change given, passing
   over (`skip`) as many of that time as were given. A commit of many cells gives them all one
   time, so a time alone could not say where a part left off; and a change made meanwhile is
   newer than any asked for. The audit is read back the same way.
