@@ -401,6 +401,19 @@ model's page (2026-11-23):
 | Opened and drawn | 1,830 to 1,889 ms | 1,537 to 1,591 ms |
 | The page's heap, once open | 375 MB | 193 to 202 MB |
 
+What it works out from the dimension then made a set for each element as it worked out the
+levels, each by default; looked every leaf up again on the way down to their depths; gave
+each leaf two empty lists of children; and indexed the elements by name from a pair made for
+each. A profile of the page put a third of the time in those. One set now serves, the way
+down passes a leaf by its element, a leaf's children are one empty list for all, and the
+index is set one element at a time; the levels, depths, roots and parents of the million are
+the same as before. Measured the same way (2026-11-23):
+
+| The model's editor, a dimension of a million leaves | Before | After |
+| --- | --- | --- |
+| Opened and drawn | 1,537 to 1,591 ms | 1,333 to 1,398 ms |
+| The page's heap, once open | 193 to 202 MB | 167 to 170 MB |
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions

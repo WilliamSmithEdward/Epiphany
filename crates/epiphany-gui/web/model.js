@@ -9,6 +9,8 @@ import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey,
 import { choices, dialog, h, icon, invalid, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, widest, working } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
+/** What an element without children has as its list of them: one list, never changed. */
+const NO_CHILDREN = Object.freeze([]);
 /** How tall a child's row is in an element's detail: its controls and the gap below them. */
 const CHILD_ROW = 36;
 
@@ -517,7 +519,12 @@ class DimensionEditor extends Editor {
       return {
         byName,
         roots: this.working.elements.filter((element) => !above.has(element.name)).map((element) => element.name),
-        children: (name) => (byName.get(name)?.children ?? []).map((child) => child.name).filter((child) => byName.has(child)),
+        // A leaf, as most are, has no lists made for it: one empty list serves them all.
+        children: (name) => {
+          const element = byName.get(name);
+          if (!element?.children?.length) return NO_CHILDREN;
+          return element.children.map((child) => child.name).filter((child) => byName.has(child));
+        },
         parents: (name) => [above.get(name) ?? []].flat(),
       };
     });
@@ -563,13 +570,21 @@ class DimensionEditor extends Editor {
    */
   listWidth() {
     return this.kept('width', () => {
-      const { roots, children } = this.hierarchy();
-      const depths = new Map();
-      const queue = roots.map((name) => [name, 0]);
-      for (const [name, depth] of queue) {
-        if (depths.has(name)) continue;
-        depths.set(name, depth);
-        for (const child of children(name)) queue.push([child, depth + 1]);
+      const { byName, roots } = this.hierarchy();
+      // Each element's depth, the first it is reached at, top down: each queued once, as its
+      // element, so that a leaf, as most are, is passed at a glance.
+      const depths = new Map(roots.map((name) => [name, 0]));
+      const queue = [...depths.keys()].map((name) => byName.get(name));
+      for (let at = 0; at < queue.length; at += 1) {
+        const element = queue[at];
+        if (!element.children?.length) continue;
+        const depth = depths.get(element.name) + 1;
+        for (const child of element.children) {
+          const below = byName.get(child.name);
+          if (!below || depths.has(child.name)) continue;
+          depths.set(child.name, depth);
+          queue.push(below);
+        }
       }
       const names = widest(this.working.elements, (element) => element.name, (element) => (depths.get(element.name) ?? 0) * INDENT);
       const type = Math.max(...Object.values(TYPES).map(textWidths()));
@@ -580,7 +595,12 @@ class DimensionEditor extends Editor {
   }
 
   get byName() {
-    return this.kept('byName', () => new Map(this.working.elements.map((element) => [element.name, element])));
+    return this.kept('byName', () => {
+      // Set one by one, rather than made from a pair for each of a million.
+      const byName = new Map();
+      for (const element of this.working.elements) byName.set(element.name, element);
+      return byName;
+    });
   }
 
   draw() {
@@ -1110,14 +1130,19 @@ class DimensionEditor extends Editor {
     return this.kept('levels', () => {
       const byName = this.byName;
       const memo = new Map();
-      const level = (name, trail = new Set()) => {
-        if (memo.has(name)) return memo.get(name);
+      // The elements being worked out, one within another, by which a loop is found; one set
+      // for all, where one made for each element was a million.
+      const trail = new Set();
+      const level = (name) => {
+        // A leaf, as most are, is known as one by its element alone.
         const element = byName.get(name);
         if (!element?.children?.length || trail.has(name)) return 0;
+        const known = memo.get(name);
+        if (known !== undefined) return known;
         trail.add(name);
         // A loop, not a spread: a total over a million children is too many arguments.
         let highest = 0;
-        for (const child of element.children) highest = Math.max(highest, level(child.name, trail));
+        for (const child of element.children) highest = Math.max(highest, level(child.name));
         trail.delete(name);
         memo.set(name, highest + 1);
         return highest + 1;
