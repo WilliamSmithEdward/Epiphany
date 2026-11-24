@@ -117,9 +117,9 @@ namespace Epiphany.Excel
                 asking = true;
                 ExcelAsyncUtil.QueueAsMacro(() => Connect(place));
             };
-            // A changed model changes what the dimension functions answer, so every formula
-            // asks again.
-            place.Connection.ModelChanged += () => ExcelAsyncUtil.QueueAsMacro(Refresh);
+            // A changed model may change what any formula answers, so every formula asks again:
+            // from the dimensions the connection still holds, those the change left as they were.
+            place.Connection.ModelChanged += () => ExcelAsyncUtil.QueueAsMacro(() => AskAgain(forget: false));
             // Left unused, a transaction is rolled back by the server. What was entered in
             // it is gone, and the sheet goes back to showing what is stored.
             place.Connection.TransactionLost += () => ExcelAsyncUtil.QueueAsMacro(() =>
@@ -145,12 +145,14 @@ namespace Epiphany.Excel
             AskAgain();
         }
 
-        /// <summary>Has every formula ask its server again.</summary>
-        private static void AskAgain()
+        /// <summary>Has every formula ask its server again: about dimensions fetched afresh, or,
+        /// without <paramref name="forget"/>, from those each connection holds.</summary>
+        private static void AskAgain(bool forget = true)
         {
             Refreshes++;
-            foreach (var place in Places.Values)
-                place.Connection.Refresh();
+            if (forget)
+                foreach (var place in Places.Values)
+                    place.Connection.Refresh();
             // Every formula is calculated again, whether or not Excel holds it to be out of date.
             ((Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application).CalculateFull();
         }
