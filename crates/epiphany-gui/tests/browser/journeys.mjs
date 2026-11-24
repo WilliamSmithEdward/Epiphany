@@ -1121,10 +1121,19 @@ async function exploring() {
     })()`;
     await page.click('button', 'Edit');
     await page.waitFor(`document.querySelector('.board.editing ${bars} .chart')`, 'the dashboard, being edited');
-    // Laid out freely, the tile of text stands over the bars' head: their options are opened
-    // from the keys, Enter on the tile.
-    await page.evaluate(`document.querySelector('${bars}').focus()`);
-    await page.press('Enter');
+    // Laid out freely, the tile of text stands over the bars' head; pointed at, the bars stand
+    // over it, their options within the pointer's reach.
+    const options = `${bars} [aria-haspopup="menu"]`;
+    const reached = `(() => {
+      const button = document.querySelector('${options}');
+      const box = button.getBoundingClientRect();
+      return document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)?.closest('[aria-haspopup]') === button;
+    })()`;
+    expect(!(await page.evaluate(reached)), 'The tile of text does not stand over the bars\' head, as this step takes it to.');
+    const chart = await page.point(`${bars} .tile-body`);
+    await page.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: chart.x, y: chart.y });
+    await page.waitFor(reached, 'the bars, over the tile of text');
+    await page.click(options);
     await page.click('.menu [role="menuitem"]', 'How its series are drawn…');
     const series = (name) => `dialog[open] [role="radiogroup"][aria-label="${name}"] [role="radio"]`;
     await page.waitFor(`document.querySelector('${series('UK · Revenue')}')`, 'how each series is drawn');

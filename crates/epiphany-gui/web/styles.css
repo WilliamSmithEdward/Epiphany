@@ -973,6 +973,9 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .board.editing .tile-body { pointer-events: none; }
 .board.editing .dash-tile:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .board.arranging, .board.arranging .dash-tile { cursor: grabbing; }
+/* Laid out freely and being arranged, a tile pointed at or holding the keys stands over those
+   it overlaps, its head and handles in reach; shown, each keeps its place in the stack. */
+.board.editing.free .dash-tile:is(:hover, :focus-within) { z-index: 40 !important; }
 .dash-tile.lifted { z-index: 50 !important; box-shadow: var(--shadow-3); opacity: .96; transition: none; }
 .dash-tile.sizing { z-index: 50 !important; transition: none; }
 .dash-tile.sizing::after { content: attr(data-size); position: absolute; right: 12px; bottom: 12px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: var(--text-xs); font-weight: 600; font-variant-numeric: tabular-nums; }
