@@ -4152,6 +4152,19 @@
         },
         "additionalProperties": false
       },
+      "ChartKind": {
+        "type": "string",
+        "description": "A kind of chart, as a view or a dashboard's tile draws one.",
+        "enum": [
+          "bars",
+          "stacked",
+          "shares",
+          "lines",
+          "area",
+          "ranked",
+          "donut"
+        ]
+      },
       "ChildDef": {
         "type": "object",
         "required": [
@@ -6412,6 +6425,38 @@
         },
         "additionalProperties": false
       },
+      "ViewChart": {
+        "type": "object",
+        "description": "How a view is charted, as it was when it was saved from its chart.",
+        "properties": {
+          "by_columns": {
+            "type": "boolean",
+            "description": "A series for each of the view's columns, rather than each of its rows."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChartKind"
+          },
+          "labels": {
+            "type": "boolean",
+            "description": "Each value written on its mark."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The series, by name, drawn as lines over the rest, against the same scale."
+          },
+          "second_axis": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The series, by name, drawn as lines against a scale of their own at the right."
+          }
+        },
+        "additionalProperties": false
+      },
       "ViewDef": {
         "type": "object",
         "description": "A saved query against a cube.",
@@ -6419,6 +6464,17 @@
           "mdx"
         ],
         "properties": {
+          "chart": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ViewChart",
+                "description": "The chart the view was saved from: it opens as that chart, drawn so, and as its grid\nwithout one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "format": {
             "oneOf": [
               {

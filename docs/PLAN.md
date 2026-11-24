@@ -432,6 +432,12 @@ practice that means:
   are stored, the route naming it in `subsets_reading_cells`. One built on it reads cells
   too. A picklist, worked out once, cannot offer one.
 - A view is checked when the model is compiled, by running it against an empty cube.
+- A view keeps how it is shown beside its query: the sizes of its grid, its number format,
+  its highlights, and, where it was saved from its chart, that chart (`chart`: its kind, the
+  way its series run, its values on the marks, and the series drawn as lines over the rest
+  or against a scale at the right). **Decision:** a view with a chart opens as it, one
+  without as its grid; the chart's kinds are a type of their own, `ChartKind`, so that a
+  view cannot be saved as a key figure or a tile of text.
 - `TM1SubsetToSet([Dimension], "name")` uses a subset in any query, and with "private"
   one the user asking keeps for themself.
 - `GET /dimensions/{name}` lists each subset's elements; `GET /cubes/{cube}/views/{view}`

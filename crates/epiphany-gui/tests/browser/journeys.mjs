@@ -927,6 +927,35 @@ async function exploring() {
     await page.click('dialog[open] button', 'Done');
     expect(quoted((await page.api('GET', views)).data) === '{}', 'The view is still kept.');
   });
+  await step('A view saved from its chart opens as that chart, drawn as it was', async () => {
+    const views = '/cubes/General%20Ledger/private-views';
+    const kind = (name) => `document.querySelector('[role="radiogroup"][aria-label="Kind of chart"] [aria-checked="true"]')?.textContent === ${quoted(name)}`;
+    await page.click('[role="tab"]', 'Chart');
+    await page.waitFor(`document.querySelector('.chart-pane')`, 'the chart');
+    await page.click('[role="radiogroup"][aria-label="Kind of chart"] [role="radio"]', 'Stacked');
+    await page.waitFor(kind('Stacked'), 'stacked bars');
+    await page.click('button', 'Views');
+    await page.click('.menu [role="menuitem"]', 'Save this query as a view…');
+    await page.fill('#view-name', 'Stacked costs');
+    await page.press('Enter');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('for you alone'))`, 'the view, saved');
+    const kept = (await page.api('GET', views)).data['Stacked costs'];
+    expect(kept?.chart?.kind === 'stacked', `The view was kept as ${quoted(kept)}.`);
+    // On the grid as bars again, the view chosen from the list comes as its stacked chart.
+    await page.click('[role="radiogroup"][aria-label="Kind of chart"] [role="radio"]', 'Bars');
+    await page.waitFor(kind('Bars'), 'bars again');
+    await page.click('[role="tab"]', 'Grid');
+    await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
+    await page.click('button', 'Views');
+    await page.click('.menu [role="menuitem"]', 'Stacked costs');
+    await page.waitFor(`document.querySelector('[role="tab"][aria-selected="true"]')?.textContent === 'Chart' && ${kind('Stacked')} && document.querySelector('.chart-pane svg')`, 'the view, as its stacked chart');
+    // Taken away, and the cube's chart as bars and its grid shown again, for the steps after.
+    expect((await page.api('DELETE', `${views}/Stacked%20costs`)).status < 300, 'The view was not taken away.');
+    await page.click('[role="radiogroup"][aria-label="Kind of chart"] [role="radio"]', 'Bars');
+    await page.waitFor(kind('Bars'), 'bars again');
+    await page.click('[role="tab"]', 'Grid');
+    await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
+  });
   await step('A set kept as one\'s own subset is offered again, and taken away', async () => {
     const subsets = '/dimensions/Account/private-subsets';
     await page.click('.chip-main', 'Account2 members');

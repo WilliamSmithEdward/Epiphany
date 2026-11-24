@@ -73,6 +73,26 @@ export async function render(target, { params, titled }) {
   return new Explorer(target, definition, cube, dims, view, kept, named ? (name, unsaved) => titled(`${named} · ${name}`, unsaved) : titled);
 }
 
+/** A saved view's query, and how it is shown, put into a layout: its chart where it has one. */
+function opened(layout, view) {
+  Object.assign(layout, { mdx: view.mdx, geometry: view.geometry ?? null, format: view.format ?? null, highlights: view.highlights ?? null });
+  if (view.chart) {
+    const { kind = 'bars', by_columns: byColumns = false, labels = false, lines = [], second_axis: second = [] } = view.chart;
+    layout.chart = { kind, byColumns, labels, lines, second };
+  }
+}
+
+/** A layout's chart as a view keeps it. */
+function chartOf({ kind = 'bars', byColumns, labels, lines, second } = {}) {
+  return {
+    kind,
+    ...(byColumns ? { by_columns: true } : {}),
+    ...(labels ? { labels: true } : {}),
+    ...(lines?.length ? { lines } : {}),
+    ...(second?.length ? { second_axis: second } : {}),
+  };
+}
+
 class Explorer {
   /**
    * `view`, where one is given, is a saved view to open in place of the last layout; `kept`
@@ -85,10 +105,11 @@ class Explorer {
     this.cube = cube;
     this.dims = dims;
     this.layout = this.restore() ?? defaultLayout(cube, dims);
-    if (view) Object.assign(this.layout, { mdx: view.mdx, geometry: view.geometry ?? null, format: view.format ?? null, highlights: view.highlights ?? null });
+    if (view) opened(this.layout, view);
     this.past = [];
     this.future = [];
-    this.view = 'grid';
+    // Saved from its chart, a view opens as that chart; anything else, as its grid.
+    this.view = view?.chart ? 'chart' : 'grid';
     this.result = null;
     this.ticket = 0;
     // Writing back: the transaction the edits are held in, a sandbox's where one is worked
@@ -1227,12 +1248,11 @@ class Explorer {
         unfetched = true;
       }
     }
-    const open = (view) => () => this.change((layout) => {
-      layout.mdx = view.mdx;
-      layout.geometry = view.geometry ?? null;
-      layout.format = view.format ?? null;
-      layout.highlights = view.highlights ?? null;
-    }, true);
+    const open = (view) => () => {
+      this.view = view.chart ? 'chart' : 'grid';
+      this.drawTabs();
+      this.change((layout) => opened(layout, view), true);
+    };
     const mine = Object.entries(own);
     const everyones = Object.entries(this.cube.views ?? {});
     const saving = !viewing && (keepsOwn || state.user?.role === 'admin');
@@ -1250,7 +1270,10 @@ class Explorer {
     ], button);
   }
 
-  /** The query shown, with the sizes, number format and highlights it is shown with. */
+  /**
+   * The query shown, with the sizes, number format and highlights it is shown with, and the
+   * chart it is shown as, where it is.
+   */
   asView() {
     const geometry = this.layout.geometry;
     const sized = geometry && (geometry.row_height || Object.keys(geometry.widths ?? {}).length)
@@ -1258,7 +1281,8 @@ class Explorer {
       : {};
     const format = this.layout.format ? { format: this.layout.format } : {};
     const highlights = this.layout.highlights ? { highlights: this.layout.highlights } : {};
-    return { mdx: this.text, ...sized, ...format, ...highlights };
+    const chart = this.view === 'chart' ? { chart: chartOf(this.layout.chart) } : {};
+    return { mdx: this.text, ...sized, ...format, ...highlights, ...chart };
   }
 
   /**

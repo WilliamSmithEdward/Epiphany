@@ -1109,7 +1109,11 @@ class Dashboards {
         cubes.length
           ? cubes.map(({ cube, views }) => [
             h('div', { class: 'drawer-section' }, cube.name),
-            views.map((view) => item({ cube: cube.name, view, show: 'bars' }, view, 'Saved view', 'chart')),
+            views.map((view) => {
+              // A view saved from its chart is shown as that chart, drawn so; any other as bars.
+              const { kind = 'bars', ...drawn } = cube.views[view].chart ?? {};
+              return item({ cube: cube.name, view, show: kind, ...drawn }, view, 'Saved view', KINDS[kind]?.[1] ?? 'chart');
+            }),
           ])
           : h('p', { class: 'hint' }, words ? 'No view has those words.' : 'No cube has a saved view yet. Save a view in Explore first.'));
     };

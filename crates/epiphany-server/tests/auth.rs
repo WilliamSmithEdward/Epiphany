@@ -410,7 +410,7 @@ async fn a_users_views_are_their_own_and_go_with_them() {
     let mdx = "SELECT {[Period].[Jan]} ON COLUMNS FROM [General Ledger]";
 
     // A reader keeps a view, which nobody else sees.
-    let view = json!({ "mdx": mdx, "format": { "decimals": 1 } });
+    let view = json!({ "mdx": mdx, "format": { "decimals": 1 }, "chart": { "kind": "lines" } });
     let (status, _, _) = send(
         &app,
         "PUT",

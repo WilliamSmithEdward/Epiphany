@@ -288,6 +288,50 @@ pub struct ViewDef {
     /// How the view draws the eye to some numbers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub highlights: Option<Highlights>,
+    /// The chart the view was saved from: it opens as that chart, drawn so, and as its grid
+    /// without one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart: Option<ViewChart>,
+}
+
+/// How a view is charted, as it was when it was saved from its chart.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(deny_unknown_fields)]
+pub struct ViewChart {
+    #[serde(default)]
+    pub kind: ChartKind,
+    /// A series for each of the view's columns, rather than each of its rows.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub by_columns: bool,
+    /// Each value written on its mark.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub labels: bool,
+    /// The series, by name, drawn as lines over the rest, against the same scale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<String>,
+    /// The series, by name, drawn as lines against a scale of their own at the right.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub second_axis: Vec<String>,
+}
+
+/// A kind of chart, as a view or a dashboard's tile draws one.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum ChartKind {
+    #[default]
+    Bars,
+    Stacked,
+    /// Stacked bars each as tall as its category's whole, each series its share of it.
+    Shares,
+    Lines,
+    /// Lines with the ground beneath them filled.
+    Area,
+    /// Bars across, the largest first.
+    Ranked,
+    /// A ring of each value's share of their whole.
+    Donut,
 }
 
 /// How a view draws the eye to numbers: bars, shades, and colours by rule. Totals take no

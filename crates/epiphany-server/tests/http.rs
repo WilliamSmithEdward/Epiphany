@@ -590,8 +590,8 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
         json!({ "code": "not_found", "message": "cube 'General Ledger' has no view 'Nope'" })
     );
 
-    // A view keeps the sizes of its grid and how it shows its numbers; a unit not known is
-    // refused.
+    // A view keeps the sizes of its grid, how it shows its numbers, and the chart it was
+    // saved from; a unit or a kind of chart not known is refused.
     let (_, mut cube) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
     let shown = json!({
         "geometry": { "row_height": 40, "widths": { "col:[Period].[Jan]": 120 } },
@@ -603,6 +603,10 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
                 { "test": "at_least", "value": 100.0, "tone": "good" },
                 { "test": "below", "value": 0.0, "tone": "bad" }
             ]
+        },
+        "chart": {
+            "kind": "shares", "by_columns": true, "labels": true,
+            "lines": ["Rent"], "second_axis": ["Margin %"]
         }
     });
     let mut view = shown.clone();
@@ -625,14 +629,18 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
         served["views"]["Winter rent"]["highlights"],
         shown["highlights"]
     );
-    cube["views"]["Winter rent"]["format"]["scale"] = json!("dozens");
-    let put = json!({ "based_on": 3, "cube": cube });
-    assert_eq!(
-        call(&app, "PUT", "/cubes/General%20Ledger", Some(put))
-            .await
-            .0,
-        StatusCode::UNPROCESSABLE_ENTITY
-    );
+    assert_eq!(served["views"]["Winter rent"]["chart"], shown["chart"]);
+    for (part, odd) in [("format", "scale"), ("chart", "kind")] {
+        let mut broken = cube.clone();
+        broken["views"]["Winter rent"][part][odd] = json!("dozens");
+        let put = json!({ "based_on": 3, "cube": broken });
+        assert_eq!(
+            call(&app, "PUT", "/cubes/General%20Ledger", Some(put))
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
 }
 
 #[tokio::test]
