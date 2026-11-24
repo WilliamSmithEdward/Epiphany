@@ -2,7 +2,7 @@
 // their rules, feeders and views. Every change is saved against the model version it was
 // made from, so that nobody's change is overwritten unseen.
 
-import { del, get, part, put } from './api.js';
+import { del, get, part, post, put } from './api.js';
 import { empty, failure, go, loading } from './app.js';
 import { checkFeeders } from './feeders.js';
 import { chooser, finder, pick } from './finder.js';
@@ -218,26 +218,23 @@ class ModelPage {
 
   /** Shows what restoring an earlier model would change, and restores it if asked to. */
   async compare(kept, button) {
-    // The model now whole, to compare with the earlier one, which only this asks for.
-    let earlier;
-    let current;
+    // What restoring it would change, by name, as the server finds it: neither model is
+    // fetched, however large.
+    let changes;
     try {
-      const both = await working(button, () => Promise.all([get(`/admin/models/${part(kept.name)}`), get('/model')]));
-      [earlier, current] = [both?.[0]?.model, both?.[1]?.model];
+      changes = await working(button, () => get(`/admin/models/${part(kept.name)}/changes`));
     } catch (problem) {
       notify(problem.message, 'bad');
       return;
     }
-    if (!earlier || !current) return;
+    if (!changes) return;
     document.querySelector('dialog[open]')?.close();
+    // Past twenty of a kind, the rest are counted.
+    const listed = (names) => (names.length > 20 ? `${names.slice(0, 20).join(', ')} and ${(names.length - 20).toLocaleString()} more` : names.join(', '));
     const said = [['dimensions', 'Dimensions'], ['cubes', 'Cubes'], ['dashboards', 'Dashboards']].flatMap(([key, label]) => {
-      const byName = (list) => new Map((list ?? []).map((item) => [item.name, JSON.stringify(item)]));
-      const [now, then] = [byName(current[key]), byName(earlier[key])];
-      const added = [...then.keys()].filter((name) => !now.has(name));
-      const removed = [...now.keys()].filter((name) => !then.has(name));
-      const changed = [...then.keys()].filter((name) => now.has(name) && now.get(name) !== then.get(name));
-      const line = (verb, names) => (names.length ? h('li', {}, h('strong', {}, `${label} ${verb}: `), names.join(', ')) : null);
-      return [line('brought back', added), line('taken away', removed), line('put back as they were', changed)].filter(Boolean);
+      const line = (verb, names) => (names.length ? h('li', {}, h('strong', {}, `${label} ${verb}: `), listed(names)) : null);
+      const { brought_back: back, taken_away: away, put_back: again } = changes[key];
+      return [line('brought back', back), line('taken away', away), line('put back as they were', again)].filter(Boolean);
     });
     const agreed = await dialog({
       title: `Restore version ${kept.version}?`,
@@ -252,7 +249,8 @@ class ModelPage {
     // Changes being edited would go with the page; they are given up only if the user agrees.
     if (!agreed || !(await this.leave())) return;
     try {
-      const update = await put('/model', { based_on: this.version, model: earlier });
+      // Restored where it is kept: the model is not sent back, however large.
+      const update = await post(`/admin/models/${part(kept.name)}/restore`, { based_on: this.version });
       notify(`Restored version ${kept.version} as version ${update.version}.${update.dropped_cells ? ` ${update.dropped_cells.toLocaleString()} stored cells no longer fitted and were removed.` : ''}`, 'good');
       // The page is drawn again from the model as it now is.
       location.assign('/model');

@@ -1,6 +1,6 @@
 //! The routes, their request and response shapes, and the OpenAPI document generated from them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{
     Arc, LockResult, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
@@ -204,6 +204,8 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_earlier_models))
         .routes(routes!(list_changes))
         .routes(routes!(get_earlier_model))
+        .routes(routes!(earlier_model_changes))
+        .routes(routes!(restore_earlier_model))
         .routes(routes!(list_comments, add_comment))
         .routes(routes!(remove_comment))
 }
@@ -3197,8 +3199,8 @@ async fn remove_comment(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// The models kept from before the current one, newest first. One is restored by sending it
-/// back with `PUT /model`, which makes it the newest version. For administrators.
+/// The models kept from before the current one, newest first. One is restored with
+/// `POST /admin/models/{name}/restore`, which makes it the newest version. For administrators.
 #[utoipa::path(
     get,
     path = "/admin/models",
@@ -3235,6 +3237,123 @@ async fn get_earlier_model(
     }))
 }
 
+/// What restoring an earlier model would change, by the names of what changes.
+#[derive(Serialize, ToSchema)]
+struct Restoring {
+    /// The version the earlier model was.
+    version: u64,
+    dimensions: Differences,
+    cubes: Differences,
+    dashboards: Differences,
+}
+
+/// Of one kind, what restoring an earlier model brings back, takes away and puts back as it
+/// was, each by its name, in the order the model lists them.
+#[derive(Serialize, ToSchema)]
+struct Differences {
+    /// Those the earlier model has and the current one has not.
+    brought_back: Vec<String>,
+    /// Those the current model has and the earlier one has not.
+    taken_away: Vec<String>,
+    /// Those both have, but not alike.
+    put_back: Vec<String>,
+}
+
+impl Differences {
+    fn between<T: PartialEq>(now: &[T], then: &[T], name: impl Fn(&T) -> &str) -> Self {
+        let now_named: HashMap<&str, &T> = now.iter().map(|item| (name(item), item)).collect();
+        let then_named: HashSet<&str> = then.iter().map(&name).collect();
+        Self {
+            brought_back: then
+                .iter()
+                .map(&name)
+                .filter(|named| !now_named.contains_key(named))
+                .map(str::to_owned)
+                .collect(),
+            taken_away: now
+                .iter()
+                .map(&name)
+                .filter(|named| !then_named.contains(named))
+                .map(str::to_owned)
+                .collect(),
+            put_back: then
+                .iter()
+                .filter(|item| now_named.get(name(item)).is_some_and(|was| *was != *item))
+                .map(|item| name(item).to_owned())
+                .collect(),
+        }
+    }
+}
+
+/// What restoring an earlier model would change: the dimensions, cubes and dashboards it
+/// brings back, takes away and puts back as they were, by name, so that neither model is
+/// sent, however large. For administrators.
+#[utoipa::path(
+    get,
+    path = "/admin/models/{name}/changes",
+    params(("name" = String, Path, description = "The name it is kept under, as the list of earlier models gives it")),
+    responses(
+        (status = OK, body = Restoring, description = "What restoring it would change"),
+        (status = NOT_FOUND, body = ApiError, description = "No earlier model is kept under that name"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The kept model could not be read")
+    )
+)]
+async fn earlier_model_changes(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+) -> Result<Json<Restoring>, ApiError> {
+    let database = database.read().unwrap();
+    let earlier = database.earlier_model(&name)?;
+    let version = database
+        .earlier_models()
+        .into_iter()
+        .find(|kept| kept.name == name)
+        .map_or(0, |kept| kept.version);
+    let now = database.definition();
+    Ok(Json(Restoring {
+        version,
+        dimensions: Differences::between(&now.dimensions, &earlier.dimensions, |d| &d.name),
+        cubes: Differences::between(&now.cubes, &earlier.cubes, |c| &c.name),
+        dashboards: Differences::between(&now.dashboards, &earlier.dashboards, |d| &d.name),
+    }))
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct Restore {
+    /// The model version the restoring was decided from.
+    based_on: u64,
+}
+
+/// Makes an earlier model the current one again, as its newest version: the one it replaces
+/// is kept among the earlier models, so that this too can be undone, and stored cells that no
+/// longer fit are removed. The model is read where it is kept rather than sent, however large.
+/// For administrators.
+#[utoipa::path(
+    post,
+    path = "/admin/models/{name}/restore",
+    params(("name" = String, Path, description = "The name it is kept under, as the list of earlier models gives it")),
+    request_body = Restore,
+    responses(
+        (status = OK, body = ModelUpdate, description = "The earlier model is the current one"),
+        (status = NOT_FOUND, body = ApiError, description = "No earlier model is kept under that name"),
+        (status = CONFLICT, body = ApiError, description = "Stale version, or a transaction holds a lock"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "The request body is malformed"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The kept model could not be read, or the change could not be stored")
+    )
+)]
+async fn restore_earlier_model(
+    State(database): State<Shared>,
+    Path(name): Path<String>,
+    Body(request): Body<Restore>,
+) -> Result<Json<ModelUpdate>, ApiError> {
+    // Read while others go on reading, then made the current one against its version.
+    let earlier = database.read().unwrap().earlier_model(&name)?;
+    Ok(Json(
+        database.write().update_model(request.based_on, earlier)?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -3263,6 +3382,7 @@ mod tests {
             "GET /admin/changes admin read",
             "GET /admin/models admin read",
             "GET /admin/models/{name} admin read",
+            "GET /admin/models/{name}/changes admin read",
             "GET /admin/status admin read",
             "GET /admin/transactions admin read",
             "GET /admin/users admin read",
@@ -3280,6 +3400,7 @@ mod tests {
             "GET /model/outline model read",
             "GET /sandboxes cells read",
             "GET /transactions/{id}/point cells read",
+            "POST /admin/models/{name}/restore admin write",
             "POST /admin/view-as admin write",
             "POST /cells/detail cells write",
             "POST /cells/explain cells read",

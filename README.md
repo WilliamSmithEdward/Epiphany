@@ -207,7 +207,8 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `GET /cubes/{cube}/private-views`, `PUT`, `DELETE /cubes/{cube}/private-views/{name}` | The signed-in user's own views of a cube, which nobody else sees |
 | `GET /dimensions/{dimension}/private-subsets`, `PUT`, `DELETE /dimensions/{dimension}/private-subsets/{name}` | The signed-in user's own subsets of a dimension: lists of members, which nobody else sees |
 | `GET /cubes/{cube}/feeders/check` | Calculated cells that no feeder feeds |
-| `GET /admin/models`, `GET /admin/models/{name}` | The earlier versions of the model the server keeps; one is restored by `PUT /model` |
+| `GET /admin/models`, `GET /admin/models/{name}` | The earlier versions of the model the server keeps |
+| `GET /admin/models/{name}/changes`, `POST /admin/models/{name}/restore` | What restoring an earlier version would change, by name, and restoring it where it is kept: neither sends a model, however large |
 | `GET /admin/changes` | The changes saved to cells across cubes, the newest first, by cube, user and time |
 | `POST /admin/view-as`, `GET /admin/audit` | A view of the server as another user has it, reading only, and the audit that records each |
 | `POST /transactions`, then `/transactions/{id}/commit`, `rollback`, `locks`, `point` and `undo` | Transactions, and taking one back to a point it came to |

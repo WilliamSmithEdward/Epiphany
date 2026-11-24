@@ -2,6 +2,7 @@
 
 import { del, get, part, put } from './api.js';
 import { state } from './app.js';
+import { pick } from './finder.js';
 import { beneath, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
 import { choices, copyText, counted, dialog, h, icon, invalid, menu, MOD, mount, notify, refocus } from './ui.js';
 
@@ -630,13 +631,19 @@ class SetEditor {
       to: (level) => openWhere(this.dim.elements.filter((element) => element.level > level).map((element) => element.name)),
     });
     // The set replaced whole: by the top members, a level, one of the dimension's subsets, or
-    // one of the user's own, which come once they are fetched.
+    // one of the user's own, which come once they are fetched. Past a dozen subsets, they are
+    // found by typing among however many.
+    const subsetItems = () => [
+      ...Object.keys(this.dim.subsets ?? {}).map((subset) => ({ label: subset, icon: 'filter', group: 'The dimension’s', chosen: `subset:${subset}` })),
+      ...Object.keys(this.own).map((subset) => ({ label: subset, icon: 'filter', group: 'Yours', chosen: `own:${subset}` })),
+    ];
     const quick = h('select', {
       class: 'select small-select',
       'aria-label': 'Replace the set',
       onchange: async (event) => {
-        const chosen = event.target.value;
+        let chosen = event.target.value;
         event.target.value = '';
+        if (chosen === 'find:') chosen = (await pick({ items: subsetItems(), at: quick, label: 'Find a subset' }))?.chosen ?? '';
         const [kind, ...rest] = chosen.split(':');
         const value = rest.join(':');
         if (!kind) return;
@@ -659,12 +666,16 @@ class SetEditor {
         });
       },
     });
-    this.drawQuick = () => mount(quick,
-      h('option', { value: '' }, 'Replace with…'),
-      h('option', { value: 'top:' }, 'The top members'),
-      levels.map((level) => h('option', { value: `level:${level}` }, `Every member of ${levelName(level)}`)),
-      Object.keys(this.dim.subsets ?? {}).map((subset) => h('option', { value: `subset:${subset}` }, `The subset ${subset}`)),
-      Object.keys(this.own).map((subset) => h('option', { value: `own:${subset}` }, `Your subset ${subset}`)));
+    this.drawQuick = () => {
+      const subsets = subsetItems();
+      mount(quick,
+        h('option', { value: '' }, 'Replace with…'),
+        h('option', { value: 'top:' }, 'The top members'),
+        levels.map((level) => h('option', { value: `level:${level}` }, `Every member of ${levelName(level)}`)),
+        subsets.length > 12
+          ? h('option', { value: 'find:' }, `One of ${subsets.length.toLocaleString()} subsets…`)
+          : subsets.map((subset) => h('option', { value: subset.chosen }, subset.group === 'Yours' ? `Your subset ${subset.label}` : `The subset ${subset.label}`)));
+    };
     this.drawQuick();
     this.fetchOwn();
     // Copying gives the names, one to a line; pasting adds the members a list names.

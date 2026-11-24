@@ -224,7 +224,7 @@
     },
     "/admin/models": {
       "get": {
-        "summary": "The models kept from before the current one, newest first. One is restored by sending it\nback with `PUT /model`, which makes it the newest version. For administrators.",
+        "summary": "The models kept from before the current one, newest first. One is restored with\n`POST /admin/models/{name}/restore`, which makes it the newest version. For administrators.",
         "operationId": "list_earlier_models",
         "responses": {
           "200": {
@@ -321,6 +321,174 @@
           },
           "500": {
             "description": "The kept model could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/models/{name}/changes": {
+      "get": {
+        "summary": "What restoring an earlier model would change: the dimensions, cubes and dashboards it\nbrings back, takes away and puts back as they were, by name, so that neither model is\nsent, however large. For administrators.",
+        "operationId": "earlier_model_changes",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name it is kept under, as the list of earlier models gives it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What restoring it would change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Restoring"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No earlier model is kept under that name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The kept model could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/models/{name}/restore": {
+      "post": {
+        "summary": "Makes an earlier model the current one again, as its newest version: the one it replaces\nis kept among the earlier models, so that this too can be undone, and stored cells that no\nlonger fit are removed. The model is read where it is kept rather than sent, however large.\nFor administrators.",
+        "operationId": "restore_earlier_model",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name it is kept under, as the list of earlier models gives it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Restore"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The earlier model is the current one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelUpdate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No earlier model is kept under that name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale version, or a transaction holds a lock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The kept model could not be read, or the change could not be stored",
             "content": {
               "application/json": {
                 "schema": {
@@ -4494,6 +4662,38 @@
         },
         "additionalProperties": false
       },
+      "Differences": {
+        "type": "object",
+        "description": "Of one kind, what restoring an earlier model brings back, takes away and puts back as it\nwas, each by its name, in the order the model lists them.",
+        "required": [
+          "brought_back",
+          "taken_away",
+          "put_back"
+        ],
+        "properties": {
+          "brought_back": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Those the earlier model has and the current one has not."
+          },
+          "put_back": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Those both have, but not alike."
+          },
+          "taken_away": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Those the current model has and the earlier one has not."
+          }
+        }
+      },
       "DimensionDef": {
         "type": "object",
         "required": [
@@ -5732,6 +5932,48 @@
               "$ref": "#/components/schemas/CellResult"
             },
             "description": "One result per requested cell, in request order."
+          }
+        }
+      },
+      "Restore": {
+        "type": "object",
+        "required": [
+          "based_on"
+        ],
+        "properties": {
+          "based_on": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model version the restoring was decided from.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "Restoring": {
+        "type": "object",
+        "description": "What restoring an earlier model would change, by the names of what changes.",
+        "required": [
+          "version",
+          "dimensions",
+          "cubes",
+          "dashboards"
+        ],
+        "properties": {
+          "cubes": {
+            "$ref": "#/components/schemas/Differences"
+          },
+          "dashboards": {
+            "$ref": "#/components/schemas/Differences"
+          },
+          "dimensions": {
+            "$ref": "#/components/schemas/Differences"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The version the earlier model was.",
+            "minimum": 0
           }
         }
       },

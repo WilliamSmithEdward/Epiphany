@@ -1,3 +1,5 @@
+mod common;
+
 use std::path::Path;
 
 use axum::Router;
@@ -758,6 +760,46 @@ async fn a_malformed_body_uses_the_common_error_shape() {
 
 /// The committed contract must equal the document generated from the routes. Regenerate it
 /// with `cargo run -p epiphany-server -- openapi > openapi.json`.
+#[tokio::test]
+async fn an_earlier_model_is_compared_and_restored_where_it_is_kept() {
+    let home = common::Home::new("restored");
+    let app = app(home.open());
+    // A rule added to the ledger keeps the model before it, as version 1.
+    let (_, before) = call(&app, "GET", "/model", None).await;
+    let mut ledger = before["model"]["cubes"][0].clone();
+    ledger["rules"] = json!(["[Account].[Rent] = 1"]);
+    let put = json!({ "based_on": 1, "cube": ledger });
+    let (status, _) = call(&app, "PUT", "/cubes/General%20Ledger", Some(put)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, changes) = call(&app, "GET", "/admin/models/1/changes", None).await;
+    let none = json!({ "brought_back": [], "taken_away": [], "put_back": [] });
+    let ledger_back =
+        json!({ "brought_back": [], "taken_away": [], "put_back": ["General Ledger"] });
+    let expected =
+        json!({ "version": 1, "dimensions": none, "cubes": ledger_back, "dashboards": none });
+    assert_eq!((status, changes), (StatusCode::OK, expected));
+
+    let restore = Some(json!({ "based_on": 2 }));
+    let (status, update) = call(&app, "POST", "/admin/models/1/restore", restore.clone()).await;
+    assert_eq!(
+        (status, update["version"].clone()),
+        (StatusCode::OK, json!(3))
+    );
+    let (_, after) = call(&app, "GET", "/model", None).await;
+    assert_eq!(after["model"], before["model"]);
+    // The model it replaced is kept among the earlier ones, so that this too can be undone.
+    assert!(home.path("data/models/2/model.json").exists());
+
+    // A model not kept is not found, and one decided from a version gone by is refused.
+    let (status, _) = call(&app, "GET", "/admin/models/9/changes", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&app, "POST", "/admin/models/9/restore", restore.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&app, "POST", "/admin/models/1/restore", restore).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
 #[tokio::test]
 async fn the_committed_contract_matches_the_routes() {
     let committed = std::fs::read_to_string(Path::new(ROOT).join("../../openapi.json")).unwrap();
