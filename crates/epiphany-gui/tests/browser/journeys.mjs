@@ -1631,7 +1631,7 @@ async function exploring() {
       await page.call('Emulation.clearDeviceMetricsOverride');
     }
   });
-  await step('In a smaller laptop\'s window Explore\'s zones stand side by side, and a dashboard\'s buttons go beneath its title rather than squeeze it', async () => {
+  await step('In a smaller laptop\'s window Explore\'s zones stand side by side, a dashboard\'s buttons go beneath its title rather than squeeze it, and the users\' buttons stay in sight', async () => {
     await page.call('Emulation.setDeviceMetricsOverride', { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false });
     try {
       await page.goto('/explore?cube=General%20Ledger');
@@ -1648,6 +1648,11 @@ async function exploring() {
       })()`);
       expect(!squeezed, `The dashboard's title is squeezed to ${squeezed} pixels by its buttons.`);
       await page.audit('A dashboard in a smaller laptop\'s window');
+      // Administration's list of users fits its card, each row's buttons in sight.
+      await page.goto('/admin');
+      await page.waitFor(`document.querySelector('[aria-label="Users"] .table')`, 'the list of users');
+      const past = await page.evaluate(`(() => { const card = document.querySelector('[aria-label="Users"]'); return card.scrollWidth - card.clientWidth; })()`);
+      expect(past <= 0, `The list of users reaches ${past} pixels past its card.`);
     } finally {
       await page.call('Emulation.clearDeviceMetricsOverride');
     }
