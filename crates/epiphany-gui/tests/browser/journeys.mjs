@@ -890,6 +890,34 @@ async function exploring() {
     })()`);
     expect(drawn.first === 1 && drawn.resized === 2, `Drawn ${drawn.first} times when first shown and ${drawn.resized - drawn.first} more when made narrower.`);
   });
+  await step('A chart draws every series it is given, those past the ten colours lighter, none alike', async () => {
+    const drawn = await page.evaluate(`(async () => {
+      const { chart, seriesNames } = await import('/chart.js');
+      const categories = ['Q1', 'Q2', 'Q3', 'Q4'];
+      const series = Array.from({ length: 25 }, (_, s) => ({ name: 'Entity ' + (s + 1), tuple: [], values: categories.map((_, c) => s + c + 1), texts: null }));
+      const data = { categories, tuples: categories.map(() => []), series };
+      const box = document.body.appendChild(document.createElement('div'));
+      box.style.width = '800px';
+      const element = box.appendChild(chart(data, 'lines', { fresh: false }));
+      let svg;
+      for (let tries = 0; tries < 100 && !svg; tries += 1) {
+        await new Promise((done) => requestAnimationFrame(done));
+        svg = [...element.querySelectorAll('svg')].find((each) => each.querySelector('.line'));
+      }
+      const looks = [...svg.querySelectorAll('path.line')].map((line) => line.getAttribute('class') + ' ' + getComputedStyle(line).opacity);
+      const result = {
+        lines: looks.length,
+        alike: looks.length - new Set(looks).size,
+        legend: element.querySelectorAll('.legend-item').length,
+        named: seriesNames(data).length,
+        said: element.textContent.includes('Showing the first'),
+      };
+      box.remove();
+      return result;
+    })()`);
+    expect(drawn.lines === 25 && drawn.legend === 25 && drawn.named === 25 && !drawn.said, `Of 25 series, ${quoted(drawn)}.`);
+    expect(drawn.alike === 0, `${drawn.alike} series are drawn alike.`);
+  });
   await step('A view kept for oneself is listed apart, and taken away', async () => {
     const views = '/cubes/General%20Ledger/private-views';
     await page.click('button', 'Views');

@@ -5,10 +5,17 @@
 
 import { extent, formatNumber, h, icon, textWidths } from './ui.js';
 
-/** How many series are drawn at most; the rest are left out and said to be. */
-const MOST_SERIES = 12;
-/** How many colours there are before they repeat. */
+/** How many colours there are before they come round again, lighter. */
 const COLOURS = 10;
+
+/**
+ * The colour of a series, or a slice, by its place, as classes: one of the ten, and past
+ * them the same again lighter, and past twenty lighter still, so that no two look alike.
+ */
+const colourOf = (index) => {
+  const tint = Math.min(Math.floor(index / COLOURS), 2);
+  return `c${index % COLOURS}${tint ? ` tint-${tint}` : ''}`;
+};
 /** How many slices a ring has at most: past that, the smallest are one slice, Other. */
 const MOST_SLICES = 12;
 
@@ -33,12 +40,12 @@ function ticks(low, high, count = 5) {
 }
 
 /**
- * The colour of a bar of the series coloured `index`: that of the tone `tone(value)` gives,
+ * The colour of a bar of a series coloured `colour`: that of the tone `tone(value)` gives,
  * the tone of the first of the view's rules the value meets, or else the series'.
  */
-const paint = (index, value, tone) => {
+const paint = (colour, value, tone) => {
   const rule = tone?.(value);
-  return rule ? `tone-${rule}` : `c${index}`;
+  return rule ? `tone-${rule}` : colour;
 };
 
 /**
@@ -86,7 +93,7 @@ export function shape(result, byColumns) {
 }
 
 /** The names of the series of `data` that a chart draws. */
-export const seriesNames = (data) => data.series.slice(0, MOST_SERIES).map((entry) => entry.name);
+export const seriesNames = (data) => data.series.map((entry) => entry.name);
 
 /**
  * A line of values, small and without axes, to show which way they go: gaps where a value
@@ -155,8 +162,8 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   const over = new Set(axes && kind !== 'lines' && kind !== 'shares' ? lines.filter((name) => !beside.has(name)) : []);
   const slices = ring ? ringSlices(data) : null;
   // What the legend lists and the colours tell apart: the series, or a ring's slices.
-  const parts = (ring ? slices.map((slice) => slice.name) : data.series.slice(0, MOST_SERIES).map((entry) => entry.name))
-    .map((name, index) => ({ name, colour: index % COLOURS, index }));
+  const parts = (ring ? slices.map((slice) => slice.name) : data.series.map((entry) => entry.name))
+    .map((name, index) => ({ name, colour: colourOf(index), index }));
   const hidden = new Set();
   const plot = h('div', { class: 'chart-plot', tabindex: '0', role: 'group', 'aria-roledescription': 'chart' });
   const tip = h('div', { class: 'chart-tip', role: 'status', hidden: true });
@@ -183,8 +190,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   legend.addEventListener('scroll', ends, { passive: true });
   const element = h('figure', { class: `chart${fill ? ' fill' : ''}` },
     h('div', { class: 'legend-row' }, earlier, legend, later),
-    h('div', { class: 'chart-area' }, plot, tip),
-    !ring && data.series.length > MOST_SERIES ? h('figcaption', { class: 'hint' }, `Showing the first ${MOST_SERIES} of ${data.series.length} series.`) : null);
+    h('div', { class: 'chart-area' }, plot, tip));
   let marks = [];
   let focused = -1;
   let entering = fresh && !still.matches;
@@ -202,7 +208,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
         drawLegend();
         draw();
       },
-    }, h('span', { class: `swatch c${part.colour}` }), part.name)));
+    }, h('span', { class: `swatch ${part.colour}` }), part.name)));
     ends();
   };
   // A series whose bars take its view's rules' colours shows those colours in its swatch.
@@ -238,7 +244,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
       marks.push(shapeElement);
       return shapeElement;
     };
-    const context = { svg, width, height: tall, data, labels, format, mark, colour: (index) => parts[index]?.colour ?? index % COLOURS, shown: (index) => !hidden.has(index), beside, over, tone };
+    const context = { svg, width, height: tall, data, labels, format, mark, colour: (index) => parts[index]?.colour ?? colourOf(index), shown: (index) => !hidden.has(index), beside, over, tone };
     let said;
     if (ring) said = drawRing(context, slices);
     else if (kind === 'ranked') said = drawRanked(context);
@@ -257,7 +263,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   const say = (target, x, y) => {
     const [value, name, detail] = target.dataset.tip.split('\n');
     // The series named beside its colour, as the legend has it.
-    const colour = [...target.classList].find((each) => /^(c\d+|tone-\w+)$/.test(each));
+    const colour = [...target.classList].filter((each) => /^(c\d+|tint-\d|tone-\w+)$/.test(each)).join(' ');
     tip.replaceChildren(h('strong', {}, value),
       h('span', { class: 'tip-series' }, colour ? h('span', { class: `swatch ${colour}`, 'aria-hidden': 'true' }) : null, name),
       detail ? h('span', { class: 'muted' }, detail) : null);
@@ -367,7 +373,7 @@ function stepWriter(series) {
  * of their own on the right, unless they are all there are.
  */
 function drawAxes({ svg, width, height, data, labels, format, mark, colour, shown, beside, over, tone }, kind) {
-  const all = data.series.slice(0, MOST_SERIES).map((entry, index) => ({ ...entry, index })).filter((entry) => shown(entry.index));
+  const all = data.series.map((entry, index) => ({ ...entry, index })).filter((entry) => shown(entry.index));
   const right = all.filter((entry) => beside.has(entry.name));
   const apart = right.length > 0 && right.length < all.length;
   const left = apart ? all.filter((entry) => !beside.has(entry.name)) : all;
@@ -464,16 +470,16 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
       // Each unbroken run of values fills down to nought.
       let run = [];
       const fillRun = () => {
-        if (run.length > 1) svg.append(h('path', { class: `area c${colour(entry.index)}`, d: `M${run[0][0]},${of(0)}L${run.map((point) => point.join(',')).join('L')}L${run[run.length - 1][0]},${of(0)}Z` }));
+        if (run.length > 1) svg.append(h('path', { class: `area ${colour(entry.index)}`, d: `M${run[0][0]},${of(0)}L${run.map((point) => point.join(',')).join('L')}L${run[run.length - 1][0]},${of(0)}Z` }));
         run = [];
       };
       points.forEach((point) => (point ? run.push(point) : fillRun()));
       fillRun();
     }
-    svg.append(h('path', { class: `line c${colour(entry.index)}`, d: linePath(points), pathLength: 1 }));
+    svg.append(h('path', { class: `line ${colour(entry.index)}`, d: linePath(points), pathLength: 1 }));
     points.forEach((point, c) => {
       if (!point) return;
-      svg.append(mark(h('circle', { class: `dot c${colour(entry.index)}`, cx: point[0], cy: point[1], r: 4 }), { s: entry.index, c, lines: tipOf(entry, c, entry.values[c]) }));
+      svg.append(mark(h('circle', { class: `dot ${colour(entry.index)}`, cx: point[0], cy: point[1], r: 4 }), { s: entry.index, c, lines: tipOf(entry, c, entry.values[c]) }));
       if (labels) label(said(entry, c), point[0], point[1] - 9);
     });
   };
@@ -537,7 +543,7 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
 
 /** The categories as bars across, the largest of the first series shown at the top. */
 function drawRanked({ svg, width, height, data, labels, format, mark, colour, shown, tone }) {
-  const entry = data.series.slice(0, MOST_SERIES).map((each, index) => ({ ...each, index })).find((each) => shown(each.index));
+  const entry = data.series.map((each, index) => ({ ...each, index })).find((each) => shown(each.index));
   const ranked = data.categories.map((name, c) => ({ name, c, value: entry?.values[c] })).filter((item) => item.value !== null && item.value !== undefined)
     .sort((a, b) => b.value - a.value);
   // Before the bars as much room as the longest name takes, up to two fifths of the chart, and
@@ -588,7 +594,7 @@ function drawRing({ svg, width, height, labels, format, mark, colour, shown }, s
     const [x2, y2] = point(end, outer);
     const [x3, y3] = point(end, inner);
     const [x4, y4] = point(angle, inner);
-    svg.append(mark(h('path', { class: `slice c${colour(slice.index)}`, d: `M${x1},${y1}A${outer},${outer} 0 ${large} 1 ${x2},${y2}L${x3},${y3}A${inner},${inner} 0 ${large} 0 ${x4},${y4}Z` }),
+    svg.append(mark(h('path', { class: `slice ${colour(slice.index)}`, d: `M${x1},${y1}A${outer},${outer} 0 ${large} 1 ${x2},${y2}L${x3},${y3}A${inner},${inner} 0 ${large} 0 ${x4},${y4}Z` }),
       { s: slice.s, c: slice.c, lines: [format(slice.value), slice.name, `${percent.format(slice.value / whole)} of ${format(whole)}`] }));
     // A slice's share written on it where its arc, through the middle of the ring, holds it.
     const share = percent.format(slice.value / whole);
