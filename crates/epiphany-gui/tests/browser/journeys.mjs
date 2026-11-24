@@ -773,8 +773,10 @@ async function exploring() {
           bars = [...element.querySelectorAll('.bar')];
         }
         const colours = bars.map((bar) => [...bar.classList].find((each) => /^(c\\d+|tone-\\w+)$/.test(each))).join(' ');
+        // A swatch in the legend tinted with the colours its series' bars took.
+        const tinted = [...element.querySelectorAll('.legend-item .swatch')].map((swatch) => (swatch.style.background.startsWith('linear-gradient') ? 'tinted' : 'plain')).join(' ');
         box.remove();
-        return colours;
+        return colours + ' | ' + tinted;
       };
       return {
         alone: await drawn([variance], 'bars'),
@@ -783,10 +785,10 @@ async function exploring() {
         both: await drawn([variance, budget], 'bars'),
       };
     })()`);
-    expect(painted.alone === 'tone-good tone-bad tone-good tone-bad', `The variance's bars are coloured ${painted.alone}.`);
-    expect(painted.ranked === 'tone-good tone-good tone-bad tone-bad', `The variance's ranked bars are coloured ${painted.ranked}.`);
-    expect(painted.lined === painted.alone, `Beside a budget drawn as a line, the variance's bars are coloured ${painted.lined}.`);
-    expect(painted.both === 'c0 c1 c0 c1 c0 c1 c0 c1', `Beside a budget drawn as bars, the bars are coloured ${painted.both}.`);
+    expect(painted.alone === 'tone-good tone-bad tone-good tone-bad | tinted', `The variance's bars and swatch are coloured ${painted.alone}.`);
+    expect(painted.ranked === 'tone-good tone-good tone-bad tone-bad | tinted', `The variance's ranked bars and swatch are coloured ${painted.ranked}.`);
+    expect(painted.lined === 'tone-good tone-bad tone-good tone-bad | tinted plain', `Beside a budget drawn as a line, the bars and swatches are coloured ${painted.lined}.`);
+    expect(painted.both === 'c0 c1 c0 c1 c0 c1 c0 c1 | plain plain', `Beside a budget drawn as bars, the bars and swatches are coloured ${painted.both}.`);
   });
   await step('A view kept for oneself is listed apart, and taken away', async () => {
     const views = '/cubes/General%20Ledger/private-views';

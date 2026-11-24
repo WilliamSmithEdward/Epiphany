@@ -181,6 +181,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     // A series drawn as a line over the rest is shown so, its swatch a line.
     legend.replaceChildren(...parts.map((part) => h('button', {
       class: beside.has(part.name) || over.has(part.name) ? 'legend-item line' : 'legend-item',
+      dataset: { s: part.index },
       'aria-pressed': String(!hidden.has(part.index)),
       title: beside.has(part.name) ? `${part.name}, against the axis at the right` : null,
       onclick: () => {
@@ -191,6 +192,21 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
       },
     }, h('span', { class: `swatch c${part.colour}` }), part.name)));
     ends();
+  };
+  // A series whose bars take its view's rules' colours shows those colours in its swatch.
+  const tintLegend = (svg) => {
+    const paints = new Map();
+    for (const bar of svg.querySelectorAll('.bar[data-s]')) {
+      const paint = [...bar.classList].find((each) => /^(c\d+|tone-\w+)$/.test(each));
+      paints.set(bar.dataset.s, (paints.get(bar.dataset.s) ?? new Set()).add(paint));
+    }
+    for (const item of legend.children) {
+      const used = [...(paints.get(item.dataset.s) ?? [])];
+      const colours = used.some((paint) => paint.startsWith('tone-')) ? used.map((paint) => `var(--${paint.replace(/^tone-/, '')})`) : [];
+      item.querySelector('.swatch').style.background = colours.length
+        ? `linear-gradient(90deg, ${colours.map((colour, at) => `${colour} ${(at * 100) / colours.length}% ${((at + 1) * 100) / colours.length}%`).join(', ')})`
+        : '';
+    }
   };
 
   const draw = () => {
@@ -213,6 +229,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     else if (kind === 'ranked') said = drawRanked(context);
     else said = drawAxes(context, kind);
     svg.setAttribute('aria-label', said);
+    tintLegend(svg);
     plot.setAttribute('aria-label', `${said}. The arrow keys go from one value to the next${pick ? ', and Enter picks it' : ''}.`);
     plot.replaceChildren(svg);
     // The legend is as wide as the chart: drawn at a new size, it may hold more or less.
