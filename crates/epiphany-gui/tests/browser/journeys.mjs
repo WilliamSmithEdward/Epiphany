@@ -1413,7 +1413,9 @@ async function exploring() {
     const written = await page.api('POST', '/cells/write', { cells: [{ cube: 'General Ledger', at: ['Product Revenue', 'UK', 'Feb', 'Actual'], value: 4200 }] });
     expect(written.status < 300, 'The actual revenue was not written.');
     await page.goto('/dashboards?name=Quarter');
-    await page.waitFor(`document.querySelector('.dash-tile .mark[data-s]') && !document.querySelector('.dash-tile .skeleton')`, 'the tiles, run');
+    // Every tile answered, and none drawing itself again, so that the bar is not replaced
+    // between being pressed and let go.
+    await page.waitFor(`document.querySelector('.dash-tile .mark[data-s]') && !document.querySelector('.dash-tile .skeleton, .dash-tile [aria-busy="true"]')`, 'the tiles, run');
     await page.click('.dash-tile .mark[data-s]');
     await page.waitFor(`document.querySelector('.dash-filter.picked')`, 'what was picked, said above the tiles');
     await page.waitFor(`document.querySelectorAll('.tile-standing').length >= 2 && !document.querySelector('.dash-tile [aria-busy="true"]')`, 'the other tiles, at the members picked');
