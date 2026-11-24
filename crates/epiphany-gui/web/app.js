@@ -822,7 +822,7 @@ async function overview(target) {
     h('div', { class: 'grid-cards stats' },
       stat('Cubes', definition.cubes.length, 'cube'),
       stat('Dimensions', definition.dimensions.length, 'dimension'),
-      stat('Elements', elements, 'member'),
+      stat('Elements', elements, 'level'),
       stat('Model version', Number(state.version ?? 0), 'model')),
     places.length ? h('h2', { class: 'section-title' }, 'Recent') : null,
     places.length ? h('ul', { class: 'recent', 'aria-label': 'Places visited lately' }, places) : null,
