@@ -92,6 +92,7 @@ const ICONS = {
   trash: 'M3 6h18 M8 6V4h8v2 M19 6l-1 14H6L5 6',
   refresh: 'M21 12a9 9 0 1 1-2.6-6.4 M21 3v6h-6',
   lock: 'M5 11h14v10H5z M8 11V7a4 4 0 0 1 8 0v4',
+  key: 'M7.5 21a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9 M10.7 13.3L21 3 M17 7l3 3 M14.5 9.5l2 2',
   server: 'M3 4h18v6H3z M3 14h18v6H3z M7 7h.01 M7 17h.01',
   sigma: 'M18 7V4H6l6 8-6 8h12v-3',
   more: 'M12 12h.01 M19 12h.01 M5 12h.01',

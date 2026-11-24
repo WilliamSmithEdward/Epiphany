@@ -254,9 +254,13 @@ class Page {
         return box.width > 0 && box.height > 0 && (named === null || each.getAttribute('aria-label') === named || each.textContent.trim() === named);
       });
       if (!element) return null;
-      // Brought into view only if out of it, as a person scrolls to what they cannot see.
+      // Brought into view only if out of it, as a person scrolls to what they cannot see:
+      // outside the window, or cut off by what it scrolls in, such as a long dialog's body,
+      // where its middle is something else's.
       const seen = element.getBoundingClientRect();
-      if (seen.top < 0 || seen.left < 0 || seen.bottom > innerHeight || seen.right > innerWidth) {
+      const there = document.elementFromPoint(seen.left + seen.width / 2, seen.top + seen.height / 2);
+      const hidden = !there || !(there === element || element.contains(there));
+      if (seen.top < 0 || seen.left < 0 || seen.bottom > innerHeight || seen.right > innerWidth || hidden) {
         element.scrollIntoView({ block: 'center', inline: 'center' });
       }
       // The pointer goes where a frame has drawn it: what appeared since is drawn first.
@@ -1375,6 +1379,80 @@ async function administering({ reader }) {
   });
 }
 
+async function usingKeys({ admin, reader }, server) {
+  /** The server asked as a program asks it: directly, with a key or a session's token. */
+  const direct = async (method, path, token, body) => {
+    const headers = { authorization: `Bearer ${token}`, ...(body ? { 'content-type': 'application/json' } : {}) };
+    const answer = await fetch(`${server}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+    return { status: answer.status, data: answer.status === 204 ? null : await answer.json() };
+  };
+  const dialogNamed = (name) => `document.querySelector('dialog[open]')?.getAttribute('aria-label') === ${quoted(name)}`;
+  let made;
+  await step('A key is made from the user menu, given all its user may do with one click, and shown once', async () => {
+    await page.click('button[aria-haspopup="menu"]', admin.name);
+    await page.click('.menu [role="menuitem"]', 'API keys');
+    await page.waitFor(`document.querySelector('h1')?.textContent === 'API keys' && document.querySelector('main .empty')`, 'the keys page, with none');
+    await page.audit('API keys, none yet');
+    await page.click('.page-head button', 'New key');
+    await page.waitFor(dialogNamed('New API key'), 'the new key');
+    await page.fill('#key-name', 'Nightly load');
+    await page.click('dialog[open] button', 'Everything you may do');
+    const everything = 'Read and write,Read and change,Read and manage';
+    await page.waitFor(`[...document.querySelectorAll('dialog[open] [role="radio"][aria-checked="true"]')].map((each) => each.textContent).join() === ${quoted(everything)}`, 'everything chosen');
+    await page.audit('A new API key');
+    await page.click('dialog[open] button', 'Make key');
+    await page.waitFor(dialogNamed('Your key Nightly load'), 'the key, shown once');
+    made = await page.evaluate(`document.querySelector('dialog[open] .key-shown input').value`);
+    expect(/^epk_[0-9a-f]{64}$/.test(made), `The key shown is ${quoted(made)}.`);
+    await page.audit('A key shown once');
+    await page.click('dialog[open] button', 'Done');
+    await page.waitFor(`[...document.querySelectorAll('td strong')].some((name) => name.textContent === 'Nightly load')`, 'the key, listed');
+    // Never shown again; and a program uses it as its user may.
+    const listed = await page.evaluate(`document.querySelector('main').textContent`);
+    expect(!listed.includes(made.slice(16)), 'The list of keys shows a key itself.');
+    const state = await direct('GET', '/admin/status', made);
+    expect(state.status === 200, `The key asking for the server's state was answered ${state.status}.`);
+  });
+  await step('An administrator lets a reader make keys, no more than the reader may, and revokes one', async () => {
+    await page.goto('/admin');
+    await page.click('button', `Edit ${reader.name}`);
+    await page.waitFor(dialogNamed(`Edit ${reader.name}`), 'the user\'s editor');
+    await page.click('dialog[open] label', 'May make API keys');
+    await page.click('dialog[open] button', 'Save');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes(${quoted(`Saved ${reader.name}`)}))`, 'the user, saved');
+    const signedIn = await fetch(`${server}/sessions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: reader.name, password: reader.password }),
+    }).then((answer) => answer.json());
+    const theirs = await direct('POST', '/keys', signedIn.token, { name: 'Report', cells: 'read', model: 'read' });
+    expect(theirs.status === 201, `The reader's key was answered ${theirs.status}.`);
+    const beyond = await direct('POST', '/keys', signedIn.token, { name: 'Loader', cells: 'write' });
+    expect(beyond.status === 422, `A reader's key that writes was answered ${beyond.status}.`);
+    await page.goto('/admin');
+    await page.click('button', `API keys of ${reader.name}`);
+    await page.waitFor(dialogNamed(`API keys of ${reader.name}`), 'the reader\'s keys');
+    await page.audit('A user\'s API keys');
+    await page.click('dialog[open] button', 'Revoke Report');
+    await page.waitFor(`document.querySelectorAll('dialog[open]').length === 2`, 'the revoking, asked');
+    await page.click('dialog[open] button', 'Revoke key');
+    await page.waitFor(`document.querySelector('dialog[open]')?.textContent.includes('They hold none now.')`, 'the key, gone from the list');
+    const after = await direct('GET', '/model', theirs.data.key);
+    expect(after.status === 401, `The revoked key was answered ${after.status}.`);
+    await page.click('dialog[open] button', 'Done');
+    await page.settled();
+  });
+  await step('A key its user revokes stops at once', async () => {
+    await page.goto('/keys');
+    await page.click('button', 'Revoke Nightly load');
+    await page.waitFor(dialogNamed('Revoke Nightly load?'), 'the revoking, asked');
+    await page.click('dialog[open] button', 'Revoke key');
+    await page.waitFor(`document.querySelector('main .empty')`, 'no keys left');
+    const after = await direct('GET', '/model', made);
+    expect(after.status === 401, `The revoked key was answered ${after.status}.`);
+  });
+}
+
 async function aLargeGrid() {
   await step('A grid of 100,000 cells draws only what is in view, and scrolls smoothly', async () => {
     const made = await page.evaluate(`(async () => {
@@ -1502,6 +1580,7 @@ async function main() {
     ['Exploring and writing back', exploring],
     ['Changing the model', changingTheModel],
     ['Administering, and viewing as another user', () => administering(users)],
+    ['API keys', () => usingKeys(users, server)],
     ['A large grid', aLargeGrid],
   ];
   for (const [name, run] of journeys) {

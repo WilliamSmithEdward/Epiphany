@@ -8,7 +8,8 @@ import { dialog, h, icon, invalid, menu, MOD, mount, notify, revealable, when, w
 export const state = { user: null, open: false, model: null, version: null };
 
 /**
- * The pages, in the order the navigation lists them. `admin` pages need the admin role;
+ * The pages, in the order the navigation lists them. `admin` pages need the admin role; a
+ * user's `own` page is reached from their menu, not the navigation, where users sign in;
  * `shape` is the outline shown while a page loads.
  */
 const PAGES = [
@@ -17,6 +18,7 @@ const PAGES = [
   { path: '/dashboards', title: 'Dashboards', icon: 'dashboard', shape: 'cards', load: () => import('./dashboards.js') },
   { path: '/model', title: 'Model', icon: 'model', shape: 'panes', load: () => import('./model.js'), section: 'Manage', admin: true },
   { path: '/admin', title: 'Administration', icon: 'admin', shape: 'cards', load: () => import('./admin.js'), admin: true },
+  { path: '/keys', title: 'API keys', icon: 'key', shape: 'cards', load: () => import('./keys.js'), own: true },
 ];
 
 const root = document.getElementById('app');
@@ -207,7 +209,7 @@ let statusElement;
 let announcer;
 
 const isAdmin = () => state.user?.role === 'admin';
-const visible = () => PAGES.filter((entry) => !entry.admin || isAdmin());
+const visible = () => PAGES.filter((entry) => (!entry.admin || isAdmin()) && (!entry.own || !state.open));
 
 let fetchedAhead = false;
 
@@ -232,7 +234,7 @@ function shell(signedIn = false) {
   statusElement = h('span', { class: 'status', role: 'status', title: 'The Epiphany server is answering' }, 'Connected');
   const nav = h('nav', { class: 'nav', 'aria-label': 'Pages' });
   let section;
-  for (const entry of visible()) {
+  for (const entry of visible().filter((each) => !each.own)) {
     if (entry.section && entry.section !== section) {
       section = entry.section;
       nav.append(h('div', { class: 'section' }, section));
@@ -267,6 +269,7 @@ function shell(signedIn = false) {
       { heading: `${user.name} · ${roleName(user.role)}` },
       user.viewer ? { heading: `Viewed by ${user.viewer}, reading only` } : null,
       user.viewer ? { label: 'Stop viewing', icon: 'eyeOff', action: stopViewing } : null,
+      state.open ? null : { label: 'API keys', icon: 'key', action: () => go('/keys') },
       { label: 'Keyboard shortcuts', icon: 'keyboard', action: shortcuts },
       ...(state.open ? [] : [{ label: 'Sign out', icon: 'out', action: signOut }]),
     ], event.currentTarget),

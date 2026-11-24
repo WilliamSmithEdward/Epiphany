@@ -580,6 +580,31 @@ practice that means:
       leaf beneath the cell may be written, and does not name what is hidden.
     - The permits are worked out from the roles once for each version of the model and kept
       with the user's grants; a query, a read or a write takes them where it resolves names.
+  - API keys, for programs to reach the server in a user's name (the owner's request,
+    2026-11-23). A user makes them with `POST /keys`, lists them with `GET /keys` and
+    revokes them with `DELETE /keys/{id}`; an administrator always may, anyone else once an
+    administrator lets them (`"makes_keys": true` on the user, off for a new one), and a
+    user no longer let loses theirs. A key is sent as a session's token is, starts `epk_`,
+    and lasts until it is revoked or expires at the time it was given.
+    - A key is given how far it reaches into each of three parts of the server, `none`,
+      `read` or `write`: cells (reading them, queries, views, history and comments;
+      writing and spreading them, transactions, locks, sandboxes and comments), the model
+      (its dimensions, cubes and dashboards) and administration (everything under
+      `/admin`). Every route falls in one part, as reading or as writing it; a test lists
+      them all, so that a route added without its place fails. A key may be kept to
+      particular cubes, whose cells alone it reads and writes; one kept so may not change
+      the model or administer the server, which reach every cube.
+    - A key does no more than its user may: what they may not do is refused at its making,
+      and at each request it is held to what they may do then, their roles on cubes and
+      elements as they stand. A key makes and revokes no keys and has no session to end,
+      and a view as another user makes none in their name.
+    - Only a BLAKE2b hash of each key is kept, with its user in `users.json`. A key is 32
+      random bytes, so a hash quick to work out is as safe as a slow one, and one is worked
+      out at every request. The key itself is in the answer that made it and nowhere else;
+      the twelve characters after `epk_` name it in lists and to revoke it.
+    - **Decision:** a key holds what it was given at its making, never "all its user may":
+      a user raised later does not raise their keys with them.
+    - Not done: when each key was last used, which would be a write to disk at requests.
 - Not done: permissions by cell, TLS (put the server behind a proxy that provides it before
   using it across a network), and tying a transaction to the session that began it.
   Transaction ids are fifty-three random bits, so the last adds little.

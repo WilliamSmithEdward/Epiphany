@@ -2,6 +2,7 @@
 
 import { del, get, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
+import { keyTable } from './keys.js';
 import { cellQuery, handOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { dialog, h, icon, invalid, mount, notify, refocus, revealable, when, working } from './ui.js';
@@ -13,6 +14,16 @@ const ELEMENT_ROLES = { none: 'Hidden', read: 'Can read', write: 'Can write' };
 /** A user's roles on elements, as the users list says them: Region · Europe: hidden. */
 const elementRoles = (elements) => Object.entries(elements ?? {})
   .flatMap(([dimensionName, roles]) => Object.entries(roles).map(([element, role]) => `${dimensionName} · ${element}: ${ELEMENT_ROLES[role].toLowerCase()}`));
+
+/** Whether a user may make API keys: an administrator always, anyone else once let. */
+const makesKeys = (user) => user.role === 'admin' || user.makes_keys;
+
+/** A user's API keys, as the users list says them. */
+const keysSaid = (user) => {
+  if (!makesKeys(user)) return h('span', { class: 'muted' }, 'Not allowed');
+  const count = user.keys.length;
+  return count ? `${count} key${count === 1 ? '' : 's'}` : h('span', { class: 'muted' }, 'None yet');
+};
 
 const bytes = (count) => {
   if (count === null || count === undefined) return '—';
@@ -146,7 +157,7 @@ class AdminPage {
     const me = state.user?.name?.toLowerCase();
     mount(this.usersCard, head,
       h('table', { class: 'table' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Role'), h('th', {}, 'On particular cubes'), h('th', {}, 'On particular elements'), h('th', { class: 'num-col' }, 'Sessions'), h('th', { class: 'actions' }, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Role'), h('th', {}, 'On particular cubes'), h('th', {}, 'On particular elements'), h('th', {}, 'API keys'), h('th', { class: 'num-col' }, 'Sessions'), h('th', { class: 'actions' }, ''))),
         h('tbody', {}, list.users.map((user) => {
           const cubes = Object.entries(user.cubes);
           return h('tr', {},
@@ -154,10 +165,12 @@ class AdminPage {
             h('td', {}, h('span', { class: `badge ${user.role === 'admin' ? 'accent' : user.role === 'none' ? 'bad' : ''}` }, ROLES[user.role])),
             h('td', { class: 'muted' }, cubes.length ? cubes.map(([cube, role]) => `${cube}: ${ROLES[role].toLowerCase()}`).join(' · ') : '—'),
             h('td', { class: 'muted' }, elementRoles(user.elements).join(', ') || '—'),
+            h('td', { class: 'nowrap' }, keysSaid(user)),
             h('td', { class: 'num-col num' }, user.sessions.toLocaleString()),
             // Each row's buttons name its user, to be told from the next row's.
             h('td', { class: 'actions' },
               h('button', { class: 'button small quiet', 'aria-label': `Edit ${user.name}`, onclick: (event) => this.editUser(user, event.currentTarget) }, icon('edit', 14), 'Edit'),
+              user.keys.length ? h('button', { class: 'button small quiet', 'aria-label': `API keys of ${user.name}`, onclick: () => this.showKeys(user) }, icon('key', 14), 'Keys') : null,
               user.name.toLowerCase() === me ? null : h('button', {
                 class: 'button small quiet',
                 'aria-label': `View as ${user.name}`,
@@ -212,6 +225,26 @@ class AdminPage {
     const password = h('input', { class: 'input', id: 'user-password', type: 'password', autocomplete: 'new-password', required: adding });
     const again = h('input', { class: 'input', id: 'user-again', type: 'password', autocomplete: 'new-password', required: adding });
     const role = h('select', { class: 'select', id: 'user-role' }, Object.entries(ROLES).map(([value, label]) => h('option', { value, selected: (user?.role ?? 'read') === value }, label)));
+    // Whether they may make API keys: theirs to be let, an administrator's always.
+    let allowed = Boolean(user?.makes_keys);
+    const allowKeys = h('input', { type: 'checkbox', id: 'user-keys', onchange: () => {
+      allowed = allowKeys.checked;
+      drawKeys();
+    } });
+    const keysHint = h('span', { class: 'hint' });
+    const held = user?.keys.length ?? 0;
+    const drawKeys = () => {
+      const admin = role.value === 'admin';
+      allowKeys.checked = admin || allowed;
+      allowKeys.disabled = admin;
+      keysHint.textContent = admin
+        ? 'Administrators always may.'
+        : !allowed && held
+          ? `Their ${held === 1 ? 'key stops' : `${held} keys stop`} working, and ${held === 1 ? 'is' : 'are'} taken away.`
+          : 'Keys let their programs reach the server in their name, each doing no more than they may. Off until you let them.';
+    };
+    role.addEventListener('change', drawKeys);
+    drawKeys();
     const rows = h('div', { class: 'cube-roles' });
     // A row taken away, the keys stay in the list.
     const takeAway = (list, row, otherwise) => {
@@ -268,6 +301,7 @@ class AdminPage {
         adding ? null : h('p', { class: 'hint' }, 'Leave the password empty to keep the one they have.'),
         h('div', { class: 'field' }, h('label', { for: 'user-role' }, 'Role'), role,
           h('span', { class: 'hint' }, 'What they may do on every cube, unless a cube below says otherwise. Only an administrator may change the model or manage users.')),
+        h('div', { class: 'field' }, h('label', { class: 'check' }, allowKeys, 'May make API keys'), keysHint),
         h('div', { class: 'field' },
           h('label', {}, 'On particular cubes'),
           rows,
@@ -295,12 +329,40 @@ class AdminPage {
         }
         const body = { role: role.value, cubes: cubeRoles, elements };
         if (password.value) body.password = password.value;
+        // An administrator's own leave is kept as it is, for if they are one no longer.
+        if (role.value !== 'admin') body.makes_keys = allowed;
         await put(`/admin/users/${part(value)}`, body);
         return value;
       },
     });
     if (!saved) return;
     notify(adding ? `Added ${saved}. They can sign in now.` : `Saved ${saved}. Their open sessions use the change at once.`, 'good');
+    this.load();
+  }
+
+  /** A user's API keys, each to be revoked: it stops working at once. */
+  async showKeys(user) {
+    let keys = user.keys;
+    const holder = h('div');
+    const revoke = async (key) => {
+      const revoked = await dialog({
+        title: `Revoke ${key.name}?`,
+        body: h('p', {}, `A program of ${user.name}’s using it is refused from its next request. It cannot be undone.`),
+        confirm: 'Revoke key',
+        danger: true,
+        onsubmit: async () => {
+          await del(`/admin/users/${part(user.name)}/keys/${part(key.id)}`);
+          return true;
+        },
+      });
+      if (!revoked) return;
+      notify(`Revoked ${user.name}’s key ${key.name}.`, 'good');
+      keys = keys.filter((each) => each.id !== key.id);
+      draw();
+    };
+    const draw = () => mount(holder, keys.length ? keyTable(keys, revoke) : h('p', { class: 'muted' }, 'They hold none now.'));
+    draw();
+    await dialog({ title: `API keys of ${user.name}`, body: holder, confirm: 'Done', cancel: null, wide: true });
     this.load();
   }
 

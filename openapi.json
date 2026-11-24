@@ -43,7 +43,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -143,7 +143,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -204,7 +204,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -253,7 +253,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -311,7 +311,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -352,7 +352,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -390,7 +390,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -442,7 +442,7 @@
             "description": "The user was saved"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -502,7 +502,7 @@
             "description": "The user was removed"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -554,6 +554,87 @@
         }
       }
     },
+    "/admin/users/{name}/keys/{id}": {
+      "delete": {
+        "summary": "Revokes one of a user's API keys: it stops working at once. For administrators.",
+        "operationId": "revoke_users_key",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The user, ignoring case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The key's id, which follows epk_ at its start",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The key was revoked"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no such user, or they have no such key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/admin/users/{name}/sessions": {
       "delete": {
         "summary": "Ends every session of a user, who must sign in again. For administrators.",
@@ -581,7 +662,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -649,7 +730,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -720,7 +801,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -808,7 +889,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -866,7 +947,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -934,7 +1015,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -992,7 +1073,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1073,7 +1154,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1182,7 +1263,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1240,7 +1321,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1306,7 +1387,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1387,7 +1468,7 @@
             "description": "Taken away"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1455,7 +1536,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1520,7 +1601,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1590,7 +1671,7 @@
             "description": "Saved"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1667,7 +1748,7 @@
             "description": "Taken away"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1743,7 +1824,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1812,7 +1893,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1879,7 +1960,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1967,7 +2048,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2066,7 +2147,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2154,7 +2235,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2242,7 +2323,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2312,7 +2393,7 @@
             "description": "Saved"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2389,7 +2470,7 @@
             "description": "Taken away"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2458,7 +2539,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2525,7 +2606,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2613,7 +2694,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2702,7 +2783,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2723,6 +2804,202 @@
           },
           "404": {
             "description": "Unknown dimension",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/keys": {
+      "get": {
+        "summary": "The signed-in user's API keys, never the keys themselves; whether they may make more, and\nthe most a new one may be given.",
+        "operationId": "list_keys",
+        "responses": {
+          "200": {
+            "description": "The user's keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users, so it takes no keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Makes an API key for the signed-in user, who must be an administrator or let by one. It\nis given what it may do in each part of the server, never more than the user may, and\nmay be kept to particular cubes; at every request it is held to what the user may do\nthen. The key itself is in the answer, and is not given again.",
+        "operationId": "make_key",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The key, given this once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewKey"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users, so it takes no keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No name, a name taken, more than the user may do, a cube that is not there, or a malformed request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The key could not be saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/keys/{id}": {
+      "delete": {
+        "summary": "Revokes one of the signed-in user's API keys: it stops working at once.",
+        "operationId": "revoke_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The key's id, which follows epk_ at its start",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The key was revoked"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user has no such key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be saved",
             "content": {
               "application/json": {
                 "schema": {
@@ -2760,7 +3037,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2818,7 +3095,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2864,7 +3141,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2932,7 +3209,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -2973,7 +3250,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -3019,7 +3296,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -3080,7 +3357,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -3190,7 +3467,7 @@
             "description": "Signed out"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -3228,7 +3505,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -3271,7 +3548,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -3364,7 +3641,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -3444,7 +3721,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -3497,7 +3774,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -3560,7 +3837,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -4775,6 +5052,115 @@
           }
         }
       },
+      "KeyList": {
+        "type": "object",
+        "description": "A user's keys as they see them.",
+        "required": [
+          "allowed",
+          "most",
+          "keys"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean",
+            "description": "Whether they may make keys: an administrator always, anyone else once an\nadministrator lets them."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeyView"
+            },
+            "description": "Their keys, the newest first."
+          },
+          "most": {
+            "$ref": "#/components/schemas/Permissions",
+            "description": "The most a key of theirs may be given now."
+          }
+        }
+      },
+      "KeyRequest": {
+        "type": "object",
+        "description": "A key to make: how far it reaches into each part of the server, `none`, `read` or\n`write`, a part not given being one it does not reach.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "admin": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Administration: everything under `/admin`."
+          },
+          "cells": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Cells: reading them, with queries, views, history and comments; writing and\nspreading them, with transactions, locks, sandboxes and comments."
+          },
+          "cubes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The cubes whose cells it reaches, every cube if none are named. A key kept to\nparticular cubes may not change the model or administer the server."
+          },
+          "expires": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When it stops working, in seconds since 1970; it lasts until revoked if not given.",
+            "minimum": 0
+          },
+          "model": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The model: its dimensions, cubes and dashboards."
+          },
+          "name": {
+            "type": "string",
+            "description": "What to call the key, unlike any other key of the user's."
+          }
+        },
+        "additionalProperties": false
+      },
+      "KeyView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Permissions"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "created"
+            ],
+            "properties": {
+              "created": {
+                "type": "integer",
+                "format": "int64",
+                "description": "When it was made, in seconds since 1970.",
+                "minimum": 0
+              },
+              "expires": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "When it stops working, in seconds since 1970; it lasts until revoked where there is\nno such time.",
+                "minimum": 0
+              },
+              "id": {
+                "type": "string",
+                "description": "What follows `epk_` at the start of the key: it names the key in lists and to revoke\nit, and is not enough of it to use."
+              },
+              "name": {
+                "type": "string",
+                "description": "What its user calls it."
+              }
+            }
+          }
+        ],
+        "description": "An API key as its user and administrators see it: never the key itself."
+      },
       "Line": {
         "type": "object",
         "description": "One line of a cell's supporting detail.",
@@ -5009,6 +5395,25 @@
           }
         }
       },
+      "NewKey": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/KeyView"
+          },
+          {
+            "type": "object",
+            "required": [
+              "key"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "description": "The key, given this once: only its hash is kept. Send it with every request as\n`Authorization: Bearer <key>`."
+              }
+            }
+          }
+        ]
+      },
       "NumberFormat": {
         "type": "object",
         "description": "How numbers are shown. Only the showing changes: values are read, written and copied in\nfull.",
@@ -5060,6 +5465,36 @@
           }
         },
         "additionalProperties": false
+      },
+      "Permissions": {
+        "type": "object",
+        "description": "What an API key may do in each part of the server, each `none`, `read` or `write`, and on\nwhich cubes. A key never does more than its user may: what it is given is held at every\nrequest to what they may do then.",
+        "required": [
+          "cells",
+          "model",
+          "admin"
+        ],
+        "properties": {
+          "admin": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Everything under `/admin`: reading the server's state, users, audit and changes;\nmanaging users and their sessions."
+          },
+          "cells": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Cells: reading them, with queries, views, history and comments; writing and spreading\nthem, with transactions, locks, sandboxes and comments."
+          },
+          "cubes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The cubes whose cells the key reaches, by name; every cube where none are named."
+          },
+          "model": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The model: reading its dimensions, cubes and dashboards; changing them."
+          }
+        }
       },
       "PicklistDef": {
         "oneOf": [
@@ -5787,6 +6222,13 @@
             "$ref": "#/components/schemas/BTreeMap",
             "description": "Elements with a role of their own, by dimension and element: none, read or write. It\nholds beneath the element too, unless a nearer element has its own; an element beneath\nseveral takes the highest of theirs. An administrator is bound by none."
           },
+          "makes_keys": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the user may make API keys; kept as it is if not given, and false for a new\nuser. Administrators always may. A user who may no longer make keys loses theirs."
+          },
           "password": {
             "type": [
               "string",
@@ -5807,7 +6249,9 @@
           "name",
           "role",
           "cubes",
-          "sessions"
+          "sessions",
+          "makes_keys",
+          "keys"
         ],
         "properties": {
           "cubes": {
@@ -5823,6 +6267,17 @@
           "elements": {
             "$ref": "#/components/schemas/BTreeMap",
             "description": "The elements with a role of their own, by dimension and element: `none`, `read` or\n`write`, holding beneath them too where nearer elements have none."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeyView"
+            },
+            "description": "The user's API keys, the newest first."
+          },
+          "makes_keys": {
+            "type": "boolean",
+            "description": "Whether an administrator lets the user make API keys. Administrators always may."
           },
           "name": {
             "type": "string"
@@ -5959,7 +6414,8 @@
     "securitySchemes": {
       "session": {
         "type": "http",
-        "scheme": "bearer"
+        "scheme": "bearer",
+        "description": "A session's token, from POST /sessions, or an API key, from POST /keys, which starts epk_. A key is held to what it was given and to what its user may do."
       }
     }
   },

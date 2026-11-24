@@ -31,10 +31,13 @@ use epiphany_core::model::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{Admitted, AuditEntry, Auth, ElementRoles, Grants, Refusal, Role, UserView};
+use crate::auth::{
+    Admitted, AuditEntry, Auth, ElementRoles, Grants, KEY_START, KeyList, KeyRefusal, KeyView,
+    Part, Permissions, Refusal, Role, UserView,
+};
 use crate::private::Refused;
 use utoipa::openapi::RefOr;
-use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme};
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme};
 use utoipa::{IntoParams, OpenApi, ToSchema};
 use utoipa_axum::router::OpenApiRouter;
 use utoipa_axum::routes;
@@ -160,6 +163,8 @@ const MOST_SIGN_IN: usize = 16 * 1024;
 fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::with_openapi(Contract::openapi())
         .routes(routes!(sign_in, sign_out))
+        .routes(routes!(list_keys, make_key))
+        .routes(routes!(revoke_key))
         .routes(routes!(get_model, put_model))
         .routes(routes!(get_outline))
         .routes(routes!(get_dimension, put_dimension, delete_dimension))
@@ -192,6 +197,7 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(list_users))
         .routes(routes!(put_user, delete_user))
         .routes(routes!(end_sessions))
+        .routes(routes!(revoke_users_key))
         .routes(routes!(view_as))
         .routes(routes!(read_audit))
         .routes(routes!(list_transactions))
@@ -207,10 +213,16 @@ pub fn openapi() -> utoipa::openapi::OpenApi {
     secured(router().into_openapi())
 }
 
-/// Adds to the contract what holds for every route but signing in: a session token is sent,
-/// and without a live one the answer is 401.
+/// Adds to the contract what holds for every route but signing in: a session token or an API
+/// key is sent, and without a live one the answer is 401.
 fn secured(mut contract: utoipa::openapi::OpenApi) -> utoipa::openapi::OpenApi {
-    let bearer = Http::new(HttpAuthScheme::Bearer);
+    let bearer = HttpBuilder::new()
+        .scheme(HttpAuthScheme::Bearer)
+        .description(Some(
+            "A session's token, from POST /sessions, or an API key, from POST /keys, which \
+             starts epk_. A key is held to what it was given and to what its user may do.",
+        ))
+        .build();
     let components = contract.components.get_or_insert_default();
     components.add_security_scheme(SESSION, SecurityScheme::Http(bearer));
     contract.security = Some(vec![SecurityRequirement::new(SESSION, [""; 0])]);
@@ -222,7 +234,8 @@ fn secured(mut contract: utoipa::openapi::OpenApi) -> utoipa::openapi::OpenApi {
         .expect("the route exists");
     let mut refusal = read.responses.responses["422"].clone();
     if let RefOr::T(response) = &mut refusal {
-        response.description = "Not signed in, or the session has ended".to_owned();
+        response.description =
+            "Not signed in, the session has ended, or the API key is not in force".to_owned();
     }
     let mut forbidden = refusal.clone();
     if let RefOr::T(response) = &mut forbidden {
@@ -392,10 +405,11 @@ fn needed(method: &Method, path: &str) -> Role {
             false => Role::Write,
         };
     }
-    // A user's own views and subsets are theirs to keep and take away, with no more than
-    // reading.
-    if let ["", "cubes", _, "private-views", ..] | ["", "dimensions", _, "private-subsets", ..] =
-        segments.as_slice()
+    // A user's own views, subsets and API keys are theirs to keep and take away, with no more
+    // than reading.
+    if let ["", "cubes", _, "private-views", ..]
+    | ["", "dimensions", _, "private-subsets", ..]
+    | ["", "keys", ..] = segments.as_slice()
     {
         return Role::Read;
     }
@@ -426,25 +440,36 @@ async fn require_session(
             .insert(Signed(OPEN_USER.to_owned()));
         return next.run(request).await;
     };
-    let admitted = bearer(request.headers()).and_then(|token| auth.admits(token));
+    let token = bearer(request.headers());
+    let admitted = token.and_then(|token| auth.admits(token));
     let needed = needed(request.method(), request.uri().path());
     if let Some(Admitted {
         name,
         grants,
         viewer,
+        key,
     }) = admitted
     {
-        // The model belongs to no cube, so changing it takes the user's own role. Anything
-        // else is let in by a role on any cube; the route then asks about the cube it names.
-        let held = match needed {
-            Role::Admin => grants.role(),
-            _ => grants.most(),
+        let refused = match &key {
+            // A key reaches no further than it was given, nor than its user may go now.
+            Some(reach) => refused_key(reach, request.method(), request.uri().path(), needed),
+            // The model belongs to no cube, so changing it takes the user's own role. Anything
+            // else is let in by a role on any cube; the route then asks about the cube it
+            // names.
+            None => {
+                let held = match needed {
+                    Role::Admin => grants.role(),
+                    _ => grants.most(),
+                };
+                (held < needed).then(|| match viewer {
+                    Some(_) => {
+                        format!("a view as {name} only reads; this needs the role '{needed}'")
+                    }
+                    None => format!("this needs a user with the role '{needed}'"),
+                })
+            }
         };
-        if held < needed {
-            let message = match viewer {
-                Some(_) => format!("a view as {name} only reads; this needs the role '{needed}'"),
-                None => format!("this needs a user with the role '{needed}'"),
-            };
+        if let Some(message) = refused {
             return ApiError::new(StatusCode::FORBIDDEN, "forbidden", message).into_response();
         }
         request.extensions_mut().insert(grants);
@@ -454,13 +479,54 @@ async fn require_session(
         }
         return next.run(request).await;
     }
+    let message = match token.is_some_and(|token| token.starts_with(KEY_START)) {
+        true => {
+            "this API key is not in force: it has been revoked or has expired, or its \
+                 user may no longer have keys"
+        }
+        false => "sign in at POST /sessions and send the token as 'Authorization: Bearer <token>'",
+    };
     let refusal = ApiError::new(
         StatusCode::UNAUTHORIZED,
         "not_signed_in",
-        "sign in at POST /sessions and send the token as 'Authorization: Bearer <token>'"
-            .to_owned(),
+        message.to_owned(),
     );
     ([(WWW_AUTHENTICATE, "Bearer")], refusal).into_response()
+}
+
+/// The part of the server a route reaches and how far, reading or writing: what an API key
+/// must be given to call it. Every route about cells, queries, transactions and what a user
+/// keeps reads where the user's role it needs is reading.
+fn reached(method: &Method, path: &str, needed: Role) -> (Part, Role) {
+    let reading = |reads: bool| if reads { Role::Read } else { Role::Write };
+    let segments: Vec<&str> = path.split('/').collect();
+    match segments.as_slice() {
+        ["", "admin", ..] => (Part::Admin, reading(method == Method::GET)),
+        ["", "model", ..]
+        | ["", "dimensions", _]
+        | ["", "dimensions", _, "definition"]
+        | ["", "cubes", _]
+        | ["", "dashboards", _] => (Part::Model, reading(method == Method::GET)),
+        _ => (Part::Cells, reading(needed == Role::Read)),
+    }
+}
+
+/// Why an API key may not call a route, if it may not.
+fn refused_key(reach: &Permissions, method: &Method, path: &str, needed: Role) -> Option<String> {
+    let segments: Vec<&str> = path.split('/').collect();
+    match segments.as_slice() {
+        ["", "sessions"] => {
+            Some("an API key has no session to end; it stops working when revoked".to_owned())
+        }
+        // A key that made keys would outlast its own revoking.
+        ["", "keys", ..] => {
+            Some("keys are made and revoked by their user signed in, not with a key".to_owned())
+        }
+        _ => {
+            let (part, wanted) = reached(method, path, needed);
+            (reach.of(part) < wanted).then(|| format!("this key may not {}", part.doing(wanted)))
+        }
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -561,6 +627,162 @@ async fn sign_out(State(state): State<AppState>, headers: HeaderMap) -> StatusCo
         auth.sign_out(token);
     }
     StatusCode::NO_CONTENT
+}
+
+/* ---- API keys: what programs use in a user's name ---- */
+
+/// The signed-in user's API keys, never the keys themselves; whether they may make more, and
+/// the most a new one may be given.
+#[utoipa::path(
+    get,
+    path = "/keys",
+    responses(
+        (status = OK, body = KeyList, description = "The user's keys"),
+        (status = CONFLICT, body = ApiError, description = "The server has no users, so it takes no keys")
+    )
+)]
+async fn list_keys(
+    State(state): State<AppState>,
+    Extension(Signed(user)): Extension<Signed>,
+) -> Result<Json<KeyList>, ApiError> {
+    let keys = users_of(&state)?.keys(&user);
+    Ok(Json(keys.ok_or_else(|| unknown("user", &user))?))
+}
+
+/// What nothing is given: a part of the server a key does not reach.
+fn reaches_nothing() -> Role {
+    Role::None
+}
+
+/// A key to make: how far it reaches into each part of the server, `none`, `read` or
+/// `write`, a part not given being one it does not reach.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct KeyRequest {
+    /// What to call the key, unlike any other key of the user's.
+    name: String,
+    /// Cells: reading them, with queries, views, history and comments; writing and
+    /// spreading them, with transactions, locks, sandboxes and comments.
+    #[serde(default = "reaches_nothing")]
+    cells: Role,
+    /// The model: its dimensions, cubes and dashboards.
+    #[serde(default = "reaches_nothing")]
+    model: Role,
+    /// Administration: everything under `/admin`.
+    #[serde(default = "reaches_nothing")]
+    admin: Role,
+    /// The cubes whose cells it reaches, every cube if none are named. A key kept to
+    /// particular cubes may not change the model or administer the server.
+    #[serde(default)]
+    cubes: Vec<String>,
+    /// When it stops working, in seconds since 1970; it lasts until revoked if not given.
+    expires: Option<u64>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct NewKey {
+    /// The key, given this once: only its hash is kept. Send it with every request as
+    /// `Authorization: Bearer <key>`.
+    key: String,
+    #[serde(flatten)]
+    view: KeyView,
+}
+
+/// Makes an API key for the signed-in user, who must be an administrator or let by one. It
+/// is given what it may do in each part of the server, never more than the user may, and
+/// may be kept to particular cubes; at every request it is held to what the user may do
+/// then. The key itself is in the answer, and is not given again.
+#[utoipa::path(
+    post,
+    path = "/keys",
+    request_body = KeyRequest,
+    responses(
+        (status = CREATED, body = NewKey, description = "The key, given this once"),
+        (status = FORBIDDEN, body = ApiError, description = "The user may not make keys, or this is a view as another user"),
+        (status = CONFLICT, body = ApiError, description = "The server has no users, so it takes no keys"),
+        (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "No name, a name taken, more than the user may do, a cube that is not there, or a malformed request body"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The key could not be saved")
+    )
+)]
+async fn make_key(
+    State(state): State<AppState>,
+    Extension(Signed(user)): Extension<Signed>,
+    viewing: Option<Extension<Viewing>>,
+    Body(request): Body<KeyRequest>,
+) -> Result<(StatusCode, Json<NewKey>), ApiError> {
+    let auth = users_of(&state)?;
+    not_viewing(viewing, &user)?;
+    let invalid =
+        |message: String| ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "invalid_key", message);
+    // Each cube named is the model's, by the name it has there.
+    let cubes = {
+        let database = state.database.read().unwrap();
+        let model = database.model();
+        let found = request.cubes.iter().map(|name| {
+            let cube = model.cube(name).map(|cube| cube.name.clone());
+            cube.ok_or_else(|| invalid(format!("there is no cube '{name}'")))
+        });
+        let mut cubes = found.collect::<Result<Vec<_>, _>>()?;
+        cubes.sort();
+        cubes.dedup();
+        cubes
+    };
+    let permissions = Permissions {
+        cells: request.cells,
+        model: request.model,
+        admin: request.admin,
+        cubes,
+    };
+    let made = auth.make_key(&user, &request.name, permissions, request.expires);
+    let (view, key) = made.map_err(|refusal| match refusal {
+        KeyRefusal::NotAllowed => ApiError::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "an administrator has not let you make API keys".to_owned(),
+        ),
+        KeyRefusal::Invalid(message) => invalid(message),
+        KeyRefusal::Unsaved(message) => {
+            ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "storage_failed", message)
+        }
+    })?;
+    Ok((StatusCode::CREATED, Json(NewKey { key, view })))
+}
+
+/// Revokes one of the signed-in user's API keys: it stops working at once.
+#[utoipa::path(
+    delete,
+    path = "/keys/{id}",
+    params(("id" = String, Path, description = "The key's id, which follows epk_ at its start")),
+    responses(
+        (status = NO_CONTENT, description = "The key was revoked"),
+        (status = NOT_FOUND, body = ApiError, description = "The user has no such key"),
+        (status = FORBIDDEN, body = ApiError, description = "This is a view as another user"),
+        (status = CONFLICT, body = ApiError, description = "The server has no users"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be saved")
+    )
+)]
+async fn revoke_key(
+    State(state): State<AppState>,
+    Extension(Signed(user)): Extension<Signed>,
+    viewing: Option<Extension<Viewing>>,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let auth = users_of(&state)?;
+    not_viewing(viewing, &user)?;
+    revoked(auth, &user, &id)
+}
+
+/// Revokes a user's key, or says why it was not.
+fn revoked(auth: &Auth, user: &str, id: &str) -> Result<StatusCode, ApiError> {
+    match auth.revoke_key(user, id) {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err(unknown("key", id)),
+        Err(message) => Err(ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "storage_failed",
+            message,
+        )),
+    }
 }
 
 /// The one error shape used by every route.
@@ -1251,6 +1473,8 @@ fn unknown(what: &'static str, name: &str) -> ApiError {
     let code = match what {
         "cube" => "unknown_cube",
         "user" => "unknown_user",
+        "dashboard" => "unknown_dashboard",
+        "key" => "unknown_key",
         _ => "unknown_dimension",
     };
     ApiError::new(
@@ -2501,6 +2725,9 @@ struct UserPut {
     /// several takes the highest of theirs. An administrator is bound by none.
     #[serde(default)]
     elements: ElementRoles,
+    /// Whether the user may make API keys; kept as it is if not given, and false for a new
+    /// user. Administrators always may. A user who may no longer make keys loses theirs.
+    makes_keys: Option<bool>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -2625,9 +2852,36 @@ async fn put_user(
         }
     }
     let grants = Grants::new(user.role, user.cubes).with_elements(user.elements);
-    let saved = users_of(&state)?.set(&name, user.password.as_deref(), grants);
+    let auth = users_of(&state)?;
+    let saved = auth.set(&name, user.password.as_deref(), grants, user.makes_keys);
     saved.map_err(invalid)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Revokes one of a user's API keys: it stops working at once. For administrators.
+#[utoipa::path(
+    delete,
+    path = "/admin/users/{name}/keys/{id}",
+    params(
+        ("name" = String, Path, description = "The user, ignoring case"),
+        ("id" = String, Path, description = "The key's id, which follows epk_ at its start")
+    ),
+    responses(
+        (status = NO_CONTENT, description = "The key was revoked"),
+        (status = NOT_FOUND, body = ApiError, description = "There is no such user, or they have no such key"),
+        (status = CONFLICT, body = ApiError, description = "The server has no users"),
+        (status = INTERNAL_SERVER_ERROR, body = ApiError, description = "The change could not be saved")
+    )
+)]
+async fn revoke_users_key(
+    State(state): State<AppState>,
+    Path((name, id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    let auth = users_of(&state)?;
+    if !auth.has(&name) {
+        return Err(unknown("user", &name));
+    }
+    revoked(auth, &name, &id)
 }
 
 /// Removes a user and ends their sessions. The last administrator cannot be removed. For
@@ -2937,6 +3191,101 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
+
+    /// Every route the contract describes, with how far an API key must reach to call it:
+    /// a route added without its place here fails, rather than being let in unseen.
+    #[test]
+    fn every_route_says_how_far_an_api_key_must_reach() {
+        let expected = [
+            "DELETE /admin/users/{name} admin write",
+            "DELETE /admin/users/{name}/keys/{id} admin write",
+            "DELETE /admin/users/{name}/sessions admin write",
+            "DELETE /cubes/{cube}/comments/{id} cells write",
+            "DELETE /cubes/{cube}/private-views/{name} cells read",
+            "DELETE /cubes/{name} model write",
+            "DELETE /dashboards/{name} model write",
+            "DELETE /dimensions/{dimension}/private-subsets/{name} cells read",
+            "DELETE /dimensions/{name} model write",
+            "DELETE /keys/{id} no key",
+            "DELETE /sandboxes/{name} cells write",
+            "DELETE /sessions no key",
+            "GET /admin/audit admin read",
+            "GET /admin/changes admin read",
+            "GET /admin/models admin read",
+            "GET /admin/models/{name} admin read",
+            "GET /admin/status admin read",
+            "GET /admin/transactions admin read",
+            "GET /admin/users admin read",
+            "GET /cubes/{cube}/cells cells read",
+            "GET /cubes/{cube}/comments cells read",
+            "GET /cubes/{cube}/feeders/check cells read",
+            "GET /cubes/{cube}/private-views cells read",
+            "GET /cubes/{cube}/views/{view} cells read",
+            "GET /cubes/{name} model read",
+            "GET /dimensions/{dimension}/private-subsets cells read",
+            "GET /dimensions/{name} model read",
+            "GET /dimensions/{name}/definition model read",
+            "GET /keys no key",
+            "GET /model model read",
+            "GET /model/outline model read",
+            "GET /sandboxes cells read",
+            "GET /transactions/{id}/point cells read",
+            "POST /admin/view-as admin write",
+            "POST /cells/detail cells write",
+            "POST /cells/explain cells read",
+            "POST /cells/history cells read",
+            "POST /cells/read cells read",
+            "POST /cells/spread cells write",
+            "POST /cells/write cells write",
+            "POST /cubes/{cube}/comments cells write",
+            "POST /keys no key",
+            "POST /mdx cells read",
+            "POST /sandboxes cells write",
+            "POST /sessions no key",
+            "POST /transactions cells write",
+            "POST /transactions/{id}/commit cells write",
+            "POST /transactions/{id}/locks cells write",
+            "POST /transactions/{id}/rollback cells write",
+            "POST /transactions/{id}/undo cells write",
+            "PUT /admin/users/{name} admin write",
+            "PUT /cubes/{cube}/private-views/{name} cells read",
+            "PUT /cubes/{name} model write",
+            "PUT /dashboards/{name} model write",
+            "PUT /dimensions/{dimension}/private-subsets/{name} cells read",
+            "PUT /dimensions/{name} model write",
+            "PUT /model model write",
+        ];
+        let everything = Permissions {
+            cells: Role::Write,
+            model: Role::Write,
+            admin: Role::Write,
+            cubes: Vec::new(),
+        };
+        let contract = serde_json::to_value(openapi()).unwrap();
+        let mut found = Vec::new();
+        for (path, methods) in contract["paths"].as_object().unwrap() {
+            // Each parameter given a value, as a request would.
+            let parts = path.split('/').map(|part| match part.starts_with('{') {
+                true => "x",
+                false => part,
+            });
+            let filled = parts.collect::<Vec<_>>().join("/");
+            for method in methods.as_object().unwrap().keys() {
+                let method = Method::from_bytes(method.to_uppercase().as_bytes()).unwrap();
+                let needed = needed(&method, &filled);
+                let said = match refused_key(&everything, &method, &filled, needed) {
+                    Some(_) => "no key".to_owned(),
+                    None => {
+                        let (part, reach) = reached(&method, &filled, needed);
+                        format!("{} {reach}", format!("{part:?}").to_lowercase())
+                    }
+                };
+                found.push(format!("{method} {path} {said}"));
+            }
+        }
+        found.sort();
+        assert_eq!(found, expected);
+    }
 
     #[tokio::test]
     async fn a_request_that_goes_wrong_is_answered_and_so_is_the_next() {

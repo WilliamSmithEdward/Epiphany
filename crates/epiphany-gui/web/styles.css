@@ -626,6 +626,16 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .json-editor { min-height: 420px; }
 .checks { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
 .check { display: inline-flex; align-items: center; gap: 6px; }
+/* A new API key: each part of the server beside how far the key reaches into it. */
+.key-parts { display: flex; flex-direction: column; gap: var(--s3); margin-top: var(--s3); }
+.key-part { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s4); }
+.key-part .hint { margin-top: 2px; }
+fieldset.field > .check { margin-right: var(--s4); }
+.key-cubes { margin-top: var(--s2); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--radius); }
+.key-cubes[hidden], fieldset.field[hidden] { display: none; }
+/* The key just made, shown this once, to be copied. */
+.key-shown { display: flex; gap: var(--s2); }
+.key-shown .input { flex: 1; min-width: 0; }
 fieldset.field { border: 0; padding: 0; margin: 0; }
 fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(--text-2); margin-bottom: 6px; }
 .plain-list { margin: 0; padding-left: var(--s5); }
@@ -1243,6 +1253,8 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
   .tree-tools .search { flex-basis: 100%; }
   /* Fields paired, one above the other; an element role on two lines, its button at the end. */
   .field-pair { grid-template-columns: minmax(0, 1fr); }
+  /* A part of the server above how far a new key reaches into it. */
+  .key-part { grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
   .element-role { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .element-role > .button:last-child { justify-self: end; }
   /* On a phone the highlight rules' box decides too, as the filter's always does. Wider, the

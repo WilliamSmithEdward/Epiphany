@@ -10,7 +10,8 @@ PAfE functions (`DBRW`, `DBS`, `SUBNM` and the rest).
 - **Writeback** in atomic batches, **spreading** to consolidations, and **transactions** with
   locks and rollback that span requests.
 - **A model defined in JSON files**, updated through the API in one step and versioned.
-- **Users** with roles, for the whole server, cube by cube and element by element.
+- **Users** with roles, for the whole server, cube by cube and element by element, and
+  **API keys** for their programs, each given what it may do.
 - **One HTTP API**, described by [openapi.json](openapi.json), which is generated from the
   routes and checked by a test.
 
@@ -83,6 +84,15 @@ An administrator may view the server as another user has it, to see what they se
 session of theirs that only reads, and sees none of their sandboxes, until it is signed out
 of. Each such view is recorded in `<directory>/audit.jsonl` before it is given, and
 `GET /admin/audit` lists them.
+
+A program reaches the server in a user's name with an API key, sent as a session's token is:
+`Authorization: Bearer epk_…`. A user makes their keys under API keys in the GUI's user
+menu, or with `POST /keys`; an administrator always may, anyone else once an administrator
+ticks May make API keys for them. Each key is given how far it reaches into cells, the
+model and administration, `none`, `read` or `write` (or all a user may, with one click), may
+be kept to particular cubes, and lasts until it is revoked or the time it was given. It
+never does more than its user may at the time. Only a hash of it is kept, so it is shown
+once, as it is made.
 
 ## The model
 
@@ -178,6 +188,7 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | Route | Purpose |
 | --- | --- |
 | `POST /sessions`, `DELETE /sessions` | Sign in and out |
+| `GET`, `POST /keys`, `DELETE /keys/{id}` | The signed-in user's API keys, for programs; `DELETE /admin/users/{name}/keys/{id}` revokes anyone's |
 | `GET /model`, `PUT /model` | The whole model, and replacing it against its version |
 | `GET /model/outline` | The model without its dimensions' elements: its cubes and dashboards, and each dimension's name, type and size |
 | `GET`, `PUT`, `DELETE /dimensions/{name}` | One dimension, with its hierarchy and subsets |

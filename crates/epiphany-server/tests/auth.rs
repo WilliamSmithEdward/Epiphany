@@ -1118,10 +1118,12 @@ async fn transaction_ids_cannot_be_guessed_from_one_another() {
 #[test]
 fn the_contract_says_which_routes_need_a_session() {
     let contract = serde_json::to_value(openapi()).unwrap();
+    let scheme = &contract["components"]["securitySchemes"]["session"];
     assert_eq!(
-        contract["components"]["securitySchemes"]["session"],
-        json!({ "type": "http", "scheme": "bearer" })
+        (&scheme["type"], &scheme["scheme"]),
+        (&json!("http"), &json!("bearer"))
     );
+    assert!(scheme["description"].as_str().unwrap().contains("API key"));
     assert_eq!(contract["security"], json!([{ "session": [] }]));
     for (path, methods) in contract["paths"].as_object().unwrap() {
         for (method, operation) in methods.as_object().unwrap() {
@@ -1135,7 +1137,7 @@ fn the_contract_says_which_routes_need_a_session() {
             } else {
                 assert_eq!(
                     operation["responses"]["401"]["description"],
-                    "Not signed in, or the session has ended",
+                    "Not signed in, the session has ended, or the API key is not in force",
                     "{method} {path}"
                 );
             }
@@ -1382,6 +1384,12 @@ async fn a_server_without_users_lists_none_and_adds_none() {
         (status, refusal["code"].clone()),
         (StatusCode::CONFLICT, json!("no_users"))
     );
+    // Nor keys, which are a user's.
+    let (status, _, refusal) = send(&app, "GET", "/keys", None, None).await;
+    assert_eq!(
+        (status, refusal["code"].clone()),
+        (StatusCode::CONFLICT, json!("no_users"))
+    );
     // Nor has anybody views of their own: every view is everybody's, kept with its cube.
     let views = "/cubes/General%20Ledger/private-views";
     let (status, _, refusal) = send(&app, "GET", views, None, None).await;
@@ -1580,4 +1588,344 @@ async fn a_users_roles_on_elements_hide_them_and_keep_them_from_being_changed() 
     let viewing = viewing["token"].as_str().unwrap().to_owned();
     let (_, _, entity) = send(&app, "GET", "/dimensions/Entity", Some(&viewing), None).await;
     assert_eq!(names(&entity), ["Total Entity", "US"]);
+}
+
+/// Asks for an API key with a session, and gives the status and the answer.
+async fn make_key(app: &Router, token: &str, asked: Value) -> (StatusCode, Value) {
+    let (status, _, body) = send(app, "POST", "/keys", Some(token), Some(asked)).await;
+    (status, body)
+}
+
+/// The key of an answer that made one.
+fn key_of(made: &Value) -> String {
+    made["key"].as_str().expect("a key was made").to_owned()
+}
+
+#[tokio::test]
+async fn an_api_key_does_what_it_was_given_and_no_more() {
+    let (home, app) = secured("keys", None);
+    let admin = token(&app).await;
+    let at = json!(["Rent", "UK", "Jan", "Actual"]);
+    let read = json!({ "cells": [{ "cube": "General Ledger", "at": at }] });
+    let write = json!({ "cells": [{ "cube": "General Ledger", "at": at, "value": 7 }] });
+
+    // A key that writes cells and does nothing else, given once and kept only as a hash.
+    let asked = json!({ "name": "Nightly load", "cells": "write" });
+    let (status, made) = make_key(&app, &admin, asked).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let loader = key_of(&made);
+    assert!(loader.starts_with("epk_") && loader.len() == 68, "{loader}");
+    assert_eq!(made["id"], loader[4..16]);
+    assert_eq!(
+        [
+            &made["name"],
+            &made["cells"],
+            &made["model"],
+            &made["admin"]
+        ],
+        [
+            &json!("Nightly load"),
+            &json!("write"),
+            &json!("none"),
+            &json!("none")
+        ]
+    );
+    let stored = fs::read_to_string(home.path("users.json")).unwrap();
+    assert!(stored.contains("Nightly load") && !stored.contains(&loader[16..]));
+
+    // It writes and reads cells as its user, and reaches nothing else.
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&loader), Some(write)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, cells) = send(
+        &app,
+        "POST",
+        "/cells/read",
+        Some(&loader),
+        Some(read.clone()),
+    )
+    .await;
+    assert_eq!(cells["cells"][0]["value"], 7.0);
+    let cell = json!({ "cube": "General Ledger", "at": at });
+    let (_, _, history) = send(&app, "POST", "/cells/history", Some(&loader), Some(cell)).await;
+    assert_eq!(history["changes"][0]["author"], NAME);
+    for (method, uri, refusal) in [
+        ("GET", "/model", "this key may not read the model"),
+        (
+            "GET",
+            "/admin/status",
+            "this key may not see the server's administration",
+        ),
+        (
+            "GET",
+            "/keys",
+            "keys are made and revoked by their user signed in, not with a key",
+        ),
+        (
+            "DELETE",
+            "/sessions",
+            "an API key has no session to end; it stops working when revoked",
+        ),
+    ] {
+        let (status, _, body) = send(&app, method, uri, Some(&loader), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(body["message"], refusal, "{method} {uri}");
+    }
+
+    // One that reads the model and the administration changes neither, nor reads cells.
+    let asked = json!({ "name": "Watch", "model": "read", "admin": "read" });
+    let watcher = key_of(&make_key(&app, &admin, asked).await.1);
+    let (status, _, model) = send(&app, "GET", "/model", Some(&watcher), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = send(&app, "GET", "/admin/status", Some(&watcher), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let update = json!({ "based_on": model["version"], "model": model["model"] });
+    let ending = "/admin/users/ada/sessions";
+    for (method, uri, body, refusal) in [
+        (
+            "PUT",
+            "/model",
+            Some(update.clone()),
+            "this key may not change the model",
+        ),
+        (
+            "DELETE",
+            ending,
+            None,
+            "this key may not administer the server",
+        ),
+        (
+            "POST",
+            "/cells/read",
+            Some(read.clone()),
+            "this key may not read cells",
+        ),
+    ] {
+        let (status, _, answer) = send(&app, method, uri, Some(&watcher), body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(answer["message"], refusal, "{method} {uri}");
+    }
+
+    // Everything an administrator may do, a key of theirs may be given.
+    let everything =
+        json!({ "name": "Deploy", "cells": "write", "model": "write", "admin": "write" });
+    let (_, made) = make_key(&app, &admin, everything).await;
+    let deploy = key_of(&made);
+    let (status, _, _) = send(&app, "PUT", "/model", Some(&deploy), Some(update)).await;
+    assert!(status.is_success());
+
+    // The keys are listed newest first, never as themselves.
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    assert_eq!(list["allowed"], true);
+    assert_eq!(
+        list["most"],
+        json!({ "cells": "write", "model": "write", "admin": "write" })
+    );
+    let keys = list["keys"].as_array().unwrap().iter();
+    let names: Vec<&str> = keys.map(|key| key["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Deploy", "Watch", "Nightly load"]);
+    assert!(!list.to_string().contains(&loader[16..]));
+
+    // A name is not given twice, and a key needs a name and something to do.
+    for (asked, refusal) in [
+        (
+            json!({ "name": "nightly LOAD", "cells": "read" }),
+            "there is a key called nightly LOAD already",
+        ),
+        (
+            json!({ "name": " ", "cells": "read" }),
+            "a key needs a name",
+        ),
+        (
+            json!({ "name": "Idle" }),
+            "a key needs to be able to do something",
+        ),
+        (
+            json!({ "name": "Kept", "cells": "read", "model": "write", "cubes": ["General Ledger"] }),
+            "a key kept to particular cubes may not change the model or administer the server, \
+             which reach every cube",
+        ),
+        (
+            json!({ "name": "Elsewhere", "cells": "read", "cubes": ["Plan"] }),
+            "there is no cube 'Plan'",
+        ),
+    ] {
+        let (status, body) = make_key(&app, &admin, asked).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refusal}");
+        assert_eq!(body["message"], refusal);
+    }
+
+    // One revoked stops at once, and is not there to revoke again.
+    let id = made["id"].as_str().unwrap();
+    let revoke = format!("/keys/{id}");
+    let (status, _, _) = send(&app, "DELETE", &revoke, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, body) = send(&app, "GET", "/model", Some(&deploy), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("this API key is not in force")
+    );
+    let (status, _, body) = send(&app, "DELETE", &revoke, Some(&admin), None).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::NOT_FOUND, &json!("unknown_key"))
+    );
+
+    // The others outlast the server: started again, it takes them as it did.
+    drop(app);
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let (status, _, _) = send(&app, "POST", "/cells/read", Some(&loader), Some(read)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_user_makes_keys_once_let_and_each_does_no_more_than_they_may() {
+    let home = Home::new("users-keys");
+    let plan = json!({ "name": "Plan", "dimensions": ["Entity", "Period"] });
+    fs::write(home.path("model/cubes/plan.json"), plan.to_string()).unwrap();
+    set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let admin = token(&app).await;
+    let put = |user: Value| {
+        let (app, admin) = (app.clone(), admin.clone());
+        async move {
+            send(&app, "PUT", "/admin/users/grace", Some(&admin), Some(user))
+                .await
+                .0
+        }
+    };
+    // Grace reads everything and writes the plan.
+    let grace =
+        json!({ "password": "grace-only-3b7a", "role": "read", "cubes": { "Plan": "write" } });
+    assert_eq!(put(grace).await, StatusCode::NO_CONTENT);
+    let (_, signed) = sign_in(&app, "grace", "grace-only-3b7a").await;
+    let session = signed["token"].as_str().unwrap().to_owned();
+
+    // Until an administrator lets her, she makes none.
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&session), None).await;
+    assert_eq!(list["allowed"], false);
+    let asked = json!({ "name": "Plan load", "cells": "write", "cubes": ["plan"] });
+    let (status, body) = make_key(&app, &session, asked.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body["message"],
+        "an administrator has not let you make API keys"
+    );
+    let let_her = json!({ "role": "read", "cubes": { "Plan": "write" }, "makes_keys": true });
+    assert_eq!(put(let_her).await, StatusCode::NO_CONTENT);
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&session), None).await;
+    assert_eq!(list["allowed"], true);
+    assert_eq!(
+        list["most"],
+        json!({ "cells": "write", "model": "read", "admin": "none" })
+    );
+
+    // A key of hers does no more than she may.
+    let beyond = json!({ "name": "Too much", "cells": "write", "model": "write" });
+    let (status, body) = make_key(&app, &session, beyond).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["message"],
+        "a key does no more than its user may, who may not change the model"
+    );
+    // One kept to the plan, named as the model names it, reaches the plan's cells alone.
+    let (status, made) = make_key(&app, &session, asked).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(made["cubes"], json!(["Plan"]));
+    let key = key_of(&made);
+    let planned = json!({ "cells": [{ "cube": "Plan", "at": ["UK", "Jan"], "value": 3 }] });
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(&key),
+        Some(planned.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let ledger =
+        json!({ "cells": [{ "cube": "General Ledger", "at": ["Rent", "UK", "Jan", "Actual"] }] });
+    let (_, _, cells) = send(&app, "POST", "/cells/read", Some(&key), Some(ledger)).await;
+    assert_eq!(cells["cells"][0]["error"]["code"], "forbidden");
+    // Nor may a view as her make one in her name.
+    let (_, _, view) = send(
+        &app,
+        "POST",
+        "/admin/view-as",
+        Some(&admin),
+        Some(json!({ "user": "grace" })),
+    )
+    .await;
+    let viewing = view["token"].as_str().unwrap().to_owned();
+    let (status, _) = make_key(&app, &viewing, json!({ "name": "Mine", "cells": "read" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // What she may do, the key may: no longer let write the plan, it writes it no more. A
+    // change that says nothing of keys leaves her let make them, and her key in place.
+    assert_eq!(put(json!({ "role": "read" })).await, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&key), Some(planned)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let hers = || {
+        let (app, admin) = (app.clone(), admin.clone());
+        async move {
+            let (_, _, list) = send(&app, "GET", "/admin/users", Some(&admin), None).await;
+            let mut users = list["users"].as_array().unwrap().iter();
+            users.find(|user| user["name"] == "grace").unwrap().clone()
+        }
+    };
+    let her = hers().await;
+    assert_eq!(her["makes_keys"], true);
+    assert_eq!(her["keys"][0]["name"], "Plan load");
+
+    // An administrator revokes a key of hers; and her leave taken away, the rest go with it.
+    let id = made["id"].as_str().unwrap();
+    let revoke = format!("/admin/users/Grace/keys/{id}");
+    let (status, _, _) = send(&app, "DELETE", &revoke, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(&app, "GET", "/model", Some(&key), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let reads = key_of(
+        &make_key(&app, &session, json!({ "name": "Reads", "cells": "read" }))
+            .await
+            .1,
+    );
+    assert_eq!(
+        put(json!({ "role": "read", "makes_keys": false })).await,
+        StatusCode::NO_CONTENT
+    );
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&reads), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(hers().await["keys"], json!([]));
+    // Let again, she has none back.
+    assert_eq!(
+        put(json!({ "role": "read", "makes_keys": true })).await,
+        StatusCode::NO_CONTENT
+    );
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&reads), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn an_api_key_stops_when_it_expires() {
+    let (_home, app) = secured("expiring-keys", None);
+    let admin = token(&app).await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let past = json!({ "name": "Past", "cells": "read", "expires": now - 1 });
+    let (status, body) = make_key(&app, &admin, past).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["message"], "a key cannot expire before it is made");
+    let soon = json!({ "name": "Soon", "cells": "read", "expires": now + 3 });
+    let (_, made) = make_key(&app, &admin, soon).await;
+    assert_eq!(made["expires"], now + 3);
+    let key = key_of(&made);
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&key), None).await;
+    assert_eq!(status, StatusCode::OK);
+    tokio::time::sleep(Duration::from_millis(3100)).await;
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&key), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
