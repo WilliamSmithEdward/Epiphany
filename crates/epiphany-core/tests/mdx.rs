@@ -1593,6 +1593,32 @@ fn a_value_is_chosen_case_by_case() {
         ["Jan", "Feb"]
     );
     assert_eq!(columns("NameToSet(\"[Period].[Feb]\")"), ["Feb"]);
+    assert_eq!(
+        columns("StrToMember(\"[Period].[Q1]\", CONSTRAINED)"),
+        ["Q1"]
+    );
+    // ALL keeps the first set's repeats.
+    let jans = "{[Period].[Jan], [Period].[Jan], [Period].[Feb]}";
+    assert_eq!(
+        columns(&format!("Except({jans}, {{[Period].[Feb]}})")),
+        ["Jan"]
+    );
+    assert_eq!(
+        columns(&format!("Except({jans}, {{[Period].[Feb]}}, ALL)")),
+        ["Jan", "Jan"]
+    );
+    // Comments of every kind, and the cell properties a tool asks for.
+    assert_eq!(
+        columns("{/* the first */ [Period].[Q1], -- and\n [Period].[Q2] // the second\n}"),
+        ["Q1", "Q2"]
+    );
+    run(
+        "SELECT {[Period].[Q1]} ON COLUMNS FROM [General Ledger] CELL PROPERTIES VALUE, FORMATTED_VALUE",
+    );
+    assert!(
+        failure("SELECT /* {[Period].[Q1]} ON COLUMNS FROM [General Ledger]")
+            .contains("unclosed comment")
+    );
     // Drilled down to the children with the largest values, or the smallest, an argument
     // left out between commas.
     let q2 = "IIF([Period].CurrentMember IS [Period].[Q2], 1, 0)";

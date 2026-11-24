@@ -243,6 +243,8 @@ practice that means:
   - `SELECT ... ON COLUMNS [, ... ON ROWS [, ...]] FROM [cube] [WHERE tuple]`, with
     `NON EMPTY` and `[DIMENSION] PROPERTIES` on an axis. Any number of axes, named
     (`COLUMNS`, `ROWS`, `PAGES`, `CHAPTERS`, `SECTIONS`) or numbered (`ON 0`, `ON AXIS(1)`).
+    `CELL PROPERTIES` at the end, as Excel writes it, each cell's value given whatever is
+    asked; comments after `--` or `//` to the end of the line, and between `/*` and `*/`.
   - Sets: braces, `.Members`, `.AllMembers`, `.Children`, `.Siblings`, ranges
     (`first : last`), `CrossJoin` and `*`, `Union` and `+`, `Except`, `Intersect`,
     `Distinct`, `Unorder`, `Head`, `Tail`, `Subset`, `.Item`, `TopCount`, `BottomCount`, `Generate`,

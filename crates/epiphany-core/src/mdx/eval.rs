@@ -33,7 +33,7 @@ const MOST_TEXT: usize = 1_000_000;
 /// The words that tell a function how to go about its work. Where one of them stands alone
 /// it is that word, even in a model with a dimension of the same name; the dimension is
 /// then written in brackets with its hierarchy, as `[Desc].[Desc]`.
-const FLAGS: [&str; 18] = [
+const FLAGS: [&str; 19] = [
     "ALL",
     "ASC",
     "DESC",
@@ -50,6 +50,7 @@ const FLAGS: [&str; 18] = [
     "SELF_BEFORE_AFTER",
     "LEAVES",
     "INCLUDEMEMBER",
+    "CONSTRAINED",
     "INCLUDEEMPTY",
     "EXCLUDEEMPTY",
 ];
@@ -1163,8 +1164,14 @@ impl<'a> Evaluator<'a> {
                 union(left, right, all(arguments.get(2))?).map(Datum::Set)
             }
             "EXCEPT" | "INTERSECT" => {
-                count(2..=2)?;
-                let left = distinct(self.set(&arguments[0], context)?);
+                count(2..=3)?;
+                // ALL keeps the first set's repeats; else each of its tuples stands once.
+                let left = self.set(&arguments[0], context)?;
+                let left = match flag(arguments.get(2)).as_deref() {
+                    None => distinct(left),
+                    Some("ALL") => left,
+                    Some(other) => return fail(format!("unknown {function} flag {other}")),
+                };
                 let right: HashSet<Tuple> = self.set(&arguments[1], context)?.into_iter().collect();
                 let wanted = function == "INTERSECT";
                 let kept = left
@@ -1685,7 +1692,11 @@ impl<'a> Evaluator<'a> {
                 self.read_from(function, &arguments[0], context)
             }
             "STRTOMEMBER" | "STRTOTUPLE" | "STRTOSET" => {
-                count(1..=1)?;
+                count(1..=2)?;
+                // CONSTRAINED, that the text names and works nothing out, is taken as said.
+                if let Some(other) = flag(arguments.get(1)).filter(|word| word != "CONSTRAINED") {
+                    return fail(format!("unknown {function} flag {other}"));
+                }
                 let text = self.text(&arguments[0], context)?;
                 let parsed = super::parser::Parser::new(super::lexer::lex(&text)?).set()?;
                 match (function, self.evaluate(&parsed, context)?) {

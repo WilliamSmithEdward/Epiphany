@@ -63,8 +63,19 @@ pub(super) fn lex(source: &str) -> Result<Vec<(Token, usize)>, MdxError> {
             at += 1;
             continue;
         }
-        if c == '-' && characters.get(at + 1) == Some(&'-') {
+        // Comments: to the end of the line after `--` or `//`, and between `/*` and `*/`.
+        if matches!(
+            (c, characters.get(at + 1)),
+            ('-', Some('-')) | ('/', Some('/'))
+        ) {
             at += characters[at..].iter().take_while(|&&c| c != '\n').count();
+            continue;
+        }
+        if c == '/' && characters.get(at + 1) == Some(&'*') {
+            let closed = characters[at + 2..]
+                .windows(2)
+                .position(|pair| pair == ['*', '/']);
+            at += 4 + closed.ok_or_else(|| error("unclosed comment", start))?;
             continue;
         }
         let token = if c == '[' {

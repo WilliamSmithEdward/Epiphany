@@ -194,6 +194,21 @@ impl Parser {
             true => Some(self.expression()?),
             false => None,
         };
+        // The properties of each cell a tool asks for, as Excel does: each cell's value is
+        // given whatever is asked.
+        if self.word("CELL") {
+            if !self.word("PROPERTIES") {
+                return Err(self.error("expected PROPERTIES after CELL"));
+            }
+            loop {
+                if !matches!(self.advance(), Token::Word(_)) {
+                    return Err(self.error("expected the name of a cell property"));
+                }
+                if !self.symbol(",") {
+                    break;
+                }
+            }
+        }
         self.expect_end()?;
         Ok(Query {
             members,
