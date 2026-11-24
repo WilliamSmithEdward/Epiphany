@@ -90,6 +90,10 @@ body {
   text-rendering: optimizeLegibility;
 }
 h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+/* No word left alone on a paragraph's last line, and a heading's lines even, where the
+   browser can; what is kept to one line stays so. */
+p { text-wrap-style: pretty; }
+h1, h2, h3 { text-wrap-style: balance; }
 h1 { font-size: var(--text-2xl); }
 h2 { font-size: var(--text-xl); }
 h3 { font-size: var(--text-l); }
