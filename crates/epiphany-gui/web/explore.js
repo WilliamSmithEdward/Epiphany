@@ -9,7 +9,7 @@ import { chooseMember, dimension } from './picker.js';
 import { csvOf } from './selection.js';
 import { askDrawn, AXES, CHARTS, KINDS } from './tiles.js';
 import { editSet } from './sets.js';
-import { choices, copyText, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
+import { choices, copyText, counted, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid, toneOf } from './grid.js';
 import { sandboxes } from './sandboxes.js';
@@ -152,7 +152,7 @@ class Explorer {
     }
     const agreed = await dialog({
       title: 'Discard your changes?',
-      body: h('p', {}, `You have ${this.changes || 0} unsaved change${this.changes === 1 ? '' : 's'} to ${this.cube.name}. Leaving discards them.`),
+      body: h('p', {}, `You have ${counted(this.changes || 0, 'unsaved change')} to ${this.cube.name}. Leaving discards them.`),
       confirm: 'Discard and leave',
       cancel: 'Stay',
       danger: true,
@@ -430,7 +430,7 @@ class Explorer {
     this.pendingBar.hidden = sandbox ? !sandbox.pending : !this.tx || !this.changes;
     if (this.pendingBar.hidden) return;
     if (sandbox) {
-      const cells = `${sandbox.pending.toLocaleString()} cell${sandbox.pending === 1 ? '' : 's'}`;
+      const cells = counted(sandbox.pending, 'cell');
       mount(this.pendingBar,
         icon('sandbox', 16),
         h('span', { class: 'grow' }, `${sandbox.name} changes ${cells}, not yet published. Totals here include them; nobody else sees them until you publish.`),
@@ -441,7 +441,7 @@ class Explorer {
     const count = this.changes || 0;
     mount(this.pendingBar,
       icon('edit', 16),
-      h('span', { class: 'grow' }, `${count} unsaved change${count === 1 ? '' : 's'}. Totals already include them; nothing is stored until you save.`),
+      h('span', { class: 'grow' }, `${counted(count, 'unsaved change')}. Totals already include them; nothing is stored until you save.`),
       h('button', { class: 'button small', onclick: (event) => working(event.currentTarget, () => this.discard()) }, 'Discard'),
       h('button', { class: 'button small primary', onclick: (event) => working(event.currentTarget, () => this.save()) }, icon('save', 14), 'Save changes'));
   }
@@ -490,7 +490,7 @@ class Explorer {
       })) : null,
       layout.top ? button('Show every row', 'close', () => this.change((l) => {
         l.top = null;
-      }), { title: `Showing the ${layout.top.count.toLocaleString()} ${layout.top.bottom ? 'smallest' : 'largest'} rows only` }) : null,
+      }), { title: `Showing the ${counted(layout.top.count, `${layout.top.bottom ? 'smallest' : 'largest'} row`)} only` }) : null,
       h('div', { class: 'grow' }),
       layout.mdx ? h('span', {
         class: 'badge accent',
@@ -580,7 +580,7 @@ class Explorer {
       if (name && this.placeOf(name) !== 'unused') this.move(name, 'unused');
     };
     mount(this.fields,
-      h('div', { class: 'fields-head' }, h('h3', {}, 'Fields'), h('span', { class: 'muted' }, `${this.cube.dimensions.length} dimensions`)),
+      h('div', { class: 'fields-head' }, h('h3', {}, 'Fields'), h('span', { class: 'muted' }, counted(this.cube.dimensions.length, 'dimension'))),
       h('div', { class: 'search' }, icon('search', 16), search),
       list,
       h('p', { class: 'hint fields-hint' }, 'Drag a dimension to Rows, Columns or Filters, or choose where it goes with the ⋯ button beside it. Drag one back here to leave it out of the query: it then stands at its first top element.'));

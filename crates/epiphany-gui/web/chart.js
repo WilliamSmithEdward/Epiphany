@@ -3,7 +3,7 @@
 // again as either changes. Its marks say what they are when pointed at, or gone through with
 // the arrow keys, and may be picked.
 
-import { extent, formatNumber, h, icon, textWidths } from './ui.js';
+import { counted, extent, formatNumber, h, icon, textWidths } from './ui.js';
 
 /** How many colours there are before they come round again, lighter. */
 const COLOURS = 10;
@@ -105,7 +105,7 @@ export function sparkline(values, { width = 180, height = 40 } = {}) {
   const x = (index) => 2 + (index / Math.max(values.length - 1, 1)) * (width - 4);
   const y = (value) => 2 + (high === low ? (height - 4) / 2 : (1 - (value - low) / (high - low)) * (height - 4));
   const last = values.length - 1 - [...values].reverse().findIndex((value) => value !== null);
-  return h('svg', { class: 'sparkline', width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `Trend over ${values.length} values` },
+  return h('svg', { class: 'sparkline', width, height, viewBox: `0 0 ${width} ${height}`, role: 'img', 'aria-label': `Trend over ${counted(values.length, 'value')}` },
     h('path', { class: 'line c0', d: linePath(values.map((value, index) => (value === null ? null : [x(index), y(value)]))) }),
     h('circle', { class: 'dot c0', cx: x(last), cy: y(values[last]), r: 3 }));
 }

@@ -692,9 +692,11 @@ fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(-
 .changes.busy > .table { opacity: .6; transition: opacity .3s .5s; }
 .nowrap { white-space: nowrap; }
 .card-head { flex-wrap: wrap; }
-/* A card as wide as its table, rather than the table's columns spread across the page. */
+/*
+ * A card as wide as its table, rather than the table's columns spread across the page; and
+ * its table as wide as the card, where the card's head is the wider.
+ */
 .card.fit { width: fit-content; max-width: 100%; overflow-x: auto; }
-.card.fit .table { width: auto; }
 .card.fit .table .bar-col { width: 240px; }
 .share { height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
 .share-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent); }

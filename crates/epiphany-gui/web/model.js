@@ -6,7 +6,7 @@ import { del, get, part, put } from './api.js';
 import { empty, failure, go, loading } from './app.js';
 import { checkFeeders } from './feeders.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, dialog, h, icon, invalid, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, widest, working } from './ui.js';
+import { choices, counted, dialog, h, icon, invalid, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, widest, working } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 /** What an element without children has as its list of them: one list, never changed. */
@@ -140,7 +140,7 @@ class ModelPage {
       const update = await put(path, { based_on: this.version, ...body });
       this.version = update.version;
       const dropped = update.dropped_cells
-        ? ` ${update.dropped_cells.toLocaleString()} stored cell${update.dropped_cells === 1 ? '' : 's'} no longer fitted and ${update.dropped_cells === 1 ? 'was' : 'were'} removed.`
+        ? ` ${counted(update.dropped_cells, 'stored cell')} no longer fitted and ${update.dropped_cells === 1 ? 'was' : 'were'} removed.`
         : '';
       notify(`Saved. The model is now at version ${update.version}.${dropped}`, 'good');
       return true;
@@ -655,7 +655,7 @@ class DimensionEditor extends Editor {
     const layout = h('div', { class: 'element-layout' },
       h('div', { class: 'card element-list' },
         h('div', { class: 'card-head' },
-          h('h3', { class: 'grow' }, `${this.working.elements.length.toLocaleString()} elements`),
+          h('h3', { class: 'grow' }, counted(this.working.elements.length, 'element')),
           h('button', { class: 'button small quiet', title: 'Add elements from an outline, as pasted from elsewhere', onclick: () => this.pasteElements() }, icon('paste', 14), 'Paste'),
           h('button', { class: 'button small', onclick: () => this.addElement() }, icon('plus', 14), 'Add element')),
         h('div', { class: 'tree-tools' },
@@ -1053,7 +1053,7 @@ class DimensionEditor extends Editor {
       this.open.add(parent.name);
     });
     const said = [
-      added.size ? `Added ${added.size.toLocaleString()} element${added.size === 1 ? '' : 's'}.` : null,
+      added.size ? `Added ${counted(added.size, 'element')}.` : null,
       placed.length ? `Placed ${placed.length.toLocaleString()} the dimension had already.` : null,
       left.length ? `Left out ${left.slice(0, 3).join(', ')}${left.length > 3 ? ` and ${left.length - 3} more` : ''}.` : null,
     ].filter(Boolean).join(' ');

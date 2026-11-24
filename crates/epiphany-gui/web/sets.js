@@ -3,7 +3,7 @@
 import { del, get, part, put } from './api.js';
 import { state } from './app.js';
 import { beneath, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, copyText, dialog, h, icon, invalid, menu, MOD, mount, notify, refocus } from './ui.js';
+import { choices, copyText, counted, dialog, h, icon, invalid, menu, MOD, mount, notify, refocus } from './ui.js';
 
 /**
  * Edits the set of members a dimension shows on an axis. `dim` is the dimension as the
@@ -245,7 +245,7 @@ class SetEditor {
   drawFilterCount() {
     if (!this.filterCount) return;
     const count = this.matches().length;
-    this.filterCount.textContent = `${count.toLocaleString()} member${count === 1 ? '' : 's'} match`;
+    this.filterCount.textContent = `${counted(count, 'member')} ${count === 1 ? 'matches' : 'match'}`;
     const active = this.activeRules().length;
     this.filterButton.querySelector('.filter-count').textContent = active ? String(active) : '';
   }
@@ -321,7 +321,7 @@ class SetEditor {
     event.dataTransfer.effectAllowed = from === 'tree' ? 'copy' : 'copyMove';
     event.dataTransfer.setData('text/plain', names.join('\n'));
     if (names.length > 1) {
-      const label = h('div', { class: 'drag-count' }, `${names.length.toLocaleString()} members`);
+      const label = h('div', { class: 'drag-count' }, counted(names.length, 'member'));
       this.dialogBody.append(label);
       event.dataTransfer.setDragImage(label, 14, 14);
       setTimeout(() => label.remove());
@@ -396,7 +396,7 @@ class SetEditor {
     const row = this.shown.find((each) => each.name === name);
     const beneath = this.descendants(name);
     menu([
-      { heading: they(name, `${names.length.toLocaleString()} members`) },
+      { heading: they(name, counted(names.length, 'member')) },
       { label: 'Add to the set', icon: 'chevron', action: () => this.add(names) },
       { label: they('Add its children', 'Add their children'), icon: 'plus', disabled: !names.some((each) => this.children(each).length), action: () => this.add(names.flatMap((each) => this.children(each))) },
       { label: they('Add it and all beneath it', 'Add them and all beneath them'), icon: 'level', action: () => this.add(names.flatMap((each) => [each, ...this.descendants(each)])) },
@@ -442,7 +442,7 @@ class SetEditor {
       this.set.splice(replace ? place : place + 1, replace ? 1 : 0, ...fresh);
     });
     menu([
-      { heading: they(name, `${names.length.toLocaleString()} members`) },
+      { heading: they(name, counted(names.length, 'member')) },
       { label: they('Move it to the top', 'Move them to the top'), icon: 'up', action: () => this.moveTo(names, 0) },
       { label: they('Move it to the bottom', 'Move them to the bottom'), icon: 'down', action: () => this.moveTo(names, this.set.length) },
       one && kids.length ? '-' : null,
@@ -786,7 +786,7 @@ class SetEditor {
       confirm: 'Keep',
       body: h('div', { class: 'facts' },
         h('div', { class: 'field' }, h('label', { for: 'subset-name' }, 'Name'), name),
-        h('p', { class: 'hint' }, `The ${this.set.length.toLocaleString()} member${this.set.length === 1 ? '' : 's'} of the set, in order, kept for you alone: nobody else sees it. One of yours of the same name is replaced.`)),
+        h('p', { class: 'hint' }, `The ${counted(this.set.length, 'member')} of the set, in order, kept for you alone: nobody else sees it. One of yours of the same name is replaced.`)),
       onsubmit: async () => {
         const subset = name.value.trim();
         if (!subset) throw invalid(name, 'Give the subset a name.');
@@ -805,7 +805,7 @@ class SetEditor {
     mount(list, Object.keys(this.own).map((name) => {
       const item = h('li', {},
         h('span', { class: 'grow' }, name),
-        h('span', { class: 'muted' }, `${this.own[name].length.toLocaleString()} member${this.own[name].length === 1 ? '' : 's'}`),
+        h('span', { class: 'muted' }, counted(this.own[name].length, 'member')),
         h('button', {
           class: 'button small danger',
           type: 'button',
@@ -870,7 +870,7 @@ class SetEditor {
       const after = this.set.reduce((last, name, index) => (this.marked.has(name) ? index : last), -1);
       this.change(() => this.set.splice(place ?? (after >= 0 ? after + 1 : this.set.length), 0, ...fresh));
     }
-    const added = fresh.length ? `Added ${fresh.length.toLocaleString()} member${fresh.length === 1 ? '' : 's'}.` : 'Nothing new to add.';
+    const added = fresh.length ? `Added ${counted(fresh.length, 'member')}.` : 'Nothing new to add.';
     const shown = missing.slice(0, 5).join(', ') + (missing.length > 5 ? ` and ${(missing.length - 5).toLocaleString()} more` : '');
     notify(missing.length ? `${added} Not in ${this.dim.name}: ${shown}.` : added, missing.length ? 'bad' : 'good');
   }
@@ -1041,7 +1041,7 @@ class SetEditor {
 
   /** Draws the set, with the keys on the member at `focus`, where one is given. */
   drawRight(focus) {
-    this.count.textContent = `${this.set.length.toLocaleString()} member${this.set.length === 1 ? '' : 's'}`;
+    this.count.textContent = counted(this.set.length, 'member');
     this.rightEmpty.hidden = this.set.length > 0;
     // The member the keys act on: the one given, or else the first marked.
     this.rightAt = focus ?? Math.max(0, this.set.findIndex((name) => this.marked.has(name)));

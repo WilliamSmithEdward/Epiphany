@@ -7,7 +7,7 @@ import { checkFeeders } from './feeders.js';
 import { member, namesOf, outlined, pathsBeneath, saved } from './layout.js';
 import { cellText, Selection } from './selection.js';
 import { beneath } from './tree.js';
-import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, printsWhole, SCALES, shownText } from './ui.js';
+import { copyText, counted, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, printsWhole, SCALES, shownText } from './ui.js';
 
 /** The most cells a grid draws whole for printing: every row draws all its columns. */
 const PRINTED = 200_000;
@@ -492,8 +492,8 @@ export const grid = {
     grid.legend = h('span', { class: 'legend-input muted', title: 'Tinted cells take a value: type into one, or paste', hidden: !this.writable.size }, 'Can be written');
     grid.invalidLegend = h('span', { class: 'legend-invalid muted', title: 'Underlined values break a check of the cube. Point at one to read what it says.', hidden: !this.invalid.size }, 'Breaks a check');
     mount(this.statusLine,
-      h('span', {}, `${grid.rowTuples.length.toLocaleString()} rows × ${grid.columnCount.toLocaleString()} columns`),
-      h('span', { class: 'muted' }, `${cells.toLocaleString()} cells in ${Math.round(this.took)} ms`),
+      h('span', {}, `${counted(grid.rowTuples.length, 'row')} × ${counted(grid.columnCount, 'column')}`),
+      h('span', { class: 'muted' }, `${counted(cells, 'cell')} in ${Math.round(this.took)} ms`),
       grid.legend,
       grid.invalidLegend,
       this.differing ? h('span', {
@@ -956,7 +956,7 @@ export const grid = {
       this.coordinate(r, c) ? { label: this.commentsAt(r, c).length ? `Comments (${this.commentsAt(r, c).length})…` : 'Comment on it…', icon: 'edit', action: () => this.openComments(r, c) } : null,
       this.coordinate(r, c) ? { label: 'Who changed it, and when…', icon: 'clock', action: () => this.openHistory(r, c) } : null,
       this.coordinate(r, c) && typeof this.valueAt(r, c) === 'number' && ![...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
-        ? { label: this.detailed.has(`${r},${c}`) ? `Detail (${this.detailed.get(`${r},${c}`)} lines)…` : 'Break it down into lines…', icon: 'bars', action: () => this.openCell(r, c, 'detail') }
+        ? { label: this.detailed.has(`${r},${c}`) ? `Detail (${counted(this.detailed.get(`${r},${c}`), 'line')})…` : 'Break it down into lines…', icon: 'bars', action: () => this.openCell(r, c, 'detail') }
         : null,
       [...rowTuple, ...columnTuple].some((m) => m.type === 'consolidated')
         ? { label: 'Show the leaves beneath', icon: 'level', action: () => this.drillToLeaves(rowTuple, columnTuple) }

@@ -5,7 +5,7 @@ import { empty, failure, go, loading, model, state } from './app.js';
 import { keyTable } from './keys.js';
 import { cellQuery, handOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, h, icon, invalid, mount, notify, olderButton, refocus, revealable, when, working } from './ui.js';
+import { counted, dialog, h, icon, invalid, mount, notify, olderButton, refocus, revealable, when, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
 /** How many entries of the audit, and of the changes to cells, are fetched at a time. */
@@ -25,7 +25,7 @@ const makesKeys = (user) => user.role === 'admin' || user.makes_keys;
 const keysSaid = (user) => {
   if (!makesKeys(user)) return h('span', { class: 'muted' }, 'Not allowed');
   const count = user.keys.length;
-  return count ? `${count} key${count === 1 ? '' : 's'}` : h('span', { class: 'muted' }, 'None yet');
+  return count ? counted(count, 'key') : h('span', { class: 'muted' }, 'None yet');
 };
 
 const bytes = (count) => {
@@ -125,7 +125,7 @@ class AdminPage {
     mount(this.statusCard,
       h('div', { class: 'grid-cards' },
         tile('Running for', duration(status.uptime_seconds), 'server', `Epiphany ${status.server} · model version ${status.model_version}`),
-        tile('Cells stored', cells.toLocaleString(), 'cube', `In ${status.cubes.length} cube${status.cubes.length === 1 ? '' : 's'}`),
+        tile('Cells stored', cells.toLocaleString(), 'cube', `In ${counted(status.cubes.length, 'cube')}`),
         tile('Sessions open', status.sessions === null ? '—' : status.sessions.toLocaleString(), 'users', status.sessions === null ? 'No one needs to sign in' : null),
         tile('Transactions open', status.transactions.toLocaleString(), 'lock', null),
         // Every save of the model keeps the one it replaces: what they take is said apart.
@@ -392,7 +392,7 @@ class AdminPage {
   async signOut(user) {
     try {
       const answer = await del(`/admin/users/${part(user.name)}/sessions`);
-      notify(`Ended ${answer.ended} session${answer.ended === 1 ? '' : 's'} of ${user.name}.`, 'good');
+      notify(`Ended ${counted(answer.ended, 'session')} of ${user.name}.`, 'good');
       this.load();
     } catch (problem) {
       notify(problem.message, 'bad');
@@ -549,7 +549,7 @@ class AdminPage {
   async rollBack(transaction) {
     const done = await dialog({
       title: 'Roll the transaction back?',
-      body: h('p', {}, `Its ${transaction.pending.toLocaleString()} waiting write${transaction.pending === 1 ? ' is' : 's are'} discarded, and whoever was working in it will be told their changes are gone.`),
+      body: h('p', {}, `Its ${counted(transaction.pending, 'waiting write')} ${transaction.pending === 1 ? 'is' : 'are'} discarded, and whoever was working in it will be told their changes are gone.`),
       confirm: 'Roll back',
       danger: true,
       onsubmit: async () => {

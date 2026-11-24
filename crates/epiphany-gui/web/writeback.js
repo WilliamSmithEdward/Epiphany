@@ -3,7 +3,7 @@
 // each part readable.
 
 import { get, post } from './api.js';
-import { dialog, h, invalid, MOD, notify, parseNumber } from './ui.js';
+import { counted, dialog, h, invalid, MOD, notify, parseNumber } from './ui.js';
 
 /** A spread typed into a total asks first when it reaches more leaf cells than this. */
 const SPREAD_ASKS = 1000;
@@ -217,7 +217,7 @@ export const writeback = {
     // Everything there is to say of the cell, the checks it breaks first.
     const title = [
       ...(invalid ?? []).map((check) => check.message),
-      detail ? `The total of its ${detail} line${detail === 1 ? '' : 's'} of detail` : null,
+      detail ? `The total of its ${counted(detail, 'line')} of detail` : null,
       held ? 'Held: spreads leave it as it is' : null,
       edited ? 'Changed, not yet saved' : null,
       stored !== null ? `Changed in ${this.sandbox.name}. Stored: ${stored || 'nothing'}` : null,
@@ -469,7 +469,7 @@ export const writeback = {
     }
     if (!(await this.replacingDetail(cells.map(({ r, c }) => [r, c])))) return;
     this.focusAfter = [top, left];
-    const pasted = `Pasted ${cells.length.toLocaleString()} value${cells.length === 1 ? '' : 's'}.`;
+    const pasted = `Pasted ${counted(cells.length, 'value')}.`;
     await this.writeCells(cells, leftOut ? `${pasted} ${leftOut.toLocaleString()} left out: cells that cannot be written, or values they do not take.` : pasted);
   },
 
@@ -632,7 +632,7 @@ export const writeback = {
     if (count > SPREAD_ASKS || (emptying && count > 1)) {
       const agreed = await dialog({
         title: emptying ? `Empty ${count.toLocaleString()} cells?` : `Change ${count.toLocaleString()} cells?`,
-        body: h('p', {}, `From ${this.coordinate(r, c).join(' · ')} on, ${given.length.toLocaleString()} cells of the grid ${emptying ? 'become empty' : 'take new values'}. Nothing is stored until you save your changes, and Discard takes it back.`),
+        body: h('p', {}, `From ${this.coordinate(r, c).join(' · ')} on, ${counted(given.length, 'cell')} of the grid ${given.length === 1 ? (emptying ? 'becomes empty' : 'takes a new value') : (emptying ? 'become empty' : 'take new values')}. Nothing is stored until you save your changes, and Discard takes it back.`),
         confirm: emptying ? 'Empty them' : 'Change them',
         danger: emptying,
       });
@@ -657,8 +657,8 @@ export const writeback = {
         this.warnOfChecks(written.map(({ at }) => at));
       }
       this.changes = (this.changes ?? 0) + given.length;
-      const left = passed ? ` ${passed.toLocaleString()} cell${passed === 1 ? '' : 's'} took no value.` : '';
-      return `Gave ${given.length.toLocaleString()} cell${given.length === 1 ? '' : 's'} new values.${left}`;
+      const left = passed ? ` ${counted(passed, 'cell')} took no value.` : '';
+      return `Gave ${counted(given.length, 'cell')} ${given.length === 1 ? 'a new value' : 'new values'}.${left}`;
     }, false, [r, c]);
   },
 
@@ -668,7 +668,7 @@ export const writeback = {
     await this.changeValues(`the spread over ${at.join(' · ')}`, async () => {
       const answer = await post('/cells/spread', { transaction: this.tx, spread: { cube: this.cube.name, at, value, method, holds } });
       this.changes = (this.changes ?? 0) + 1;
-      return `Spread over ${answer.written.toLocaleString()} cell${answer.written === 1 ? '' : 's'}.`;
+      return `Spread over ${counted(answer.written, 'cell')}.`;
     }, false, [r, c]);
   },
 
@@ -691,8 +691,8 @@ export const writeback = {
       return;
     }
     notify(this.sandbox
-      ? `Published ${published.toLocaleString()} changed cell${published === 1 ? '' : 's'} from ${this.sandbox.name} to the stored values.`
-      : `Saved ${this.changes} change${this.changes === 1 ? '' : 's'}.`, 'good');
+      ? `Published ${counted(published, 'changed cell')} from ${this.sandbox.name} to the stored values.`
+      : `Saved ${counted(this.changes, 'change')}.`, 'good');
     this.forget();
     await this.run();
   },

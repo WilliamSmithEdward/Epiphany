@@ -651,6 +651,11 @@ async function exploring() {
   });
   await step('An MDX query typed in shows what the API answers to it', async () => {
     await page.click('[role="tab"]', 'MDX');
+    // One row, one column and one cell are each counted as one, not as "1 rows".
+    await page.fill('textarea.mdx-editor', QUERY.replace(', [Period].[Feb]', '').replace(', [Account].[Rent]', ''));
+    await page.click('button', 'Run');
+    await page.waitFor(`/^1 row × 1 column1 cell in \\d+ ms/.test(document.querySelector('.status-line')?.textContent)`, 'one row, one column and one cell, each counted as one');
+    await page.click('[role="tab"]', 'MDX');
     await page.fill('textarea.mdx-editor', QUERY);
     await page.click('button', 'Run');
     await page.waitFor(`[...document.querySelectorAll('th.row-head[data-r1]')].map((th) => th.textContent.trim()).join() === 'Salaries,Rent'`, 'the rows the query asks for');
@@ -1847,6 +1852,11 @@ async function usingKeys({ admin, reader }, server) {
     // The audit keeps who made it and who revoked it.
     const revoked = `Revoked the API key Report (epk_${theirs.data.id}) of ${reader.name}`;
     await page.waitFor(`document.querySelector('main')?.textContent.includes(${quoted(revoked)})`, 'the revoking, on record');
+    // Each card's table reaches the card's edges, the audit's too, whose head is the wider.
+    const short = await page.evaluate(`[...document.querySelectorAll('.card.fit')]
+      .filter((card) => card.querySelector(':scope > .table')?.offsetWidth < card.clientWidth - 1)
+      .map((card) => card.getAttribute('aria-label'))`);
+    expect(!short.length, `The tables of ${quoted(short)} stop short of their cards' edges.`);
   });
   await step('A key its user revokes stops at once', async () => {
     await page.goto('/keys');

@@ -1,7 +1,7 @@
 // The feeder check, asked for from Explore and from the model's editor alike.
 
 import { get, part } from './api.js';
-import { dialog, h, notify, working } from './ui.js';
+import { counted, dialog, h, notify, working } from './ui.js';
 
 /**
  * Looks for cells of a cube that rules calculate and hold a value, but that no feeder feeds,
@@ -35,7 +35,7 @@ export async function checkFeeders(cube, button) {
     more.hidden = !next;
     said.textContent = next
       ? `${count.toLocaleString()} found so far: the check stops at each hundred it finds.`
-      : `${count.toLocaleString()} cell${count === 1 ? '' : 's'} in all.`;
+      : `${counted(count, 'cell')} in all.`;
   };
   more.addEventListener('click', async () => {
     try {

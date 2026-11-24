@@ -527,6 +527,11 @@ export function choices({ label, kind = 'tablist', options, chosen, choose, into
   return mount(into, buttons);
 }
 
+/** A count with what it counts, as "1 cell" or "2,048 cells": the noun takes an "s" unless the count is one. */
+export function counted(count, noun) {
+  return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`;
+}
+
 /** A number as the reader's locale writes it. */
 export function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return value ?? '';

@@ -6,7 +6,7 @@
 
 import { del, get, part, post } from './api.js';
 import { loading, state } from './app.js';
-import { choices, dialog, formatValue, h, icon, MOD, mount, notify, olderButton, parseNumber, when, working } from './ui.js';
+import { choices, counted, dialog, formatValue, h, icon, MOD, mount, notify, olderButton, parseNumber, when, working } from './ui.js';
 
 /** How many of a cell's changes are fetched at a time. */
 const HISTORY = 100;
@@ -57,7 +57,7 @@ export const comments = {
     td.append(h('button', {
       class: 'comment-mark',
       tabindex: '-1',
-      'aria-label': `${thread.length} comment${thread.length === 1 ? '' : 's'}`,
+      'aria-label': counted(thread.length, 'comment'),
       title: `${thread.at(-1).author}: ${thread.at(-1).text}`,
       onclick: (event) => {
         event.stopPropagation();
@@ -254,7 +254,7 @@ export const comments = {
       await post('/cells/detail', { transaction: this.tx, cube: this.cube.name, at: cell.at, lines });
       this.changes = (this.changes ?? 0) + 1;
       if (!this.sandbox && lines.length) this.edits.set(JSON.stringify(cell.at), lines.reduce((all, line) => all + line.value, 0));
-      return lines.length ? `The cell is now the total of its ${lines.length} line${lines.length === 1 ? '' : 's'}.` : 'Took the detail away; the value stays.';
+      return lines.length ? `The cell is now the total of its ${counted(lines.length, 'line')}.` : 'Took the detail away; the value stays.';
     }, false, [cell.r, cell.c]);
   },
 

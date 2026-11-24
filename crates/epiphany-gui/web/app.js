@@ -2,7 +2,7 @@
 
 import { ApiError, api, events, get } from './api.js';
 import { marked } from './tree.js';
-import { dialog, h, icon, invalid, menu, MOD, mount, notify, revealable, when, working } from './ui.js';
+import { counted, dialog, h, icon, invalid, menu, MOD, mount, notify, revealable, when, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
@@ -799,8 +799,8 @@ async function overview(target) {
     'data-link': '',
   },
   h('div', { class: 'toolbar' }, h('div', { class: 'tile-icon' }, icon('cube', 20)), h('div', { class: 'grow' }),
-    cube.rules?.length ? h('span', { class: 'badge accent' }, `${cube.rules.length} rule${cube.rules.length === 1 ? '' : 's'}`) : null,
-    views(cube) ? h('span', { class: 'badge' }, `${views(cube)} view${views(cube) === 1 ? '' : 's'}`) : null),
+    cube.rules?.length ? h('span', { class: 'badge accent' }, counted(cube.rules.length, 'rule')) : null,
+    views(cube) ? h('span', { class: 'badge' }, counted(views(cube), 'view')) : null),
   h('h3', {}, cube.name),
   h('p', { class: 'muted' }, cube.dimensions.join(' · '))));
   const dashboards = (definition.dashboards ?? []).map((dashboard) => h('a', {
@@ -809,7 +809,7 @@ async function overview(target) {
     'data-link': '',
   },
   h('div', { class: 'toolbar' }, h('div', { class: 'tile-icon' }, icon('dashboard', 20)), h('div', { class: 'grow' }),
-    h('span', { class: 'badge' }, `${dashboard.tiles.length} tile${dashboard.tiles.length === 1 ? '' : 's'}`)),
+    h('span', { class: 'badge' }, counted(dashboard.tiles.length, 'tile'))),
   h('h3', {}, dashboard.name),
   dashboard.description ? h('p', { class: 'muted' }, dashboard.description) : null));
   // The places visited lately, to go back to where one was.
