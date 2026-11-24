@@ -1417,6 +1417,9 @@ async function usingKeys({ admin, reader }, server) {
     expect(!listed.includes(made.slice(16)), 'The list of keys shows a key itself.');
     const state = await direct('GET', '/admin/status', made);
     expect(state.status === 200, `The key asking for the server's state was answered ${state.status}.`);
+    // Its list says it was used just now; before, never.
+    await page.goto('/keys');
+    await page.waitFor(`document.querySelector('main tbody tr td:nth-child(5) .ago')?.textContent === 'now'`, 'the key, used just now');
   });
   await step('An administrator lets a reader make keys, no more than the reader may, and revokes one', async () => {
     await page.goto('/admin');

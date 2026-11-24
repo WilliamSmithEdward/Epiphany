@@ -5155,6 +5155,15 @@
               "name": {
                 "type": "string",
                 "description": "What its user calls it."
+              },
+              "used": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "When it was last used, in seconds since 1970; never, where there is no such time. It\nis noted at every use and saved every few minutes, so the last uses before the server\nstopped may be missed.",
+                "minimum": 0
               }
             }
           }

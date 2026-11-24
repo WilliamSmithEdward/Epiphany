@@ -29,6 +29,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, RwLockReadGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -67,6 +68,9 @@ const KEY_ID: usize = 12;
 const MOST_KEYS: usize = 100;
 /// The longest name a key may be given, in characters.
 const LONGEST_KEY_NAME: usize = 100;
+/// How often, at most, the times keys were last used are saved. A use is noted in memory at
+/// every request; written to disk each time, it would be a write for every read.
+const SAVING_USES: Duration = Duration::from_secs(10 * 60);
 
 /// What a user may do. Each role may also do what the ones before it may.
 #[derive(
@@ -382,6 +386,11 @@ pub struct KeyView {
     /// no such time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires: Option<u64>,
+    /// When it was last used, in seconds since 1970; never, where there is no such time. It
+    /// is noted at every use and saved every few minutes, so the last uses before the server
+    /// stopped may be missed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub used: Option<u64>,
 }
 
 /// A key as `users.json` keeps it: by its hash, never as itself.
@@ -427,6 +436,8 @@ struct Usable {
     /// The user's grants, held to the key's reach into cells and to its cubes.
     grants: Arc<Grants>,
     expires: Option<u64>,
+    /// When it was last used, in seconds since 1970; zero if never.
+    used: AtomicU64,
 }
 
 /// Whether a user may make API keys: an administrator always, anyone else if let.
@@ -522,6 +533,7 @@ fn usable(users: &HashMap<String, Account>) -> HashMap<String, Usable> {
                 reach: Arc::new(key.view.permissions.within(&account.grants)),
                 grants: Arc::new(key.view.permissions.on_cubes(&account.grants)),
                 expires: key.view.expires,
+                used: AtomicU64::new(key.view.used.unwrap_or(0)),
             };
             (key.hash.clone(), usable)
         })
@@ -600,6 +612,11 @@ pub struct Auth {
     users: RwLock<HashMap<String, Account>>,
     /// Their API keys, by hash. Put in place with the users, while they are held.
     keys: RwLock<HashMap<String, Usable>>,
+    /// Whether a key has been used since the times of use were last saved.
+    unsaved_uses: AtomicBool,
+    /// When they were last saved, and how often, at most, they are.
+    saved_uses: Mutex<Instant>,
+    saving_uses: Duration,
     sessions: Mutex<HashMap<String, Session>>,
     /// Wrong passwords running and when the last was given, by name in lower case.
     failures: Mutex<HashMap<String, (u32, Instant)>>,
@@ -636,6 +653,9 @@ impl Auth {
             directory: directory.to_owned(),
             keys: RwLock::new(usable(&users)),
             users: RwLock::new(users),
+            unsaved_uses: AtomicBool::new(false),
+            saved_uses: Mutex::new(Instant::now()),
+            saving_uses: SAVING_USES,
             sessions: Mutex::default(),
             failures: Mutex::default(),
             idle: IDLE,
@@ -665,6 +685,11 @@ impl Auth {
     /// Sets how long a name is refused after too many wrong passwords.
     pub fn set_pause(&mut self, pause: Duration) {
         self.pause = pause;
+    }
+
+    /// Sets how often, at most, the times keys were last used are saved.
+    pub fn set_saving_uses(&mut self, every: Duration) {
+        self.saving_uses = every;
     }
 
     fn users(&self) -> RwLockReadGuard<'_, HashMap<String, Account>> {
@@ -802,15 +827,18 @@ impl Auth {
     }
 
     /// The user of a live session or an API key, by the name as it was given, what they may
-    /// do, and who views as them; a session then counts as used just now. Nothing if the
-    /// token belongs to no live session and is no key in force.
+    /// do, and who views as them; a session or a key then counts as used just now. Nothing if
+    /// the token belongs to no live session and is no key in force.
     pub fn admits(&self, token: &str) -> Option<Admitted> {
         if token.starts_with(KEY_START) {
             let keys = self.keys.read().unwrap_or_else(PoisonError::into_inner);
             let key = keys.get(&digest(token))?;
-            if key.expires.is_some_and(|at| now() >= at) {
+            let now = now();
+            if key.expires.is_some_and(|at| now >= at) {
                 return None;
             }
+            key.used.store(now, Ordering::Relaxed);
+            self.unsaved_uses.store(true, Ordering::Relaxed);
             return Some(Admitted {
                 name: key.user.clone(),
                 grants: Arc::clone(&key.grants),
@@ -864,8 +892,10 @@ impl Auth {
                 *open.entry(whose.clone()).or_default() += 1;
             }
         }
-        let mut users: Vec<UserView> = self
-            .users()
+        // The users before their keys, as they are taken whenever both are.
+        let accounts = self.users();
+        let usable = self.keys.read().unwrap_or_else(PoisonError::into_inner);
+        let mut users: Vec<UserView> = accounts
             .iter()
             .map(|(key, account)| UserView {
                 name: account.name.clone(),
@@ -874,7 +904,7 @@ impl Auth {
                 elements: account.grants.elements().clone(),
                 sessions: open.get(key).copied().unwrap_or(0),
                 makes_keys: account.makes_keys,
-                keys: newest_first(&account.keys),
+                keys: newest_first(&account.keys, &usable),
             })
             .collect();
         users.sort_by_key(|user| user.name.to_lowercase());
@@ -990,16 +1020,70 @@ impl Auth {
     }
 
     /// Saves a changed set of users and puts it in place, the keys it holds with it, so that
-    /// a key revoked or a user's grants changed hold from the next request.
+    /// a key revoked or a user's grants changed hold from the next request. The times keys
+    /// were last used are saved with it.
     fn commit(
         &self,
         users: &mut HashMap<String, Account>,
-        changed: HashMap<String, Account>,
+        mut changed: HashMap<String, Account>,
     ) -> Result<(), String> {
+        self.note_uses(&mut changed);
         save(&self.directory, &changed).map_err(|error| error.to_string())?;
         *self.keys.write().unwrap_or_else(PoisonError::into_inner) = usable(&changed);
         *users = changed;
         Ok(())
+    }
+
+    /// Puts the times keys were last used, as noted at each use, with the users' keys, for
+    /// them to be saved.
+    fn note_uses(&self, users: &mut HashMap<String, Account>) {
+        // A use from now on is one to save next time.
+        self.unsaved_uses.store(false, Ordering::Relaxed);
+        let usable = self.keys.read().unwrap_or_else(PoisonError::into_inner);
+        for key in users
+            .values_mut()
+            .flat_map(|account| account.keys.iter_mut())
+        {
+            let used = usable
+                .get(&key.hash)
+                .map_or(0, |held| held.used.load(Ordering::Relaxed));
+            if used > 0 {
+                key.view.used = Some(used);
+            }
+        }
+    }
+
+    /// Whether the times keys were last used are to be saved now: a key has been used since
+    /// they were last saved, long enough ago. True once each time, for the caller to save
+    /// them, away from the request that asked.
+    pub fn uses_due(&self) -> bool {
+        if !self.unsaved_uses.load(Ordering::Relaxed) {
+            return false;
+        }
+        let mut saved = self
+            .saved_uses
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if saved.elapsed() < self.saving_uses {
+            return false;
+        }
+        *saved = Instant::now();
+        true
+    }
+
+    /// Saves the times keys were last used, with the users. If they cannot be saved, they
+    /// are tried again with the next save, and nothing else is lost.
+    pub fn save_uses(&self) {
+        let mut users = self.users.write().unwrap_or_else(PoisonError::into_inner);
+        let mut changed = users.clone();
+        self.note_uses(&mut changed);
+        match save(&self.directory, &changed) {
+            Ok(()) => *users = changed,
+            Err(error) => {
+                self.unsaved_uses.store(true, Ordering::Relaxed);
+                eprintln!("The times API keys were last used could not be saved: {error}");
+            }
+        }
     }
 
     /// A user's API keys, the newest first, whether they may make more, and the most one may
@@ -1007,10 +1091,11 @@ impl Auth {
     pub fn keys(&self, user: &str) -> Option<KeyList> {
         let users = self.users();
         let account = users.get(&user.trim().to_lowercase())?;
+        let usable = self.keys.read().unwrap_or_else(PoisonError::into_inner);
         Some(KeyList {
             allowed: account.makes_keys(),
             most: Permissions::most(&account.grants),
-            keys: newest_first(&account.keys),
+            keys: newest_first(&account.keys, &usable),
         })
     }
 
@@ -1072,6 +1157,7 @@ impl Auth {
             permissions,
             created: now(),
             expires,
+            used: None,
         };
         let stored = StoredKey {
             view: view.clone(),
@@ -1102,9 +1188,19 @@ impl Auth {
     }
 }
 
-/// Keys as their user sees them, the newest first.
-fn newest_first(keys: &[StoredKey]) -> Vec<KeyView> {
-    keys.iter().rev().map(|key| key.view.clone()).collect()
+/// Keys as their user sees them, the newest first, each last used when it was, as noted at
+/// each use whether saved yet or not.
+fn newest_first(keys: &[StoredKey], usable: &HashMap<String, Usable>) -> Vec<KeyView> {
+    let view = |key: &StoredKey| {
+        let noted = usable
+            .get(&key.hash)
+            .map_or(0, |held| held.used.load(Ordering::Relaxed));
+        KeyView {
+            used: Some(noted).filter(|&used| used > 0).or(key.view.used),
+            ..key.view.clone()
+        }
+    };
+    keys.iter().rev().map(view).collect()
 }
 
 /// The time now, in seconds since 1970.

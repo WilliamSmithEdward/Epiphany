@@ -604,7 +604,11 @@ practice that means:
       the twelve characters after `epk_` name it in lists and to revoke it.
     - **Decision:** a key holds what it was given at its making, never "all its user may":
       a user raised later does not raise their keys with them.
-    - Not done: when each key was last used, which would be a write to disk at requests.
+    - When each key was last used is noted in memory at each use and listed with the keys.
+      It is saved with every change to the users, and otherwise at most every ten minutes
+      while keys are used, on a thread of its own, the way a snapshot is: saved at every
+      use, it would be a write for every read. The uses of the last minutes before the
+      server stops may be missed, the server having no orderly stop to save them at.
 - Not done: permissions by cell, TLS (put the server behind a proxy that provides it before
   using it across a network), and tying a transaction to the session that began it.
   Transaction ids are fifty-three random bits, so the last adds little.

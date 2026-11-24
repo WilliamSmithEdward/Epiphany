@@ -1773,11 +1773,57 @@ async fn an_api_key_does_what_it_was_given_and_no_more() {
         (StatusCode::NOT_FOUND, &json!("unknown_key"))
     );
 
-    // The others outlast the server: started again, it takes them as it did.
+    // The others outlast the server: started again, it takes them as it did, and knows when
+    // each was last used, saved with the revoking.
+    let (_, _, before) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    let used = before["keys"][1]["used"]
+        .as_u64()
+        .expect("the loader was used");
+    assert!(used >= before["keys"][1]["created"].as_u64().unwrap());
     drop(app);
     let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let admin = token(&app).await;
+    let (_, _, after) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    assert_eq!(after["keys"][1]["name"], "Nightly load");
+    assert_eq!(after["keys"][1]["used"], used);
     let (status, _, _) = send(&app, "POST", "/cells/read", Some(&loader), Some(read)).await;
     assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn when_a_key_was_last_used_is_noted_at_once_and_saved_apart() {
+    let home = Home::new("key-uses");
+    set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();
+    let mut auth = Auth::load(&home.0).unwrap().expect("a user");
+    auth.set_saving_uses(Duration::ZERO);
+    let app = app_with(home.open(), Some(auth));
+    let admin = token(&app).await;
+    let (_, made) = make_key(&app, &admin, json!({ "name": "Report", "cells": "read" })).await;
+    assert_eq!(made["used"], Value::Null);
+    let key = key_of(&made);
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&key), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    let used = list["keys"][0]["used"].as_u64().expect("noted at once");
+    assert!(used >= made["created"].as_u64().unwrap());
+    // Saved apart from the request that used it, a moment later.
+    let saved = || {
+        fs::read_to_string(home.path("users.json"))
+            .unwrap()
+            .contains("\"used\"")
+    };
+    for _ in 0..100 {
+        if saved() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(saved(), "the key's use was not saved");
+    drop(app);
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let admin = token(&app).await;
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    assert_eq!(list["keys"][0]["used"], used);
 }
 
 #[tokio::test]

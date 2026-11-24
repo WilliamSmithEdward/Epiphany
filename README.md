@@ -92,7 +92,7 @@ ticks May make API keys for them. Each key is given how far it reaches into cell
 model and administration, `none`, `read` or `write` (or all a user may, with one click), may
 be kept to particular cubes, and lasts until it is revoked or the time it was given. It
 never does more than its user may at the time. Only a hash of it is kept, so it is shown
-once, as it is made.
+once, as it is made; the list of keys says when each was last used.
 
 ## The model
 

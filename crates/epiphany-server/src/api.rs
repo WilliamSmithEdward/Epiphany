@@ -472,6 +472,12 @@ async fn require_session(
         if let Some(message) = refused {
             return ApiError::new(StatusCode::FORBIDDEN, "forbidden", message).into_response();
         }
+        // When keys were last used is saved now and then, apart, as a snapshot is: never by
+        // a request that waits for it.
+        if key.is_some() && auth.uses_due() {
+            let auth = Arc::clone(auth);
+            tokio::task::spawn_blocking(move || auth.save_uses());
+        }
         request.extensions_mut().insert(grants);
         request.extensions_mut().insert(Signed(name));
         if viewer.is_some() {

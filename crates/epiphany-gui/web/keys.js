@@ -45,13 +45,15 @@ function lasts(key) {
 export function keyTable(keys, revoke = null) {
   return h('table', { class: 'table' },
     h('thead', {}, h('tr', {},
-      h('th', {}, 'Name'), h('th', {}, 'May'), h('th', {}, 'Cubes'), h('th', {}, 'Made'), h('th', {}, 'Lasts'),
+      h('th', {}, 'Name'), h('th', {}, 'May'), h('th', {}, 'Cubes'), h('th', {}, 'Made'), h('th', {}, 'Last used'), h('th', {}, 'Lasts'),
       revoke ? h('th', { class: 'actions' }, '') : null)),
     h('tbody', {}, keys.map((key) => h('tr', {},
       h('td', {}, h('strong', {}, key.name), h('div', { class: 'mono muted' }, `epk_${key.id}…`)),
       h('td', {}, reach(key)),
       h('td', { class: 'muted' }, key.cubes?.length ? key.cubes.join(', ') : 'Every cube'),
       h('td', { class: 'muted nowrap' }, when(key.created)),
+      // A key unused for long is one to think of revoking.
+      h('td', { class: 'nowrap' }, key.used ? when(key.used) : h('span', { class: 'muted' }, 'Never')),
       h('td', { class: 'nowrap' }, lasts(key)),
       // Not one that submits, for the table may stand in a dialog's form.
       revoke ? h('td', { class: 'actions' }, h('button', {
