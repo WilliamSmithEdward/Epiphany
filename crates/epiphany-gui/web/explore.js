@@ -4,7 +4,7 @@
 import { ApiError, del, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, readdress, state } from './app.js';
 import { chart, seriesNames, shape } from './chart.js';
-import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, linkOf, mdx, namesOf, pathKey, pathsBeneath, quote, saved, shown, takeOver } from './layout.js';
+import { CALCULATIONS, cubeOf, defaultLayout, emptiness, folded, handOver, linkedView, linkOf, mdx, namesOf, pathKey, pathsBeneath, quote, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { csvOf } from './selection.js';
 import { askDrawn, AXES, CHARTS } from './tiles.js';
@@ -247,6 +247,13 @@ class Explorer {
             rest = Math.floor(rest / members.length);
           }
         });
+      }
+      // Read as an outline where they are one, as Descendants gives them, so that the grid
+      // indents them and marks the members it opens.
+      for (const entry of entries) {
+        const dim = this.dims.get(entry.dimension);
+        const outline = dim && folded(entry.members, dim);
+        if (outline) Object.assign(entry, outline);
       }
       return entries.filter((entry) => entry.members.length);
     };

@@ -660,6 +660,17 @@ async function exploring() {
   });
   await step('An MDX query typed in shows what the API answers to it', async () => {
     await page.click('[role="tab"]', 'MDX');
+    // An outline, as Descendants gives one, is shown as one: indented, the members it opens marked open.
+    await page.fill('textarea.mdx-editor', 'SELECT {[Period].[Jan]} ON COLUMNS, Descendants([Account].[Net Income]) ON ROWS FROM [General Ledger] WHERE ([Entity].[US], [Version].[Budget])');
+    await page.click('button', 'Run');
+    await page.waitFor(`(() => {
+      const heads = [...document.querySelectorAll('th.row-head[data-r1]')];
+      const head = (name) => heads.find((th) => th.textContent.trim() === name);
+      const depth = (name) => head(name)?.style.getPropertyValue('--depth') || '0';
+      return depth('Net Income') === '0' && depth('Revenue') === '1' && depth('Product Revenue') === '2'
+        && head('Net Income')?.querySelector('button')?.getAttribute('aria-expanded') === 'true';
+    })()`, 'the outline, indented and open');
+    await page.click('[role="tab"]', 'MDX');
     // One row, one column and one cell are each counted as one, not as "1 rows".
     await page.fill('textarea.mdx-editor', QUERY.replace(', [Period].[Feb]', '').replace(', [Account].[Rent]', ''));
     await page.click('button', 'Run');

@@ -110,6 +110,37 @@ export const pathKey = (names) => names.join(JOIN);
 export const namesOf = (path) => String(path).split(JOIN);
 
 /**
+ * A dimension's members, in the order a query gave them, read as an outline where they are
+ * one: members chosen, each followed by the whole of its children, in order, where it is
+ * open, as Descendants gives them. `{ members, expanded }`, which `shown` gives back in the
+ * same order; null where nothing in them opens, or where a member is followed by some of
+ * its children and not all.
+ */
+export function folded(names, dim) {
+  let at = 0;
+  const expanded = [];
+  // The members after the one at the end of `path`: its children, if they follow it.
+  const read = (path) => {
+    const children = dim.byName.get(path.at(-1))?.children ?? [];
+    if (!children.length || names[at] !== children[0].name) return true;
+    for (const child of children) {
+      if (names[at] !== child.name) return false;
+      at += 1;
+      if (!read([...path, child.name])) return false;
+    }
+    expanded.push(pathKey(path));
+    return true;
+  };
+  const members = [];
+  while (at < names.length) {
+    members.push(names[at]);
+    at += 1;
+    if (!read([members.at(-1)])) return null;
+  }
+  return expanded.length ? { members, expanded } : null;
+}
+
+/**
  * The members an axis entry shows, as `{ name, depth, path, opened }`: each chosen member,
  * and its children where it is open, after it, or before it where the entry puts totals last.
  */
