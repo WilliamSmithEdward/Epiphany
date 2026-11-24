@@ -604,6 +604,11 @@ practice that means:
       the twelve characters after `epk_` name it in lists and to revoke it.
     - **Decision:** a key holds what it was given at its making, never "all its user may":
       a user raised later does not raise their keys with them.
+    - The audit records each key made, before it is made and refusing it if it cannot, as
+      a view as another user is; and each key revoked, by whom, whether by its user, by an
+      administrator, or with the leave to make keys taken away. A revoking is recorded
+      after it is made, and is made whether or not it can be recorded: a key is never kept
+      working for want of a line in the audit.
     - When each key was last used is noted in memory at each use and listed with the keys.
       It is saved with every change to the users, and otherwise at most every ten minutes
       while keys are used, on a thread of its own, the way a snapshot is: saved at every

@@ -1449,6 +1449,9 @@ async function usingKeys({ admin, reader }, server) {
     expect(after.status === 401, `The revoked key was answered ${after.status}.`);
     await page.click('dialog[open] button', 'Done');
     await page.settled();
+    // The audit keeps who made it and who revoked it.
+    const revoked = `Revoked the API key Report (epk_${theirs.data.id}) of ${reader.name}`;
+    await page.waitFor(`document.querySelector('main')?.textContent.includes(${quoted(revoked)})`, 'the revoking, on record');
   });
   await step('A key its user revokes stops at once', async () => {
     await page.goto('/keys');

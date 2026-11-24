@@ -1601,6 +1601,18 @@ fn key_of(made: &Value) -> String {
     made["key"].as_str().expect("a key was made").to_owned()
 }
 
+/// What the audit records of keys, the newest first, as who did what to which.
+async fn audited(app: &Router, admin: &str) -> Vec<String> {
+    let (_, _, audit) = send(app, "GET", "/admin/audit", Some(admin), None).await;
+    let entries = audit.as_array().expect("the audit").iter();
+    let keys = entries.filter(|entry| entry["action"].as_str().unwrap().ends_with("key"));
+    let said = |entry: &Value| {
+        let part = |name: &str| entry[name].as_str().unwrap().to_owned();
+        format!("{} {}: {}", part("user"), part("action"), part("subject"))
+    };
+    keys.map(said).collect()
+}
+
 #[tokio::test]
 async fn an_api_key_does_what_it_was_given_and_no_more() {
     let (home, app) = secured("keys", None);
@@ -1771,6 +1783,17 @@ async fn an_api_key_does_what_it_was_given_and_no_more() {
     assert_eq!(
         (status, &body["code"]),
         (StatusCode::NOT_FOUND, &json!("unknown_key"))
+    );
+    // Each key made, and the one revoked, is on record; those refused are not.
+    let said = audited(&app, &admin).await;
+    assert_eq!(
+        said,
+        [
+            format!("ada revoke key: Deploy (epk_{id})"),
+            format!("ada make key: Deploy (epk_{id})"),
+            format!("ada make key: Watch (epk_{})", &watcher[4..16]),
+            format!("ada make key: Nightly load (epk_{})", &loader[4..16]),
+        ]
     );
 
     // The others outlast the server: started again, it takes them as it did, and knows when
@@ -1951,6 +1974,18 @@ async fn a_user_makes_keys_once_let_and_each_does_no_more_than_they_may() {
     );
     let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&reads), None).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // Her keys made, and revoked by the administrator, one by one and with her leave, are
+    // on record, each naming whose it was.
+    let (plan, read) = (made["id"].as_str().unwrap(), &reads[4..16]);
+    assert_eq!(
+        audited(&app, &admin).await,
+        [
+            format!("ada revoke key: Reads (epk_{read}) of grace"),
+            format!("grace make key: Reads (epk_{read})"),
+            format!("ada revoke key: Plan load (epk_{plan}) of grace"),
+            format!("grace make key: Plan load (epk_{plan})"),
+        ]
+    );
 }
 
 #[tokio::test]

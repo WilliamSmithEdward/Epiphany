@@ -775,12 +775,12 @@ async fn revoke_key(
 ) -> Result<StatusCode, ApiError> {
     let auth = users_of(&state)?;
     not_viewing(viewing, &user)?;
-    revoked(auth, &user, &id)
+    revoked(auth, &user, &id, &user)
 }
 
-/// Revokes a user's key, or says why it was not.
-fn revoked(auth: &Auth, user: &str, id: &str) -> Result<StatusCode, ApiError> {
-    match auth.revoke_key(user, id) {
+/// Revokes a user's key on record as revoked by `by`, or says why it was not.
+fn revoked(auth: &Auth, user: &str, id: &str, by: &str) -> Result<StatusCode, ApiError> {
+    match auth.revoke_key(user, id, by) {
         Ok(true) => Ok(StatusCode::NO_CONTENT),
         Ok(false) => Err(unknown("key", id)),
         Err(message) => Err(ApiError::new(
@@ -2830,6 +2830,7 @@ async fn list_users(State(state): State<AppState>) -> Json<UserList> {
 )]
 async fn put_user(
     State(state): State<AppState>,
+    Extension(Signed(admin)): Extension<Signed>,
     Path(name): Path<String>,
     Body(user): Body<UserPut>,
 ) -> Result<StatusCode, ApiError> {
@@ -2859,7 +2860,13 @@ async fn put_user(
     }
     let grants = Grants::new(user.role, user.cubes).with_elements(user.elements);
     let auth = users_of(&state)?;
-    let saved = auth.set(&name, user.password.as_deref(), grants, user.makes_keys);
+    let saved = auth.set(
+        &name,
+        user.password.as_deref(),
+        grants,
+        user.makes_keys,
+        &admin,
+    );
     saved.map_err(invalid)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2881,13 +2888,14 @@ async fn put_user(
 )]
 async fn revoke_users_key(
     State(state): State<AppState>,
+    Extension(Signed(admin)): Extension<Signed>,
     Path((name, id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
     let auth = users_of(&state)?;
     if !auth.has(&name) {
         return Err(unknown("user", &name));
     }
-    revoked(auth, &name, &id)
+    revoked(auth, &name, &id, &admin)
 }
 
 /// Removes a user and ends their sessions. The last administrator cannot be removed. For
@@ -2968,8 +2976,8 @@ struct AuditQuery {
     most: Option<usize>,
 }
 
-/// What the audit records, the newest first: each view of the server as another user, who
-/// viewed and when. For administrators.
+/// What the audit records, the newest first: each view of the server as another user, and
+/// each API key made or revoked, by whom and when. For administrators.
 #[utoipa::path(
     get,
     path = "/admin/audit",

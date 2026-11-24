@@ -17,7 +17,9 @@
 //! lasts until it is revoked or expires. Each is given what it may do in each part of the
 //! server, cells, the model and administration, and may be kept to particular cubes; it
 //! never does more than its user may at the time. Only a hash of each key is kept, with
-//! its user in `users.json`, so the key itself is seen once, as it is made.
+//! its user in `users.json`, so the key itself is seen once, as it is made. A key is
+//! recorded in the audit before it is made, and after it is revoked: revoking is never held
+//! up for want of a line in the audit.
 //!
 //! What a user keeps for themself, their own views and subsets, is kept with them
 //! ([`Private`]).
@@ -393,6 +395,13 @@ pub struct KeyView {
     pub used: Option<u64>,
 }
 
+impl KeyView {
+    /// The key as the audit names it: by its name, and the start of it that names it too.
+    fn label(&self) -> String {
+        format!("{} ({KEY_START}{})", self.name, self.id)
+    }
+}
+
 /// A key as `users.json` keeps it: by its hash, never as itself.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredKey {
@@ -598,9 +607,10 @@ pub struct AuditEntry {
     pub time: u64,
     /// Who did it.
     pub user: String,
-    /// What they did, such as `view as`.
+    /// What they did: `view as`, `make key` or `revoke key`.
     pub action: String,
-    /// Whom it was done as or to.
+    /// Whom it was done as, or what to: a key by its name and the start of it, and whose it
+    /// is where that is not the user's own.
     pub subject: String,
 }
 
@@ -925,12 +935,14 @@ impl Auth {
     /// they may make API keys if that is given. A new user needs a password, and may make no
     /// keys unless let. It is saved at once, and the user's open sessions and keys hold the
     /// new grants from their next request. A user who may no longer make keys loses theirs.
+    /// `by` is the administrator who changes them, on record for any key they take away.
     pub fn set(
         &self,
         name: &str,
         password: Option<&str>,
         grants: Grants,
         makes_keys: Option<bool>,
+        by: &str,
     ) -> Result<(), String> {
         let name = name.trim();
         if name.is_empty() {
@@ -965,11 +977,21 @@ impl Auth {
                 .map(|account| account.keys.clone())
                 .unwrap_or_default(),
         };
+        let had: Vec<String> = user.keys.iter().map(|key| key.view.label()).collect();
+        let account = Account::from(user);
+        // Keys the user may no longer have, taken away with the leave to make them.
+        let taken = match account.keys.is_empty() {
+            true => had,
+            false => Vec::new(),
+        };
         let mut changed = users.clone();
-        changed.insert(key.clone(), Account::from(user));
+        changed.insert(key.clone(), account);
         keeps_an_admin(&changed)?;
         self.commit(&mut users, changed)?;
         drop(users);
+        for label in taken {
+            self.note_revoked(by, label, name);
+        }
         let mut sessions = self.sessions();
         // Views by someone no longer an administrator end.
         let admin = grants.role() == Role::Admin;
@@ -1140,6 +1162,7 @@ impl Auth {
         if let Some(why) = permissions.refused(&account.grants) {
             return invalid(why);
         }
+        let owner = account.name.clone();
         // The start of each key names it, so it is unlike any other key's.
         let taken: HashSet<&str> = users
             .values()
@@ -1163,6 +1186,18 @@ impl Auth {
             view: view.clone(),
             hash: digest(&key),
         };
+        // Kept on record before it is made, as a view as another user is.
+        let entry = AuditEntry {
+            time: view.created,
+            user: owner,
+            action: "make key".to_owned(),
+            subject: view.label(),
+        };
+        self.record(&entry).map_err(|error| {
+            KeyRefusal::Unsaved(format!(
+                "the key could not be recorded, so it is not made: {error}"
+            ))
+        })?;
         let mut changed = users.clone();
         let account = changed.get_mut(&user).expect("the user was found");
         account.keys.push(stored);
@@ -1171,20 +1206,46 @@ impl Auth {
         Ok((view, key))
     }
 
-    /// Revokes one of a user's keys, which stops working at once. False if they hold no key
-    /// of that id.
-    pub fn revoke_key(&self, user: &str, id: &str) -> Result<bool, String> {
+    /// Revokes one of a user's keys, which stops working at once, and records who revoked
+    /// it. False if they hold no key of that id.
+    pub fn revoke_key(&self, user: &str, id: &str, by: &str) -> Result<bool, String> {
         let user = user.trim().to_lowercase();
         let mut users = self.users.write().unwrap_or_else(PoisonError::into_inner);
-        let held = users.get(&user);
-        if !held.is_some_and(|account| account.keys.iter().any(|key| key.view.id == id)) {
+        let found = users.get(&user).and_then(|account| {
+            let key = account.keys.iter().find(|key| key.view.id == id)?;
+            Some((account.name.clone(), key.view.label()))
+        });
+        let Some((owner, label)) = found else {
             return Ok(false);
-        }
+        };
         let mut changed = users.clone();
         let account = changed.get_mut(&user).expect("the user was found");
         account.keys.retain(|key| key.view.id != id);
         self.commit(&mut users, changed)?;
+        drop(users);
+        self.note_revoked(by, label, &owner);
         Ok(true)
+    }
+
+    /// Records a key revoked, after it is: revoking a key is never held up for want of a
+    /// line in the audit, which is said instead.
+    fn note_revoked(&self, by: &str, label: String, owner: &str) {
+        let subject = match owner.eq_ignore_ascii_case(by) {
+            true => label,
+            false => format!("{label} of {owner}"),
+        };
+        let entry = AuditEntry {
+            time: now(),
+            user: by.to_owned(),
+            action: "revoke key".to_owned(),
+            subject,
+        };
+        if let Err(error) = self.record(&entry) {
+            eprintln!(
+                "The key {} was revoked, but could not be recorded in the audit: {error}",
+                entry.subject
+            );
+        }
     }
 }
 

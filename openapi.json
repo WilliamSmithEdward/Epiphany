@@ -11,7 +11,7 @@
   "paths": {
     "/admin/audit": {
       "get": {
-        "summary": "What the audit records, the newest first: each view of the server as another user, who\nviewed and when. For administrators.",
+        "summary": "What the audit records, the newest first: each view of the server as another user, and\neach API key made or revoked, by whom and when. For administrators.",
         "operationId": "read_audit",
         "parameters": [
           {
@@ -3935,11 +3935,11 @@
         "properties": {
           "action": {
             "type": "string",
-            "description": "What they did, such as `view as`."
+            "description": "What they did: `view as`, `make key` or `revoke key`."
           },
           "subject": {
             "type": "string",
-            "description": "Whom it was done as or to."
+            "description": "Whom it was done as, or what to: a key by its name and the start of it, and whose it\nis where that is not the user's own."
           },
           "time": {
             "type": "integer",

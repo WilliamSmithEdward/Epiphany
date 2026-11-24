@@ -196,11 +196,16 @@ class AdminPage {
     location.assign('/');
   }
 
-  /** What the audit records, the newest first: each view as another user, by whom and when. */
+  /** What the audit records, the newest first: each view as another user, and each API key made or revoked, by whom and when. */
   drawAudit(entries) {
-    const said = (entry) => (entry.action === 'view as' ? `Viewed the server as ${entry.subject}` : `${entry.action}: ${entry.subject}`);
+    const says = {
+      'view as': (subject) => `Viewed the server as ${subject}`,
+      'make key': (subject) => `Made the API key ${subject}`,
+      'revoke key': (subject) => `Revoked the API key ${subject}`,
+    };
+    const said = (entry) => says[entry.action]?.(entry.subject) ?? `${entry.action}: ${entry.subject}`;
     mount(this.auditCard,
-      h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Audit'), h('span', { class: 'muted' }, 'Kept on record: each view of the server as another user')),
+      h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Audit'), h('span', { class: 'muted' }, 'Kept on record: each view of the server as another user, and each API key made or revoked')),
       entries.length
         ? h('table', { class: 'table' },
           h('thead', {}, h('tr', {}, h('th', {}, 'When'), h('th', {}, 'Who'), h('th', {}, 'What'))),
