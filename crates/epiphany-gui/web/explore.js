@@ -465,9 +465,11 @@ class Explorer {
     this.drawSandboxButton();
     const layout = this.layout;
     const button = (label, iconName, action, props = {}) => h('button', { class: 'button small quiet', onclick: action, ...props }, icon(iconName, 16), h('span', {}, label));
+    // Undo and Redo by their marks alone, as over a dashboard edited, their names said pointed at.
+    const mark = (label, iconName, action, props) => h('button', { class: 'button small quiet icon', 'aria-label': label, onclick: action, ...props }, icon(iconName, 16));
     mount(this.toolbar,
-      button('Undo', 'undo', () => this.undo(), { disabled: !this.past.length, title: `Undo ${said(this.past.at(-1))} (${MOD} Z)` }),
-      button('Redo', 'redo', () => this.redo(), { disabled: !this.future.length, title: `Redo ${said(this.future.at(-1))} (${MOD} Y)` }),
+      mark('Undo', 'undo', () => this.undo(), { disabled: !this.past.length, title: `Undo ${said(this.past.at(-1))} (${MOD} Z)` }),
+      mark('Redo', 'redo', () => this.redo(), { disabled: !this.future.length, title: `Redo ${said(this.future.at(-1))} (${MOD} Y)` }),
       h('span', { class: 'divider' }),
       button('Swap axes', 'swap', () => this.change((l) => {
         [l.rows, l.columns] = [l.columns, l.rows];
