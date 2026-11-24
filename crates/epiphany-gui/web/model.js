@@ -35,9 +35,8 @@ class ModelPage {
     this.element = h('div', { class: 'model-page' }, this.list, this.pane);
     mount(target, this.element);
     // As wide as the names it lists need: icon, name, count and padding.
-    const width = textWidths();
-    const names = [...this.definition.dimensions, ...this.definition.cubes].map((item) => width(item.name));
-    splitter(this.element, { name: 'model-list', key: 'model', min: 200, max: 520, fit: () => Math.ceil(Math.max(120, ...names) + 130) }).fit();
+    const names = widest([...this.definition.dimensions, ...this.definition.cubes], (item) => item.name);
+    splitter(this.element, { name: 'model-list', key: 'model', min: 200, max: 520, fit: () => Math.ceil(Math.max(120, names) + 130) }).fit();
     this.drawList();
     this.update(params);
   }

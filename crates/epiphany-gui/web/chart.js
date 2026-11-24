@@ -3,7 +3,7 @@
 // again as either changes. Its marks say what they are when pointed at, or gone through with
 // the arrow keys, and may be picked.
 
-import { counted, extent, formatNumber, h, icon, textWidths } from './ui.js';
+import { counted, extent, formatNumber, h, icon, textWidths, widest } from './ui.js';
 
 /** How many colours there are before they come round again, lighter. */
 const COLOURS = 10;
@@ -433,6 +433,23 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   const y = scale(steps);
   const yRight = apart ? scale(rightSteps) : y;
   const x = (c) => margin.left + band * c;
+  // Marks narrower than a pixel stand over one another: of those in each pixel's column only
+  // the highest and the lowest can be seen, and only they are drawn, so that a chart of
+  // 100,000 categories draws as many marks as it has pixels across. A bar from nought hides
+  // the others its way: of bars, the highest above nought and the lowest below. Null where
+  // every mark is seen.
+  const seen = (values, bars = true) => {
+    if (band >= 1) return null;
+    const [highest, lowest] = [new Map(), new Map()];
+    values.forEach((value, c) => {
+      if (value === null || value === undefined) return;
+      const column = Math.floor(x(c));
+      const [most, least] = [highest.get(column), lowest.get(column)];
+      if (most === undefined || value > values[most]) highest.set(column, c);
+      if (least === undefined || value < values[least]) lowest.set(column, c);
+    });
+    return new Set([...[...highest.values()].filter((c) => !bars || values[c] > 0), ...[...lowest.values()].filter((c) => !bars || values[c] < 0)]);
+  };
   // A value as the query writes it, where it does, as a calculated member's format has it; as
   // the view's format has it in a tip, and briefly on its mark, otherwise.
   const tipOf = (entry, c, value) => [entry.texts?.[c] ?? format(value), entry.name, categories[c]];
@@ -466,6 +483,10 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   /** A series as a line through its values against the scale `of`, a dot at each; filled down to nought for an area. */
   const drawLine = (entry, of, filled) => {
     const points = entry.values.map((value, c) => (value === null ? null : [x(c) + band / 2, of(value)]));
+    // Dense, the line and its dots go through those seen alone, as one through every point
+    // looks; it is broken only where a value is missing.
+    const kept = seen(entry.values, false);
+    const traced = kept ? points.filter((point, c) => point === null || kept.has(c)) : points;
     if (filled) {
       // Each unbroken run of values fills down to nought.
       let run = [];
@@ -473,12 +494,12 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
         if (run.length > 1) svg.append(h('path', { class: `area ${colour(entry.index)}`, d: `M${run[0][0]},${of(0)}L${run.map((point) => point.join(',')).join('L')}L${run[run.length - 1][0]},${of(0)}Z` }));
         run = [];
       };
-      points.forEach((point) => (point ? run.push(point) : fillRun()));
+      traced.forEach((point) => (point ? run.push(point) : fillRun()));
       fillRun();
     }
-    svg.append(h('path', { class: `line ${colour(entry.index)}`, d: linePath(points), pathLength: 1 }));
+    svg.append(h('path', { class: `line ${colour(entry.index)}`, d: linePath(traced), pathLength: 1 }));
     points.forEach((point, c) => {
-      if (!point) return;
+      if (!point || (kept && !kept.has(c))) return;
       svg.append(mark(h('circle', { class: `dot ${colour(entry.index)}`, cx: point[0], cy: point[1], r: 4 }), { s: entry.index, c, lines: tipOf(entry, c, entry.values[c]) }));
       if (labels) label(said(entry, c), point[0], point[1] - 9);
     });
@@ -488,9 +509,12 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
     for (const entry of series) drawLine(entry, y, kind === 'area');
   } else if (kind === 'stacked' || shares) {
     const thick = Math.max(Math.min(band * 0.64, 56), 2);
+    const stacks = categories.map((_, c) => stack(c));
+    const kept = band < 1 ? new Set([...seen(stacks.map(([up]) => up)), ...seen(stacks.map(([, down]) => down))]) : null;
     categories.forEach((_, c) => {
+      if (kept && !kept.has(c)) return;
       // As shares, each positive value is drawn as its part of the category's whole.
-      const [whole] = stack(c);
+      const [whole] = stacks[c];
       let up = 0;
       let down = 0;
       for (const entry of series) {
@@ -510,10 +534,11 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   } else {
     const group = Math.min(band * 0.8, 24 * series.length + 8);
     const each = Math.max(group / Math.max(series.length, 1), 2);
+    const kept = series.map((entry) => seen(entry.values));
     categories.forEach((_, c) => {
       series.forEach((entry, s) => {
         const value = entry.values[c];
-        if (!value) return;
+        if (!value || (kept[s] && !kept[s].has(c))) return;
         const left = x(c) + (band - group) / 2 + s * each + 1;
         svg.append(mark(h('rect', {
           class: `bar ${paint(colour(entry.index), value, toned)}`,
@@ -546,30 +571,47 @@ function drawRanked({ svg, width, height, data, labels, format, mark, colour, sh
   const entry = data.series.map((each, index) => ({ ...each, index })).find((each) => shown(each.index));
   const ranked = data.categories.map((name, c) => ({ name, c, value: entry?.values[c] })).filter((item) => item.value !== null && item.value !== undefined)
     .sort((a, b) => b.value - a.value);
-  // Before the bars as much room as the longest name takes, up to two fifths of the chart, and
-  // after them, where they are written, as much as the widest value.
+  const margin = { top: 8, right: 16, bottom: 28, left: 16 };
+  const tall = Math.max(height - margin.top - margin.bottom, 20);
+  const band = tall / Math.max(ranked.length, 1);
+  // Names and values are written where a bar is tall enough to be told by them: before the
+  // bars as much room as the longest name takes, up to two fifths of the chart, and after
+  // them as much as the widest value. Only those are measured: a million are not.
+  const named = band >= 11;
   const written = (item) => entry.texts?.[item.c] ?? compact.format(item.value);
-  const [tickWidth, valueWidth] = [measured(), measured(true)];
-  const longest = ranked.reduce((most, item) => Math.max(most, tickWidth(short(item.name, 28))), 0);
-  const widest = labels ? ranked.reduce((most, item) => Math.max(most, valueWidth(written(item))), 0) : 0;
-  const margin = { top: 8, right: labels ? Math.ceil(widest) + 14 : 16, bottom: 28, left: Math.min(longest + 16, width * 0.4) };
-  const inner = { width: Math.max(width - margin.left - margin.right, 20), height: Math.max(height - margin.top - margin.bottom, 20) };
-  const steps = ticks(Math.min(0, ...ranked.map((item) => item.value)), Math.max(0, ...ranked.map((item) => item.value)), 4);
+  if (named) {
+    margin.left = Math.min(widest(ranked, (item) => short(item.name, 28), () => 0, measured()) + 16, width * 0.4);
+    if (labels) margin.right = Math.ceil(widest(ranked, written, () => 0, measured(true))) + 14;
+  }
+  const inner = { width: Math.max(width - margin.left - margin.right, 20), height: tall };
+  const [least, most] = extent(ranked.map((item) => item.value));
+  const steps = ticks(Math.min(0, least), Math.max(0, most), 4);
   const low = steps[0];
   const high = steps[steps.length - 1];
   const x = (value) => margin.left + ((value - low) / (high - low)) * inner.width;
-  const band = inner.height / Math.max(ranked.length, 1);
   const thick = Math.max(Math.min(band * 0.7, 28), 1);
   for (const step of steps) {
     svg.append(h('line', { class: step === 0 ? 'axis' : 'gridline', x1: x(step), x2: x(step), y1: margin.top, y2: margin.top + inner.height }),
       h('text', { class: 'tick', x: x(step), y: height - 8, 'text-anchor': 'middle' }, compact.format(step)));
   }
+  // Bars thinner than a pixel stand over one another: of each pixel's row only the longest
+  // can be seen, and only it is drawn.
+  const longest = new Map();
+  if (band < 1) {
+    ranked.forEach((item, rank) => {
+      const row = Math.floor(band * rank);
+      const was = longest.get(row);
+      if (was === undefined || Math.abs(item.value) > Math.abs(ranked[was].value)) longest.set(row, rank);
+    });
+  }
+  const seen = new Set(longest.values());
   ranked.forEach((item, rank) => {
+    if (band < 1 && !seen.has(rank)) return;
     const top = margin.top + band * rank + (band - thick) / 2;
-    if (band >= 11) svg.append(h('text', { class: 'tick', x: margin.left - 8, y: top + thick / 2 + 4, 'text-anchor': 'end' }, short(item.name, 28)));
+    if (named) svg.append(h('text', { class: 'tick', x: margin.left - 8, y: top + thick / 2 + 4, 'text-anchor': 'end' }, short(item.name, 28)));
     svg.append(mark(h('rect', { class: `bar ${paint(colour(entry.index), item.value, tone)}`, x: Math.min(x(0), x(item.value)), y: top, width: Math.max(Math.abs(x(item.value) - x(0)), 1), height: thick, rx: 2 }),
       { s: entry.index, c: item.c, lines: [entry.texts?.[item.c] ?? format(item.value), item.name, `${rank + 1} of ${ranked.length}`] }));
-    if (labels && band >= 11) svg.append(h('text', { class: 'value', x: x(Math.max(item.value, 0)) + 6, y: top + thick / 2 + 4 }, written(item)));
+    if (labels && named) svg.append(h('text', { class: 'value', x: x(Math.max(item.value, 0)) + 6, y: top + thick / 2 + 4 }, written(item)));
   });
   return `Bars of ${entry?.name ?? 'nothing'} across ${ranked.length} categories, the largest first`;
 }
