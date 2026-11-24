@@ -1,12 +1,13 @@
 // The pivot grid: drawing and sizing it, moving about its headings, finding in it,
 // highlighting it, and its menus. Methods of the explorer, kept apart to keep each part readable.
 
-import { get, part, post } from './api.js';
+import { post } from './api.js';
 import { empty } from './app.js';
+import { checkFeeders } from './feeders.js';
 import { member, namesOf, outlined, pathsBeneath, saved } from './layout.js';
 import { cellText, Selection } from './selection.js';
 import { beneath } from './tree.js';
-import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, printsWhole, SCALES, shownText, working } from './ui.js';
+import { copyText, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, printsWhole, SCALES, shownText } from './ui.js';
 
 /** The most cells a grid draws whole for printing: every row draws all its columns. */
 const PRINTED = 200_000;
@@ -1179,34 +1180,8 @@ export const grid = {
         facts.invalid?.length ? row('Breaks', h('ul', { class: 'plain-list' }, facts.invalid.map((check) => h('li', {},
           check.message, check.refuses ? h('span', { class: 'muted' }, ' (written before the check refused such values)') : null)))) : null,
         facts.fed === null || facts.fed === undefined ? null : row('Fed', facts.fed ? 'Yes' : h('span', {}, 'No: consolidations leave it out. ',
-          h('button', { class: 'button small', type: 'button', onclick: (event) => this.checkFeeders(event.currentTarget) }, 'Check the feeders')))),
+          h('button', { class: 'button small', type: 'button', onclick: (event) => checkFeeders(this.cube.name, event.currentTarget) }, 'Check the feeders')))),
     });
   },
 
-  /**
-   * Looks for cells of the cube that rules calculate and hold a value, but that no feeder
-   * feeds; `button` shows it at work.
-   */
-  async checkFeeders(button) {
-    let found;
-    try {
-      found = await working(button, () => get(`/cubes/${part(this.cube.name)}/feeders/check`));
-    } catch (problem) {
-      notify(problem.message, 'bad');
-      return;
-    }
-    if (!found) return;
-    const unfed = found.unfed ?? [];
-    await dialog({
-      title: unfed.length ? `${unfed.length.toLocaleString()}${unfed.length >= 100 ? ' or more' : ''} cells not fed` : 'Every calculated cell is fed',
-      confirm: 'Close',
-      cancel: null,
-      body: unfed.length
-        ? h('div', { class: 'facts' },
-          h('p', { class: 'muted' }, 'These cells hold a value a rule works out, but no feeder feeds them, so the totals above them leave them out. A feeder that names them, or something beneath them, brings them in.'),
-          h('ul', { class: 'plain-list mono' }, unfed.slice(0, 50).map((cell) => h('li', {}, cell.at.join(' · ')))),
-          unfed.length > 50 ? h('p', { class: 'hint' }, `And ${(unfed.length - 50).toLocaleString()} more.`) : null)
-        : h('p', {}, `No cell of ${this.cube.name} that a rule calculates holds a value its totals leave out.`),
-    });
-  },
 };

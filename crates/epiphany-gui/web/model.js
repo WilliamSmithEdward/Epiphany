@@ -4,6 +4,7 @@
 
 import { del, get, part, put } from './api.js';
 import { empty, failure, go, loading } from './app.js';
+import { checkFeeders } from './feeders.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
 import { choices, dialog, h, icon, invalid, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, widest, working } from './ui.js';
 
@@ -1180,7 +1181,7 @@ class CubeEditor extends Editor {
         h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, label), h('span', { class: 'muted' }, help)),
         h('div', { class: 'card-body' }, text));
     };
-    const check = h('button', { class: 'button', onclick: (event) => this.checkFeeders(event.currentTarget) }, icon('check', 16), 'Check the feeders');
+    const check = h('button', { class: 'button', onclick: (event) => checkFeeders(this.working.name, event.currentTarget) }, icon('check', 16), 'Check the feeders');
     mount(this.body, h('div', { class: 'facts' },
       area('rules', 'Rules', 'One a line: [N: | C: | S:] area = expression. The first that covers a cell decides it.'),
       area('feeders', 'Feeders', 'One a line: source => target, … They say which calculated cells may hold a value.'),
@@ -1231,30 +1232,6 @@ class CubeEditor extends Editor {
       h('div', { class: 'toolbar' },
         h('button', { class: 'button', onclick: () => keep([...checks, { cells: '', valid: '', message: '' }]) }, icon('plus', 16), 'Add a check'),
         h('span', { class: 'hint' }, 'Cells name an area as a rule does; N:, C: or S: before it keeps to leaf, consolidated or text cells. Valid where is written as a rule\'s expression is: true, or a number but zero, where a value is acceptable.'))));
-  }
-
-  /** Looks for calculated cells that hold a value but are not fed; `button` shows it at work. */
-  async checkFeeders(button) {
-    let answer;
-    try {
-      answer = await working(button, () => get(`/cubes/${part(this.working.name)}/feeders/check`));
-    } catch (problem) {
-      notify(problem.message, 'bad');
-      return;
-    }
-    if (!answer) return;
-    if (!answer.unfed.length) {
-      notify('Every calculated cell that holds a value is fed.', 'good');
-      return;
-    }
-    await dialog({
-      title: `${answer.unfed.length} cell${answer.unfed.length === 1 ? ' is' : 's are'} not fed`,
-      confirm: 'Close',
-      cancel: null,
-      body: h('div', { class: 'facts' },
-        h('p', { class: 'muted' }, 'A rule gives these cells a value, but no feeder feeds them, so totals leave them out.'),
-        h('ul', { class: 'plain-list' }, answer.unfed.map((cell) => h('li', { class: 'mono' }, cell.at.join(' · '))))),
-    });
   }
 
   drawViews() {
