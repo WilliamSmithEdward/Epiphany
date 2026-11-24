@@ -53,11 +53,11 @@ function wait(change) {
 
 /**
  * Calls the API. `path` is an Epiphany server path such as `/model`, or a GUI server path
- * beginning `/gui/`. The answer's JSON is returned; an error is thrown as an ApiError. A
- * `quiet` call shows nothing while it runs, and one given a `signal` can be stopped, when it
- * throws an ApiError coded `stopped`.
+ * beginning `/gui/`. The answer's JSON is returned, or with `raw` its text unread; an error
+ * is thrown as an ApiError. A `quiet` call shows nothing while it runs, and one given a
+ * `signal` can be stopped, when it throws an ApiError coded `stopped`.
  */
-export async function api(method, path, body, { quiet = false, signal } = {}) {
+export async function api(method, path, body, { quiet = false, signal, raw = false } = {}) {
   const init = { method, headers: { ...CLIENT }, credentials: 'same-origin', signal };
   if (body !== undefined) {
     init.headers['content-type'] = 'application/json';
@@ -88,6 +88,8 @@ export async function api(method, path, body, { quiet = false, signal } = {}) {
   if (response.status === 401 && !path.startsWith('/gui/')) {
     events.dispatchEvent(new Event('signed-out'));
   }
+  // Asked for `raw`, an answer is given as the text it came as, for a caller that keeps it.
+  if (raw && response.ok) return text;
   let data = null;
   if (text) {
     try {

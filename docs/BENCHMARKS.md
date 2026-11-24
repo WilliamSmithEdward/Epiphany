@@ -389,6 +389,18 @@ way, the old and the new in turn, twice each (2026-11-23):
 | The copy, held | 417 MB | 411 MB |
 | Time to the first answer, fetching included | 2.35 to 2.87 s | 2.24 to 2.35 s |
 
+The model's editor, opening that dimension, read its 65 MB definition as it came (258 ms),
+wrote it out again as the original to go back to (95 ms), and read that again as the copy
+to work on (240 ms). It now keeps the text it came as for the original and reads it once;
+what the copy is compared with to tell whether it changed is written out the first time it
+is asked, at the first change. A release server and GUI, the dimension opened from the
+model's page (2026-11-23):
+
+| The model's editor, a dimension of a million leaves | Before | After |
+| --- | --- | --- |
+| Opened and drawn | 1,830 to 1,889 ms | 1,537 to 1,591 ms |
+| The page's heap, once open | 375 MB | 193 to 202 MB |
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions

@@ -118,14 +118,14 @@ class ModelPage {
     // Too narrow for both, the page shows the list or the one open, which leads back to it.
     this.element.classList.add('editing');
     if (kind === 'cube') {
-      this.editor = new CubeEditor(this, found);
+      this.editor = new CubeEditor(this, JSON.stringify(found));
       return;
     }
     // A dimension's definition is fetched as it is opened, the pane saying so meanwhile; one
-    // chosen after it is opened in its place.
+    // chosen after it is opened in its place. Its text is the editor's original, read once.
     const opening = (this.opening = {});
     mount(this.pane, loading('panes'));
-    get(`/dimensions/${part(name)}/definition`).then((dimension) => {
+    get(`/dimensions/${part(name)}/definition`, { raw: true }).then((dimension) => {
       if (this.opening === opening) this.editor = new DimensionEditor(this, dimension);
     }, (problem) => {
       if (this.opening === opening) mount(this.pane, failure(problem, () => this.open(kind, name)));
@@ -323,13 +323,21 @@ class ModelPage {
 /* ---- Shared by both editors ---- */
 
 class Editor {
+  /**
+   * `original` is the dimension or cube as JSON text, what Discard goes back to. The working
+   * copy is read from it once: a dimension of a million elements was read as it came, written
+   * out again and read a second time, a third of a second more.
+   */
   constructor(page, original, kind) {
     this.page = page;
     this.kind = kind;
-    this.original = JSON.stringify(original);
-    // Copied by way of its JSON: a dimension of a million elements in a third of the time
-    // structuredClone takes.
-    this.working = JSON.parse(this.original);
+    this.original = original;
+    this.working = JSON.parse(original);
+    // The original as the working copy would be written out, to tell whether it changed:
+    // worked out once it is first asked, as the server writes some things otherwise.
+    this.written = null;
+    // Its name as it was opened, which a rename not yet saved leaves as it is.
+    const opened = this.working.name;
     // Whether the working copy has been changed since it was the original, and what is
     // worked out from it, kept until it changes.
     this.edited = false;
@@ -343,9 +351,9 @@ class Editor {
         h('div', { class: 'grow' },
           h('a', { class: 'editor-back', href: '/model', 'data-link': '' }, icon('back', 14), 'Dimensions and cubes'),
           h('p', { class: 'muted' }, kind === 'dimension' ? 'Dimension' : 'Cube'),
-          h('h2', {}, original.name)),
+          h('h2', {}, opened)),
         this.tabs,
-        h('button', { class: 'button danger', onclick: () => page.remove(kind, original.name) }, icon('trash', 16), 'Remove')),
+        h('button', { class: 'button danger', onclick: () => page.remove(kind, opened) }, icon('trash', 16), 'Remove')),
       this.body,
       this.strip);
   }
@@ -364,7 +372,10 @@ class Editor {
 
   get dirty() {
     // Unchanged, it is the original: a million elements need not be written out to say so.
-    return this.edited && this.kept('dirty', () => JSON.stringify(this.working) !== this.original);
+    return this.edited && this.kept('dirty', () => {
+      this.written ??= JSON.stringify(JSON.parse(this.original));
+      return JSON.stringify(this.working) !== this.written;
+    });
   }
 
   /** Marks the working copy changed and draws it again. */
@@ -408,6 +419,7 @@ class Editor {
     const path = `/${this.kind === 'cube' ? 'cubes' : 'dimensions'}/${part(this.working.name)}`;
     if (await this.page.save(path, { [this.kind]: this.working })) {
       this.original = JSON.stringify(this.working);
+      this.written = this.original;
       this.unchanged();
       this.page.replace(this.kind, this.working);
       this.draw();
