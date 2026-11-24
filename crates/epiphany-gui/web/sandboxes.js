@@ -75,10 +75,11 @@ export const sandboxes = {
     const changed = (count) => (count ? ` · ${count.toLocaleString()} changed` : '');
     menu([
       { heading: 'Work in' },
-      { label: 'Stored values', icon: current ? 'cube' : 'check', action: () => this.useSandbox(null) },
+      { label: 'Stored values', icon: current ? 'cube' : 'check', checked: !current, action: () => this.useSandbox(null) },
       ...this.sandboxes.map((sandbox) => ({
         label: `${sandbox.name}${changed(sandbox.pending)}`,
         icon: sandbox.transaction === current?.transaction ? 'check' : 'sandbox',
+        checked: sandbox.transaction === current?.transaction,
         action: () => this.useSandbox(sandbox),
       })),
       '-',

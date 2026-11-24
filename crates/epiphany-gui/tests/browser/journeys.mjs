@@ -253,11 +253,12 @@ class Page {
   /** The middle of the element `css` finds, of the name given if one is, brought into view. */
   point(css, name) {
     return this.waitFor(`(async () => {
-      const element = [...document.querySelectorAll(${quoted(css)})].find((each) => {
+      const find = () => [...document.querySelectorAll(${quoted(css)})].find((each) => {
         const box = each.getBoundingClientRect();
         const named = ${quoted(name ?? null)};
         return box.width > 0 && box.height > 0 && (named === null || each.getAttribute('aria-label') === named || each.textContent.trim() === named);
       });
+      let element = find();
       if (!element) return null;
       // Brought into view only if out of it, as a person scrolls to what they cannot see:
       // outside the window, or cut off by what it scrolls in, such as a long dialog's body,
@@ -268,8 +269,12 @@ class Page {
       if (seen.top < 0 || seen.left < 0 || seen.bottom > innerHeight || seen.right > innerWidth || hidden) {
         element.scrollIntoView({ block: 'center', inline: 'center' });
       }
-      // The pointer goes where a frame has drawn it: what appeared since is drawn first.
+      // The pointer goes where a frame has drawn it: what appeared since is drawn first, and
+      // what was drawn again meanwhile, as a chart is at a new size, is found again, rather
+      // than measured gone, at nought, and the page's corner pressed.
       await new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+      if (!element.isConnected) element = find();
+      if (!element) return null;
       const box = element.getBoundingClientRect();
       return { x: box.left + box.width / 2, y: box.top + box.height / 2 };
     })()`, name ? `“${name}”` : css);

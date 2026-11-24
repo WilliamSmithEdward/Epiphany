@@ -44,7 +44,8 @@ their practices, not their looks.
 | A page's selectors that every widget follows (PAW books, Anaplan pages, Power BI slicers) | Dashboard filters: a member chosen above the tiles, which each tile whose cube has the dimension stands at, through the query's `context`; a tile whose rows or columns are of the dimension keeps only those at the member or beneath it |
 | Arranging a page's visuals by dragging, on a grid or freely, snapped or lined up (Power BI's snap to grid and smart guides, Tableau's tiled and floating objects, a phone's home screen) | A dashboard's board of twelve columns and rows. A tile is dragged by any part of it and resized by its edges or its corner. On the grid the others change places with it as it passes them and rise into what is free, a ghost showing where it will settle; laid out freely it stands where it is let go, over another if put there, and while it is pointed at or holds the keys it stands over any that overlap it, its head and handles in reach, on whole columns and rows when snapping or else lined up with an edge or middle it comes near. Sizes at once from its menu, the arrow keys to move it and with Shift to resize it, Undo and Redo, and views dragged in from a list beside |
 | Clicking one visual to filter the others (Power BI's cross-filtering, Tableau's filter actions) | A bar, point, slice or row of one tile picked shows every other tile at its members, the picked one marked and said above the tiles, until it is picked again or Escape |
-| A page that keeps itself current | Its tiles run again by themselves, every minute to every hour, while the page is in sight |
+| A page that keeps itself current | Its tiles run again by themselves, every minute to every hour, while the page is in sight, the pace chosen from a clock beside Refresh that names it, in the accent, while they do |
+| Tooltips that find the point (Power BI's and Tableau's tooltips) | A chart's tip tells of the mark pointed at or the nearest: of a line, the point nearest the pointer in the column it points in, grown a little, as a line is read down from its categories; a bar within a few pixels, as thin as bars may be; and a click picks the one whose tip is shown |
 | A visual pinned to a dashboard from where it was made (Power BI's Pin to dashboard) | Explore's Views offers Pin to a dashboard: the query shown, saved as a view for everyone, and a tile showing it, as the chart shown, its series the same way, its values on the marks and its lines as they are, or a grid, added to a dashboard named or a new one; the notice opens it |
 | A page begun from another (Power BI's Duplicate page, Tableau's Duplicate) | New offers a blank dashboard or a copy of the one shown, named "Copy of" it and opened to be arranged before it is saved |
 | A visual made in place from any table, its fields chosen and drawn as they are (Power BI's Fields pane, Tableau's Show Me) | A dashboard's Add list offers New view: the cube, found by typing; what stands down the side and across, a member's children, the top, the leaves or a subset; how it is shown; and its name, drawn as they are chosen, saved with the cube and added as a tile |
@@ -117,8 +118,10 @@ only way to do something, and modal dialogs where a side panel would keep the da
   along one row that scrolls sideways, as do the chips of each of its layout's zones, beside
   the zone's name, so that the grid shows on the first screen with the most room; a cell's
   comments, history and detail open over the whole screen, there being no room beside the
-  grid. No page is wider than the screen, nor any dialog, nor the cards of the overview and of
-  administration or the model's editor in a pane narrower than a phone. A rule, of the highlights or of the set editor's
+  grid; and a dashboard's buttons stand on one line, each its mark alone, square, without the
+  chevron of one that opens a menu, the words heard. No page is wider than the screen, nor
+  any dialog, nor the cards of the overview and of administration or the model's editor in a
+  pane narrower than a phone. A rule, of the highlights or of the set editor's
   filter, takes two lines where its box is too narrow for one, its fields still lined up with
   the other rules': on a phone, and in a pane of the set editor on any screen. Under 900
   pixels the set editor's panes go one above the other, each at its own height, its dialog

@@ -369,26 +369,49 @@ class Dashboards {
 
   /** The buttons over a dashboard shown: Refresh and its pace, and for an administrator, Edit, New and Delete. */
   viewActions() {
-    const pace = Number(localStorage.getItem(refreshKey(this.name)) ?? 0);
+    // In a narrow window the buttons show their marks alone, on one line: their words are
+    // heard, not seen.
+    const said = (text) => h('span', { class: 'label' }, text);
     return [
       h('button', {
         class: 'button quiet',
         title: 'Run every tile again',
         onclick: (event) => working(event.currentTarget, () => this.refresh()),
-      }, icon('refresh', 16), 'Refresh'),
-      h('select', {
-        class: 'select small-select',
-        'aria-label': 'Run the tiles again by themselves',
-        onchange: (event) => {
-          localStorage.setItem(refreshKey(this.name), event.target.value);
-          this.everyMinutes();
-        },
-      }, EVERY.map(([minutes, text]) => h('option', { value: minutes, selected: minutes === pace }, text))),
-      h('button', { class: 'button', title: 'Show the dashboard over the whole screen, as on a wall', onclick: () => this.present(true) }, icon('monitor', 16), 'Present'),
-      this.admin ? h('button', { class: 'button', onclick: () => this.edit() }, icon('edit', 16), 'Edit') : null,
-      this.admin ? h('button', { class: 'button', 'aria-haspopup': 'menu', title: 'A new dashboard, blank or a copy of this one', onclick: (event) => this.newMenu(event.currentTarget) }, icon('plus', 16), 'New', icon('down', 14)) : null,
-      this.admin ? h('button', { class: 'button danger quiet', onclick: () => this.remove() }, icon('trash', 16), 'Delete') : null,
+      }, icon('refresh', 16), said('Refresh')),
+      this.paceButton(),
+      h('button', { class: 'button', title: 'Show the dashboard over the whole screen, as on a wall', onclick: () => this.present(true) }, icon('monitor', 16), said('Present')),
+      this.admin ? h('button', { class: 'button', title: 'Edit the dashboard', onclick: () => this.edit() }, icon('edit', 16), said('Edit')) : null,
+      this.admin ? h('button', { class: 'button', 'aria-haspopup': 'menu', title: 'A new dashboard, blank or a copy of this one', onclick: (event) => this.newMenu(event.currentTarget) }, icon('plus', 16), said('New'), icon('down', 14)) : null,
+      this.admin ? h('button', { class: 'button danger quiet', title: 'Delete the dashboard', onclick: () => this.remove() }, icon('trash', 16), said('Delete')) : null,
     ];
+  }
+
+  /**
+   * How often the tiles run again by themselves, chosen from a menu: a clock alone while by
+   * hand, as most are, and how often beside it, in the accent, while they run so.
+   */
+  paceButton() {
+    const pace = Number(localStorage.getItem(refreshKey(this.name)) ?? 0);
+    const [, said] = EVERY.find(([minutes]) => minutes === pace) ?? EVERY[0];
+    const button = h('button', {
+      class: `button quiet pace${pace ? ' on' : ''}`,
+      'aria-haspopup': 'menu',
+      'aria-label': `Run the tiles again by themselves: ${said}`,
+      title: `Run the tiles again by themselves: ${said.toLowerCase()}`,
+      onclick: () => menu(EVERY.map(([minutes, text]) => ({
+        label: text,
+        icon: minutes === pace ? 'check' : null,
+        checked: minutes === pace,
+        action: () => {
+          localStorage.setItem(refreshKey(this.name), String(minutes));
+          this.everyMinutes();
+          const again = this.paceButton();
+          button.replaceWith(again);
+          again.focus();
+        },
+      })), button),
+    }, icon('clock', 16), pace ? h('span', { class: 'label' }, said) : null, icon('down', 14));
+    return button;
   }
 
   /**
@@ -1121,8 +1144,9 @@ class Dashboards {
     menu([
       text ? null : { heading: 'Show as' },
       ...(text ? [] : Object.entries(KINDS).filter(([kind]) => kind !== 'text').map(([kind, [label, iconName]]) => ({
-        label: (tile.show ?? 'bars') === kind ? `${label} (shown)` : label,
+        label,
         icon: (tile.show ?? 'bars') === kind ? 'check' : iconName,
+        checked: (tile.show ?? 'bars') === kind,
         action: () => set({ show: kind }),
       }))),
       charted ? '-' : null,

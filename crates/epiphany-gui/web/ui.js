@@ -468,8 +468,11 @@ export function menu(items, at) {
   const element = h('div', { class: 'menu', role: 'menu' }, items.filter(Boolean).map((item) => {
     if (item === '-') return h('hr');
     if (item.heading) return h('div', { class: 'menu-label' }, item.heading);
+    // A choice of several, the one there is now ticked, is told as ticked or not.
+    const ticked = item.checked !== undefined;
     const button = h('button', {
-      role: 'menuitem',
+      role: ticked ? 'menuitemradio' : 'menuitem',
+      'aria-checked': ticked ? String(item.checked) : null,
       disabled: item.disabled,
       onclick: () => {
         close();
@@ -519,7 +522,9 @@ export function menu(items, at) {
   element.classList.toggle('above', above);
   element.style.top = `${above ? Math.max(8, box.top - height - 4) : below}px`;
   document.addEventListener('pointerdown', outside, true);
-  buttons.find((button) => !button.disabled)?.focus();
+  // The keys begin on the choice there is now, where it is one, or on the first.
+  const enabled = buttons.filter((button) => !button.disabled);
+  (enabled.find((button) => button.getAttribute('aria-checked') === 'true') ?? enabled[0])?.focus();
   openMenu = { close };
 }
 

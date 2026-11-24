@@ -18,6 +18,10 @@ const colourOf = (index) => {
 };
 /** How many slices a ring has at most: past that, the smallest are one slice, Other. */
 const MOST_SLICES = 12;
+/** How near a bar, in pixels, the pointer is taken to be on it, as thin as bars may be. */
+const NEAR_BAR = 4;
+/** How far to either side of a line's only column of dots, in pixels, the pointer finds them. */
+const NEAR_LONE = 48;
 
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
 const percent = new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 });
@@ -192,6 +196,10 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     h('div', { class: 'legend-row' }, earlier, legend, later),
     h('div', { class: 'chart-area' }, plot, tip));
   let marks = [];
+  // Where the marks drawn stand, worked out once the pointer moves over them, and the one it
+  // is on or nearest.
+  let near = null;
+  let hovered = null;
   let focused = -1;
   let entering = fresh && !still.matches;
 
@@ -235,6 +243,11 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     drawnAt = `${width}x${tall}`;
     const svg = h('svg', { width, height: tall, viewBox: `0 0 ${width} ${tall}`, role: 'img', class: [entering ? 'entering' : '', picked ? 'picking' : ''].join(' ').trim() || null });
     marks = [];
+    // Drawn again, at a new size or a series shown or hidden, nothing is pointed at until the
+    // pointer moves, and no tip tells of a mark gone; the keys' is shown again below.
+    near = null;
+    hover(null);
+    tip.hidden = true;
     // A mark of series `s` at category `c`: what it says when pointed at, and whether it is the one picked.
     const mark = (shapeElement, { s, c, lines }) => {
       shapeElement.classList.add('mark');
@@ -287,8 +300,56 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     if (pick && target?.dataset.s !== undefined) pick({ series: Number(target.dataset.s), category: Number(target.dataset.c) });
   };
 
+  /**
+   * The mark nearest the pointer at `x`, `y` across the chart drawn, where it is on none: a
+   * bar within a few pixels, as thin as bars may be; or of a line's dots, small to point at,
+   * the nearest of those in the column nearest it, as a line is read down from its
+   * categories. Slices are pointed at only.
+   */
+  const nearest = (x, y) => {
+    if (!near) {
+      const dots = marks.filter((each) => each.localName === 'circle').map((each) => ({ each, x: Number(each.getAttribute('cx')), y: Number(each.getAttribute('cy')) }));
+      const across = [...new Set(dots.map((dot) => dot.x))].sort((a, b) => a - b);
+      const apart = across.slice(1).reduce((least, at, index) => Math.min(least, at - across[index]), Infinity);
+      const bars = marks.filter((each) => each.localName === 'rect').map((each) => {
+        const [left, top, wide, high] = ['x', 'y', 'width', 'height'].map((name) => Number(each.getAttribute(name)));
+        return { each, left, top, right: left + wide, bottom: top + high };
+      });
+      near = { dots, bars, reach: Number.isFinite(apart) ? apart / 2 : NEAR_LONE };
+    }
+    let found = null;
+    let least = NEAR_BAR;
+    for (const bar of near.bars) {
+      const far = Math.hypot(Math.max(bar.left - x, 0, x - bar.right), Math.max(bar.top - y, 0, y - bar.bottom));
+      if (far <= least) {
+        found = bar.each;
+        least = far;
+      }
+    }
+    if (found) return found;
+    least = Infinity;
+    for (const dot of near.dots) {
+      const far = Math.abs(dot.y - y);
+      if (Math.abs(dot.x - x) <= near.reach && far < least) {
+        found = dot.each;
+        least = far;
+      }
+    }
+    return found;
+  };
+  /** Marks the mark the pointer is on or nearest, or none. */
+  const hover = (target) => {
+    if (target === hovered) return;
+    hovered?.classList.remove('hovered');
+    hovered = target;
+    hovered?.classList.add('hovered');
+    plot.classList.toggle('near', Boolean(hovered));
+  };
+
   plot.addEventListener('pointermove', (event) => {
-    const target = event.target.closest?.('[data-tip]');
+    const area = plot.firstElementChild?.getBoundingClientRect();
+    const target = event.target.closest?.('[data-tip]') ?? (area ? nearest(event.clientX - area.left, event.clientY - area.top) : null);
+    hover(target);
     if (!target) {
       tip.hidden = true;
       return;
@@ -297,9 +358,11 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     say(target, event.clientX - box.left, event.clientY - box.top);
   });
   plot.addEventListener('pointerleave', () => {
+    hover(null);
     tip.hidden = true;
   });
-  plot.addEventListener('click', (event) => choose(event.target.closest?.('.mark')));
+  // A click picks the mark it is on, or the one whose tip is shown.
+  plot.addEventListener('click', (event) => choose(event.target.closest?.('.mark') ?? hovered));
   plot.addEventListener('keydown', (event) => {
     const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
     if (step || event.key === 'Home' || event.key === 'End') {
