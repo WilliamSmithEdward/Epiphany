@@ -55,6 +55,12 @@ export function enter(element, duration = 160) {
   if (element && !still.matches) element.animate([{ opacity: 0 }, { opacity: 1 }], { duration, easing: 'ease-out' });
 }
 
+/**
+ * Dots a unit across at each of `points`, ringed by the stroke: a dot of a mere point is no
+ * wider than the stroke, and a row of them, as Options is, too faint to be seen as a button.
+ */
+const dots = (...points) => points.map(([x, y]) => `M${x - 1} ${y}a1 1 0 1 0 2 0a1 1 0 1 0-2 0`).join(' ');
+
 /* Icons: 24-unit strokes, drawn at the size asked for. */
 const ICONS = {
   explore: 'M3 3v18h18 M7 15l4-4 3 3 5-6',
@@ -96,7 +102,7 @@ const ICONS = {
   level: 'M4 6h16 M8 12h12 M12 18h8',
   member: 'M12 12m-3 0a3 3 0 1 0 6 0 3 3 0 1 0-6 0',
   folder: 'M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
-  drag: 'M9 5h.01 M9 12h.01 M9 19h.01 M15 5h.01 M15 12h.01 M15 19h.01',
+  drag: dots([9, 5], [9, 12], [9, 19], [15, 5], [15, 12], [15, 19]),
   alert: 'M12 9v4 M12 17h.01 M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
   check: 'M20 6L9 17l-5-5',
   info: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 16v-4 M12 8h.01',
@@ -107,7 +113,7 @@ const ICONS = {
   key: 'M7.5 21a4.5 4.5 0 1 0 0-9 4.5 4.5 0 0 0 0 9 M10.7 13.3L21 3 M17 7l3 3 M14.5 9.5l2 2',
   server: 'M3 4h18v6H3z M3 14h18v6H3z M7 7h.01 M7 17h.01',
   sigma: 'M18 7V4H6l6 8-6 8h12v-3',
-  more: 'M12 12h.01 M19 12h.01 M5 12h.01',
+  more: dots([5, 12], [12, 12], [19, 12]),
   dashboard: 'M3 3h8v10H3z M13 3h8v6h-8z M13 11h8v10h-8z M3 15h8v6H3z',
   hash: 'M4 9h16 M4 15h16 M10 3L8 21 M16 3l-2 18',
   pause: 'M8 5v14 M16 5v14',

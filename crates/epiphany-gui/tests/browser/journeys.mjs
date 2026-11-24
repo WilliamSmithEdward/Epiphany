@@ -1572,21 +1572,20 @@ async function exploring() {
     await page.click('dialog[open] button', 'Add it');
     await page.waitFor(`!document.querySelector('dialog[open]') && document.querySelectorAll('.dash-tile').length === 1`, 'its tile, added');
     // The keys on the tile: Ctrl+D adds a copy, Ctrl+C and Ctrl+V copy and paste it, each
-    // taken back by Ctrl+Z; and A gives the list of what may be added the keys.
+    // taken back by Ctrl+Z, the keys left on the tile; and A gives the list of what may be
+    // added the keys.
     const tiles = `document.querySelectorAll('.board .dash-tile').length`;
-    const onTile = () => page.evaluate(`document.querySelector('.board .dash-tile').focus()`);
-    await onTile();
+    const onTile = `document.activeElement === document.querySelector('.board .dash-tile')`;
+    await page.evaluate(`document.querySelector('.board .dash-tile').focus()`);
     await page.press('d', CTRL);
     await page.waitFor(`${tiles} === 2`, 'a copy, added');
     await page.press('z', CTRL);
-    await page.waitFor(`${tiles} === 1`, 'the copy, taken back');
-    await onTile();
+    await page.waitFor(`${tiles} === 1 && ${onTile}`, 'the copy, taken back, the keys on the tile');
     await page.press('c', CTRL);
     await page.press('v', CTRL);
     await page.waitFor(`${tiles} === 2`, 'the tile, pasted');
     await page.press('z', CTRL);
-    await page.waitFor(`${tiles} === 1`, 'the paste, taken back');
-    await onTile();
+    await page.waitFor(`${tiles} === 1 && ${onTile}`, 'the paste, taken back, the keys on the tile');
     await page.press('a');
     await page.waitFor(`document.activeElement === document.querySelector('.dash-drawer input')`, 'what may be added, given the keys');
     await page.click('button', 'Save');

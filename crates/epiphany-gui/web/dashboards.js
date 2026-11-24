@@ -276,9 +276,11 @@ class Dashboards {
     const shown = this.shown();
     this.retitle();
     clearInterval(this.timer);
-    // What held the keys in a tile, its chart, table or a button, holds them again once drawn.
+    // What held the keys in a tile, the tile itself, its chart, table or a button, holds them
+    // again once drawn: a tile being moved by the arrows stays the one they move.
     const holding = this.cards?.findIndex((card) => card.contains(document.activeElement)) ?? -1;
-    const held = holding >= 0 ? ['.chart-plot', '.tile-table', '[aria-haspopup="menu"]', '.tile-head .button'].find((css) => document.activeElement.matches(css)) : null;
+    const itself = holding >= 0 && document.activeElement === this.cards[holding];
+    const held = holding >= 0 && !itself ? ['.chart-plot', '.tile-table', '[aria-haspopup="menu"]', '.tile-head .button'].find((css) => document.activeElement.matches(css)) : null;
     if (!shown) {
       mount(this.target, h('div', { class: 'page' },
         h('div', { class: 'page-head' }, h('div', { class: 'grow' }, h('h1', {}, 'Dashboards'))),
@@ -348,8 +350,9 @@ class Dashboards {
     this.watcher.disconnect();
     this.watcher.observe(frame);
     this.everyMinutes();
-    const card = this.cards[holding];
-    if (card) (held && card.querySelector(held) || card.querySelector('.tile-head .button') || card).focus({ preventScroll: true });
+    // A tile taken back by Ctrl+Z, the last, gives the keys to the one before it.
+    const card = this.cards[Math.min(holding, this.cards.length - 1)];
+    if (card) ((itself && card.tabIndex >= 0 ? card : null) ?? (held && card.querySelector(held)) ?? card.querySelector('.tile-head .button') ?? card).focus({ preventScroll: true });
     // Presented, the keys stay on the page, for the arrows to go on from one dashboard to the next.
     else if (presenting && !this.target.contains(document.activeElement)) this.target.querySelector('.page-head .toolbar .button')?.focus({ preventScroll: true });
   }
