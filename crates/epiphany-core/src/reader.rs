@@ -37,6 +37,10 @@ const MOST_KEPT: usize = 1_000_000;
 
 type Read<T> = Result<T, MdxError>;
 
+/// Where the feeder check stopped: the place of the rule it was in, and the last cell it
+/// found.
+pub(crate) type Stopped = (usize, Vec<ElementId>);
+
 /// Consolidated cells worked out from the committed cells of each cube. They hold only until
 /// a cell or the model changes, when whoever owns them starts again with none.
 #[derive(Debug, Default)]
@@ -359,16 +363,23 @@ impl<'a> Reader<'a> {
     }
 
     /// The leaf cells that a rule gives a value but that are neither stored nor fed, and so
-    /// are missing from the consolidations of a fed cube. At most `limit` are returned.
-    pub(crate) fn unfed(&self, cube: usize, limit: usize) -> Read<Vec<Vec<ElementId>>> {
+    /// are missing from the consolidations of a fed cube: at most `limit`, going on from just
+    /// after the cell of the rule `after` names, where it names one. With `limit` found, it
+    /// says where it stopped, the rule and the last cell, to go on from for more.
+    pub(crate) fn unfed(
+        &self,
+        cube: usize,
+        limit: usize,
+        after: Option<&Stopped>,
+    ) -> Read<(Vec<Vec<ElementId>>, Option<Stopped>)> {
         let definition = &self.model.cubes()[cube];
         let Some(fed) = &self.fed[cube] else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         };
         let last = definition.dimensions.len() - 1;
         let mut found = Vec::new();
         for (index, rule) in definition.rules.iter().enumerate() {
-            if !rule.decides_leaves() {
+            if !rule.decides_leaves() || after.is_some_and(|(from, _)| index < *from) {
                 continue;
             }
             // Every leaf cell of the rule's area: the element it names in a dimension, or
@@ -390,6 +401,23 @@ impl<'a> Reader<'a> {
                 continue;
             };
             let mut at: Vec<ElementId> = leaves.iter().map(|l| l[0].0).collect();
+            // Going on in the rule it stopped in, the check begins just after the cell it
+            // stopped at; a cell the area no longer holds begins the rule again.
+            if let Some((_, stopped)) = after.filter(|(from, _)| *from == index) {
+                let places: Option<Vec<usize>> = (stopped.len() == leaves.len())
+                    .then(|| {
+                        let place =
+                            |(l, id): (&Leaves, &ElementId)| l.iter().position(|(e, _)| e == id);
+                        leaves.iter().zip(stopped).map(place).collect()
+                    })
+                    .flatten();
+                if let Some(places) = places {
+                    (positions, at) = (places, stopped.clone());
+                    if !advance(&leaves, &mut positions, &mut at) {
+                        continue;
+                    }
+                }
+            }
             let earlier = &definition.rules[..index];
             loop {
                 let shadowed = earlier
@@ -400,7 +428,7 @@ impl<'a> Reader<'a> {
                 if !shadowed && !counted && self.number(cube, &at)? != 0.0 {
                     found.push(at.clone());
                     if found.len() == limit {
-                        return Ok(found);
+                        return Ok((found, Some((index, at))));
                     }
                 }
                 if !advance(&leaves, &mut positions, &mut at) {
@@ -408,7 +436,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Ok(found)
+        Ok((found, None))
     }
 
     fn decide(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {

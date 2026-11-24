@@ -283,6 +283,15 @@ impl serde::Serialize for NamedWrites<'_> {
     }
 }
 
+/// A part of the cells the feeder check finds ([`Database::unfed_after`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Unfed {
+    pub cells: Vec<CellRef>,
+    /// Where the check stopped, having found as many as it was asked for, to be given to it
+    /// again to go on; none once it has looked at every cell.
+    pub next: Option<String>,
+}
+
 /// Every stored cell of a database, addressed by name. It is named a cell at a time as it is
 /// written out: a snapshot of a million cells that named them all first took some 300 bytes
 /// a cell beside the cells themselves, three times what they take.
@@ -795,9 +804,37 @@ impl Database {
     /// its consolidations leave them out. At most `limit` are returned; none means the cube
     /// is not fed, or its feeders are complete for the data it holds.
     pub fn unfed(&self, cube: &str, limit: usize) -> Result<Vec<CellRef>, Error> {
+        Ok(self.unfed_after(cube, limit, None)?.cells)
+    }
+
+    /// As [`Database::unfed`], going on from where an earlier check stopped, as the `next`
+    /// of its answer says, so that every cell can be found a part at a time.
+    pub fn unfed_after(
+        &self,
+        cube: &str,
+        limit: usize,
+        after: Option<&str>,
+    ) -> Result<Unfed, Error> {
         let id = self.cube_id(cube)?;
-        let cells = self.reader(None)?.unfed(id, limit);
-        let cells = cells.map_err(|error| Error::Rule(error.to_string()))?;
+        // Where a check stopped: its rule's place, and the last cell's elements, by number.
+        let read = |after: &str| {
+            let (rule, at) = after.split_once(':')?;
+            let at = at.split('.').map(|id| id.parse().ok());
+            Some((rule.parse().ok()?, at.collect::<Option<Vec<ElementId>>>()?))
+        };
+        let stopped = after
+            .map(|after| {
+                read(after).ok_or_else(|| {
+                    Error::NotFound(format!(
+                        "a place the feeder check stopped at, '{after}': check again from the start"
+                    ))
+                })
+            })
+            .transpose()?;
+        let (cells, next) = self
+            .reader(None)?
+            .unfed(id, limit, stopped.as_ref())
+            .map_err(|error| Error::Rule(error.to_string()))?;
         let named = |at: Vec<ElementId>| {
             let cell = self.named(id, &at, Scalar::Number(0.0));
             CellRef {
@@ -805,7 +842,14 @@ impl Database {
                 at: cell.at,
             }
         };
-        Ok(cells.into_iter().map(named).collect())
+        let written = |(rule, at): (usize, Vec<ElementId>)| {
+            let at: Vec<String> = at.iter().map(ToString::to_string).collect();
+            format!("{rule}:{}", at.join("."))
+        };
+        Ok(Unfed {
+            cells: cells.into_iter().map(named).collect(),
+            next: next.map(written),
+        })
     }
 
     /// Says how a cell comes by its value: whether it is stored, calculated by a rule or added

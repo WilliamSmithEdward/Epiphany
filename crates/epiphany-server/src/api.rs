@@ -1240,6 +1240,16 @@ struct SpreadResult {
 struct FeederCheck {
     /// Calculated leaf cells that hold a value but are not fed.
     unfed: Vec<CellRef>,
+    /// Where the check stopped, having found a hundred: given as `after`, it goes on from
+    /// there. None once every cell has been looked at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next: Option<String>,
+}
+
+#[derive(Deserialize, IntoParams)]
+struct FeederCheckQuery {
+    /// Where an earlier check stopped, as its `next` said: the check goes on from there.
+    after: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -2102,14 +2112,16 @@ async fn run_view(
 
 /// Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's
 /// consolidations therefore leave out. It works every calculated leaf out, so it is slow on
-/// a large cube. At most a hundred cells are returned; none means the feeders are complete
-/// for the data held, or the cube is not fed.
+/// a large cube. It stops at the first hundred it finds, saying where in `next`, to be given
+/// as `after` to go on from there; none found means the feeders are complete for the data
+/// held, or the cube is not fed.
 #[utoipa::path(
     get,
     path = "/cubes/{cube}/feeders/check",
-    params(("cube" = String, Path)),
+    params(("cube" = String, Path), FeederCheckQuery),
     responses(
         (status = OK, body = FeederCheck, description = "The cells found"),
+        (status = NOT_FOUND, body = ApiError, description = "`after` is not a place the check stopped at"),
         (status = UNPROCESSABLE_ENTITY, body = ApiError, description = "Unknown cube, or a rule failed")
     )
 )]
@@ -2117,12 +2129,17 @@ async fn check_feeders(
     State(database): State<Shared>,
     Extension(grants): Held,
     Path(cube): Path<String>,
+    Query(query): Query<FeederCheckQuery>,
 ) -> Result<Json<FeederCheck>, ApiError> {
     allow(&grants, &cube, Role::Read)?;
     let database = database.read().unwrap();
-    let mut unfed = database.unfed(&cube, 100)?;
+    let found = database.unfed_after(&cube, 100, query.after.as_deref())?;
+    let mut unfed = found.cells;
     unfed.retain(|cell| permit_of(&grants, &database, cell).is_ok());
-    Ok(Json(FeederCheck { unfed }))
+    Ok(Json(FeederCheck {
+        unfed,
+        next: found.next,
+    }))
 }
 
 /// Begins a transaction, signed with the user who begins it: the history of cells records

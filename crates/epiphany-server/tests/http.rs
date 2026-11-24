@@ -686,6 +686,12 @@ async fn rules_and_feeders_are_part_of_the_model() {
         body,
         json!({ "unfed": [{ "cube": "General Ledger", "at": ["Rent", "UK", "Jan", "Budget"] }] })
     );
+    // Going on from a place the check never stopped at is refused.
+    let nowhere = "/cubes/General%20Ledger/feeders/check?after=nowhere";
+    assert_eq!(
+        call(&app, "GET", nowhere, None).await.0,
+        StatusCode::NOT_FOUND
+    );
 
     let calculated = json!({ "cells": [write(["Rent", "US", "Jan", "Budget"], json!(1))] });
     let (status, body) = call(&app, "POST", "/cells/write", Some(calculated)).await;

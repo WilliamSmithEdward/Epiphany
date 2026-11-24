@@ -1654,6 +1654,50 @@ async function changingTheModel() {
 }
 
 async function administering({ reader }) {
+  await step('The feeder check finds every cell not fed, a hundred at a time, Find more going on', async () => {
+    // A cube of its own, whose budgets are its actuals and a tenth: fed from the US's January
+    // rent alone, its other budgets and its margins, of every month, are not fed.
+    const { data } = await page.api('GET', '/model');
+    const ledger = data.model.cubes.find((each) => each.name === 'General Ledger');
+    const cube = {
+      name: 'Feeding',
+      dimensions: ledger.dimensions,
+      rules: [...(ledger.rules ?? []), 'N: [Version].[Budget] = [Version].[Actual] * 1.1'],
+      feeders: ['([Account].[Rent], [Entity].[US], [Period].[Jan], [Version].[Actual]) => [Version].[Budget]'],
+    };
+    const made = await page.api('PUT', '/cubes/Feeding', { based_on: data.version, cube });
+    expect(made.status === 200, `The cube was not made: ${quoted(made.data)}`);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    // Revenue above costs, so that every month's margin is a number the margin rule works out.
+    const amounts = { 'Product Revenue': 200, 'Service Revenue': 200, Salaries: 50, Rent: 50 };
+    const cells = Object.entries(amounts).flatMap(([account, value]) => ['US', 'UK']
+      .flatMap((entity) => months.map((month) => ({ cube: 'Feeding', at: [account, entity, month, 'Actual'], value }))));
+    const written = await page.api('POST', '/cells/write', { cells });
+    expect(written.status < 300, `The actuals were not written: ${quoted(written.data)}`);
+    // Every cell not fed, as the API gives them a part at a time.
+    let every = 0;
+    for (let after = null, first = true; first || after; first = false) {
+      const part = (await page.api('GET', `/cubes/Feeding/feeders/check${after ? `?after=${encodeURIComponent(after)}` : ''}`)).data;
+      every += part.unfed.length;
+      after = part.next ?? null;
+    }
+    expect(every > 100, `Only ${every} cells are not fed: the check never stops at a hundred.`);
+    await page.goto('/model?cube=Feeding');
+    await page.click('[role="tab"]', 'Rules and feeders');
+    await page.click('button', 'Check the feeders');
+    await page.waitFor(`document.querySelector('dialog[open]')?.getAttribute('aria-label') === 'Cells not fed'`, 'the cells not fed');
+    const listed = `document.querySelectorAll('dialog[open] .plain-list li').length`;
+    expect(await page.evaluate(listed) === 100, `${await page.evaluate(listed)} cells are listed at first.`);
+    await page.audit('Cells not fed, more to find');
+    await page.click('dialog[open] button', 'Find more');
+    const more = `[...document.querySelectorAll('dialog[open] button')].find((button) => button.textContent === 'Find more')`;
+    await page.waitFor(`${listed} === ${every} && ${more}.hidden && getComputedStyle(${more}).display === 'none'`, 'every cell not fed, and nothing more to find');
+    expect(await page.evaluate(`document.querySelector('dialog[open] [role="status"]').textContent`) === `${every} cells in all.`, 'The count of cells not fed is not said whole.');
+    await page.click('dialog[open] button', 'Close');
+    // The cube taken away, for the steps after.
+    const version = (await page.api('GET', '/model')).data.version;
+    expect((await page.api('DELETE', `/cubes/Feeding?based_on=${version}`)).status === 200, 'The cube was not taken away.');
+  });
   await step('Administration lists the users', async () => {
     await page.goto('/admin');
     await page.waitFor(`[...document.querySelectorAll('td strong')].some((name) => name.textContent === ${quoted(reader.name)})`, 'the users');

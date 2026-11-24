@@ -471,6 +471,31 @@ fn a_cell_that_nothing_feeds_is_left_out_and_can_be_found() {
 }
 
 #[test]
+fn the_cells_nothing_feeds_are_found_a_part_at_a_time() {
+    // Only the north's January is fed: the north's February and the south's January are not.
+    let database = priced(json!([
+        "([Account].[Units], [Region].[North], [Month].[Jan]) => [Account].[Revenue]"
+    ]));
+    let every = database.unfed("Sales", 10).unwrap();
+    let missing = [["North", "Feb", "Revenue"], ["South", "Jan", "Revenue"]];
+    assert_eq!(every, missing.map(|at| cell("Sales", &at)).to_vec());
+    // A cell at a time, each part going on from where the one before stopped, the same come.
+    let (mut found, mut after) = (Vec::new(), None);
+    loop {
+        let part = database.unfed_after("Sales", 1, after.as_deref()).unwrap();
+        found.extend(part.cells);
+        match part.next {
+            Some(next) => after = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(found, every);
+    // A place the check never gave is refused.
+    let nowhere = database.unfed_after("Sales", 1, Some("nowhere"));
+    assert!(matches!(nowhere, Err(Error::NotFound(_))), "{nowhere:?}");
+}
+
+#[test]
 fn a_cell_explains_how_it_comes_by_its_value() {
     let feeder = "([Account].[Units], [Region].[North]) => [Account].[Revenue]";
     let database = priced(json!([feeder]));

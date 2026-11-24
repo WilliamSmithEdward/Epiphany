@@ -220,7 +220,12 @@ practice that means:
   can reach, which is always right and can be slow; past ten million cells it refuses and
   asks for feeders.
 - `GET /cubes/{cube}/feeders/check` lists calculated leaf cells that hold a value but are
-  not fed, which is how missing feeders are found.
+  not fed, which is how missing feeders are found. It stops at the first hundred it finds,
+  saying where in `next`; given back as `after`, it goes on from just after that cell, in
+  the rule it was in, so that every cell is found a part at a time without looking at the
+  first part again. **Decision:** `next` is the rule's place and the cell's elements by
+  number, so a change to the model between parts may make it name nothing: it is then
+  refused, and the check begun again.
 - `POST /cells/explain` says how each cell comes by its value: its kind, what is stored,
   whether it can be written, the rule that decides it, whether it is fed, and on request the
   feeders that feed it with the cell each fed it from. The GUI uses it to mark the cells that

@@ -1549,7 +1549,7 @@
     },
     "/cubes/{cube}/feeders/check": {
       "get": {
-        "summary": "Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's\nconsolidations therefore leave out. It works every calculated leaf out, so it is slow on\na large cube. At most a hundred cells are returned; none means the feeders are complete\nfor the data held, or the cube is not fed.",
+        "summary": "Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's\nconsolidations therefore leave out. It works every calculated leaf out, so it is slow on\na large cube. It stops at the first hundred it finds, saying where in `next`, to be given\nas `after` to go on from there; none found means the feeders are complete for the data\nheld, or the cube is not fed.",
         "operationId": "check_feeders",
         "parameters": [
           {
@@ -1558,6 +1558,18 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "path",
+            "description": "Where an earlier check stopped, as its `next` said: the check goes on from there.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         ],
@@ -1584,6 +1596,16 @@
           },
           "403": {
             "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`after` is not a place the check stopped at",
             "content": {
               "application/json": {
                 "schema": {
@@ -4960,6 +4982,13 @@
           "unfed"
         ],
         "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the check stopped, having found a hundred: given as `after`, it goes on from\nthere. None once every cell has been looked at."
+          },
           "unfed": {
             "type": "array",
             "items": {
