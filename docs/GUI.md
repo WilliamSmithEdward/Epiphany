@@ -106,9 +106,10 @@ only way to do something, and modal dialogs where a side panel would keep the da
   browser that takes it, at gzip's quickest: a dimension of 100,000 elements, 10.8 MB of
   JSON, comes to 0.56 MB, made in some 8 ms; the files, 541 KB, to about 160 KB.
 - **Fits a phone.** At a phone's width the bar keeps its marks, the words beside them still
-  heard by a screen reader; headings and their buttons stack, as do a dialog's fields set side
-  by side, an element role taking two lines, and a new API key's parts above how far it
-  reaches into each; and the explorer's buttons go
+  heard by a screen reader, and so does the model's tree of elements, each element's mark
+  saying its type, so that the names have the room; headings and their buttons stack, as do
+  a dialog's fields set side by side, an element role taking two lines, and a new API key's
+  parts, or a chart's series, above how they are chosen; and the explorer's buttons go
   along one row that scrolls sideways, as do the chips of each of its layout's zones, beside
   the zone's name, so that the grid shows on the first screen with the most room; a cell's
   comments, history and detail open over the whole screen, there being no room beside the

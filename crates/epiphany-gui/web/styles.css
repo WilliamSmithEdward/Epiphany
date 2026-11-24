@@ -1246,7 +1246,9 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
    grid to stay in view. */
 @media (max-width: 600px) {
   .bar { gap: var(--s2); padding: 0 var(--s2); }
-  .bar .brand span, .bar .button .label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* Heard, not seen: the bar's words beside its marks, and an element's type beside its
+     name, which its mark says, the name taking the room. */
+  .bar .brand span, .bar .button .label, .element-row .element-type { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .bar .status { gap: 0; font-size: 0; }
   .page-head, .editor-head, .card-head { flex-wrap: wrap; }
   .editor-head, .work-head { padding: var(--s3); }

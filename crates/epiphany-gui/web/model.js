@@ -706,7 +706,7 @@ class DimensionEditor extends Editor {
     icon(element.type === 'consolidated' ? 'sigma' : 'member', 14),
     h('span', { class: 'grow' }, row.match ? marked(row.name, this.words) : row.name),
     weight !== 1 ? h('span', { class: 'badge' }, `× ${weight}`) : null,
-    h('span', { class: 'muted' }, TYPES[element.type]));
+    h('span', { class: 'muted element-type' }, TYPES[element.type]));
   }
   detail(element) {
     const byName = this.byName;
