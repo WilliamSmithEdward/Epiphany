@@ -64,6 +64,11 @@ export function keyTable(keys, revoke = null) {
       }, icon('trash', 14), 'Revoke')) : null))));
 }
 
+/** Where a program learns what it may ask: the API's contract, as the server serves it. */
+const contract = () => h('span', {}, 'The ',
+  h('a', { href: '/api/openapi.json', target: '_blank', rel: 'noopener' }, 'API\'s contract'),
+  ' says what a program may ask.');
+
 export async function render(target) {
   return new KeysPage(target);
 }
@@ -75,7 +80,7 @@ class KeysPage {
     mount(target, h('div', { class: 'page' },
       h('div', { class: 'page-head' },
         h('div', { class: 'grow' }, h('h1', {}, 'API keys'),
-          h('p', {}, 'Programs reach the server in your name with a key: a script, a loader, a report. Each does only what you give it and never more than you may, until you revoke it.')),
+          h('p', {}, 'Programs reach the server in your name with a key: a script, a loader, a report. Each does only what you give it and never more than you may, until you revoke it. ', contract())),
         this.makeButton),
       this.card));
     mount(this.card, h('div', { class: 'card-body' }, loading('lines')));
@@ -225,7 +230,7 @@ class KeysPage {
       body: h('div', { class: 'facts' },
         h('p', {}, h('strong', {}, 'Copy it now. '), 'It is shown this once: only a hash of it is kept, and it cannot be shown again.'),
         h('div', { class: 'key-shown' }, field, copy),
-        h('p', { class: 'hint' }, 'A program sends it with every request, as the header ', h('code', {}, 'Authorization: Bearer ', h('em', {}, 'key')), '.')),
+        h('p', { class: 'hint' }, 'A program sends it with every request to the Epiphany server itself, not to this page, as the header ', h('code', {}, 'Authorization: Bearer ', h('em', {}, 'key')), '. ', contract())),
     });
   }
 

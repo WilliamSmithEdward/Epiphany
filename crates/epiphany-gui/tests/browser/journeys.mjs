@@ -1637,6 +1637,14 @@ async function usingKeys({ admin, reader }, server) {
     await page.waitFor(dialogNamed('Your key Nightly load'), 'the key, shown once');
     made = await page.evaluate(`document.querySelector('dialog[open] .key-shown input').value`);
     expect(/^epk_[0-9a-f]{64}$/.test(made), `The key shown is ${quoted(made)}.`);
+    // Told where a program sends it, and what it may ask: the API's contract, a link away.
+    const link = await page.evaluate(`(() => {
+      const link = document.querySelector('dialog[open] .hint a');
+      return link && { href: link.getAttribute('href'), colour: getComputedStyle(link).color };
+    })()`);
+    expect(link?.href === '/api/openapi.json' && link.colour !== 'rgb(0, 0, 238)', `The key shown links to ${quoted(link)}.`);
+    const contract = await page.evaluate(`fetch('/api/openapi.json').then((answer) => answer.json()).then((contract) => Boolean(contract.openapi && contract.paths['/keys']))`);
+    expect(contract, 'The API\'s contract, as the link has it, is not the server\'s, with its keys.');
     await page.audit('A key shown once');
     await page.click('dialog[open] button', 'Done');
     await page.waitFor(`[...document.querySelectorAll('td strong')].some((name) => name.textContent === 'Nightly load')`, 'the key, listed');

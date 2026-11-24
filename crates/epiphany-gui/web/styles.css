@@ -94,6 +94,9 @@ h1 { font-size: var(--text-2xl); }
 h2 { font-size: var(--text-xl); }
 h3 { font-size: var(--text-l); }
 p { margin: 0; }
+/* A link in running text, a paragraph's or a notice's, in the accent's colour for text: the
+   browser's own blue is hardly to be seen on the dark theme. */
+:is(p, .notice) a:not([class]) { color: var(--accent-text); text-underline-offset: 2px; }
 button, input, select, textarea { font: inherit; color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--radius-s); }
 ::selection { background: var(--accent-soft); }
