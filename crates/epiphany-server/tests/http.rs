@@ -1113,7 +1113,8 @@ async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
                 "cube": "General Ledger", "view": "By entity", "show": "donut",
                 "place": { "x": 6.5, "y": 2.0, "w": 5.5, "h": 8.0 }, "by_columns": true, "labels": true
             },
-            { "show": "text", "text": "# Notes\n- Budget is in thousands", "place": { "x": 0.0, "y": 0.0, "w": 12.0, "h": 2.0 } }
+            { "show": "text", "text": "# Notes\n- Budget is in thousands", "place": { "x": 0.0, "y": 0.0, "w": 12.0, "h": 2.0 } },
+            { "cube": "General Ledger", "view": "By entity", "show": "lines", "by_columns": true, "second_axis": ["Total"] }
         ]
     });
     let put = json!({ "based_on": 2, "dashboard": dashboard });
@@ -1131,6 +1132,8 @@ async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
     assert_eq!(served["layout"], "free");
     assert_eq!(served["tiles"][2], dashboard["tiles"][2]);
     assert_eq!(served["tiles"][3], dashboard["tiles"][3]);
+    // A chart keeps the series it draws against a scale at its right.
+    assert_eq!(served["tiles"][4], dashboard["tiles"][4]);
 
     // A tile must show a view the cube has, one or two columns wide, or else text, and stand
     // on the page; and a filter must be a dimension of the model.

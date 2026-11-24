@@ -8,6 +8,7 @@
 import { del, modelVersion, part, post, put } from './api.js';
 import { announce, empty, failure, go, model, readdress, state } from './app.js';
 import { COLUMNS, firstFree, inReadingOrder, linesOf, moveOnGrid, nearest, onPage, ontoGrid, resizeOnGrid } from './arrange.js';
+import { MOST_SERIES, shape } from './chart.js';
 import { chooseMember, dimension } from './picker.js';
 import { csvOf, tsvOf } from './selection.js';
 import { KINDS, numbersOf, present, prose } from './tiles.js';
@@ -954,13 +955,24 @@ class Dashboards {
     }
   }
 
-  /** A tile's options: how it shows its view, its size, its series and values, its name or text, its order, a copy, and removing it. */
+  /**
+   * A tile's options: how it shows its view, its size, its series and values and the scale
+   * each is drawn against, its name or text, its order, a copy, and removing it.
+   */
   tileMenu(index, at) {
     const tile = this.editing.tiles[index];
     const free = this.editing.layout === 'free';
     const text = tile.show === 'text';
     const charted = !['figure', 'grid', 'heatmap', 'text'].includes(tile.show ?? 'bars');
     const set = (change) => this.change(() => Object.assign(tile, change));
+    // The series of the chart's last answer, by name, any but the last of them to be drawn as
+    // lines against a scale of their own at the right.
+    const last = this.lastShown.get(index);
+    const axes = ['bars', 'stacked', 'lines', 'area'].includes(tile.show ?? 'bars');
+    const names = axes && last?.tile.cube === tile.cube && last.tile.view === tile.view
+      ? shape(last.result, Boolean(tile.by_columns)).series.slice(0, MOST_SERIES).map((entry) => entry.name)
+      : [];
+    const right = new Set((tile.second_axis ?? []).filter((name) => names.includes(name)));
     const sized = (w, h) => this.change(() => {
       const places = placesOf(this.editing);
       const [leastW, leastH] = sizeOf(tile).least;
@@ -979,8 +991,17 @@ class Dashboards {
         action: () => set({ show: kind }),
       }))),
       charted ? '-' : null,
-      charted ? { label: tile.by_columns ? 'A series for each row' : 'A series for each column', icon: 'swap', action: () => set({ by_columns: !tile.by_columns }) } : null,
+      // Its series turned the other way are others: none of them is at the right.
+      charted ? { label: tile.by_columns ? 'A series for each row' : 'A series for each column', icon: 'swap', action: () => set({ by_columns: !tile.by_columns, second_axis: undefined }) } : null,
       charted ? { label: tile.labels ? 'Values off the marks' : 'Values on the marks', icon: 'hash', action: () => set({ labels: !tile.labels }) } : null,
+      names.length > 1 ? { heading: 'Against a scale at the right' } : null,
+      ...(names.length > 1 ? names.map((name) => ({
+        label: name,
+        checked: right.has(name),
+        icon: right.has(name) ? 'check' : null,
+        disabled: !right.has(name) && right.size === names.length - 1,
+        action: () => set({ second_axis: right.has(name) ? [...right].filter((each) => each !== name) : [...right, name] }),
+      })) : []),
       { heading: 'Size' },
       ...PRESETS.map(([label, w, h]) => ({ label: `${label}, ${w} × ${h}`, icon: 'columns', action: () => sized(w, h) })),
       '-',
@@ -1184,6 +1205,7 @@ class Dashboards {
         place: kept(places[index], free),
         ...(tile.by_columns ? { by_columns: true } : {}),
         ...(tile.labels ? { labels: true } : {}),
+        ...(tile.second_axis?.length ? { second_axis: tile.second_axis } : {}),
       })),
     };
     // A dashboard renamed is saved in its old one's place.

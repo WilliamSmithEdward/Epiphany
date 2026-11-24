@@ -59,6 +59,7 @@ export function present(result, tile, view, { pick = null, picked = null, fresh 
   return chart(data, how, {
     fill: true,
     labels: Boolean(tile.labels),
+    second: tile.second_axis ?? [],
     format: (value) => formatValue(value, format),
     pick: pick && (({ series, category }) => pick([...data.series[series].tuple, ...data.tuples[category]], `s:${series}|c:${category}`)),
     picked: at ? { series: Number(at[1]), category: Number(at[2]) } : null,

@@ -1065,6 +1065,28 @@ async function exploring() {
     await page.click('.menu [role="menuitem"]', 'Show the bars again');
     await page.waitFor(`document.querySelector('.dash-tile[data-index="1"] .chart') && !document.querySelector('.dash-tile[data-index="1"] .tile-table')`, 'the bars again');
   });
+  await step('A series of a chart is drawn as a line against a scale of its own at its right, and kept so with the dashboard', async () => {
+    const bars = '.dash-tile[data-index="1"]';
+    const apart = `document.querySelector('${bars} text.tick.right') && document.querySelector('${bars} .legend-item.second')?.textContent === 'UK · Revenue'`;
+    await page.click('button', 'Edit');
+    await page.waitFor(`document.querySelector('.board.editing ${bars} .chart')`, 'the dashboard, being edited');
+    // Laid out freely, the tile of text stands over the bars' head: their options are opened
+    // from the keys, Enter on the tile.
+    await page.evaluate(`document.querySelector('${bars}').focus()`);
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('.menu [role="menuitemcheckbox"]')`, 'the bars\' options');
+    const offered = await page.evaluate(`[...document.querySelectorAll('.menu [role="menuitemcheckbox"]')].map((item) => item.textContent.trim())`);
+    expect(offered.includes('UK · Revenue'), `The bars offer ${quoted(offered)} to draw against a scale at the right.`);
+    await page.click('.menu [role="menuitemcheckbox"]', 'UK · Revenue');
+    await page.waitFor(apart, 'UK revenue, against a scale at the right');
+    await page.audit('A chart with a scale at its right');
+    await page.click('button', 'Save');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Saved Quarter'))`, 'the dashboard, saved');
+    const kept = (await page.api('GET', '/model')).data.model.dashboards.find((each) => each.name === 'Quarter');
+    expect(quoted(kept.tiles[1].second_axis) === quoted(['UK · Revenue']), `The bars were kept as ${quoted(kept.tiles[1])}.`);
+    await page.goto('/dashboards?name=Quarter');
+    await page.waitFor(apart, 'UK revenue, at the right still');
+  });
   await step('A key figure takes the colour of the first of its view\'s rules its value meets', async () => {
     // The view coloured green at nought or more, as a target met.
     const { data } = await page.api('GET', '/model');

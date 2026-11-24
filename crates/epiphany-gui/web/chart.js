@@ -6,7 +6,7 @@
 import { extent, formatNumber, h, icon } from './ui.js';
 
 /** How many series are drawn at most; the rest are left out and said to be. */
-const MOST_SERIES = 12;
+export const MOST_SERIES = 12;
 /** How many colours there are before they repeat. */
 const COLOURS = 10;
 /** How many slices a ring has at most: past that, the smallest are one slice, Other. */
@@ -37,7 +37,9 @@ const short = (name, most = 18) => (name.length > most ? `${name.slice(0, most -
 
 /**
  * The series and categories of a result: each row is a series across the columns, or each
- * column across the rows when `byColumns`. Each keeps its tuple, the members it stands for.
+ * column across the rows when `byColumns`. Each keeps its tuple, the members it stands for,
+ * and where the query writes its cells out, as a calculated member's format does, its
+ * `texts`, each value as written.
  */
 export function shape(result, byColumns) {
   const [columns, rows] = result.axes;
@@ -49,11 +51,18 @@ export function shape(result, byColumns) {
     const cell = result.cells[r * count + c];
     return typeof cell === 'number' ? cell : null;
   };
+  const written = (r, c) => result.formatted?.[r * count + c] ?? null;
   const [across, along] = byColumns ? [rowTuples, columnTuples] : [columnTuples, rowTuples];
+  const each = (read, s) => across.map((_, c) => (byColumns ? read(c, s) : read(s, c)));
   return {
     categories: across.map(label),
     tuples: across,
-    series: along.map((tuple, s) => ({ name: label(tuple), tuple, values: across.map((_, c) => (byColumns ? value(c, s) : value(s, c))) })),
+    series: along.map((tuple, s) => ({
+      name: label(tuple),
+      tuple,
+      values: each(value, s),
+      texts: result.formatted?.length ? each(written, s) : null,
+    })),
   };
 }
 
@@ -111,8 +120,11 @@ function ringSlices(data) {
  * called with the series and category of a mark clicked, or chosen with Enter, and `picked`
  * names the one picked, the others fading. `fresh`: the values are new, and come in moving.
  */
-export function chart(data, kind, { height = 380, fill = false, labels = false, format = formatNumber, pick = null, picked = null, fresh = true } = {}) {
+export function chart(data, kind, { height = 380, fill = false, labels = false, format = formatNumber, pick = null, picked = null, fresh = true, second = [] } = {}) {
   const ring = kind === 'donut';
+  // The series, by name, drawn as lines against a scale of their own on the right, where the
+  // chart has axes.
+  const beside = new Set(ring || kind === 'ranked' ? [] : second);
   const slices = ring ? ringSlices(data) : null;
   // What the legend lists and the colours tell apart: the series, or a ring's slices.
   const parts = (ring ? slices.map((slice) => slice.name) : data.series.slice(0, MOST_SERIES).map((entry) => entry.name))
@@ -150,9 +162,11 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   let entering = fresh && !still.matches;
 
   const drawLegend = () => {
+    // A series against the axis at the right is shown so: its swatch a line, as it is drawn.
     legend.replaceChildren(...parts.map((part) => h('button', {
-      class: 'legend-item',
+      class: beside.has(part.name) ? 'legend-item second' : 'legend-item',
       'aria-pressed': String(!hidden.has(part.index)),
+      title: beside.has(part.name) ? `${part.name}, against the axis at the right` : null,
       onclick: () => {
         if (hidden.has(part.index)) hidden.delete(part.index);
         else if (hidden.size < parts.length - 1) hidden.add(part.index);
@@ -177,7 +191,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
       marks.push(shapeElement);
       return shapeElement;
     };
-    const context = { svg, width, height: tall, data, labels, format, mark, colour: (index) => parts[index]?.colour ?? index % COLOURS, shown: (index) => !hidden.has(index) };
+    const context = { svg, width, height: tall, data, labels, format, mark, colour: (index) => parts[index]?.colour ?? index % COLOURS, shown: (index) => !hidden.has(index), beside };
     let said;
     if (ring) said = drawRing(context, slices);
     else if (kind === 'ranked') said = drawRanked(context);
@@ -264,50 +278,82 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   return element;
 }
 
-/** Bars side by side, stacked, lines or areas, over the categories along the bottom. */
-function drawAxes({ svg, width, height, data, labels, format, mark, colour, shown }, kind) {
-  const series = data.series.slice(0, MOST_SERIES).map((entry, index) => ({ ...entry, index })).filter((entry) => shown(entry.index));
+/** The steps of a scale that holds `values`, nought among them. */
+function reach(values) {
+  let low = 0;
+  let high = 0;
+  for (const value of values) {
+    if (value === null) continue;
+    high = Math.max(high, value);
+    low = Math.min(low, value);
+  }
+  return ticks(low, high);
+}
+
+/**
+ * How a scale writes the steps of `series`: in percent where they write each of their values
+ * so, a hundred times over unless the format's percent sign is in quotes, only written.
+ */
+function stepWriter(series) {
+  const written = series.flatMap((entry) => entry.values.flatMap((value, c) => (value === null ? [] : [[value, entry.texts?.[c] ?? '']])));
+  if (!written.length || !written.every(([, text]) => /%\s*$/.test(text))) return (step) => compact.format(step);
+  const [value, text] = written.find(([number]) => number !== 0) ?? written[0];
+  const shown = Math.abs(Number.parseFloat(text.replace(/[^\d.]/g, '')));
+  const by = Math.abs(shown - Math.abs(value) * 100) < Math.abs(shown - Math.abs(value)) ? 100 : 1;
+  return (step) => `${compact.format(step * by)}%`;
+}
+
+/**
+ * Bars side by side, stacked, lines or areas, over the categories along the bottom; and the
+ * series `beside` names as lines against a scale of their own on the right, unless they are
+ * all there are.
+ */
+function drawAxes({ svg, width, height, data, labels, format, mark, colour, shown, beside }, kind) {
+  const all = data.series.slice(0, MOST_SERIES).map((entry, index) => ({ ...entry, index })).filter((entry) => shown(entry.index));
+  const right = all.filter((entry) => beside.has(entry.name));
+  const apart = right.length > 0 && right.length < all.length;
+  const series = apart ? all.filter((entry) => !beside.has(entry.name)) : all;
   const categories = data.categories;
   const crowded = categories.length > Math.floor(width / 70);
-  const margin = { top: labels ? 24 : 16, right: 16, bottom: crowded ? 84 : 40, left: 64 };
+  const margin = { top: labels ? 24 : 16, right: apart ? 60 : 16, bottom: crowded ? 84 : 40, left: 64 };
   const inner = { width: width - margin.left - margin.right, height: Math.max(height - margin.top - margin.bottom, 20) };
 
   // The range the values reach: stacks add up their positives and negatives apart.
-  let low = 0;
-  let high = 0;
-  categories.forEach((_, c) => {
-    if (kind === 'stacked') {
-      let up = 0;
-      let down = 0;
-      for (const entry of series) {
-        const value = entry.values[c] ?? 0;
-        if (value > 0) up += value;
-        else down += value;
-      }
-      high = Math.max(high, up);
-      low = Math.min(low, down);
-    } else {
-      for (const entry of series) {
-        const value = entry.values[c];
-        if (value === null) continue;
-        high = Math.max(high, value);
-        low = Math.min(low, value);
-      }
+  const stack = (c) => {
+    let up = 0;
+    let down = 0;
+    for (const entry of series) {
+      const value = entry.values[c] ?? 0;
+      if (value > 0) up += value;
+      else down += value;
     }
-  });
-  const steps = ticks(low, high);
-  const bottom = steps[0];
-  const top = steps[steps.length - 1];
-  const y = (value) => margin.top + inner.height - ((value - bottom) / (top - bottom)) * inner.height;
+    return [up, down];
+  };
+  const steps = reach(kind === 'stacked' ? categories.flatMap((_, c) => stack(c)) : series.flatMap((entry) => entry.values));
+  // The scale at the right, of the series apart, takes as many steps as the one at the left,
+  // the one with fewer reaching higher, so each of its steps lies on a gridline.
+  const rightSteps = apart ? reach(right.flatMap((entry) => entry.values)) : [];
+  for (const list of apart ? [steps, rightSteps] : []) {
+    const step = list[1] - list[0];
+    while (list.length < Math.max(steps.length, rightSteps.length)) list.push(Number((list.at(-1) + step).toFixed(10)));
+  }
+  const scale = (list) => (value) => margin.top + inner.height - ((value - list[0]) / (list.at(-1) - list[0])) * inner.height;
+  const y = scale(steps);
+  const yRight = apart ? scale(rightSteps) : y;
+  const writeRight = apart ? stepWriter(right) : null;
   const band = inner.width / Math.max(categories.length, 1);
   const x = (c) => margin.left + band * c;
-  const tipOf = (entry, c, value) => [format(value), entry.name, categories[c]];
+  // A value as the query writes it, where it does, as a calculated member's format has it; as
+  // the view's format has it in a tip, and briefly on its mark, otherwise.
+  const tipOf = (entry, c, value) => [entry.texts?.[c] ?? format(value), entry.name, categories[c]];
+  const said = (entry, c) => entry.texts?.[c] ?? compact.format(entry.values[c]);
   const label = (text, cx, cy, anchor = 'middle') => svg.append(h('text', { class: 'value', x: cx, y: cy, 'text-anchor': anchor }, text));
 
-  for (const step of steps) {
+  steps.forEach((step, s) => {
     svg.append(h('line', { class: step === 0 ? 'axis' : 'gridline', x1: margin.left, x2: width - margin.right, y1: y(step), y2: y(step) }),
       h('text', { class: 'tick', x: margin.left - 8, y: y(step) + 4, 'text-anchor': 'end' }, compact.format(step)));
-  }
+    if (apart) svg.append(h('text', { class: 'tick right', x: width - margin.right + 8, y: y(step) + 4, 'text-anchor': 'start' }, writeRight(rightSteps[s])));
+  });
   categories.forEach((name, c) => {
     const cx = x(c) + band / 2;
     svg.append(crowded
@@ -315,26 +361,29 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
       : h('text', { class: 'tick', x: cx, y: height - margin.bottom + 18, 'text-anchor': 'middle' }, short(name)));
   });
 
-  if (kind === 'lines' || kind === 'area') {
-    for (const entry of series) {
-      const points = entry.values.map((value, c) => (value === null ? null : [x(c) + band / 2, y(value)]));
-      if (kind === 'area') {
-        // Each unbroken run of values fills down to nought.
-        let run = [];
-        const fillRun = () => {
-          if (run.length > 1) svg.append(h('path', { class: `area c${colour(entry.index)}`, d: `M${run[0][0]},${y(0)}L${run.map((point) => point.join(',')).join('L')}L${run[run.length - 1][0]},${y(0)}Z` }));
-          run = [];
-        };
-        points.forEach((point) => (point ? run.push(point) : fillRun()));
-        fillRun();
-      }
-      svg.append(h('path', { class: `line c${colour(entry.index)}`, d: linePath(points), pathLength: 1 }));
-      points.forEach((point, c) => {
-        if (!point) return;
-        svg.append(mark(h('circle', { class: `dot c${colour(entry.index)}`, cx: point[0], cy: point[1], r: 4 }), { s: entry.index, c, lines: tipOf(entry, c, entry.values[c]) }));
-        if (labels) label(compact.format(entry.values[c]), point[0], point[1] - 9);
-      });
+  /** A series as a line through its values against the scale `of`, a dot at each; filled down to nought for an area. */
+  const drawLine = (entry, of, filled) => {
+    const points = entry.values.map((value, c) => (value === null ? null : [x(c) + band / 2, of(value)]));
+    if (filled) {
+      // Each unbroken run of values fills down to nought.
+      let run = [];
+      const fillRun = () => {
+        if (run.length > 1) svg.append(h('path', { class: `area c${colour(entry.index)}`, d: `M${run[0][0]},${of(0)}L${run.map((point) => point.join(',')).join('L')}L${run[run.length - 1][0]},${of(0)}Z` }));
+        run = [];
+      };
+      points.forEach((point) => (point ? run.push(point) : fillRun()));
+      fillRun();
     }
+    svg.append(h('path', { class: `line c${colour(entry.index)}`, d: linePath(points), pathLength: 1 }));
+    points.forEach((point, c) => {
+      if (!point) return;
+      svg.append(mark(h('circle', { class: `dot c${colour(entry.index)}`, cx: point[0], cy: point[1], r: 4 }), { s: entry.index, c, lines: tipOf(entry, c, entry.values[c]) }));
+      if (labels) label(said(entry, c), point[0], point[1] - 9);
+    });
+  };
+
+  if (kind === 'lines' || kind === 'area') {
+    for (const entry of series) drawLine(entry, y, kind === 'area');
   } else if (kind === 'stacked') {
     const thick = Math.max(Math.min(band * 0.64, 56), 2);
     categories.forEach((_, c) => {
@@ -349,7 +398,7 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
         else down = to;
         const box = { x: x(c) + (band - thick) / 2, y: Math.min(y(from), y(to)), width: thick, height: Math.max(Math.abs(y(to) - y(from)), 1) };
         svg.append(mark(h('rect', { class: `bar c${colour(entry.index)}`, ...box }), { s: entry.index, c, lines: tipOf(entry, c, value) }));
-        if (labels && box.height > 14) label(compact.format(value), box.x + thick / 2, box.y + box.height / 2 + 4);
+        if (labels && box.height > 14) label(said(entry, c), box.x + thick / 2, box.y + box.height / 2 + 4);
       }
     });
   } else {
@@ -368,11 +417,15 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
           height: Math.max(Math.abs(y(value) - y(0)), 1),
           rx: 2,
         }), { s: entry.index, c, lines: tipOf(entry, c, value) }));
-        if (labels) label(compact.format(value), left + Math.max(each - 2, 1) / 2, value < 0 ? y(value) + 13 : y(value) - 5);
+        if (labels) label(said(entry, c), left + Math.max(each - 2, 1) / 2, value < 0 ? y(value) + 13 : y(value) - 5);
       });
     });
   }
-  return `${{ lines: 'Line', area: 'Area', stacked: 'Stacked bar' }[kind] ?? 'Bar'} chart of ${series.map((entry) => entry.name).join(', ')} across ${categories.length} categories`;
+  // The series apart, as lines over the rest, against the scale at the right.
+  if (apart) for (const entry of right) drawLine(entry, yRight, false);
+  const kindSaid = { lines: 'Line', area: 'Area', stacked: 'Stacked bar' }[kind] ?? 'Bar';
+  const apartSaid = apart ? `, and ${right.map((entry) => entry.name).join(', ')} against an axis at the right,` : '';
+  return `${kindSaid} chart of ${series.map((entry) => entry.name).join(', ')}${apartSaid} across ${categories.length} categories`;
 }
 
 /** The categories as bars across, the largest of the first series shown at the top. */
@@ -397,8 +450,8 @@ function drawRanked({ svg, width, height, data, labels, format, mark, colour, sh
     const top = margin.top + band * rank + (band - thick) / 2;
     if (band >= 11) svg.append(h('text', { class: 'tick', x: margin.left - 8, y: top + thick / 2 + 4, 'text-anchor': 'end' }, short(item.name, 28)));
     svg.append(mark(h('rect', { class: `bar c${colour(entry.index)}`, x: Math.min(x(0), x(item.value)), y: top, width: Math.max(Math.abs(x(item.value) - x(0)), 1), height: thick, rx: 2 }),
-      { s: entry.index, c: item.c, lines: [format(item.value), item.name, `${rank + 1} of ${ranked.length}`] }));
-    if (labels && band >= 11) svg.append(h('text', { class: 'value', x: x(Math.max(item.value, 0)) + 6, y: top + thick / 2 + 4 }, compact.format(item.value)));
+      { s: entry.index, c: item.c, lines: [entry.texts?.[item.c] ?? format(item.value), item.name, `${rank + 1} of ${ranked.length}`] }));
+    if (labels && band >= 11) svg.append(h('text', { class: 'value', x: x(Math.max(item.value, 0)) + 6, y: top + thick / 2 + 4 }, entry.texts?.[item.c] ?? compact.format(item.value)));
   });
   return `Bars of ${entry?.name ?? 'nothing'} across ${ranked.length} categories, the largest first`;
 }

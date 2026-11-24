@@ -159,6 +159,11 @@ pub struct TileDef {
     /// A chart writes each value on its mark.
     #[serde(default, skip_serializing_if = "is_false")]
     pub labels: bool,
+    /// The series, by name, that a chart draws as lines against a scale of their own on its
+    /// right: those of another size than the rest, such as a margin beside the sums of money
+    /// it is worked out from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub second_axis: Vec<String>,
     /// What a tile of text says: a line that begins `# ` is a heading, one that begins `- `
     /// an item of a list, and an empty line ends a paragraph.
     #[serde(default, skip_serializing_if = "String::is_empty")]

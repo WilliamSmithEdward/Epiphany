@@ -420,7 +420,7 @@ let openMenu;
 
 /**
  * Opens a menu at a point or beside an element. `items` are `{ label, icon, action,
- * disabled }`, `'-'` for a divider, or `{ heading }`.
+ * disabled }`, with `checked` for one that is on or off, `'-'` for a divider, or `{ heading }`.
  */
 export function menu(items, at) {
   openMenu?.close();
@@ -428,8 +428,10 @@ export function menu(items, at) {
   const element = h('div', { class: 'menu', role: 'menu' }, items.filter(Boolean).map((item) => {
     if (item === '-') return h('hr');
     if (item.heading) return h('div', { class: 'menu-label' }, item.heading);
+    const switched = typeof item.checked === 'boolean';
     const button = h('button', {
-      role: 'menuitem',
+      role: switched ? 'menuitemcheckbox' : 'menuitem',
+      'aria-checked': switched ? String(item.checked) : null,
       disabled: item.disabled,
       onclick: () => {
         close();

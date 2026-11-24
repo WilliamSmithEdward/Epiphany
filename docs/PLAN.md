@@ -459,6 +459,12 @@ practice that means:
   on the grid (`layout` absent) clear of one another and risen into what is free, or freely
   (`layout: "free"`) wherever put, is the GUI's. A tile without a place takes the next free
   one, one or two of two columns wide as its older `width` says.
+- A chart's tile names, in `second_axis`, the series it draws as lines against a scale of
+  their own at its right, such as a margin beside the sums it is worked out from.
+  **Decision:** a series is named as the chart labels it, its members' names joined, not by
+  its place in an answer that changes as the model does; a name no longer among the series
+  is passed over. The scale at the right takes as many steps as the one at the left, each on
+  a gridline, and writes them in percent where the series' cells are written so.
 - A query's `context` stands it at other members: each in its dimension's place in the
   slicer, and on an axis that places the dimension, only the tuples at the member or beneath
   it, so that a dashboard's filter, or a member picked in one tile, narrows a tile whose rows

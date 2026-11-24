@@ -6095,6 +6095,13 @@
               }
             ]
           },
+          "second_axis": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The series, by name, that a chart draws as lines against a scale of their own on its\nright: those of another size than the rest, such as a margin beside the sums of money\nit is worked out from."
+          },
           "show": {
             "$ref": "#/components/schemas/TileShow"
           },

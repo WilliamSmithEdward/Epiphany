@@ -565,6 +565,8 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .legend-item { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 28px; white-space: nowrap; padding: 0 var(--s2); border: 1px solid transparent; border-radius: 999px; background: none; color: var(--text-2); font-size: var(--text-s); cursor: pointer; }
 .legend-item:hover { background: var(--surface-2); }
 .legend-item[aria-pressed="false"] { color: var(--text-3); text-decoration: line-through; }
+/* A series against the axis at the right, drawn as a line: its swatch is one. */
+.legend-item.second .swatch { width: 14px; height: 3px; border-radius: 2px; }
 .legend-item[aria-pressed="false"] .swatch { opacity: .3; }
 .swatch { width: 10px; height: 10px; border-radius: 3px; }
 .chart-tip { position: absolute; z-index: 5; display: flex; flex-direction: column; gap: 2px; min-width: 140px; max-width: 220px; padding: var(--s2) var(--s3); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-2); font-size: var(--text-s); pointer-events: none; }
