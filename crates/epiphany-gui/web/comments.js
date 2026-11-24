@@ -314,7 +314,11 @@ export const comments = {
     const asked = { cube: this.cube.name, at: cell.at, most: HISTORY };
     post('/cells/history', asked, { quiet: true }).then((answer) => {
       const all = [...answer.changes];
-      mount(list, all.length ? all.map(item) : h('li', { class: 'muted comment-none' }, 'No change has been saved to this cell.'));
+      // A total is written to only through the leaves beneath it, where its changes are kept.
+      const total = cell.at.some((name, index) => this.dims.get(this.cube.dimensions[index])?.byName.get(name)?.children.length);
+      mount(list, all.length ? all.map(item) : h('li', { class: 'muted comment-none' }, total
+        ? 'A total keeps no history of its own: its changes are saved to the leaves beneath it, each with theirs.'
+        : 'No change has been saved to this cell.'));
       // However long the history, the older changes are there to be read back.
       if (all.length === HISTORY) {
         mount(more, olderButton({
