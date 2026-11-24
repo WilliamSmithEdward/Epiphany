@@ -1561,6 +1561,12 @@ async function exploring() {
     await page.click('dialog[open] .picker-row[data-name="Q1"]');
     await page.click('dialog[open] button', 'Apply');
     await page.waitFor(`${across}?.selectedOptions[0]?.textContent === 'The children of Q1' && document.querySelectorAll('dialog[open] .view-preview .chart .tick').length > 0`, 'the months of Q1, across');
+    // Swap changes down the side and across over, each keeping its members, and back again.
+    const sides = `[...document.querySelectorAll('dialog[open] .new-view select')].map((select) => select.selectedOptions[0]?.textContent).join()`;
+    await page.click('dialog[open] button', 'Swap');
+    await page.waitFor(`${sides} === 'Period,The children of Q1,Account,Its top’s children'`, 'the two, changed over');
+    await page.click('dialog[open] button', 'Swap');
+    await page.waitFor(`${sides} === 'Account,Its top’s children,Period,The children of Q1'`, 'the two, back as they were');
     await page.audit('A new view');
     await page.fill('#new-view-name', 'Accounts by quarter');
     await page.click('dialog[open] button', 'Add it');

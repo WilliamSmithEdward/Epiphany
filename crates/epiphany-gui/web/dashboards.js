@@ -1352,6 +1352,7 @@ class Dashboards {
       mount(across, cube.dimensions.map((each) => h('option', { value: each, selected: each === columns }, each)));
       offer(downWhich, down.value);
       offer(acrossWhich, across.value);
+      swap.disabled = !down.value;
       ask();
     };
 
@@ -1362,6 +1363,7 @@ class Dashboards {
         offer(otherWhich, other.value);
       }
       offer(which, select.value);
+      swap.disabled = !down.value;
       ask();
     };
     down.addEventListener('change', () => moved(down, across, acrossWhich, downWhich));
@@ -1380,6 +1382,26 @@ class Dashboards {
       select.dataset.was = select.value;
       ask();
     };
+    // Down the side and across changed over, each with its members, as Explore swaps its axes.
+    const swap = h('button', {
+      class: 'button small quiet',
+      type: 'button',
+      title: 'Change what stands down the side and across over',
+      onclick: () => {
+        if (!down.value) return;
+        const member = (value) => (value.startsWith('member:') ? value.slice('member:'.length) : null);
+        const [side, sideWhich, top, topWhich] = [down.value, downWhich.value, across.value, acrossWhich.value];
+        across.value = side;
+        down.value = top;
+        offer(acrossWhich, side, member(sideWhich));
+        acrossWhich.value = sideWhich;
+        offer(downWhich, top, member(topWhich));
+        downWhich.value = topWhich;
+        acrossWhich.dataset.was = acrossWhich.value;
+        downWhich.dataset.was = downWhich.value;
+        ask();
+      },
+    }, icon('swap', 14), 'Swap');
     downWhich.addEventListener('change', which(downWhich, down));
     acrossWhich.addEventListener('change', which(acrossWhich, across));
     name.addEventListener('input', () => {
@@ -1408,6 +1430,7 @@ class Dashboards {
         h('div', { class: 'field-pair' },
           h('fieldset', { class: 'field' }, h('legend', {}, 'Down the side'), h('div', { class: 'field-pair' }, down, downWhich)),
           h('fieldset', { class: 'field' }, h('legend', {}, 'Across'), h('div', { class: 'field-pair' }, across, acrossWhich))),
+        h('div', { class: 'toolbar' }, swap),
         h('fieldset', { class: 'field' }, h('legend', {}, 'Shown as'), shows),
         preview,
         h('div', { class: 'field' }, h('label', { for: 'new-view-name' }, 'Name'), name, hint)),
