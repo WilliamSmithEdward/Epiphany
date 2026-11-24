@@ -33,7 +33,7 @@ const MOST_TEXT: usize = 1_000_000;
 /// The words that tell a function how to go about its work. Where one of them stands alone
 /// it is that word, even in a model with a dimension of the same name; the dimension is
 /// then written in brackets with its hierarchy, as `[Desc].[Desc]`.
-const FLAGS: [&str; 13] = [
+const FLAGS: [&str; 17] = [
     "ALL",
     "ASC",
     "DESC",
@@ -43,7 +43,11 @@ const FLAGS: [&str; 13] = [
     "RECURSIVE",
     "SELF",
     "AFTER",
+    "BEFORE",
     "SELF_AND_AFTER",
+    "SELF_AND_BEFORE",
+    "BEFORE_AND_AFTER",
+    "SELF_BEFORE_AFTER",
     "LEAVES",
     "INCLUDEEMPTY",
     "EXCLUDEEMPTY",
@@ -1530,23 +1534,39 @@ impl<'a> Evaluator<'a> {
                     None => {}
                 }
                 let which = flag(arguments.get(2)).unwrap_or_else(|| "SELF".to_owned());
-                if !["SELF", "AFTER", "SELF_AND_AFTER", "LEAVES"].contains(&which.as_str()) {
-                    return fail(format!("unknown DESCENDANTS flag {which}"));
-                }
-                // Without a distance or a level, the member and everything below it. Levels
-                // count up from the leaves, so what comes after a level has a lower number.
+                // Which of the members the flag takes: those before the distance or level,
+                // from the member itself down; those at it; those after it. LEAVES takes the
+                // leaves beneath, wherever they stand.
+                let (before, at, after) = match which.as_str() {
+                    "SELF" => (false, true, false),
+                    "AFTER" => (false, false, true),
+                    "BEFORE" => (true, false, false),
+                    "SELF_AND_AFTER" => (false, true, true),
+                    "SELF_AND_BEFORE" => (true, true, false),
+                    "BEFORE_AND_AFTER" => (true, false, true),
+                    "SELF_BEFORE_AFTER" => (true, true, true),
+                    "LEAVES" => (false, false, false),
+                    _ => return fail(format!("unknown DESCENDANTS flag {which}")),
+                };
+                // Without a distance or a level, the member and everything below it are at
+                // it. Levels count up from the leaves, so what comes after a level has a
+                // lower number.
                 let wanted = |depth: usize, element: &Element| {
-                    let (below, at) = match (distance, level) {
-                        (Some(distance), _) => (depth > distance, depth == distance),
-                        (_, Some(level)) => (element.level < level, element.level == level),
-                        _ => (true, true),
-                    };
-                    match which.as_str() {
-                        "LEAVES" => element.children.is_empty(),
-                        "AFTER" => below,
-                        "SELF_AND_AFTER" => below || at,
-                        _ => at,
+                    if which == "LEAVES" {
+                        return element.children.is_empty();
                     }
+                    let (above, on, below) = match (distance, level) {
+                        (Some(distance), _) => {
+                            (depth < distance, depth == distance, depth > distance)
+                        }
+                        (_, Some(level)) => (
+                            element.level > level,
+                            element.level == level,
+                            element.level < level,
+                        ),
+                        _ => (false, true, true),
+                    };
+                    (before && above) || (at && on) || (after && below)
                 };
                 let (id, _) = self.element(member)?;
                 let dimension = self.dimension(member.position);

@@ -247,7 +247,8 @@ practice that means:
     (`first : last`), `CrossJoin` and `*`, `Union` and `+`, `Except`, `Intersect`,
     `Distinct`, `Head`, `Tail`, `Subset`, `.Item`, `TopCount`, `BottomCount`, `Generate`,
     `Filter`, `Order` (`ASC`, `DESC`, `BASC`, `BDESC`), `Descendants` (distance and
-    `SELF`, `AFTER`, `SELF_AND_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and
+    `SELF`, `AFTER`, `BEFORE`, `SELF_AND_AFTER`, `SELF_AND_BEFORE`, `BEFORE_AND_AFTER`,
+    `SELF_BEFORE_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and
     `POST`), `NonEmpty`, and `TM1SubsetAll`, `TM1FilterByLevel`, `TM1FilterByPattern`,
     `TM1Sort`.
   - `Extract(set, dimension, ...)` for what the tuples of a set hold of some dimensions,

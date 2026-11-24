@@ -315,6 +315,20 @@ fn descendants_walk_down_the_hierarchy() {
         columns("Descendants([Period].[Q2], 0, LEAVES)"),
         ["Apr", "May", "Jun"]
     );
+    // Before the distance, from the member itself down; and with it, or with what comes after.
+    assert_eq!(columns("Descendants([Period].[H1], 1, BEFORE)"), ["H1"]);
+    assert_eq!(
+        columns("Descendants([Period].[H1], 1, SELF_AND_BEFORE)"),
+        ["H1", "Q1", "Q2"]
+    );
+    assert_eq!(
+        columns("Descendants([Period].[H1], 1, BEFORE_AND_AFTER)"),
+        ["H1", "Jan", "Feb", "Mar", "Apr", "May", "Jun"]
+    );
+    assert_eq!(
+        columns("Descendants([Period].[H1], 1, SELF_BEFORE_AFTER)"),
+        half
+    );
 }
 
 #[test]
@@ -1899,6 +1913,10 @@ fn levels_are_known_by_the_names_the_model_gives_them() {
     assert_eq!(
         columns("Descendants([Period].[Q2], [Period].[Quarter], SELF_AND_AFTER)"),
         ["Q2", "Apr", "May", "Jun"]
+    );
+    assert_eq!(
+        columns("Descendants([Period].[H1], [Period].[Quarter], SELF_AND_BEFORE)"),
+        ["H1", "Q1", "Q2"]
     );
     assert_eq!(
         columns("Descendants([Period].[Q1], 1)"),
