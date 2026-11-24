@@ -160,7 +160,7 @@ class AdminPage {
     const me = state.user?.name?.toLowerCase();
     mount(this.usersCard, head,
       h('table', { class: 'table' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Role'), h('th', {}, 'On particular cubes'), h('th', {}, 'On particular elements'), h('th', {}, 'API keys'), h('th', { class: 'num-col' }, 'Sessions'), h('th', { class: 'actions' }, ''))),
+        h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Role'), h('th', {}, 'On cubes'), h('th', {}, 'On elements'), h('th', {}, 'API keys'), h('th', { class: 'num-col' }, 'Sessions'), h('th', { class: 'actions' }, ''))),
         h('tbody', {}, list.users.map((user) => {
           const cubes = Object.entries(user.cubes);
           return h('tr', {},
