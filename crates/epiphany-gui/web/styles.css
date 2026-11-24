@@ -622,8 +622,10 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
  * was dragged; each card as tall as its content, up to the height there is, past which it
  * scrolls within; what width is left over stays beyond them, not between a name and its type.
  */
-.element-layout { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: var(--element-list, 420px) minmax(320px, 520px); grid-template-rows: minmax(0, 1fr); gap: var(--s4); align-items: start; justify-content: start; }
-.element-layout > .splitter { left: calc(var(--element-list, 420px) + 5px); }
+/* The list as wide as its longest name needs, short of leaving the element's pane less than
+   its least beside it: a name longer than that scrolls within the list. */
+.element-layout { --element-list-shown: min(var(--element-list, 420px), calc(100% - 320px - var(--s4))); position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: var(--element-list-shown) minmax(320px, 520px); grid-template-rows: minmax(0, 1fr); gap: var(--s4); align-items: start; justify-content: start; }
+.element-layout > .splitter { left: calc(var(--element-list-shown) + 5px); }
 .element-list .card-head h3 { white-space: nowrap; }
 .element-list, .element-detail { display: flex; flex-direction: column; max-height: 100%; min-height: 0; }
 .element-list .element-tree { flex: 1 1 auto; min-height: 0; overflow: auto; padding: var(--s1) var(--s2) var(--s2); }

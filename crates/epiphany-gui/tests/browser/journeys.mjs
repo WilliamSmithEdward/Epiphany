@@ -1655,6 +1655,26 @@ async function exploring() {
 }
 
 async function changingTheModel() {
+  await step('A name longer than the page has room for leaves an element\'s pane its room beside the list', async () => {
+    const { data } = await page.api('GET', '/model');
+    const entity = data.model.dimensions.find((each) => each.name === 'Entity');
+    const long = { ...entity, elements: [...entity.elements, { name: 'Professional services and consulting fees for the international subsidiaries, restated', type: 'numeric' }] };
+    const put = await page.api('PUT', '/dimensions/Entity', { based_on: data.version, dimension: long });
+    expect(put.status === 200, `The long name was not added: ${quoted(put.data)}`);
+    try {
+      await page.goto('/model?dimension=Entity');
+      await page.waitFor(`document.querySelector('.element-detail')`, 'the element\'s pane');
+      const room = await page.evaluate(`(() => {
+        const pane = document.querySelector('.model-pane');
+        return { sideways: pane.scrollWidth - pane.clientWidth, over: Math.round(document.querySelector('.element-detail').getBoundingClientRect().right - pane.getBoundingClientRect().right) };
+      })()`);
+      expect(room.sideways <= 0 && room.over <= 0, `The element's pane reaches ${room.over} pixels past the page, which scrolls ${room.sideways} sideways.`);
+    } finally {
+      const version = (await page.api('GET', '/model')).data.version;
+      const back = await page.api('PUT', '/dimensions/Entity', { based_on: version, dimension: entity });
+      expect(back.status === 200, `Entity was not put back: ${quoted(back.data)}`);
+    }
+  });
   await step('The model\'s editor shows a dimension', async () => {
     await page.goto('/model?dimension=Entity');
     await page.waitFor(`document.querySelector('[role="treeitem"][data-name="Total Entity"]')`, 'the tree of elements');
