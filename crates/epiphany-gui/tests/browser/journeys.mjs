@@ -1587,6 +1587,27 @@ async function exploring() {
       await page.call('Emulation.clearDeviceMetricsOverride');
     }
   });
+  await step('In a smaller laptop\'s window Explore\'s zones stand side by side, and a dashboard\'s buttons go beneath its title rather than squeeze it', async () => {
+    await page.call('Emulation.setDeviceMetricsOverride', { width: 1024, height: 768, deviceScaleFactor: 1, mobile: false });
+    try {
+      await page.goto('/explore?cube=General%20Ledger');
+      await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
+      // Side by side, their names level, the zones leave the grid the height they would take stacked.
+      const names = await page.evaluate(`[...document.querySelectorAll('.zone-label')].map((label) => Math.round(label.getBoundingClientRect().top))`);
+      expect(names.length === 3 && names.every((top) => top === names[0]), `The layout's zones' names stand at ${quoted(names)}, rather than side by side.`);
+      await page.goto('/dashboards?name=Quarter');
+      await page.waitFor(`document.querySelector('.dash-tile')`, 'the dashboard');
+      const squeezed = await page.evaluate(`(() => {
+        const title = document.querySelector('.page-head .grow').getBoundingClientRect().width;
+        const least = 16 * parseFloat(getComputedStyle(document.documentElement).fontSize);
+        return title < least - 1 ? Math.round(title) : 0;
+      })()`);
+      expect(!squeezed, `The dashboard's title is squeezed to ${squeezed} pixels by its buttons.`);
+      await page.audit('A dashboard in a smaller laptop\'s window');
+    } finally {
+      await page.call('Emulation.clearDeviceMetricsOverride');
+    }
+  });
 }
 
 async function changingTheModel() {
