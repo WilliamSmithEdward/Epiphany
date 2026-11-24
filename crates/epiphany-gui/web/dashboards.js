@@ -37,6 +37,8 @@ const SIZES = {
   text: { w: 6, h: 3, least: [2, 2] },
 };
 const sizeOf = (tile) => SIZES[tile.show ?? 'bars'] ?? SIZES.bars;
+/** A tile known by what it shows, wherever it stands: to follow it as the board changes. */
+const tileKey = (tile) => JSON.stringify({ ...tile, place: undefined });
 
 /** The sizes a tile may be given at once, as a home screen's widgets are. */
 const PRESETS = [['Small', 3, 4], ['Medium', 6, 8], ['Large', 8, 12], ['Full width', 12, 8]];
@@ -673,25 +675,64 @@ class Dashboards {
     this.past.push(JSON.stringify(this.editing));
     if (this.past.length > 100) this.past.shift();
     this.future = [];
+    const stood = draw ? this.boxes() : null;
     make();
-    if (draw) this.draw();
+    if (draw) this.drawFrom(stood);
     else this.retitle();
   }
 
   undo() {
     if (!this.past.length) return;
     this.future.push(JSON.stringify(this.editing));
+    const stood = this.boxes();
     this.editing = JSON.parse(this.past.pop());
-    this.draw();
+    this.drawFrom(stood);
     announce('Undone');
   }
 
   redo() {
     if (!this.future.length) return;
     this.past.push(JSON.stringify(this.editing));
+    const stood = this.boxes();
     this.editing = JSON.parse(this.future.pop());
-    this.draw();
+    this.drawFrom(stood);
     announce('Done again');
+  }
+
+  /**
+   * Where each tile of the board stands, by what it shows, for the board to be drawn again
+   * moving from there; nothing where motion is to be reduced.
+   */
+  boxes() {
+    if (!this.cards || matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
+    const tiles = this.shown()?.tiles ?? [];
+    return this.cards.map((card, index) => ({ key: tileKey(tiles[index]), box: card.getBoundingClientRect() }));
+  }
+
+  /**
+   * Draws the board again, each tile gliding from where it `stood` to its new place, and one
+   * new to the board rising into its own: the board is seen to change rather than to jump.
+   * A tile made larger or smaller takes its size at once, its chart drawn again to it.
+   */
+  drawFrom(stood) {
+    this.draw();
+    if (!stood) return;
+    const left = [...stood];
+    const tiles = this.shown()?.tiles ?? [];
+    const easing = 'cubic-bezier(.2, .8, .2, 1)';
+    this.cards.forEach((card, index) => {
+      const key = tileKey(tiles[index]);
+      const was = left.findIndex((each) => each.key === key);
+      if (was < 0) {
+        card.animate([{ opacity: 0, transform: 'translateY(8px) scale(.97)' }, { opacity: 1, transform: 'none' }], { duration: 220, easing });
+        return;
+      }
+      const [{ box: from }] = left.splice(was, 1);
+      const box = card.getBoundingClientRect();
+      const [dx, dy] = [from.left - box.left, from.top - box.top];
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 240, easing });
+    });
   }
 
   /** A new dashboard: a blank one, or a copy of the one shown, as Power BI duplicates a page. */
