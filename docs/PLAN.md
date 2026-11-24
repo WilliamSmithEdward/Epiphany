@@ -475,7 +475,8 @@ practice that means:
     went from 44 MB to 24 MB
   - `/dimensions/{name}/definition`: one dimension as it is edited and put back, which the
     model's editor fetches rather than the whole model; the outline names each dimension's
-    subsets (done)
+    subsets, and the model version it last changed in, so that a copy of it is fetched again
+    only once it changes (done)
   - `/cells/read`, `/cells/write`, `/cells/spread`: batched. Each cell names its cube, so
     one batch can span cubes, as one worksheet calculation can. A read reports errors per
     cell; a write is all or nothing and reports the first bad cell (read and write done)

@@ -4201,9 +4201,16 @@
           "name",
           "type",
           "element_count",
-          "subsets"
+          "subsets",
+          "changed_in"
         ],
         "properties": {
+          "changed_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model version in which it last changed: `GET /dimensions/{name}` says the same of it\nin every version since, so a copy of what it said is good until this changes.",
+            "minimum": 0
+          },
           "element_count": {
             "type": "integer",
             "description": "How many elements it has.",

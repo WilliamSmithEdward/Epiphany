@@ -1033,6 +1033,9 @@ struct DimensionOutline {
     element_count: usize,
     /// The names of its subsets, in name order.
     subsets: Vec<String>,
+    /// The model version in which it last changed: `GET /dimensions/{name}` says the same of it
+    /// in every version since, so a copy of what it said is good until this changes.
+    changed_in: u64,
 }
 
 /// The model in outline: its cubes and dashboards whole, and its dimensions without their
@@ -1073,6 +1076,7 @@ async fn get_outline(
             kind: dimension.kind,
             element_count: count(id, dimension.elements.len()),
             subsets: dimension.subsets.keys().cloned().collect(),
+            changed_in: database.dimension_version(id as DimensionId),
         });
     Json(ModelOutline {
         version: database.model_version(),

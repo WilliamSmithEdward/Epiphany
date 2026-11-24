@@ -1,10 +1,17 @@
-// Dimensions as the pages use them, fetched once for each model version, and the dialog
-// that chooses one member of a dimension from its tree.
+// Dimensions as the pages use them, each fetched again only once it has changed, and the
+// dialog that chooses one member of a dimension from its tree.
 
 import { get, modelVersion, part } from './api.js';
+import { model } from './app.js';
 import { marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
 import { dialog, h, icon } from './ui.js';
 
+/**
+ * Each dimension fetched, by its name: the model version it last changed in, as the outline
+ * says, and the dimension, or the fetching of it. A dimension is fetched again only once it
+ * has changed, and the copy before let go: one of a million elements holds some hundreds of
+ * megabytes of the page, and saving a dashboard changes the model but no dimension.
+ */
 const loaded = new Map();
 
 /**
@@ -16,26 +23,34 @@ const NOTHING = Object.freeze({});
 
 /**
  * A dimension with its elements, each by name in `byName`, and the names of its top
- * elements in `roots`; fetched once for each version of the model.
+ * elements in `roots`; fetched again only once it has changed.
  */
 export async function dimension(name) {
-  const key = `${modelVersion}\u0000${name}`;
-  if (!loaded.has(key)) {
-    const view = await get(`/dimensions/${part(name)}`);
-    // In one pass, as a dimension may hold a million: what the server leaves out of an
-    // element, it having none, filled in empty; each by name; and those at the top.
-    const byName = new Map();
-    const roots = [];
-    for (const element of view.elements) {
-      element.parents ??= NONE;
-      element.children ??= NONE;
-      element.attributes ??= NOTHING;
-      byName.set(element.name, element);
-      if (!element.parents.length) roots.push(element.name);
-    }
-    loaded.set(key, { ...view, byName, roots });
+  const changed = (await model()).dimensions.find((each) => each.name === name)?.changed_in ?? modelVersion;
+  if (loaded.get(name)?.changed !== changed) {
+    const fetching = fetched(name);
+    loaded.set(name, { changed, dimension: fetching });
+    // One that could not be fetched is not kept, to be asked for again.
+    fetching.catch(() => loaded.get(name)?.dimension === fetching && loaded.delete(name));
   }
-  return loaded.get(key);
+  return loaded.get(name).dimension;
+}
+
+/** A dimension as the server says it, made ready to be looked through. */
+async function fetched(name) {
+  const view = await get(`/dimensions/${part(name)}`);
+  // In one pass, as a dimension may hold a million: what the server leaves out of an
+  // element, it having none, filled in empty; each by name; and those at the top.
+  const byName = new Map();
+  const roots = [];
+  for (const element of view.elements) {
+    element.parents ??= NONE;
+    element.children ??= NONE;
+    element.attributes ??= NOTHING;
+    byName.set(element.name, element);
+    if (!element.parents.length) roots.push(element.name);
+  }
+  return { ...view, byName, roots };
 }
 
 /**

@@ -1120,6 +1120,25 @@ async function exploring() {
     const based = (await page.api('GET', '/model')).data.version;
     expect((await page.api('PUT', `/cubes/General%20Ledger`, { based_on: based, cube })).status === 200, 'The pinned view was not taken away.');
   });
+  await step('A change to the model that leaves the dimensions as they were fetches none of them again', async () => {
+    await page.goto('/explore?cube=General%20Ledger');
+    await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
+    const fetched = `performance.getEntriesByType('resource').filter((entry) => entry.name.includes('/api/dimensions/')).length`;
+    const before = await page.evaluate(fetched);
+    expect(before === 4, `${before} dimensions were fetched for the cube's four.`);
+    // A dashboard saved moves the model on, its dimensions as they were.
+    const based = (await page.api('GET', '/model')).data.version;
+    const dashboard = { name: 'Unseen', tiles: [{ show: 'text', text: 'Hello' }] };
+    expect((await page.api('PUT', '/dashboards/Unseen', { based_on: based, dashboard })).status === 200, 'The dashboard was not saved.');
+    await page.click('.nav a', 'Dashboards');
+    await page.waitFor(`location.pathname === '/dashboards' && document.querySelector('.dash-tile')`, 'the dashboards');
+    await page.click('.nav a', 'Explore');
+    await page.waitFor(`location.pathname === '/explore' && document.querySelector('td[data-r]')`, 'Explore again');
+    const after = await page.evaluate(fetched);
+    expect(after === before, `Explore fetched ${after - before} dimensions again, though none had changed.`);
+    const version = (await page.api('GET', '/model')).data.version;
+    expect((await page.api('DELETE', `/dashboards/Unseen?based_on=${version}`)).status === 200, 'The dashboard was not taken away.');
+  });
   await step('At a phone\'s width no page is wider than the screen, the grid shows on the first, and a name cut short shows whole', async () => {
     // A phone widens the page to what it holds and draws it smaller: the screen is the measure.
     const phone = { width: 390, height: 844 };

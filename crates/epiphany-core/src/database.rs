@@ -42,7 +42,8 @@ use crate::cells::CellError;
 use crate::cells::{At, Cells, Coordinate, Writes, check, coordinate, offered};
 use crate::mdx::{self, Asker, MdxError, QueryResult};
 use crate::model::{
-    Cube, CubeDef, DimensionDef, ElementDef, ElementId, Model, ModelDef, ModelError, Shared,
+    Cube, CubeDef, DimensionDef, DimensionId, ElementDef, ElementId, Model, ModelDef, ModelError,
+    PicklistDef, Shared,
 };
 use crate::reader::{Fed, Reader, Totals, feed};
 use locks::{Locks, Mode, Resource};
@@ -488,6 +489,8 @@ pub struct Database {
     definition: ModelDef,
     model: Model,
     model_version: u64,
+    /// The model version in which each dimension last changed, in the model's order.
+    dimension_versions: Vec<u64>,
     /// The committed cells of each cube, in [`Model::cubes`] order.
     cells: Vec<Cells>,
     /// The supporting detail of committed cells, by cube.
@@ -533,6 +536,7 @@ impl Database {
                 .map(|cube| Cells::for_cube(&model, cube))
                 .collect(),
             details: vec![Default::default(); model.cubes().len()],
+            dimension_versions: vec![model_version; definition.dimensions.len()],
             definition,
             model,
             model_version,
@@ -672,6 +676,13 @@ impl Database {
 
     pub fn model_version(&self) -> u64 {
         self.model_version
+    }
+
+    /// The model version in which a dimension last changed: what it holds, and what is worked
+    /// out from it, is the same in every version since. One that offers another dimension's
+    /// members in a picklist changes with the model, as that dimension may have.
+    pub fn dimension_version(&self, dimension: DimensionId) -> u64 {
+        self.dimension_versions[dimension as usize]
     }
 
     /// How many cells each cube stores, by its name, in the model's order.
@@ -1220,9 +1231,30 @@ impl Database {
             ),
             None => Default::default(),
         };
+        let version = self.model_version + 1;
+        self.dimension_versions = definition
+            .dimensions
+            .iter()
+            .map(|dimension| {
+                let offers = |element: &ElementDef| {
+                    matches!(element.picklist, Some(PicklistDef::Members(_)))
+                };
+                let was = self
+                    .model
+                    .dimension_id(&dimension.name)
+                    .map(|id| id as usize);
+                let kept = was.filter(|&id| self.definition.dimensions[id] == *dimension);
+                match kept {
+                    Some(id) if !dimension.elements.iter().any(offers) => {
+                        self.dimension_versions[id]
+                    }
+                    _ => version,
+                }
+            })
+            .collect();
         self.model = model;
         self.definition = definition;
-        self.model_version += 1;
+        self.model_version = version;
         self.changed();
         let mut dropped_cells = 0;
         if let Some((cells, dropped)) = moved {

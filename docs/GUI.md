@@ -87,7 +87,9 @@ only way to do something, and modal dialogs where a side panel would keep the da
   week, kept up to date as time passes; the moment itself is shown on hover and on paper.
 - **Fast with large results.** Only the rows and columns in view are drawn, so a grid of
   100,000 cells scrolls as smoothly as one of a hundred. Pages ask for the model in outline,
-  without its elements; a dimension is fetched whole the first time a page shows it. On a
+  without its elements; a dimension is fetched whole the first time a page shows it, and again
+  only once it has changed, as the outline says, its copy before let go: saving a dashboard
+  or a view fetches none of them again. On a
   release build that takes about 0.7 s for half a million elements and 2 s for a million,
   fetched, read and made ready (2026-11-22), and 1 s for a million once the server wrote a
   dimension straight from its model (2026-11-23). Members fetched only as a tree is opened

@@ -207,7 +207,7 @@ async fn the_outline_gives_the_model_but_its_dimensions_elements() {
                 .and_then(Value::as_object)
                 .map(|subsets| subsets.keys().collect())
                 .unwrap_or_default();
-            json!({ "name": dimension["name"], "type": kind, "element_count": count, "subsets": subsets })
+            json!({ "name": dimension["name"], "type": kind, "element_count": count, "subsets": subsets, "changed_in": 1 })
         })
         .collect();
     assert_eq!(outline["dimensions"], json!(sized));

@@ -42,6 +42,34 @@ fn database() -> Database {
     Database::new(definition()).unwrap()
 }
 
+#[test]
+fn a_dimension_keeps_the_version_it_last_changed_in() {
+    let mut database = database();
+    let versions = |database: &Database| [0, 1].map(|id| database.dimension_version(id));
+    assert_eq!(versions(&database), [1, 1]);
+    // A rule of a cube changes no dimension.
+    let mut model = definition();
+    model.cubes[0].rules = vec!["[Measure].[Units] = 1".to_owned()];
+    database.update_model(1, model.clone()).unwrap();
+    assert_eq!(versions(&database), [1, 1]);
+    // An element more changes its own dimension alone.
+    model.dimensions[1]
+        .elements
+        .push(serde_json::from_value(json!({ "name": "Price", "type": "numeric" })).unwrap());
+    database.update_model(2, model.clone()).unwrap();
+    assert_eq!(versions(&database), [1, 3]);
+    // One offering another dimension's members changes with every model, as that one may.
+    let members = MembersDef {
+        dimension: "Product".to_owned(),
+        subset: None,
+    };
+    model.dimensions[1].elements[1].picklist = Some(PicklistDef::Members(members));
+    database.update_model(3, model.clone()).unwrap();
+    model.cubes[0].rules.clear();
+    database.update_model(4, model).unwrap();
+    assert_eq!(versions(&database), [1, 5]);
+}
+
 fn cell(cube: &str, at: [&str; 2]) -> CellRef {
     CellRef {
         cube: cube.to_owned(),
