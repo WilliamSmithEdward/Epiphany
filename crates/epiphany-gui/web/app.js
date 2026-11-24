@@ -518,11 +518,13 @@ const unsigned = new Set();
 /** What went wrong, with a button to try again where `retry` is given, and `also` beside it. */
 export function failure(problem, retry, also = null, title = null) {
   const refused = problem instanceof ApiError && problem.status === 403;
+  // What is not there, as a view or a dimension taken away, is said so, and not asked for again to fail the same.
+  const missing = problem instanceof ApiError && problem.status === 404;
   const shown = empty(refused ? 'lock' : 'alert',
-    title ?? (refused ? 'You may not see this' : 'Something went wrong'),
+    title ?? (refused ? 'You may not see this' : missing ? 'Not found' : 'Something went wrong'),
     refused ? 'Your role does not allow it. Ask an administrator if you need it.' : problem.message,
     also,
-    retry ? h('button', { class: 'button', onclick: retry }, icon('refresh', 16), 'Try again') : null);
+    retry && !missing ? h('button', { class: 'button', onclick: retry }, icon('refresh', 16), 'Try again') : null);
   // Failed for want of a session, it is tried again by itself once the user signs in again.
   if (retry && problem instanceof ApiError && problem.status === 401) unsigned.add({ shown, retry });
   return shown;
