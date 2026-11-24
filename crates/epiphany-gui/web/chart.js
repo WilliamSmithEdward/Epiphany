@@ -559,9 +559,11 @@ function drawRing({ svg, width, height, labels, format, mark, colour, shown }, s
     const [x4, y4] = point(angle, inner);
     svg.append(mark(h('path', { class: `slice c${colour(slice.index)}`, d: `M${x1},${y1}A${outer},${outer} 0 ${large} 1 ${x2},${y2}L${x3},${y3}A${inner},${inner} 0 ${large} 0 ${x4},${y4}Z` }),
       { s: slice.s, c: slice.c, lines: [format(slice.value), slice.name, `${percent.format(slice.value / whole)} of ${format(whole)}`] }));
-    if (labels && sweep > 0.3) {
+    // A slice's share written on it where its arc, through the middle of the ring, holds it.
+    const share = percent.format(slice.value / whole);
+    if (labels && sweep * ((outer + inner) / 2) >= share.length * 6.5 + 6) {
       const [lx, ly] = point(angle + sweep / 2, (outer + inner) / 2);
-      svg.append(h('text', { class: 'value on-slice', x: lx, y: ly + 4, 'text-anchor': 'middle' }, percent.format(slice.value / whole)));
+      svg.append(h('text', { class: 'value on-slice', x: lx, y: ly + 4, 'text-anchor': 'middle' }, share));
     }
     angle += sweep;
   }
