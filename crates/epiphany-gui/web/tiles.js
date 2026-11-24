@@ -9,21 +9,6 @@ import { highlighter, toneOf } from './grid.js';
 import { Rows } from './tree.js';
 import { choices, dialog, extent, formatValue, h, shownText, widest } from './ui.js';
 
-/** The ways a tile shows its view, by name: what each is called, and its icon. */
-export const KINDS = {
-  figure: ['Key figure', 'hash'],
-  bars: ['Bars', 'chart'],
-  stacked: ['Stacked bars', 'bars'],
-  shares: ['100% stacked bars', 'shares'],
-  lines: ['Lines', 'explore'],
-  area: ['Area', 'area'],
-  ranked: ['Ranked bars', 'ranked'],
-  donut: ['Donut', 'ring'],
-  grid: ['Grid', 'grid'],
-  heatmap: ['Heatmap', 'heat'],
-  text: ['Text', 'text'],
-};
-
 /** The ways of showing a view that chart it; of them, those with axes, whose series may be drawn as lines over the rest. */
 export const CHARTS = new Set(['bars', 'stacked', 'shares', 'lines', 'area', 'ranked', 'donut']);
 export const AXES = new Set(['bars', 'stacked', 'shares', 'lines', 'area']);

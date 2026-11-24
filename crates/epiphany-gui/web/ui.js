@@ -126,6 +126,25 @@ const ICONS = {
 /** The key held with another for a command: Cmd on a Mac, Ctrl elsewhere. */
 export const MOD = /mac|iphone|ipad/i.test(navigator.userAgentData?.platform ?? navigator.platform ?? '') ? '⌘' : 'Ctrl';
 
+/**
+ * The ways a view is shown, by name: what each is called, and its icon. A dashboard's tile
+ * takes any; a view saved from Explore's chart, one of the charts, and is marked by its icon
+ * wherever it is listed.
+ */
+export const KINDS = {
+  figure: ['Key figure', 'hash'],
+  bars: ['Bars', 'chart'],
+  stacked: ['Stacked bars', 'bars'],
+  shares: ['100% stacked bars', 'shares'],
+  lines: ['Lines', 'explore'],
+  area: ['Area', 'area'],
+  ranked: ['Ranked bars', 'ranked'],
+  donut: ['Donut', 'ring'],
+  grid: ['Grid', 'grid'],
+  heatmap: ['Heatmap', 'heat'],
+  text: ['Text', 'text'],
+};
+
 /** An icon by name, `size` pixels square. */
 export function icon(name, size = 18) {
   return h('svg', {

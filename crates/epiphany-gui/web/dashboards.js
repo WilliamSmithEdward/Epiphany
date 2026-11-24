@@ -11,8 +11,8 @@ import { COLUMNS, firstFree, inReadingOrder, linesOf, moveOnGrid, nearest, onPag
 import { seriesNames, shape } from './chart.js';
 import { chooseMember, dimension } from './picker.js';
 import { csvOf, tsvOf } from './selection.js';
-import { askDrawn, AXES, CHARTS, KINDS, numbersOf, present, prose } from './tiles.js';
-import { choices, copyText, dialog, download, h, icon, invalid, menu, MOD, mount, notify, when, working } from './ui.js';
+import { askDrawn, AXES, CHARTS, numbersOf, present, prose } from './tiles.js';
+import { choices, copyText, dialog, download, h, icon, invalid, KINDS, menu, MOD, mount, notify, when, working } from './ui.js';
 
 /** A row's height and the gap between tiles, in pixels: as the styles have them. */
 const ROW = 40;

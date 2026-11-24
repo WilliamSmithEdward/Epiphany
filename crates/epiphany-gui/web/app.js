@@ -2,7 +2,7 @@
 
 import { ApiError, api, events, get } from './api.js';
 import { marked } from './tree.js';
-import { counted, dialog, h, icon, invalid, menu, MOD, mount, notify, revealable, when, working } from './ui.js';
+import { counted, dialog, h, icon, invalid, KINDS, menu, MOD, mount, notify, revealable, when, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
@@ -729,8 +729,9 @@ async function palette() {
     const explore = (cube, view) => `/explore?cube=${encodeURIComponent(cube.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`;
     found = [
       ...definition.cubes.map((cube) => ({ label: `Explore ${cube.name}`, kind: 'Cube', icon: 'cube', run: () => go(explore(cube)) })),
-      ...definition.cubes.flatMap((cube) => Object.keys(cube.views ?? {}).map((view) => ({
-        label: view, context: cube.name, kind: `View of ${cube.name}`, icon: 'grid', run: () => go(explore(cube, view)),
+      // Each view marked as it opens: its chart's icon, or the grid's.
+      ...definition.cubes.flatMap((cube) => Object.entries(cube.views ?? {}).map(([view, { chart }]) => ({
+        label: view, context: cube.name, kind: `View of ${cube.name}`, icon: KINDS[chart?.kind]?.[1] ?? 'grid', run: () => go(explore(cube, view)),
       }))),
       ...(definition.dashboards ?? []).map((dashboard) => ({ label: dashboard.name, kind: 'Dashboard', icon: 'dashboard', run: () => go(`/dashboards?name=${encodeURIComponent(dashboard.name)}`) })),
       ...(isAdmin() ? [
