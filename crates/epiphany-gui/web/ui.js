@@ -646,10 +646,15 @@ const RELATIVE = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
 /** The spans a moment within the week is said in, each in seconds, the largest first. */
 const SPANS = [['day', 86_400], ['hour', 3_600], ['minute', 60]];
 
-/** How long ago `date` was, as "5 minutes ago" or "yesterday", within the week; past it, its date and time. */
+/**
+ * How long ago `date` was, as "5 minutes ago" or "yesterday", within the week; past it, its
+ * date and time. A time to come, as when a key stops working, is its day alone: the hour is
+ * said on hover and on paper, and the day is what the list it stands in has room for.
+ */
 function ago(date) {
   const seconds = (Date.now() - date) / 1000;
   if (Math.abs(seconds) < 60) return RELATIVE.format(0, 'second');
+  if (seconds < 0) return date.toLocaleDateString(undefined, { dateStyle: 'medium' });
   const span = seconds > 0 && seconds < 7 * 86_400 && SPANS.find(([, size]) => seconds >= size);
   return span ? RELATIVE.format(-Math.floor(seconds / span[1]), span[0]) : date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 }
