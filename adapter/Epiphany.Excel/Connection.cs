@@ -41,6 +41,22 @@ namespace Epiphany.Excel
             public bool Ok => Status >= 200 && Status < 300;
         }
 
+        /// <summary>A dimension asked about: its fetching, and the model version the connection
+        /// had seen as it was asked for, which the dimension is at least as new as.</summary>
+        private sealed class Held
+        {
+            public Task<Fetched> Fetch;
+            public string Seen;
+        }
+
+        /// <summary>What the server answered for a dimension: its status, and the dimension made
+        /// ready once to answer every question, where there is one.</summary>
+        private sealed class Fetched
+        {
+            public int Status;
+            public Dimension Dimension;
+        }
+
         private readonly HttpClient http;
         private readonly object gate = new object();
         private readonly Timer timer;
@@ -48,7 +64,12 @@ namespace Epiphany.Excel
         private readonly SemaphoreSlim sending = new SemaphoreSlim(1);
         private List<Cell> reads = new List<Cell>();
         private List<Cell> writes = new List<Cell>();
-        private Dictionary<string, Task<Reply>> dimensions = new Dictionary<string, Task<Reply>>();
+        // Each dimension asked about, by its key.
+        private Dictionary<string, Held> dimensions = new Dictionary<string, Held>();
+
+        // The dimensions held, being checked against a new version of the model: a question
+        // about one waits for it.
+        private Task checking = Task.CompletedTask;
 
         public string Address { get; }
 
@@ -56,7 +77,8 @@ namespace Epiphany.Excel
         public event Action SignInNeeded;
 
         /// <summary>Raised when an answer comes from another version of the model than the
-        /// one before it did. The dimensions held have been forgotten by then.</summary>
+        /// one before it did. The dimensions held are checked against it by then, and those it
+        /// has changed are fetched again when they are next asked about.</summary>
         public event Action ModelChanged;
 
         // The model version the last answer came from, as the server's header gave it.
@@ -138,34 +160,87 @@ namespace Epiphany.Excel
         public async Task<object> Ask(string dimension, Func<Dimension, object> question)
         {
             var key = Dimension.Key(dimension);
-            Task<Reply> fetch;
+            // Held across a change to the model, a dimension is first checked against it.
+            Task waiting;
+            lock (gate)
+                waiting = checking;
+            await waiting.ConfigureAwait(false);
+            Held held;
             lock (gate)
             {
-                if (!dimensions.TryGetValue(key, out fetch))
+                if (!dimensions.TryGetValue(key, out held))
                 {
-                    fetch = Send(HttpMethod.Get, "dimensions/" + Uri.EscapeDataString(dimension), null);
-                    dimensions[key] = fetch;
+                    var seen = Volatile.Read(ref version);
+                    held = new Held { Fetch = Fetch(dimension), Seen = seen };
+                    dimensions[key] = held;
                 }
             }
-            var reply = await fetch.ConfigureAwait(false);
-            if (reply.Ok)
-                return question(new Dimension(reply.Body));
-            if (reply.Status == 404)
+            var fetched = await held.Fetch.ConfigureAwait(false);
+            if (fetched.Dimension != null)
+                return question(fetched.Dimension);
+            if (fetched.Status == 404)
                 return KeyError;
             // A failure is not worth remembering; the next question asks the server again.
             lock (gate)
             {
-                if (dimensions.TryGetValue(key, out var kept) && kept == fetch)
+                if (dimensions.TryGetValue(key, out var kept) && kept == held)
                     dimensions.Remove(key);
             }
             return Unavailable;
+        }
+
+        /// <summary>A dimension fetched, and made ready once to answer every question about it:
+        /// made again for each, a dimension of a million elements took seconds a question.</summary>
+        private async Task<Fetched> Fetch(string dimension)
+        {
+            var reply = await Send(HttpMethod.Get, "dimensions/" + Uri.EscapeDataString(dimension), null).ConfigureAwait(false);
+            return new Fetched { Status = reply.Status, Dimension = reply.Ok ? new Dimension(reply.Body) : null };
         }
 
         /// <summary>Forgets the dimensions held, so that the next questions fetch them again.</summary>
         public void Refresh()
         {
             lock (gate)
-                dimensions = new Dictionary<string, Task<Reply>>();
+                dimensions = new Dictionary<string, Held>();
+        }
+
+        /// <summary>Checks the dimensions held against the model as it is now, after one check
+        /// before it: those it has not changed since each was fetched are kept, as the outline
+        /// tells, and the rest forgotten. A dimension of a million elements is some 90 MB to
+        /// fetch and read, and saving a dashboard changes the model but no dimension.</summary>
+        private void Check()
+        {
+            lock (gate)
+                checking = Checked(checking);
+        }
+
+        private async Task Checked(Task before)
+        {
+            await before.ConfigureAwait(false);
+            Dictionary<string, Held> held;
+            lock (gate)
+                held = new Dictionary<string, Held>(dimensions);
+            if (held.Count == 0)
+                return;
+            var outline = await Send(HttpMethod.Get, "model/outline", null, true).ConfigureAwait(false);
+            var changed = new Dictionary<string, long>();
+            foreach (var each in Json.Items(Json.Field(outline.Body, "dimensions")))
+            {
+                if (Json.Field(each, "name") is string name && Json.Field(each, "changed_in") is object at)
+                    changed[Dimension.Key(name)] = Convert.ToInt64(at);
+            }
+            lock (gate)
+            {
+                foreach (var pair in held)
+                {
+                    var fetch = pair.Value.Fetch;
+                    var kept = outline.Ok && fetch.Status == TaskStatus.RanToCompletion && fetch.Result.Dimension != null
+                        && long.TryParse(pair.Value.Seen, out var seen)
+                        && changed.TryGetValue(pair.Key, out var since) && since <= seen;
+                    if (!kept && dimensions.TryGetValue(pair.Key, out var now) && now == pair.Value)
+                        dimensions.Remove(pair.Key);
+                }
+            }
         }
 
         /// <summary>The most cells read in one request: some half a megabyte of them.</summary>
@@ -355,7 +430,7 @@ namespace Epiphany.Excel
                         var before = Interlocked.Exchange(ref version, versions.First());
                         if (before != null && before != version)
                         {
-                            Refresh();
+                            Check();
                             ModelChanged?.Invoke();
                         }
                     }

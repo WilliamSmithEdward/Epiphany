@@ -585,4 +585,49 @@ namespace Epiphany.Excel.Tests
             }
         }
     }
+
+    /// <summary>Changes to the model, on a server of their own.</summary>
+    public sealed class ModelChangeTests : IClassFixture<Home>
+    {
+        private readonly Home home;
+
+        public ModelChangeTests(Home home)
+        {
+            this.home = home;
+        }
+
+        [Fact]
+        public async Task ADimensionIsFetchedAgainOnlyOnceItHasChanged()
+        {
+            var at = new[] { "Rent", "UK", "Mar", "Actual" };
+            using (var connection = new Connection(home.Address))
+            using (var http = new System.Net.Http.HttpClient())
+            {
+                var changes = 0;
+                connection.ModelChanged += () => changes++;
+                // A read first, so that the connection knows the model's version as it asks.
+                Assert.Equal(0.0, await connection.Read("General Ledger", at));
+                Assert.Equal(9.0, await connection.Ask("Period", period => period.Size()));
+                Assert.Equal(3.0, await connection.Ask("Entity", entity => entity.Size()));
+
+                // Someone gives Entity an element more; Period stays as it was.
+                var entity = "{\"based_on\":1,\"dimension\":{\"name\":\"Entity\",\"elements\":["
+                    + "{\"name\":\"Total Entity\",\"type\":\"consolidated\",\"children\":[{\"name\":\"US\"},{\"name\":\"UK\"}]},"
+                    + "{\"name\":\"US\",\"type\":\"numeric\"},{\"name\":\"UK\",\"type\":\"numeric\"},{\"name\":\"FR\",\"type\":\"numeric\"}]}}";
+                var put = new System.Net.Http.StringContent(entity, System.Text.Encoding.UTF8, "application/json");
+                Assert.True((await http.PutAsync(home.Address + "/dimensions/Entity", put)).IsSuccessStatusCode);
+
+                // The next answer comes from the new model, and the change is noticed at once.
+                Assert.Equal(0.0, await connection.Read("General Ledger", at));
+                Assert.Equal(1, changes);
+                // Period is answered from the copy held, asking the server nothing; Entity is
+                // fetched again, with FR.
+                var sent = connection.Requests;
+                Assert.Equal(9.0, await connection.Ask("Period", period => period.Size()));
+                Assert.Equal(sent, connection.Requests);
+                Assert.Equal(4.0, await connection.Ask("Entity", found => found.Size()));
+                Assert.Equal(sent + 1, connection.Requests);
+            }
+        }
+    }
 }

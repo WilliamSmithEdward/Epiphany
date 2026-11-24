@@ -605,7 +605,9 @@ practice that means:
   - Reads and writes asked for within twenty milliseconds of each other go as one request
     each, the writes first. A write the server refuses gets `*KEY_ERR` and is left out; the
     rest are sent again together.
-  - Dimension functions answer from a copy of the dimension fetched once per connection.
+  - Dimension functions answer from a copy of the dimension fetched once per connection, and
+    made ready once to answer them all: made again for each question, a dimension of a
+    million elements took seconds a formula.
   - Connect, Disconnect and Refresh commands; a sign-in window that opens when the server
     refuses a request; the address and user name remembered, never the password.
   - Tests that run the connection against a real server, without Excel.
@@ -613,8 +615,10 @@ practice that means:
   - The table is recalled, not observed: no PAfE installation was at hand. Its unverified
     rows still need checking against a real PAfE workbook.
   - Every response of the server carries the model's version in a header. When an answer
-    comes from another version than the one before it, the add-in forgets its copies of
-    the dimensions and has every formula ask again. A change is therefore noticed at the
+    comes from another version than the one before it, the add-in asks the outline which
+    dimensions have changed since its copies were fetched, forgets those alone, and has every
+    formula ask again: saving a dashboard changes the model but no dimension, and a dimension
+    of a million elements is some 90 MB to fetch. A change is therefore noticed at the
     add-in's next request, whatever it is for, and not before. A dimension function
     answered from a copy already held makes no request, so a workbook of nothing but those
     notices only at Refresh.
