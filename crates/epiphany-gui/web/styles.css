@@ -414,6 +414,12 @@ dialog[open] { animation: pop .16s var(--ease); }
 .menu button:disabled, .finder-actions button:disabled { color: var(--text-3); cursor: default; background: none; }
 .menu hr { border: 0; border-top: 1px solid var(--line); margin: var(--s1) 0; }
 .menu .menu-label { padding: var(--s2) var(--s3) var(--s1); font-size: var(--text-xs); font-weight: 600; color: var(--text-3); }
+/* A menu, or a list to find in, opened beside its button unfolds from it: downwards, or
+   upwards where it opens above. */
+.menu, .finder-panel { transform-origin: top left; animation: unfold .12s var(--ease); }
+.menu.above, .finder-panel.above { transform-origin: bottom left; animation-name: unfold-up; }
+@keyframes unfold { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+@keyframes unfold-up { from { opacity: 0; transform: translateY(4px) scale(.98); } }
 
 /* ---- Finding one among many: a search over a list drawn where it is seen ---- */
 

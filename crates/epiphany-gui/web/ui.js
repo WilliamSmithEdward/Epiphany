@@ -43,6 +43,18 @@ export function mount(element, ...children) {
   return element;
 }
 
+/** Whether the reader asks for motion to be reduced. */
+const still = matchMedia('(prefers-reduced-motion: reduce)');
+
+/**
+ * Brings in an element new in its place, as a page come in place of another, by fading it up
+ * rather than putting it there at once; at once where motion is to be reduced. Opacity alone
+ * moves, so that nothing fixed or sticky within it is moved with it.
+ */
+export function enter(element, duration = 160) {
+  if (element && !still.matches) element.animate([{ opacity: 0 }, { opacity: 1 }], { duration, easing: 'ease-out' });
+}
+
 /* Icons: 24-unit strokes, drawn at the size asked for. */
 const ICONS = {
   explore: 'M3 3v18h18 M7 15l4-4 3 3 5-6',
@@ -494,7 +506,10 @@ export function menu(items, at) {
   const height = element.offsetHeight;
   element.style.left = `${Math.max(8, Math.min(box.left, innerWidth - width - 8))}px`;
   const below = box.bottom + 4;
-  element.style.top = `${below + height > innerHeight - 8 ? Math.max(8, box.top - height - 4) : below}px`;
+  // Above what opened it where there is no room beneath, it unfolds upwards.
+  const above = below + height > innerHeight - 8;
+  element.classList.toggle('above', above);
+  element.style.top = `${above ? Math.max(8, box.top - height - 4) : below}px`;
   document.addEventListener('pointerdown', outside, true);
   buttons.find((button) => !button.disabled)?.focus();
   openMenu = { close };

@@ -318,7 +318,10 @@ export function pick({ items, at, label, current = null, actions = [], row, draw
     const box = at.getBoundingClientRect();
     panel.style.left = `${Math.max(8, Math.min(box.left, innerWidth - panel.offsetWidth - 8))}px`;
     if (box.bottom + 4 + panel.offsetHeight <= innerHeight - 8 || box.top < innerHeight / 2) panel.style.top = `${box.bottom + 4}px`;
-    else panel.style.bottom = `${innerHeight - box.top + 4}px`;
+    else {
+      panel.style.bottom = `${innerHeight - box.top + 4}px`;
+      panel.classList.add('above');
+    }
     document.addEventListener('pointerdown', outside, true);
     opened = close;
     found.input.focus();

@@ -15,7 +15,7 @@ import { chooseMember, dimension } from './picker.js';
 import { csvOf, tsvOf } from './selection.js';
 import { askDrawn, AXES, CHARTS, numbersOf, present, prose } from './tiles.js';
 import { marked } from './tree.js';
-import { choices, copyText, counted, cubeSaid, dialog, download, h, icon, invalid, KINDS, menu, MOD, mount, notify, when, working } from './ui.js';
+import { choices, copyText, counted, cubeSaid, dialog, download, enter, h, icon, invalid, KINDS, menu, MOD, mount, notify, when, working } from './ui.js';
 
 /** A row's height and the gap between tiles, in pixels: as the styles have them. */
 const ROW = 40;
@@ -107,6 +107,7 @@ class Dashboards {
   /** Shows the dashboard the address names, or else the first, moving to it in place. */
   update(params) {
     const name = params.get('name');
+    const was = this.name;
     // The dashboard being edited, a copy, and whether it is new; null when only shown.
     this.editing = null;
     this.fresh = false;
@@ -126,6 +127,8 @@ class Dashboards {
       if (name !== this.name) readdress(`/dashboards?name=${encodeURIComponent(this.name)}`);
     }
     this.draw();
+    // Another dashboard's tiles fade up in place of those of the one before.
+    if (was !== undefined && was !== this.name) enter(this.target.querySelector('.board-frame'));
   }
 
   list() {
@@ -729,13 +732,14 @@ class Dashboards {
   boxes() {
     if (!this.cards || matchMedia('(prefers-reduced-motion: reduce)').matches) return null;
     const tiles = this.shown()?.tiles ?? [];
-    return this.cards.map((card, index) => ({ key: tileKey(tiles[index]), box: card.getBoundingClientRect() }));
+    return this.cards.map((card, index) => ({ key: tileKey(tiles[index]), box: card.getBoundingClientRect(), card }));
   }
 
   /**
-   * Draws the board again, each tile gliding from where it `stood` to its new place, and one
-   * new to the board rising into its own: the board is seen to change rather than to jump.
-   * A tile made larger or smaller takes its size at once, its chart drawn again to it.
+   * Draws the board again, each tile gliding from where it `stood` to its new place, one new
+   * to the board rising into its own and one taken away fading where it stood: the board is
+   * seen to change rather than to jump. A tile made larger or smaller takes its size at once,
+   * its chart drawn again to it.
    */
   drawFrom(stood) {
     this.draw();
@@ -756,6 +760,13 @@ class Dashboards {
       if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
       card.animate([{ transform: `translate(${dx}px, ${dy}px)` }, { transform: 'none' }], { duration: 240, easing });
     });
+    // Those left were taken away: each, as it was drawn, fades over the page where it stood.
+    for (const { card, box } of left) {
+      Object.assign(card.style, { position: 'fixed', left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`, margin: '0', zIndex: '60', pointerEvents: 'none' });
+      card.inert = true;
+      document.body.append(card);
+      card.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(.96)' }], { duration: 180, easing }).finished.finally(() => card.remove());
+    }
   }
 
   /** Goes to another dashboard, found by typing among however many, those shown lately first. */

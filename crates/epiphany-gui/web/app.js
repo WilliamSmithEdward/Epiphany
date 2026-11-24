@@ -3,7 +3,7 @@
 import { ApiError, api, events, get } from './api.js';
 import { choseLately, finder, lateFirst } from './finder.js';
 import { marked } from './tree.js';
-import { counted, cubeSaid, dialog, h, icon, invalid, KINDS, menu, MOD, mount, notify, revealable, when, working } from './ui.js';
+import { counted, cubeSaid, dialog, enter, h, icon, invalid, KINDS, menu, MOD, mount, notify, revealable, when, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
@@ -457,8 +457,11 @@ function awaitNext(shape) {
     shown.firstElementChild.style.animationDelay = '0s';
     mount(page, shown);
   }, 150);
+  // The page come in its place, or its outline, fades up rather than taking its place at once.
   const watcher = new MutationObserver(() => {
-    if (page.firstElementChild !== leaving) waiting();
+    if (page.firstElementChild === leaving) return;
+    enter(page.firstElementChild);
+    waiting();
   });
   waiting = () => {
     clearTimeout(timer);
