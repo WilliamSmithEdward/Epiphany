@@ -1665,6 +1665,10 @@ impl<'a> Evaluator<'a> {
                 count(1..=1)?;
                 self.ascendants(&arguments[0], context).map(Datum::Set)
             }
+            "DRILLUPLEVEL" => {
+                count(1..=2)?;
+                self.drilled_up(arguments, context).map(Datum::Set)
+            }
             "NAMETOSET" | "STRTOVALUE" => {
                 count(1..=1)?;
                 self.read_from(function, &arguments[0], context)
@@ -2657,6 +2661,43 @@ impl<'a> Evaluator<'a> {
             found.push(vec![member]);
         }
         Ok(found)
+    }
+
+    /// `DrillUpLevel(set [, level])`: the set without its members below the level, by each
+    /// tuple's first member; without a level, without those at the lowest level the set
+    /// reaches. Members of other dimensions, and calculated ones, stay.
+    fn drilled_up(&self, arguments: &[Expr], context: &Context) -> Evaluated<Vec<Tuple>> {
+        let set = self.set(&arguments[0], context)?;
+        // Levels count up from the leaves: the lowest is the smallest number.
+        let level_of = |tuple: &Tuple| match tuple.first() {
+            Some(&Member {
+                position,
+                id: Id::Element(id),
+            }) => Some((
+                position,
+                self.dimension(position).elements[id as usize].level,
+            )),
+            _ => None,
+        };
+        let (position, least) = match arguments.get(1) {
+            Some(argument) => match self.evaluate(argument, context)? {
+                Datum::Level(position, level) => (position, level),
+                _ => return fail("DrillUpLevel takes a level"),
+            },
+            None => match set
+                .iter()
+                .filter_map(level_of)
+                .min_by_key(|&(_, level)| level)
+            {
+                Some((position, lowest)) => (position, lowest + 1),
+                None => return Ok(set),
+            },
+        };
+        let kept = |tuple: &Tuple| match level_of(tuple) {
+            Some((at, level)) => at != position || level >= least,
+            None => true,
+        };
+        Ok(set.into_iter().filter(|tuple| kept(tuple)).collect())
     }
 
     /// `NameToSet(text)`: the set of the one member the text names; `StrToValue(text)`: the

@@ -269,7 +269,9 @@ practice that means:
     `.PrevMember`, `.NextMember`, `.Lag(n)`, `.Lead(n)`, and `StrToMember`, `StrToTuple`,
     `StrToSet` for a member, tuple or set given as text, with `MemberToStr`, `TupleToStr`
     and `SetToStr` writing one as such text; `NameToSet` for the set of a member named as
-    text, and `StrToValue` for the value of an expression given as text.
+    text, and `StrToValue` for the value of an expression given as text. `DrillUpLevel(set
+    [, level])` leaves out the set's members below the level, or without one those at the
+    lowest level the set reaches.
   - Levels: `[Dimension].Levels(n)`, `[Dimension].Levels('name')`, `[Dimension].[name]`
     and `member.Level`, with `.Members`, `.Ordinal` and `.Name`; `Ancestor(member, level)`,
     `Descendants(member, level [, flag])`, `Cousin(member, ancestor)`,
