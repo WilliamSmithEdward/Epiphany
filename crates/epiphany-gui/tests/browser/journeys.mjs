@@ -1464,6 +1464,13 @@ async function exploring() {
     await page.press('ArrowRight');
     await page.waitFor(`location.search === '?name=Notes' && document.querySelector('.dashboard.presenting .text-tile') && document.querySelector('.tile-table.heat .shade')`, 'the next dashboard, presented, its heatmap shaded');
     await page.audit('A heatmap, presented');
+    // Shorter than the screen at the rows it is worked on in, the board fills the screen.
+    const short = await page.evaluate(`(() => {
+      const shown = document.querySelector('.dashboard.presenting');
+      const foot = shown.getBoundingClientRect().bottom - parseFloat(getComputedStyle(shown).paddingBottom);
+      return Math.round(foot - document.querySelector('.dashboard.presenting .board').getBoundingClientRect().bottom);
+    })()`);
+    expect(Math.abs(short) <= 1, `The presented board stops ${short} pixels short of the screen's foot.`);
     await page.press('Escape');
     await page.waitFor(`!document.querySelector('.dashboard.presenting') && getComputedStyle(document.querySelector('.nav')).display !== 'none'`, 'the dashboard, no longer presented');
   });

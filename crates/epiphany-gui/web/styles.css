@@ -1060,6 +1060,12 @@ body:has(.dashboard.presenting) .shell { grid-template: "main" 1fr / 1fr; }
 body:has(.dashboard.presenting) :is(.bar, .nav) { display: none; }
 .main:fullscreen { background: var(--bg); }
 .dashboard.presenting :is(.tile-head .button, .tile-corner) { display: none; }
+/* Presented, the board fills the screen beneath its head: its rows as tall as that takes, but
+   never shorter than they are worked on, a board too tall for the screen scrolling as ever. */
+.dashboard.presenting { display: flex; flex-direction: column; }
+.dashboard.presenting > .dash-work { flex: 1; min-height: 0; align-items: stretch; }
+.dashboard.presenting .board-frame { container-type: size; }
+.dashboard.presenting .board { --dash-row: max(40px, (100cqh - (var(--rows, 1) - 1) * var(--dash-gap)) / var(--rows, 1)); }
 
 /* A tile shown over the whole page, the dashboard dimmed beneath it. */
 .board > .dash-tile.focused { position: fixed; z-index: 70 !important; left: 3vw; top: calc(var(--bar) + 3vh); width: 94vw; height: calc(100vh - var(--bar) - 6vh); box-shadow: var(--shadow-3); transition: none; animation: pop .16s var(--ease); }
