@@ -507,6 +507,29 @@ commits, by time, by user and by cell, are the same from both, byte for byte. A 
 back passes over the lines newer than it by the time each begins with, without reading
 them as JSON.
 
+## Starting
+
+```
+cargo run --release -p epiphany-server --example bench_start [cells]
+```
+
+A directory whose cube of four dimensions of a hundred leaves holds the cells at its first
+coordinates, written in commits of 250,000; opened three times once the log has become a
+snapshot, so that each opening reads the model and the snapshot alone, as a server starting
+does (2026-11-24):
+
+| Cells | Written | Snapshot | Opened |
+| --- | --- | --- | --- |
+| 1,000,000 | 1.12 s | 60 MB | 0.33 s |
+| 5,000,000 | 8.30 s | 302 MB | 1.68 s |
+
+The snapshot is read as it comes, through a buffer, and never held whole. Held whole and
+read from memory, the million open in 0.25 s rather than 0.33, but the file is then held
+beside the cells as they are stored, 60 MB a million: the peak memory of a start was
+brought down from 446 MB to 182 MB for a million and a half cells, and a quarter of the
+time is not worth giving that back. A buffer of a megabyte in place of eight kilobytes
+opens them in 0.32 s. Neither change is made.
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.
