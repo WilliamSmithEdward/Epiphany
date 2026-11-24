@@ -161,6 +161,12 @@ only way to do something, and modal dialogs where a side panel would keep the da
   described by the refusal, and gives it the keys, until it is changed. A password typed can
   be shown, and hidden again, by the button inside its field, which says beneath it, while
   it is typed in, that Caps Lock is on.
+- **Seen to change.** What changes moves rather than jumps: a page, a menu and a list to
+  find in come in; a tile glides to its new place and one taken away fades where it stood;
+  and a chart drawn again for new values, as a tile run at the members picked in another,
+  moves to them from those it showed, each bar from its old box, each point from its old
+  place and each line along its old course, what is new fading in. Where the system asks
+  for less motion, each is at once where it ends.
 - **Notices that can be read.** A notice stands as long as its words take to read, an error
   twice as long, and waits while it is pointed at, has the keys or the page is out of sight.
   The same notice again takes the place of the first, and four at most stand at once.

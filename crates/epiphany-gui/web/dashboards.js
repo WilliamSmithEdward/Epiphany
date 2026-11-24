@@ -603,6 +603,8 @@ class Dashboards {
         pick: this.editing ? null : (members, key) => this.select({ tile: index, key, members }),
         picked: this.selection?.tile === index ? this.selection.key : null,
         fresh,
+        // Run again, its chart moves from the values it showed to the new ones.
+        was: body.querySelector(':scope > .chart'),
       }));
     // An answer given before is shown again at once, and still.
     const answer = this.answers.get(asked);

@@ -22,6 +22,10 @@ const MOST_SLICES = 12;
 const NEAR_BAR = 4;
 /** How far to either side of a line's only column of dots, in pixels, the pointer finds them. */
 const NEAR_LONE = 48;
+/** The most shapes a chart moves from where another's stood: past them it is drawn at once. */
+const GLIDE_MOST = 800;
+/** What each chart drew last, its kind and its shapes, for one drawn in its place to move from. */
+const drawings = new WeakMap();
 
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
 const percent = new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 });
@@ -157,8 +161,9 @@ function ringSlices(data) {
  * drawn as bars takes for its colour. `pick` is
  * called with the series and category of a mark clicked, or chosen with Enter, and `picked`
  * names the one picked, the others fading. `fresh`: the values are new, and come in moving.
+ * `was`: the chart this one is drawn in place of, whose marks, of the same kind, it moves from.
  */
-export function chart(data, kind, { height = 380, fill = false, labels = false, format = formatNumber, tone = null, pick = null, picked = null, fresh = true, lines = [], second = [] } = {}) {
+export function chart(data, kind, { height = 380, fill = false, labels = false, format = formatNumber, tone = null, pick = null, picked = null, fresh = true, lines = [], second = [], was = null } = {}) {
   const ring = kind === 'donut';
   const axes = !ring && kind !== 'ranked';
   const beside = new Set(axes ? second : []);
@@ -202,6 +207,11 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   let hovered = null;
   let focused = -1;
   let entering = fresh && !still.matches;
+  // Drawn in the place of another of its kind, its marks move from where the other's stood, as
+  // values changed in place, rather than rising afresh.
+  const before = was && !still.matches ? drawings.get(was) : null;
+  let from = before?.kind === kind ? before.shapes() : null;
+  if (from) entering = false;
 
   const drawLegend = () => {
     // A series drawn as a line over the rest is shown so, its swatch a line.
@@ -266,6 +276,9 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     tintLegend(svg);
     plot.setAttribute('aria-label', `${said}. The arrow keys go from one value to the next${pick ? ', and Enter picks it' : ''}.`);
     plot.replaceChildren(svg);
+    if (from) glide(svg, from, shapesOf(svg, data));
+    from = null;
+    drawings.set(element, { kind, shapes: () => shapesOf(svg, data) });
     // The legend is as wide as the chart: drawn at a new size, it may hold more or less.
     ends();
     entering = false;
@@ -402,6 +415,49 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     resize.observe(plot);
   });
   return element;
+}
+
+/** A chart's marks, lines and areas by what they show: their kind, series and category. */
+function shapesOf(svg, data) {
+  const shapes = new Map();
+  for (const element of svg.querySelectorAll('[data-s]')) {
+    const { s, c } = element.dataset;
+    shapes.set(`${element.classList[0]}\n${data.series[s]?.name}\n${c === undefined ? '' : data.categories[c]}`, element);
+  }
+  return shapes;
+}
+
+/**
+ * Moves the shapes of `svg`, `now`, from where those of the chart drawn before it stood: a bar
+ * from its old box, a dot from its old place, and a line or an area from its old course where
+ * it has as many points, fading in where it has not; what is new fades in, and the values
+ * written on the marks once the marks are nearly there. A slice is drawn at once.
+ */
+function glide(svg, before, now) {
+  if (now.size > GLIDE_MOST) return;
+  const timing = { duration: 320, easing: 'cubic-bezier(.2, .8, .2, 1)' };
+  const numbers = (element, names) => names.map((name) => Number(element.getAttribute(name)));
+  const course = (d) => d.replace(/[^A-Za-z]/g, '');
+  for (const [name, element] of now) {
+    const old = before.get(name);
+    if (element.classList.contains('slice')) continue;
+    if (!old) {
+      element.animate([{ opacity: 0, offset: 0 }], timing);
+    } else if (element.localName === 'rect') {
+      const [ox, oy, ow, oh] = numbers(old, ['x', 'y', 'width', 'height']);
+      const [nx, ny, nw, nh] = numbers(element, ['x', 'y', 'width', 'height']);
+      const [sx, sy] = [ow / nw, oh / nh];
+      element.animate([{ transform: `translate(${ox - nx * sx}px, ${oy - ny * sy}px) scale(${sx}, ${sy})` }, { transform: 'none' }], timing);
+    } else if (element.localName === 'circle') {
+      const [ox, oy] = numbers(old, ['cx', 'cy']);
+      const [nx, ny] = numbers(element, ['cx', 'cy']);
+      element.animate([{ transform: `translate(${ox - nx}px, ${oy - ny}px)` }, { transform: 'none' }], timing);
+    } else if (element.localName === 'path') {
+      const [was, is] = [old.getAttribute('d'), element.getAttribute('d')];
+      element.animate(course(was) === course(is) ? [{ d: `path("${was}")` }, { d: `path("${is}")` }] : [{ opacity: 0, offset: 0 }], timing);
+    }
+  }
+  for (const text of svg.querySelectorAll('text.value')) text.animate([{ opacity: 0, offset: 0 }, { opacity: 0, offset: 0.6 }], timing);
 }
 
 /** The steps of a scale that holds `values`, nought among them. */
@@ -554,13 +610,13 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
       // Each unbroken run of values fills down to nought.
       let run = [];
       const fillRun = () => {
-        if (run.length > 1) svg.append(h('path', { class: `area ${colour(entry.index)}`, d: `M${run[0][0]},${of(0)}L${run.map((point) => point.join(',')).join('L')}L${run[run.length - 1][0]},${of(0)}Z` }));
+        if (run.length > 1) svg.append(h('path', { class: `area ${colour(entry.index)}`, d: `M${run[0][0]},${of(0)}L${run.map((point) => point.join(',')).join('L')}L${run[run.length - 1][0]},${of(0)}Z`, dataset: { s: entry.index } }));
         run = [];
       };
       traced.forEach((point) => (point ? run.push(point) : fillRun()));
       fillRun();
     }
-    svg.append(h('path', { class: `line ${colour(entry.index)}`, d: linePath(traced), pathLength: 1 }));
+    svg.append(h('path', { class: `line ${colour(entry.index)}`, d: linePath(traced), pathLength: 1, dataset: { s: entry.index } }));
     points.forEach((point, c) => {
       if (!point || (kept && !kept.has(c))) return;
       svg.append(mark(h('circle', { class: `dot ${colour(entry.index)}`, cx: point[0], cy: point[1], r: 4 }), { s: entry.index, c, lines: tipOf(entry, c, entry.values[c]) }));

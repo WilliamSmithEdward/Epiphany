@@ -1077,6 +1077,8 @@ class Explorer {
         names.length > 1 ? h('button', { class: 'button small quiet', title: 'How its series are drawn', onclick: drawnAs }, icon('explore', 14), 'Series…') : null),
       plotted
         ? chart(data, settings.kind, {
+          // Its values changed, or how it is shown, it moves from the chart it takes the place of.
+          was: this.output.querySelector(':scope > .chart-pane > .chart'),
           labels: settings.labels,
           lines: settings.lines,
           second: settings.second,

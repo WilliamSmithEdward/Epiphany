@@ -73,9 +73,10 @@ export function numbersOf(result) {
 /**
  * A view's answer as `tile` shows it, in the view's number format and with its highlights.
  * `pick(members, key)` is called with the members of what is clicked, and `picked` is the key
- * of the one picked, to be marked. `fresh`: the answer is new, rather than shown again.
+ * of the one picked, to be marked. `fresh`: the answer is new, rather than shown again. `was`:
+ * the chart this is shown in place of, its marks to move from.
  */
-export function present(result, tile, view, { pick = null, picked = null, fresh = true } = {}) {
+export function present(result, tile, view, { pick = null, picked = null, fresh = true, was = null } = {}) {
   const how = tile.show ?? 'bars';
   const format = view?.format;
   if (how === 'figure') return figure(result, format, view?.highlights);
@@ -95,6 +96,7 @@ export function present(result, tile, view, { pick = null, picked = null, fresh 
     pick: pick && (({ series, category }) => pick([...data.series[series].tuple, ...data.tuples[category]], `s:${series}|c:${category}`)),
     picked: at ? { series: Number(at[1]), category: Number(at[2]) } : null,
     fresh,
+    was,
   });
 }
 
