@@ -6171,6 +6171,7 @@
           "figure",
           "bars",
           "stacked",
+          "shares",
           "lines",
           "area",
           "ranked",

@@ -14,6 +14,7 @@ export const KINDS = {
   figure: ['Key figure', 'hash'],
   bars: ['Bars', 'chart'],
   stacked: ['Stacked bars', 'bars'],
+  shares: ['100% stacked bars', 'shares'],
   lines: ['Lines', 'explore'],
   area: ['Area', 'area'],
   ranked: ['Ranked bars', 'ranked'],
@@ -24,8 +25,8 @@ export const KINDS = {
 };
 
 /** The ways of showing a view that chart it; of them, those with axes, whose series may be drawn as lines over the rest. */
-export const CHARTS = new Set(['bars', 'stacked', 'lines', 'area', 'ranked', 'donut']);
-export const AXES = new Set(['bars', 'stacked', 'lines', 'area']);
+export const CHARTS = new Set(['bars', 'stacked', 'shares', 'lines', 'area', 'ranked', 'donut']);
+export const AXES = new Set(['bars', 'stacked', 'shares', 'lines', 'area']);
 
 const label = (tuple) => tuple.map((m) => m.name).join(' · ');
 
@@ -36,13 +37,15 @@ const label = (tuple) => tuple.map((m) => m.name).join(' · ');
  * Gives those to draw as lines over the rest and those at the right, or null if not asked.
  */
 export async function askDrawn(kind, names, { lines = [], second = [] }) {
+  // A line over lines is one of them, and over shares of a whole is against no scale of its own.
+  const over = kind !== 'lines' && kind !== 'shares';
   const options = [
-    ['own', { bars: 'Bars', stacked: 'Stacked', area: 'Area', lines: 'Line' }[kind]],
-    ...(kind === 'lines' ? [] : [['line', 'Line']]),
+    ['own', { bars: 'Bars', stacked: 'Stacked', shares: 'Share', area: 'Area', lines: 'Line' }[kind]],
+    ...(over ? [['line', 'Line']] : []),
     ['right', 'Line, scale at the right'],
   ];
   const chosen = Object.fromEntries(names.map((name) => [name,
-    second.includes(name) ? 'right' : kind !== 'lines' && lines.includes(name) ? 'line' : 'own']));
+    second.includes(name) ? 'right' : over && lines.includes(name) ? 'line' : 'own']));
   const rows = names.map((name) => [name, h('div')]);
   const draw = () => {
     for (const [name, into] of rows) {

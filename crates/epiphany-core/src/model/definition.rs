@@ -222,6 +222,8 @@ pub enum TileShow {
     #[default]
     Bars,
     Stacked,
+    /// Stacked bars each as tall as its category's whole, each series its share of it.
+    Shares,
     Lines,
     /// Lines with the ground beneath them filled.
     Area,

@@ -826,6 +826,43 @@ async function exploring() {
     })()`);
     expect(!crowded.length, `Values on the marks: ${crowded.slice(0, 5).join('; ')}.`);
   });
+  await step('A 100% stacked chart stands each category\'s bar at its whole, its series their shares of it', async () => {
+    // Two quarters of three entities, one of them below nought in the second, which has no
+    // share of a whole.
+    const drawn = await page.evaluate(`(async () => {
+      const { chart } = await import('/chart.js');
+      const categories = ['Q1', 'Q2'];
+      const series = [['North', [30, 50]], ['South', [10, -20]], ['West', [60, 50]]]
+        .map(([name, values]) => ({ name, tuple: [], values, texts: null }));
+      const box = document.body.appendChild(document.createElement('div'));
+      box.style.width = '600px';
+      const element = box.appendChild(chart({ categories, tuples: categories.map(() => []), series }, 'shares', { fresh: false, labels: true }));
+      let svg;
+      for (let tries = 0; tries < 100 && !svg; tries += 1) {
+        await new Promise((done) => requestAnimationFrame(done));
+        svg = [...element.querySelectorAll('svg')].find((each) => each.querySelector('.bar'));
+      }
+      const tall = {};
+      for (const bar of svg.querySelectorAll('.bar')) tall[bar.dataset.c] = (tall[bar.dataset.c] ?? 0) + Number(bar.getAttribute('height'));
+      const ticks = [...svg.querySelectorAll('text.tick')].filter((tick) => tick.getAttribute('text-anchor') === 'end' && !tick.hasAttribute('transform')).map((tick) => tick.textContent);
+      svg.closest('[tabindex]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+      const tip = [...element.querySelector('.chart-tip').children].map((line) => line.textContent);
+      const result = {
+        bars: svg.querySelectorAll('.bar').length,
+        even: Math.abs(tall[0] - tall[1]) < 0.5,
+        ticks: ticks.join(' '),
+        tip: tip.join(' / '),
+        said: svg.getAttribute('aria-label'),
+      };
+      box.remove();
+      return result;
+    })()`);
+    expect(drawn.bars === 5, `${drawn.bars} bars are drawn for five values above nought.`);
+    expect(drawn.even, 'The quarters\' bars do not stand equally tall, each at its whole.');
+    expect(drawn.ticks === '0% 20% 40% 60% 80% 100%', `The scale reads ${drawn.ticks}.`);
+    expect(drawn.tip === '30% / North / Q1 · 30', `The first share says ${drawn.tip}.`);
+    expect(drawn.said.startsWith('100% stacked bar chart of North, South, West'), `The chart is described as ${drawn.said}.`);
+  });
   await step('A view kept for oneself is listed apart, and taken away', async () => {
     const views = '/cubes/General%20Ledger/private-views';
     await page.click('button', 'Views');

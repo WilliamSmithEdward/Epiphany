@@ -1108,7 +1108,7 @@ async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
         "layout": "free",
         "tiles": [
             { "cube": "General Ledger", "view": "By entity", "show": "figure" },
-            { "title": "Entities", "cube": "general ledger", "view": "by entity", "width": 2 },
+            { "title": "Entities", "cube": "general ledger", "view": "by entity", "width": 2, "show": "shares" },
             {
                 "cube": "General Ledger", "view": "By entity", "show": "donut",
                 "place": { "x": 6.5, "y": 2.0, "w": 5.5, "h": 8.0 }, "by_columns": true, "labels": true
@@ -1129,6 +1129,7 @@ async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
     let (_, served) = call(&app, "GET", "/model", None).await;
     let served = &served["model"]["dashboards"][0];
     assert_eq!(served["tiles"][1]["width"], 2);
+    assert_eq!(served["tiles"][1]["show"], "shares");
     assert_eq!(served["tiles"][0]["show"], "figure");
     assert_eq!(served["filters"], json!(["Version", "Period"]));
     // Laid out freely, a tile keeps its place and how it is shown, as given.

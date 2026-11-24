@@ -1017,7 +1017,7 @@ class Explorer {
         choices({
           kind: 'radiogroup',
           label: 'Kind of chart',
-          options: [['bars', 'Bars'], ['stacked', 'Stacked'], ['lines', 'Lines'], ['area', 'Area'], ['ranked', 'Ranked'], ['donut', 'Donut']],
+          options: [['bars', 'Bars'], ['stacked', 'Stacked'], ['shares', '100%'], ['lines', 'Lines'], ['area', 'Area'], ['ranked', 'Ranked'], ['donut', 'Donut']],
           chosen: settings.kind,
           choose: (kind) => set({ kind }),
         }),

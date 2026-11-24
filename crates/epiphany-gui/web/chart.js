@@ -136,8 +136,9 @@ function ringSlices(data) {
 }
 
 /**
- * A chart of `data` ({ categories, series }) as `kind`: 'bars', 'stacked', 'lines', 'area',
- * 'ranked' or 'donut', `height` pixels high, or as high as its place where `fill`. Where it
+ * A chart of `data` ({ categories, series }) as `kind`: 'bars', 'stacked', 'shares' (each
+ * category's bar its whole, a hundred per cent), 'lines', 'area', 'ranked' or 'donut',
+ * `height` pixels high, or as high as its place where `fill`. Where it
  * has axes, the series `lines` names are drawn as lines over the rest, and those `second`
  * names as lines against a scale of their own on the right. `labels`
  * writes each value on its mark, and `format` writes a value as the view has it. `tone(value)`
@@ -150,7 +151,8 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   const ring = kind === 'donut';
   const axes = !ring && kind !== 'ranked';
   const beside = new Set(axes ? second : []);
-  const over = new Set(axes && kind !== 'lines' ? lines.filter((name) => !beside.has(name)) : []);
+  // Lines over shares of a whole would be against no scale of theirs: only those at the right.
+  const over = new Set(axes && kind !== 'lines' && kind !== 'shares' ? lines.filter((name) => !beside.has(name)) : []);
   const slices = ring ? ringSlices(data) : null;
   // What the legend lists and the colours tell apart: the series, or a ring's slices.
   const parts = (ring ? slices.map((slice) => slice.name) : data.series.slice(0, MOST_SERIES).map((entry) => entry.name))
@@ -354,7 +356,8 @@ function stepWriter(series) {
 }
 
 /**
- * Bars side by side, stacked, lines or areas, over the categories along the bottom; the
+ * Bars side by side, stacked, or stacked as shares of each category's whole, lines or areas,
+ * over the categories along the bottom; the
  * series `over` names as lines over them; and those `beside` names as lines against a scale
  * of their own on the right, unless they are all there are.
  */
@@ -367,7 +370,8 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   const series = left.filter((entry) => !over.has(entry.name));
   // The only series drawn as bars, or stacked, takes its view's rules' colours bar by bar:
   // with more, colour tells the series apart.
-  const toned = series.length === 1 ? tone : null;
+  const shares = kind === 'shares';
+  const toned = series.length === 1 && !shares ? tone : null;
   const categories = data.categories;
 
   // The range the values reach: stacks add up their positives and negatives apart.
@@ -381,7 +385,8 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
     }
     return [up, down];
   };
-  const steps = reach([
+  // Shares of each category's whole, its positive values, reach from nought to all of it.
+  const steps = shares ? ticks(0, 1) : reach([
     ...(kind === 'stacked' ? categories.flatMap((_, c) => stack(c)) : series.flatMap((entry) => entry.values)),
     ...lined.flatMap((entry) => entry.values),
   ]);
@@ -392,7 +397,7 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
     const step = list[1] - list[0];
     while (list.length < Math.max(steps.length, rightSteps.length)) list.push(Number((list.at(-1) + step).toFixed(10)));
   }
-  const leftTicks = steps.map((step) => compact.format(step));
+  const leftTicks = steps.map((step) => (shares ? percent : compact).format(step));
   const rightTicks = apart ? rightSteps.map(stepWriter(right)) : [];
 
   // Beside the plot, as much room as the steps written there take.
@@ -470,21 +475,25 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
 
   if (kind === 'lines' || kind === 'area') {
     for (const entry of series) drawLine(entry, y, kind === 'area');
-  } else if (kind === 'stacked') {
+  } else if (kind === 'stacked' || shares) {
     const thick = Math.max(Math.min(band * 0.64, 56), 2);
     categories.forEach((_, c) => {
+      // As shares, each positive value is drawn as its part of the category's whole.
+      const [whole] = stack(c);
       let up = 0;
       let down = 0;
       for (const entry of series) {
         const value = entry.values[c] ?? 0;
-        if (!value) continue;
-        const from = value > 0 ? up : down;
-        const to = from + value;
-        if (value > 0) up = to;
+        const amount = shares ? (value > 0 ? value / whole : 0) : value;
+        if (!amount) continue;
+        const from = amount > 0 ? up : down;
+        const to = from + amount;
+        if (amount > 0) up = to;
         else down = to;
         const box = { x: x(c) + (band - thick) / 2, y: Math.min(y(from), y(to)), width: thick, height: Math.max(Math.abs(y(to) - y(from)), 1) };
-        svg.append(mark(h('rect', { class: `bar ${paint(colour(entry.index), value, toned)}`, ...box }), { s: entry.index, c, lines: tipOf(entry, c, value) }));
-        if (labels && box.height > 14) label(said(entry, c), box.x + thick / 2, box.y + box.height / 2 + 4);
+        const lines = shares ? [percent.format(amount), entry.name, `${categories[c]} · ${entry.texts?.[c] ?? format(value)}`] : tipOf(entry, c, value);
+        svg.append(mark(h('rect', { class: `bar ${paint(colour(entry.index), value, toned)}`, ...box }), { s: entry.index, c, lines }));
+        if (labels && box.height > 14) label(shares ? percent.format(amount) : said(entry, c), box.x + thick / 2, box.y + box.height / 2 + 4);
       }
     });
   } else {
@@ -511,7 +520,7 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   // the scale at the right.
   for (const entry of lined) drawLine(entry, y, false);
   if (apart) for (const entry of right) drawLine(entry, yRight, false);
-  const kindSaid = { lines: 'Line', area: 'Area', stacked: 'Stacked bar' }[kind] ?? 'Bar';
+  const kindSaid = { lines: 'Line', area: 'Area', stacked: 'Stacked bar', shares: '100% stacked bar' }[kind] ?? 'Bar';
   const named = (list) => list.map((entry) => entry.name).join(', ');
   const listed = [
     series.length ? named(series) : null,

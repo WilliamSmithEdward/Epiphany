@@ -100,6 +100,7 @@ const ICONS = {
   hash: 'M4 9h16 M4 15h16 M10 3L8 21 M16 3l-2 18',
   pause: 'M8 5v14 M16 5v14',
   bars: 'M4 6h10 M4 12h16 M4 18h7',
+  shares: 'M5 4h4v16H5z M5 11h4 M10 4h4v16h-4z M10 15h4 M15 4h4v16h-4z M15 8h4',
   copy: 'M9 9h11v11H9z M5 15H4V4h11v1',
   link: 'M9 15l6-6 M11 6l1-1a4.2 4.2 0 0 1 6 6l-1 1 M13 18l-1 1a4.2 4.2 0 0 1-6-6l1-1',
   paste: 'M9 3h6v4H9z M8 5H5v16h14V5h-3',

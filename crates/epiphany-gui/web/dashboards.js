@@ -27,6 +27,7 @@ const SIZES = {
   figure: { w: 3, h: 5, least: [2, 3] },
   bars: { w: 6, h: 8, least: [3, 5] },
   stacked: { w: 6, h: 8, least: [3, 5] },
+  shares: { w: 6, h: 8, least: [3, 5] },
   lines: { w: 6, h: 8, least: [3, 5] },
   area: { w: 6, h: 8, least: [3, 5] },
   ranked: { w: 4, h: 8, least: [3, 5] },
