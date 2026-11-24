@@ -25,11 +25,21 @@ namespace Epiphany.Excel
     public sealed class Dimension
     {
         private readonly List<Element> elements = new List<Element>();
+        // The elements' names, in order: what DIMNM and SUBNM count through, made once, where
+        // made at every question a dimension of a million elements took 30 ms a formula.
+        private readonly string[] names;
+        private readonly double levels;
         // Positions by the key of every name and alias.
         private readonly Dictionary<string, int> positions = new Dictionary<string, int>();
         // "string", "numeric" or "alias", by attribute key.
         private readonly Dictionary<string, string> attributes = new Dictionary<string, string>();
         private readonly Dictionary<string, string[]> subsets = new Dictionary<string, string[]>();
+        // Each subset's members as a set, made the first time a member is looked for in it.
+        private readonly Dictionary<string, Lazy<HashSet<string>>> held = new Dictionary<string, Lazy<HashSet<string>>>();
+
+        // What an element has none of, one for all: a million leaves each with an empty map of
+        // attributes, list of children and list of weights of its own held some 100 MB.
+        private static readonly Dictionary<string, object> NoValues = new Dictionary<string, object>();
 
         /// <summary>Names are compared as the server compares them: ignoring case and spaces.</summary>
         public static string Key(string name)
@@ -42,22 +52,28 @@ namespace Epiphany.Excel
             foreach (var attribute in Fields(json, "attributes"))
                 attributes[Key(attribute.Key)] = (string)attribute.Value;
             foreach (var subset in Fields(json, "subsets"))
-                subsets[Key(subset.Key)] = Names(subset.Value);
+            {
+                var members = Names(subset.Value);
+                subsets[Key(subset.Key)] = members;
+                held[Key(subset.Key)] = new Lazy<HashSet<string>>(() => new HashSet<string>(members));
+            }
             foreach (var item in Json.Items(Json.Field(json, "elements")))
             {
                 var children = Json.Items(Json.Field(item, "children"));
+                var values = Fields(item, "attributes");
                 elements.Add(new Element
                 {
                     Name = (string)Json.Field(item, "name"),
                     Level = Convert.ToDouble(Json.Field(item, "level")),
                     Parents = Names(Json.Field(item, "parents")),
-                    Children = children.Select(child => (string)Json.Field(child, "name")).ToArray(),
-                    Weights = children.Select(child => Convert.ToDouble(Json.Field(child, "weight"))).ToArray(),
-                    Type = (string)Json.Field(item, "type"),
-                    Attributes = Fields(item, "attributes")
-                        .ToDictionary(value => Key(value.Key), value => Json.Scalar(value.Value)),
+                    Children = children.Length == 0 ? Array.Empty<string>() : children.Select(child => (string)Json.Field(child, "name")).ToArray(),
+                    Weights = children.Length == 0 ? Array.Empty<double>() : children.Select(child => Convert.ToDouble(Json.Field(child, "weight"))).ToArray(),
+                    Type = TypeOf((string)Json.Field(item, "type")),
+                    Attributes = values.Count == 0 ? NoValues : values.ToDictionary(value => Key(value.Key), value => Json.Scalar(value.Value)),
                 });
             }
+            names = elements.Select(element => element.Name).ToArray();
+            levels = elements.Count == 0 ? 0.0 : elements.Max(element => element.Level) + 1;
             // Names first, so that a name always wins over another element's alias.
             for (var position = 0; position < elements.Count; position++)
                 positions[Key(elements[position].Name)] = position;
@@ -67,6 +83,18 @@ namespace Epiphany.Excel
                         positions[Key((string)value.Value)] = position;
         }
 
+        /// <summary>The type, one string for every element of it.</summary>
+        private static string TypeOf(string type)
+        {
+            switch (type)
+            {
+                case "numeric": return "numeric";
+                case "string": return "string";
+                case "consolidated": return "consolidated";
+                default: return type;
+            }
+        }
+
         private static Dictionary<string, object> Fields(object json, string name)
         {
             return Json.Field(json, name) as Dictionary<string, object> ?? new Dictionary<string, object>();
@@ -74,20 +102,21 @@ namespace Epiphany.Excel
 
         private static string[] Names(object json)
         {
-            return Json.Items(json).Cast<string>().ToArray();
+            var items = Json.Items(json);
+            return items.Length == 0 ? Array.Empty<string>() : items.Cast<string>().ToArray();
         }
 
         /// <summary>DNLEV: how many levels the dimension has, the leaves' included.</summary>
         public object Levels()
         {
-            return elements.Count == 0 ? 0.0 : elements.Max(element => element.Level) + 1;
+            return levels;
         }
 
         /// <summary>DNEXT: the element after this one in the dimension, or empty text.</summary>
         public object Next(string element)
         {
             return positions.TryGetValue(Key(element), out var position)
-                ? At(elements.Select(other => other.Name).ToArray(), position + 2.0)
+                ? At(names, position + 2.0)
                 : Connection.KeyError;
         }
 
@@ -150,7 +179,7 @@ namespace Epiphany.Excel
         /// <summary>DIMNM.</summary>
         public object Name(double index, string alias)
         {
-            return Shown(At(elements.Select(element => element.Name).ToArray(), index), alias);
+            return Shown(At(names, index), alias);
         }
 
         /// <summary>DIMIX: zero when there is no such element.</summary>
@@ -221,22 +250,25 @@ namespace Epiphany.Excel
         /// holds it. An empty subset name means every element.</summary>
         public object SubsetName(string subset, object indexOrElement, string alias)
         {
-            var members = elements.Select(element => element.Name).ToArray();
-            if (Key(subset) != "" && !subsets.TryGetValue(Key(subset), out members))
+            var members = names;
+            var whole = Key(subset) == "";
+            if (!whole && !subsets.TryGetValue(Key(subset), out members))
                 return Connection.KeyError;
             if (indexOrElement is double index)
                 return Shown(At(members, index), alias);
             var name = positions.TryGetValue(Key(indexOrElement as string), out var position)
                 ? elements[position].Name
                 : "";
-            return Shown(members.Contains(name) ? name : "", alias);
+            // Every element is a member of the whole dimension; a subset's, of the set made of it.
+            var member = name != "" && (whole || held[Key(subset)].Value.Contains(name));
+            return Shown(member ? name : "", alias);
         }
 
         /// <summary>The elements SUBNM chooses among, each with what it is shown as: its name,
         /// or its alias when an alias attribute is named.</summary>
         public object Members(string subset, string alias)
         {
-            var members = elements.Select(element => element.Name).ToArray();
+            var members = names;
             if (Key(subset) != "" && !subsets.TryGetValue(Key(subset), out members))
                 return Connection.KeyError;
             if (Key(alias) != "" && (!attributes.TryGetValue(Key(alias), out var kind) || kind != "alias"))
