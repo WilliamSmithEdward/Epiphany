@@ -48,6 +48,15 @@ const KEYS = [
   ['The MDX editor', [
     [[`${MOD}+Enter`], 'Run the query'],
   ]],
+  ['A dashboard', [
+    [['←', '→'], 'Presented: the dashboard before, or the next'],
+    [['Esc'], 'Back from a tile over the whole page, let a picked mark go, or end presenting'],
+    [['←', '↑', '→', '↓'], 'Arranged: move the tile that has the keys'],
+    [['Shift+←', 'Shift+↑', 'Shift+→', 'Shift+↓'], 'Arranged: make it narrower, shorter, wider or taller'],
+    [['Enter'], 'Arranged: the tile\'s options'],
+    [['Delete'], 'Arranged: take the tile away'],
+    [[`${MOD}+Z`, `${MOD}+Y`], 'Arranged: take a change back, or make it again'],
+  ]],
 ];
 
 /** One set of keys pressed together, each key in its own cap. */
