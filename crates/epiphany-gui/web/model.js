@@ -6,7 +6,7 @@ import { del, get, part, put } from './api.js';
 import { empty, failure, go, loading } from './app.js';
 import { checkFeeders } from './feeders.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
-import { choices, counted, dialog, h, icon, invalid, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, widest, working } from './ui.js';
+import { choices, counted, dialog, h, icon, invalid, KINDS, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, widest, working } from './ui.js';
 
 const TYPES = { numeric: 'Number', string: 'Text', consolidated: 'Consolidation' };
 /** What an element without children has as its list of them: one list, never changed. */
@@ -1285,8 +1285,9 @@ class CubeEditor extends Editor {
           this.changed();
         });
         return h('div', { class: 'card' },
-          h('div', { class: 'card-head' }, icon('grid', 16), h('h3', { class: 'grow' }, name),
-            h('a', { class: 'button small', href: `/explore?cube=${encodeURIComponent(this.working.name)}`, 'data-link': '' }, 'Explore'),
+          // Marked as it opens, its chart's icon or the grid's; and opened as itself in Explore.
+          h('div', { class: 'card-head' }, icon(KINDS[view.chart?.kind]?.[1] ?? 'grid', 16), h('h3', { class: 'grow' }, name),
+            h('a', { class: 'button small', href: `/explore?cube=${encodeURIComponent(this.working.name)}&view=${encodeURIComponent(name)}`, 'data-link': '' }, 'Explore'),
             h('button', {
               class: 'button small danger',
               onclick: () => {

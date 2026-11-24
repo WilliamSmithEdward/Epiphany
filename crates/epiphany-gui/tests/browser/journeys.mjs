@@ -1675,6 +1675,15 @@ async function changingTheModel() {
       expect(back.status === 200, `Entity was not put back: ${quoted(back.data)}`);
     }
   });
+  await step('A view in the model\'s editor opens as itself in Explore', async () => {
+    const name = 'Quarterly income by entity';
+    await page.goto('/model?cube=General%20Ledger');
+    await page.click('[role="tab"]', 'Views');
+    const link = `[...document.querySelectorAll('.card-head')].find((head) => head.querySelector('h3')?.textContent === ${quoted(name)})?.querySelector('a')`;
+    await page.waitFor(link, 'the view, among the cube\'s');
+    await page.evaluate(`${link}.click()`);
+    await page.waitFor(`new URLSearchParams(location.search).get('view') === ${quoted(name)} && document.querySelector('td[data-r]')`, 'the view, open in Explore');
+  });
   await step('The model\'s editor shows a dimension', async () => {
     await page.goto('/model?dimension=Entity');
     await page.waitFor(`document.querySelector('[role="treeitem"][data-name="Total Entity"]')`, 'the tree of elements');
