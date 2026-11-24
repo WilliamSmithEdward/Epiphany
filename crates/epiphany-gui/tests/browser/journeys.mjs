@@ -678,7 +678,8 @@ async function exploring() {
     })()`);
     await page.click('.menu [role="menuitem"]', 'Explain this value');
     await page.waitFor(`[...document.querySelectorAll('dialog[open] .fact')].some((fact) => fact.textContent.startsWith('Adds up, by Account')
-      && fact.textContent.includes('Revenue: ') && fact.textContent.includes('Operating Expenses: '))`, 'what the total adds up');
+      && fact.textContent.includes('Revenue: ') && fact.textContent.includes('Operating Expenses: '))
+      && [...document.querySelectorAll('dialog[open] .fact')].some((fact) => fact.textContent.startsWith('Can be written') && fact.textContent.includes('it is a total'))`, 'what the total adds up, and why it is not written');
     await page.audit('A total, explained');
     await page.press('Escape');
     await page.waitFor(`!document.querySelector('dialog[open]')`, 'the explanation, closed');

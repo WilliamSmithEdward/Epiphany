@@ -1212,7 +1212,10 @@ export const grid = {
           : h('span', { class: 'muted' }, 'Never, that is on record')),
         facts.rule ? row('Rule', h('code', { class: 'mono' }, facts.rule.text ?? JSON.stringify(facts.rule))) : null,
         facts.stored !== null && facts.stored !== undefined && facts.rule ? row('Stored beneath it', String(facts.stored)) : null,
-        row('Can be written', facts.writable ? 'Yes' : 'No'),
+        row('Can be written', facts.writable ? 'Yes' : !this.mayWrite() ? 'No: you may read it, not write it'
+          : facts.rule ? 'No: a rule gives its value'
+          : facts.kind === 'consolidated' ? 'No: it is a total, and a value typed into it is spread among the leaves beneath'
+          : 'No'),
         facts.detail?.length ? row('Detail', h('ul', { class: 'plain-list' }, facts.detail.map((line) => h('li', {},
           `${line.label || '—'} `, h('span', { class: 'num muted' }, formatValue(line.value, this.layout.format)))))) : null,
         facts.invalid?.length ? row('Breaks', h('ul', { class: 'plain-list' }, facts.invalid.map((check) => h('li', {},
