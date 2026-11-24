@@ -381,7 +381,8 @@ export const writeback = {
       // In a sandbox, the cells it changes are marked against the stored values instead.
       if (!this.sandbox) for (const { at, value } of written) this.edits.set(JSON.stringify(at), value);
       this.changes = (this.changes ?? 0) + written.length;
-      await this.warnOfChecks(written.map(({ at }) => at));
+      // The checks the values break are looked for while the grid is drawn again.
+      this.warnOfChecks(written.map(({ at }) => at));
       return done;
     }, false, [cells[0].r, cells[0].c]);
   },
@@ -393,11 +394,17 @@ export const writeback = {
    */
   async warnOfChecks(written) {
     if (!this.cube.validations?.length) return;
-    const cells = written.slice(0, 1000).map((at) => ({ cube: this.cube.name, at }));
-    const answer = await post('/cells/explain', { cells, transaction: this.tx ?? undefined }, { quiet: true }).catch(() => null);
+    const transaction = this.tx ?? undefined;
     const broken = new Map();
-    for (const check of (answer?.cells ?? []).flatMap((cell) => cell.cell?.invalid ?? [])) {
-      broken.set(check.message, (broken.get(check.message) ?? 0) + 1);
+    // Every cell written is looked at, a thousand to a request; a request that fails ends the
+    // looking, and nothing is said.
+    for (let first = 0; first < written.length; first += 1000) {
+      const cells = written.slice(first, first + 1000).map((at) => ({ cube: this.cube.name, at }));
+      const answer = await post('/cells/explain', { cells, transaction }, { quiet: true }).catch(() => null);
+      if (!answer) return;
+      for (const check of answer.cells.flatMap((cell) => cell.cell?.invalid ?? [])) {
+        broken.set(check.message, (broken.get(check.message) ?? 0) + 1);
+      }
     }
     if (!broken.size) return;
     const said = [...broken].map(([message, count]) => (count > 1 ? `${message} (${count.toLocaleString()} cells)` : message));
@@ -647,7 +654,7 @@ export const writeback = {
       if (written.length) {
         await post('/cells/write', { transaction: this.tx, cells: written.map(({ at, value }) => ({ cube: this.cube.name, at, value })) });
         if (!this.sandbox) for (const { at, value } of written) this.edits.set(JSON.stringify(at), value);
-        await this.warnOfChecks(written.map(({ at }) => at));
+        this.warnOfChecks(written.map(({ at }) => at));
       }
       this.changes = (this.changes ?? 0) + given.length;
       const left = passed ? ` ${passed.toLocaleString()} cell${passed === 1 ? '' : 's'} took no value.` : '';

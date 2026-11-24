@@ -685,6 +685,33 @@ async function exploring() {
     const { data } = await page.api('POST', '/cells/read', { cells: [{ cube: 'General Ledger', at: at('Rent', 'Feb') }] });
     expect(data.cells[0].value === 250, `The API reads ${quoted(data.cells[0])} where 250 was saved.`);
   });
+  await step('A value a check of the cube warns of is kept, and said to break it', async () => {
+    // A check that warns, and keeps the value: rent above a thousand.
+    const checked = async (validations) => {
+      const { data } = await page.api('GET', '/model');
+      const cube = data.model.cubes.find((each) => each.name === 'General Ledger');
+      const put = await page.api('PUT', '/cubes/General%20Ledger', { based_on: data.version, cube: { ...cube, validations } });
+      expect(put.status === 200, `The cube's checks were not kept: ${quoted(put.data)}`);
+    };
+    await checked([{ cells: 'N: [Account].[Rent]', valid: '[Account].[Rent] <= 1000', message: 'Rent is above a thousand.' }]);
+    await page.goto('/explore?cube=General%20Ledger');
+    const typed = async (value) => {
+      await page.click('td[data-r="1"][data-c="1"]');
+      await page.waitFor(`document.querySelector('td[data-r="1"][data-c="1"]').classList.contains('editable')`, 'the cell to be writable');
+      await page.type(value[0]);
+      await page.waitFor(`document.querySelector('.cell-editor')`, 'the cell\'s editor');
+      await page.type(value.slice(1));
+      await page.press('Enter');
+    };
+    await typed('5000');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Kept, but Rent is above a thousand.'))`, 'the check, said to be broken');
+    // The rent as it was, saved, and the cube without the check, for the steps after.
+    await typed('250');
+    await page.waitFor(`document.querySelector('td[data-r="1"][data-c="1"]')?.textContent.trim() === '250'`, 'the rent as it was');
+    await page.click('.pending button', 'Save changes');
+    await page.waitFor(`document.querySelector('.pending')?.hidden`, 'the change, saved');
+    await checked([]);
+  });
   await step('The tabs over the grid go along by the arrow keys', async () => {
     await page.click('[role="tab"]', 'Grid');
     await page.press('ArrowRight');
