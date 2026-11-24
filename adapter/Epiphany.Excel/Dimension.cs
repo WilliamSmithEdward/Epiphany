@@ -35,7 +35,7 @@ namespace Epiphany.Excel
         private readonly string[] names;
         private readonly double levels;
         // Positions by the key of every name and alias.
-        private readonly Dictionary<string, int> positions = new Dictionary<string, int>();
+        private readonly Dictionary<string, int> positions;
         // "string", "numeric" or "alias", by attribute key.
         private readonly Dictionary<string, string> attributes;
         // Each subset's members, by the subset's key.
@@ -172,11 +172,17 @@ namespace Epiphany.Excel
                 var members = subset.Value;
                 held[subset.Key] = new Lazy<HashSet<string>>(() => new HashSet<string>(members));
             }
-            names = elements.Select(element => element.Name).ToArray();
             levels = elements.Count == 0 ? 0.0 : elements.Max(element => element.Level) + 1;
+            // Made as large as they will be at once: grown a name at a time, both were made again
+            // larger and larger, and a million names took the add-in's memory 40 to 55 MB higher.
+            names = new string[elements.Count];
+            positions = new Dictionary<string, int>(elements.Count);
             // Names first, so that a name always wins over another element's alias.
             for (var position = 0; position < elements.Count; position++)
-                positions[Key(elements[position].Name)] = position;
+            {
+                names[position] = elements[position].Name;
+                positions[Key(names[position])] = position;
+            }
             for (var position = 0; position < elements.Count; position++)
                 foreach (var value in elements[position].Attributes)
                     if (attributes[value.Key] == "alias" && !positions.ContainsKey(Key((string)value.Value)))

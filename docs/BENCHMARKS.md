@@ -379,6 +379,16 @@ model of a million leaves, not kept, three times after (2026-11-23):
 | Memory at the most | 2,162 MB | 576 to 591 MB |
 | The copy, held | 418 MB | 418 MB |
 
+The copy's list of names and its index of names were grown a name at a time, made again
+larger and larger. They are now made as large as they will be at once. Measured the same
+way, the old and the new in turn, twice each (2026-11-23):
+
+| The add-in, a dimension of a million leaves | Grown | Made at once |
+| --- | --- | --- |
+| Memory at the most | 579 to 580 MB | 524 to 540 MB |
+| The copy, held | 417 MB | 411 MB |
+| Time to the first answer, fetching included | 2.35 to 2.87 s | 2.24 to 2.35 s |
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions
