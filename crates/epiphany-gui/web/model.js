@@ -1268,7 +1268,9 @@ class CubeEditor extends Editor {
       checks.length ? checks.map(card) : h('div', { class: 'card' }, empty('check', 'No checks yet', 'A check marks the values that break it, or refuses them as they are written.')),
       h('div', { class: 'toolbar' },
         h('button', { class: 'button', onclick: () => keep([...checks, { cells: '', valid: '', message: '' }]) }, icon('plus', 16), 'Add a check'),
-        h('span', { class: 'hint' }, 'Cells name an area as a rule does; N:, C: or S: before it keeps to leaf, consolidated or text cells. Valid where is written as a rule\'s expression is: true, or a number but zero, where a value is acceptable.'))));
+        // The fields named as their labels name them, so that the sentences read as sentences.
+        h('span', { class: 'hint' }, h('strong', {}, 'Cells'), ' name an area as a rule does; N:, C: or S: before it keeps to leaf, consolidated or text cells. ',
+          h('strong', {}, 'Valid where'), ' is written as a rule\'s expression is: true, or a number but zero, where a value is acceptable.'))));
   }
 
   drawViews() {
