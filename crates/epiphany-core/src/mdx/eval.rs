@@ -2668,40 +2668,47 @@ impl<'a> Evaluator<'a> {
     }
 
     /// `DrillUpLevel(set [, level])`: the set without its members below the level, by each
-    /// tuple's first member; without a level, without those at the lowest level the set
-    /// reaches. Members of other dimensions, and calculated ones, stay.
+    /// tuple's first member; without a level, without the members furthest beneath the top
+    /// of their dimension, those DrillDownLevel would open. Members of other dimensions,
+    /// and calculated ones, stay.
     fn drilled_up(&self, arguments: &[Expr], context: &Context) -> Evaluated<Vec<Tuple>> {
         let set = self.set(&arguments[0], context)?;
-        // Levels count up from the leaves: the lowest is the smallest number.
-        let level_of = |tuple: &Tuple| match tuple.first() {
-            Some(&Member {
-                position,
-                id: Id::Element(id),
-            }) => Some((
-                position,
-                self.dimension(position).elements[id as usize].level,
+        let first = |tuple: &Tuple| match tuple.first() {
+            Some(
+                &member @ Member {
+                    id: Id::Element(id),
+                    ..
+                },
+            ) => Some((
+                member,
+                &self.dimension(member.position).elements[id as usize],
             )),
             _ => None,
         };
-        let (position, least) = match arguments.get(1) {
-            Some(argument) => match self.evaluate(argument, context)? {
-                Datum::Level(position, level) => (position, level),
-                _ => return fail("DrillUpLevel takes a level"),
-            },
-            None => match set
-                .iter()
-                .filter_map(level_of)
-                .min_by_key(|&(_, level)| level)
-            {
-                Some((position, lowest)) => (position, lowest + 1),
-                None => return Ok(set),
-            },
+        let kept: Vec<Tuple> = match arguments.get(1) {
+            // Levels count up from the leaves: below the level is a lower number.
+            Some(argument) => {
+                let (position, level) = self.level(argument, context)?;
+                let below = |tuple: &Tuple| {
+                    first(tuple).is_some_and(|(member, element)| {
+                        member.position == position && element.level < level
+                    })
+                };
+                set.into_iter().filter(|tuple| !below(tuple)).collect()
+            }
+            None => {
+                let deepest = set
+                    .iter()
+                    .filter_map(first)
+                    .map(|(member, _)| self.depth(member))
+                    .max();
+                let furthest = |tuple: &Tuple| {
+                    first(tuple).is_some_and(|(member, _)| Some(self.depth(member)) == deepest)
+                };
+                set.into_iter().filter(|tuple| !furthest(tuple)).collect()
+            }
         };
-        let kept = |tuple: &Tuple| match level_of(tuple) {
-            Some((at, level)) => at != position || level >= least,
-            None => true,
-        };
-        Ok(set.into_iter().filter(|tuple| kept(tuple)).collect())
+        Ok(kept)
     }
 
     /// `NameToSet(text)`: the set of the one member the text names; `StrToValue(text)`: the

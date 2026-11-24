@@ -1593,7 +1593,7 @@ fn a_value_is_chosen_case_by_case() {
         ["Jan", "Feb"]
     );
     assert_eq!(columns("NameToSet(\"[Period].[Feb]\")"), ["Feb"]);
-    // Drilled up: without the members below a level, or below the lowest the set reaches.
+    // Drilled up: without the members below a level, or those furthest beneath the top.
     assert_eq!(
         columns("DrillUpLevel({[Period].[H1], [Period].[Q1], [Period].[Jan], [Period].[Feb]})"),
         ["H1", "Q1"]
