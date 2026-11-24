@@ -268,7 +268,8 @@ practice that means:
     `.LastChild`, `.FirstSibling`, `.LastSibling`, `.CurrentMember`, `Ancestor`,
     `.PrevMember`, `.NextMember`, `.Lag(n)`, `.Lead(n)`, and `StrToMember`, `StrToTuple`,
     `StrToSet` for a member, tuple or set given as text, with `MemberToStr`, `TupleToStr`
-    and `SetToStr` writing one as such text.
+    and `SetToStr` writing one as such text; `NameToSet` for the set of a member named as
+    text, and `StrToValue` for the value of an expression given as text.
   - Levels: `[Dimension].Levels(n)`, `[Dimension].Levels('name')`, `[Dimension].[name]`
     and `member.Level`, with `.Members`, `.Ordinal` and `.Name`; `Ancestor(member, level)`,
     `Descendants(member, level [, flag])`, `Cousin(member, ancestor)`,

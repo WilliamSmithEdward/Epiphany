@@ -1665,6 +1665,10 @@ impl<'a> Evaluator<'a> {
                 count(1..=1)?;
                 self.ascendants(&arguments[0], context).map(Datum::Set)
             }
+            "NAMETOSET" | "STRTOVALUE" => {
+                count(1..=1)?;
+                self.read_from(function, &arguments[0], context)
+            }
             "STRTOMEMBER" | "STRTOTUPLE" | "STRTOSET" => {
                 count(1..=1)?;
                 let text = self.text(&arguments[0], context)?;
@@ -2653,6 +2657,18 @@ impl<'a> Evaluator<'a> {
             found.push(vec![member]);
         }
         Ok(found)
+    }
+
+    /// `NameToSet(text)`: the set of the one member the text names; `StrToValue(text)`: the
+    /// value of the expression the text holds, as `1 + 2` or a tuple of a cell.
+    fn read_from(&self, function: &str, argument: &Expr, context: &Context) -> Evaluated<Datum> {
+        let text = self.text(argument, context)?;
+        let parsed = super::parser::Parser::new(super::lexer::lex(&text)?).set()?;
+        match (function, self.evaluate(&parsed, context)?) {
+            ("NAMETOSET", Datum::Member(member)) => Ok(Datum::Set(vec![vec![member]])),
+            ("NAMETOSET", _) => fail(format!("NAMETOSET: '{text}' names no member")),
+            (_, value) => self.scalar(value, context),
+        }
     }
 
     /// `MemberToStr`, `TupleToStr` and `SetToStr`: what they are given, written as the MDX

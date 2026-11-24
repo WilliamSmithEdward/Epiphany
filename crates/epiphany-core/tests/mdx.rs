@@ -1589,6 +1589,8 @@ fn a_value_is_chosen_case_by_case() {
         columns("StrToSet(SetToStr({[Period].[Jan], [Period].[Feb]}))"),
         ["Jan", "Feb"]
     );
+    assert_eq!(columns("NameToSet(\"[Period].[Feb]\")"), ["Feb"]);
+    assert_eq!(number("StrToValue(\"1 + 2\")"), Some(3.0));
     assert_eq!(text("[Period].DefaultMember.Name"), "H1");
 
     for (mdx, expected) in [
