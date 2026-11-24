@@ -1256,12 +1256,14 @@ class Explorer {
     const mine = Object.entries(own);
     const everyones = Object.entries(this.cube.views ?? {});
     const saving = !viewing && (keepsOwn || state.user?.role === 'admin');
+    // Each view marked as it opens: as the chart it was saved from, or as its grid.
+    const item = ([name, view]) => ({ label: name, icon: KINDS[view.chart?.kind]?.[1] ?? 'grid', action: open(view) });
     menu([
       mine.length ? { heading: 'Your views' } : null,
-      ...mine.map(([name, view]) => ({ label: name, icon: 'user', action: open(view) })),
+      ...mine.map(item),
       unfetched ? { heading: 'Your views could not be fetched' } : null,
       { heading: everyones.length ? 'Everyone\'s views' : 'No views for everyone yet' },
-      ...everyones.map(([name, view]) => ({ label: name, icon: 'grid', action: open(view) })),
+      ...everyones.map(item),
       '-',
       { label: 'Copy a link to this query', icon: 'link', disabled: !this.text, action: () => copyText(linkOf(this.cube.name, this.asView())) },
       saving ? { label: 'Save this query as a view…', icon: 'save', disabled: !this.text, action: () => this.saveView() } : null,

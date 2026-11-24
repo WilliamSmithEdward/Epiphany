@@ -947,6 +947,10 @@ async function exploring() {
     await page.click('[role="tab"]', 'Grid');
     await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
     await page.click('button', 'Views');
+    // Listed with the mark of stacked bars, as it opens.
+    const mark = `[...document.querySelectorAll('.menu [role="menuitem"]')].find((item) => item.textContent.trim() === 'Stacked costs')?.querySelector('path')?.getAttribute('d')`;
+    const marked = await page.waitFor(mark, 'the view, listed');
+    expect(marked.startsWith('M4 6h10'), `The view is listed with the mark ${quoted(marked)}, not stacked bars'.`);
     await page.click('.menu [role="menuitem"]', 'Stacked costs');
     await page.waitFor(`document.querySelector('[role="tab"][aria-selected="true"]')?.textContent === 'Chart' && ${kind('Stacked')} && document.querySelector('.chart-pane svg')`, 'the view, as its stacked chart');
     // Taken away, and the cube's chart as bars and its grid shown again, for the steps after.
