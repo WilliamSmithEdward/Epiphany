@@ -40,7 +40,8 @@ namespace Epiphany.Excel
                 var connection = AddIn.For(ref dimension);
                 if (connection == null)
                     return false;
-                var answer = Task.Run(() => connection.Ask(dimension, found => found.Members(subset, alias))).Result;
+                var answer = AddIn.Awaiting("reading the elements of " + dimension,
+                    () => connection.Ask(dimension, found => found.Members(subset, alias)));
                 if (!(answer is List<KeyValuePair<string, string>> members))
                     return false;
                 string chosen;

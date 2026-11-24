@@ -166,6 +166,32 @@ namespace Epiphany.Excel
         /// <summary>Whether what is entered is being held in a transaction.</summary>
         internal static bool InTransaction => fallback != null && fallback.Connection.InTransaction;
 
+        // How long a request may take before Excel is told that it is being waited for.
+        private static readonly TimeSpan Moment = TimeSpan.FromMilliseconds(150);
+
+        /// <summary>The answer to a request a command waits for, Excel waiting with it. One that
+        /// takes more than a moment has the status bar say what is being done, and the pointer
+        /// show Excel busy, until it comes: a dimension of a million elements takes seconds to
+        /// read the first time, and a server out of reach as long as it takes to give up.</summary>
+        internal static T Awaiting<T>(string what, Func<Task<T>> request)
+        {
+            var answer = Task.Run(request);
+            if (answer.Wait(Moment))
+                return answer.Result;
+            var excel = (Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application;
+            excel.StatusBar = "Epiphany: " + what + "...";
+            excel.Cursor = Microsoft.Office.Interop.Excel.XlMousePointer.xlWait;
+            try
+            {
+                return answer.Result;
+            }
+            finally
+            {
+                excel.Cursor = Microsoft.Office.Interop.Excel.XlMousePointer.xlDefault;
+                excel.StatusBar = Standing;
+            }
+        }
+
         /// <summary>Says something in the status bar, or what stands when there is nothing to
         /// say, and has the ribbon show which transaction buttons now apply.</summary>
         private static void Say(string message)
@@ -181,7 +207,7 @@ namespace Epiphany.Excel
             var connection = fallback.Connection;
             if (connection.InTransaction)
                 MessageBox.Show("There is a transaction already. Commit it or roll it back first.", Menu);
-            else if (!Task.Run(() => connection.Begin()).Result)
+            else if (!Awaiting("beginning a transaction", connection.Begin))
                 MessageBox.Show("The server would not begin a transaction.", Menu);
             Say(null);
         }
@@ -206,7 +232,7 @@ namespace Epiphany.Excel
                 MessageBox.Show("There is no transaction. Begin one first.", Menu);
                 return;
             }
-            var problem = Task.Run(() => connection.End(commit)).Result;
+            var problem = Awaiting(commit ? "committing" : "rolling back", () => connection.End(commit));
             if (problem != null)
                 MessageBox.Show("The transaction was not " + (commit ? "committed" : "rolled back") + ": " + problem, Menu);
             Say(null);
@@ -273,7 +299,7 @@ namespace Epiphany.Excel
             {
                 return "'" + address + "' is not an address. It should look like " + DefaultAddress + ".";
             }
-            if (!Task.Run(() => connection.SignIn(user, password)).Result)
+            if (!Awaiting("signing in to " + address, () => connection.SignIn(user, password)))
             {
                 connection.Dispose();
                 return "The server at " + address + " could not be reached, or the name or password is wrong.";
@@ -289,7 +315,11 @@ namespace Epiphany.Excel
                 return;
             foreach (var place in Places.Values.ToArray())
             {
-                Task.Run(() => place.Connection.SignOut()).Wait();
+                Awaiting("signing out of " + place.Connection.Address, async () =>
+                {
+                    await place.Connection.SignOut().ConfigureAwait(false);
+                    return true;
+                });
                 // Someone who has just disconnected does not want to be asked to sign in.
                 place.Declined = true;
             }
