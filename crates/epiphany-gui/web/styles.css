@@ -422,7 +422,7 @@ dialog[open] { animation: pop .16s var(--ease); }
 .table tbody tr:hover td { background: var(--surface-2); }
 .table .actions { text-align: right; white-space: nowrap; }
 
-.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: var(--s4); }
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: var(--s4); }
 .tile { padding: var(--s5); display: flex; flex-direction: column; gap: var(--s2); text-decoration: none; color: inherit; transition: border-color .12s, box-shadow .12s, transform .12s; }
 a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transform: translateY(-1px); }
 .tile .tile-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: var(--radius); background: var(--accent-soft); color: var(--accent-text); }
@@ -647,7 +647,7 @@ fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(-
 .editor-back:hover { text-decoration: underline; }
 /* Too narrow for the list beside the one open, one at a time: the list, or the one open. */
 @media (max-width: 1100px) {
-  .element-layout { flex: none; grid-template-columns: 1fr; grid-template-rows: none; }
+  .element-layout { flex: none; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   .element-list .element-tree { max-height: 60vh; }
   .model-page { grid-template-columns: minmax(0, 1fr); }
   .model-page > .splitter, .element-layout > .splitter, .model-page.editing > .model-list, .model-page:not(.editing) > .model-pane { display: none; }
@@ -1216,7 +1216,7 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
 /* Toggles that belong together, under one short label. */
 .toggle-group { display: inline-flex; align-items: center; gap: 2px; }
 .toggle-label { padding: 0 var(--s1); font-size: var(--text-xs); color: var(--text-3); white-space: nowrap; }
-.open-group { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.open-group { display: inline-flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0; }
 
 /* ---- Dragging in the set editor ---- */
 

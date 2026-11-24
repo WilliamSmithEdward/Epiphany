@@ -113,7 +113,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
   along one row that scrolls sideways, as do the chips of each of its layout's zones, beside
   the zone's name, so that the grid shows on the first screen with the most room; a cell's
   comments, history and detail open over the whole screen, there being no room beside the
-  grid. No page is wider than the screen, nor any dialog. A rule, of the highlights or of the set editor's
+  grid. No page is wider than the screen, nor any dialog, nor the cards of the overview and of
+  administration or the model's editor in a pane narrower than a phone. A rule, of the highlights or of the set editor's
   filter, takes two lines where its box is too narrow for one, its fields still lined up with
   the other rules': on a phone, and in a pane of the set editor on any screen. Under 900
   pixels the set editor's panes go one above the other, each at its own height, its dialog
