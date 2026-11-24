@@ -7,7 +7,7 @@ import { checkFeeders } from './feeders.js';
 import { member, namesOf, outlined, pathsBeneath, saved } from './layout.js';
 import { cellText, Selection } from './selection.js';
 import { beneath } from './tree.js';
-import { copyText, counted, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, printsWhole, SCALES, shownText } from './ui.js';
+import { copyText, counted, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, printsWhole, SCALES, shownText, when } from './ui.js';
 
 /** The most cells a grid draws whole for printing: every row draws all its columns. */
 const PRINTED = 200_000;
@@ -1151,6 +1151,16 @@ export const grid = {
     }
   },
 
+  /** The newest change saved to a cell: null where none is on record, undefined where it cannot be read. */
+  async lastChange(cell) {
+    try {
+      const answer = await post('/cells/history', { cube: cell.cube, at: cell.at, most: 1 }, { quiet: true });
+      return answer.changes[0] ?? null;
+    } catch {
+      return undefined;
+    }
+  },
+
   async explain(rowTuple, columnTuple) {
     const at = new Map();
     for (const filter of this.layout.filters) at.set(filter.dimension, filter.member);
@@ -1175,8 +1185,10 @@ export const grid = {
       return;
     }
     const facts = explanation.cell;
-    // A total no rule gives: what it adds up, and how much each part brings.
+    // A total no rule gives: what it adds up, and how much each part brings; a value stored,
+    // who changed it last, and when.
     const parts = facts.kind === 'consolidated' && !facts.rule ? await this.partsOf(cell) : null;
+    const last = facts.kind !== 'consolidated' && !facts.rule ? await this.lastChange(cell) : undefined;
     const part = ({ name, weight, value }) => h('li', {}, `${weight === 1 ? '' : `${formatNumber(weight)} × `}${name}: `,
       h('span', { class: 'num' }, typeof value === 'number' ? formatNumber(value, 6) : '(empty)'));
     const how = {
@@ -1195,6 +1207,9 @@ export const grid = {
         row('Value', h('strong', { class: 'num' }, value === '' ? '(empty)' : value)),
         row('How', how),
         parts ? row(`Adds up, by ${parts.dimension}`, h('ul', { class: 'plain-list' }, parts.lines.map(part))) : null,
+        last === undefined ? null : row('Last changed', last
+          ? h('span', {}, last.author ?? 'Not known', ' · ', when(last.time))
+          : h('span', { class: 'muted' }, 'Never, that is on record')),
         facts.rule ? row('Rule', h('code', { class: 'mono' }, facts.rule.text ?? JSON.stringify(facts.rule))) : null,
         facts.stored !== null && facts.stored !== undefined && facts.rule ? row('Stored beneath it', String(facts.stored)) : null,
         row('Can be written', facts.writable ? 'Yes' : 'No'),

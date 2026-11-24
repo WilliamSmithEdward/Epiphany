@@ -721,6 +721,17 @@ async function exploring() {
     expect(!(await page.evaluate(ASKS_TO_CLOSE)), 'The browser would ask before closing the page, with nothing unsaved.');
     const { data } = await page.api('POST', '/cells/read', { cells: [{ cube: 'General Ledger', at: at('Rent', 'Feb') }] });
     expect(data.cells[0].value === 250, `The API reads ${quoted(data.cells[0])} where 250 was saved.`);
+    // Explained, the value saved says who changed it last, and when.
+    await page.evaluate(`(() => {
+      const cell = document.querySelector('td[data-r="1"][data-c="1"]');
+      const box = cell.getBoundingClientRect();
+      cell.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: box.x + 5, clientY: box.y + 5 }));
+    })()`);
+    await page.click('.menu [role="menuitem"]', 'Explain this value');
+    await page.waitFor(`[...document.querySelectorAll('dialog[open] .fact')].some((fact) => fact.textContent.startsWith('Last changed')
+      && fact.querySelector('time') && !fact.textContent.includes('Never'))`, 'who changed the value last, and when');
+    await page.press('Escape');
+    await page.waitFor(`!document.querySelector('dialog[open]')`, 'the explanation, closed');
   });
   await step('A value a check of the cube warns of is kept, and said to break it', async () => {
     // A check that warns, and keeps the value: rent above a thousand.
