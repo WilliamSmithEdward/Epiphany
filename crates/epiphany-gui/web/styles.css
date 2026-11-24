@@ -497,6 +497,8 @@ a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transfo
 @keyframes progress { from { background-position: -50% 0; } to { background-position: 150% 0; } }
 .output > .empty { flex: 1; }
 .status-line { display: flex; align-items: center; gap: var(--s4); min-height: 34px; padding: 0 var(--s5); border-top: 1px solid var(--line); background: var(--surface); font-size: var(--text-s); }
+/* With nothing to say, as beneath a chart or the query, it takes no room: its view has it. */
+.status-line:empty { display: none; }
 
 .pivot-scroll { flex: 1; overflow: auto; }
 .pivot { border-collapse: separate; border-spacing: 0; font-size: var(--text-s); font-variant-numeric: tabular-nums; width: max-content; background: var(--surface); }
