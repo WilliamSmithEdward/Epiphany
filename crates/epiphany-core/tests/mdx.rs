@@ -1573,6 +1573,22 @@ fn a_value_is_chosen_case_by_case() {
         columns("Unorder({[Period].[Feb], [Period].[Jan]})"),
         ["Feb", "Jan"]
     );
+    assert_eq!(columns("Ascendants([Period].[Feb])"), ["Feb", "Q1", "H1"]);
+    assert_eq!(text("[Period].[Feb].Caption"), "Feb");
+    // Written as MDX, and read back.
+    assert_eq!(text("MemberToStr([Period].[Feb])"), "[Period].[Feb]");
+    assert_eq!(
+        text("TupleToStr(([Period].[Feb], [Account].[Rent]))"),
+        "([Period].[Feb], [Account].[Rent])"
+    );
+    assert_eq!(
+        text("SetToStr({[Period].[Jan], [Period].[Feb]})"),
+        "{[Period].[Jan], [Period].[Feb]}"
+    );
+    assert_eq!(
+        columns("StrToSet(SetToStr({[Period].[Jan], [Period].[Feb]}))"),
+        ["Jan", "Feb"]
+    );
     assert_eq!(text("[Period].DefaultMember.Name"), "H1");
 
     for (mdx, expected) in [

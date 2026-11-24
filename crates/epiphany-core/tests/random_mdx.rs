@@ -13,7 +13,7 @@ use epiphany_core::Scalar;
 use epiphany_core::database::{CellWrite, Database};
 use epiphany_core::model::ModelDef;
 
-const FUNCTIONS: [&str; 112] = [
+const FUNCTIONS: [&str; 116] = [
     "Sum",
     "Aggregate",
     "Avg",
@@ -62,6 +62,10 @@ const FUNCTIONS: [&str; 112] = [
     "Descendants",
     "Ancestor",
     "Ancestors",
+    "Ascendants",
+    "MemberToStr",
+    "TupleToStr",
+    "SetToStr",
     "IIF",
     "IsEmpty",
     "IsAncestor",
@@ -127,7 +131,7 @@ const FUNCTIONS: [&str; 112] = [
     "Stet",
     "Continue",
 ];
-const METHODS: [&str; 26] = [
+const METHODS: [&str; 27] = [
     "Dimension",
     "Hierarchy",
     "DefaultMember",
@@ -150,6 +154,7 @@ const METHODS: [&str; 26] = [
     "CurrentMember",
     "Name",
     "UniqueName",
+    "Caption",
     "Value",
     "Properties",
     "FirstChild",

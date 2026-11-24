@@ -1656,6 +1656,15 @@ impl<'a> Evaluator<'a> {
                 }
                 Ok(Datum::Number(rank))
             }
+            "MEMBERTOSTR" | "TUPLETOSTR" | "SETTOSTR" => {
+                count(1..=1)?;
+                self.written(function, &arguments[0], context)
+                    .map(Datum::Text)
+            }
+            "ASCENDANTS" => {
+                count(1..=1)?;
+                self.ascendants(&arguments[0], context).map(Datum::Set)
+            }
             "STRTOMEMBER" | "STRTOTUPLE" | "STRTOSET" => {
                 count(1..=1)?;
                 let text = self.text(&arguments[0], context)?;
@@ -2410,7 +2419,8 @@ impl<'a> Evaluator<'a> {
             ("PARENT", _) => Ok(Datum::Member(self.parent(member()?)?)),
             ("FIRSTCHILD", _) => child(true),
             ("LASTCHILD", _) => child(false),
-            ("NAME", _) => Ok(Datum::Text(self.name(member()?).to_owned())),
+            // A member's caption is its name: an alias stands in for it only where asked.
+            ("NAME" | "CAPTION", _) => Ok(Datum::Text(self.name(member()?).to_owned())),
             ("UNIQUENAME", _) => Ok(Datum::Text(self.unique_name(member()?))),
             ("VALUE", _) => self.scalar(target, context),
             ("PROPERTIES", _) => {
@@ -2628,6 +2638,49 @@ impl<'a> Evaluator<'a> {
             pending.extend(children.map(|&(child, _)| (child, depth + 1)));
         }
         Ok(found)
+    }
+
+    /// `Ascendants(member)`: the member and each member above it, up to the top, by its
+    /// first parent.
+    fn ascendants(&self, argument: &Expr, context: &Context) -> Evaluated<Vec<Tuple>> {
+        let mut member = self.member(argument, context)?;
+        let mut found = vec![vec![member]];
+        while let Some(&parent) = self.element(member)?.1.parents().first() {
+            member = Member {
+                position: member.position,
+                id: Id::Element(parent),
+            };
+            found.push(vec![member]);
+        }
+        Ok(found)
+    }
+
+    /// `MemberToStr`, `TupleToStr` and `SetToStr`: what they are given, written as the MDX
+    /// that `StrToMember`, `StrToTuple` and `StrToSet` read back.
+    fn written(&self, function: &str, argument: &Expr, context: &Context) -> Evaluated<String> {
+        let tuple = |tuple: &[Member]| match tuple {
+            [member] => self.unique_name(*member),
+            members => {
+                let names: Vec<_> = members
+                    .iter()
+                    .map(|&member| self.unique_name(member))
+                    .collect();
+                format!("({})", names.join(", "))
+            }
+        };
+        Ok(match function {
+            "MEMBERTOSTR" => self.unique_name(self.member(argument, context)?),
+            "TUPLETOSTR" => match self.evaluate(argument, context)? {
+                Datum::Member(member) => self.unique_name(member),
+                Datum::Tuple(members) => tuple(&members),
+                _ => return fail("TupleToStr takes a tuple"),
+            },
+            _ => {
+                let set = self.set(argument, context)?;
+                let tuples: Vec<_> = set.iter().map(|each| tuple(each)).collect();
+                format!("{{{}}}", tuples.join(", "))
+            }
+        })
     }
 
     /// `IsSibling(member, member [, INCLUDEMEMBER])`: whether two members have the same

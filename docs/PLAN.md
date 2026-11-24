@@ -248,7 +248,7 @@ practice that means:
     `Distinct`, `Unorder`, `Head`, `Tail`, `Subset`, `.Item`, `TopCount`, `BottomCount`, `Generate`,
     `Filter`, `Order` (`ASC`, `DESC`, `BASC`, `BDESC`), `Descendants` (distance and
     `SELF`, `AFTER`, `BEFORE`, `SELF_AND_AFTER`, `SELF_AND_BEFORE`, `BEFORE_AND_AFTER`,
-    `SELF_BEFORE_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and
+    `SELF_BEFORE_AFTER`, `LEAVES`), `Ancestors`, `Ascendants`, `Hierarchize` (and
     `POST`), `NonEmpty`, and `TM1SubsetAll`, `TM1FilterByLevel`, `TM1FilterByPattern`,
     `TM1Sort`.
   - `Extract(set, dimension, ...)` for what the tuples of a set hold of some dimensions,
@@ -267,7 +267,8 @@ practice that means:
   - Members: `[Dimension].[Member]` by name or alias, `.Parent`, `.FirstChild`,
     `.LastChild`, `.FirstSibling`, `.LastSibling`, `.CurrentMember`, `Ancestor`,
     `.PrevMember`, `.NextMember`, `.Lag(n)`, `.Lead(n)`, and `StrToMember`, `StrToTuple`,
-    `StrToSet` for a member, tuple or set given as text.
+    `StrToSet` for a member, tuple or set given as text, with `MemberToStr`, `TupleToStr`
+    and `SetToStr` writing one as such text.
   - Levels: `[Dimension].Levels(n)`, `[Dimension].Levels('name')`, `[Dimension].[name]`
     and `member.Level`, with `.Members`, `.Ordinal` and `.Name`; `Ancestor(member, level)`,
     `Descendants(member, level [, flag])`, `Cousin(member, ancestor)`,
@@ -280,7 +281,7 @@ practice that means:
     (`CASE WHEN condition THEN ...` and `CASE value WHEN other THEN ...`, with or without
     `ELSE`), `NULL`, `IsAncestor`, `IsSibling` (and `INCLUDEMEMBER`), `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`,
     `Aggregate`, `Avg`, `Min`, `Max`, `Count` and `.Count`, tuples as cell references,
-    `.Name`, `.UniqueName`, `.Value`, and `.Properties("name")` for an attribute or for
+    `.Name` (and `.Caption`), `.UniqueName`, `.Value`, and `.Properties("name")` for an attribute or for
     `MEMBER_NAME`, `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`,
     `CHILDREN_CARDINALITY`.
   - `Rank(tuple, set [, expression])`, and `TopSum`, `BottomSum`, `TopPercent` and
