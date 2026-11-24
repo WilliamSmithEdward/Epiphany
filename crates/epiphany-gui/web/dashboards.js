@@ -10,7 +10,7 @@ import { announce, empty, failure, go, loading, model, readdress, state } from '
 import { COLUMNS, firstFree, inReadingOrder, linesOf, moveOnGrid, nearest, onPage, ontoGrid, resizeOnGrid } from './arrange.js';
 import { seriesNames, shape } from './chart.js';
 import { chooser, choseLately, finder, lateFirst, lately, pick } from './finder.js';
-import { quote } from './layout.js';
+import { member, quote } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { csvOf, tsvOf } from './selection.js';
 import { askDrawn, AXES, CHARTS, numbersOf, present, prose } from './tiles.js';
@@ -1251,15 +1251,25 @@ class Dashboards {
     let named = false;
     let answer = null;
     let asking = 0;
-    // Which of a dimension's members stand on an axis: its top's children, its top, its leaves or a subset.
-    const offer = (select, dimensionName) => {
+    // Which of a dimension's members stand on an axis: its top's children, or another
+    // member's, chosen from its tree; its top, its leaves or a subset.
+    const offer = (select, dimensionName, picked = null) => {
       select.hidden = !dimensionName;
       const subsets = outline.get(dimensionName)?.subsets ?? [];
-      mount(select, [['children', 'Its top’s children'], ['top', 'Its top alone'], ['leaves', 'Every leaf'], ...subsets.map((subset) => [`subset:${subset}`, `The subset ${subset}`])]
-        .map(([value, label]) => h('option', { value }, label)));
+      const options = [
+        ['children', 'Its top’s children'],
+        ...(picked === null ? [] : [[`member:${picked}`, `The children of ${picked}`]]),
+        ['member:', 'The children of a member…'],
+        ['top', 'Its top alone'],
+        ['leaves', 'Every leaf'],
+        ...subsets.map((subset) => [`subset:${subset}`, `The subset ${subset}`]),
+      ];
+      mount(select, options.map(([value, label]) => h('option', { value, selected: picked !== null && value === `member:${picked}` }, label)));
+      select.dataset.was = select.value;
     };
     const setOf = (dimensionName, which) => {
       const dimensionRef = quote(dimensionName);
+      if (which.startsWith('member:')) return `{${member(dimensionName, which.slice('member:'.length))}.Children}`;
       if (which === 'top') return `{${dimensionRef}.DefaultMember}`;
       if (which === 'leaves') return `TM1FilterByLevel(TM1SubsetAll(${dimensionRef}), 0)`;
       if (which.startsWith('subset:')) return `TM1SubsetToSet(${dimensionRef}, '${which.slice('subset:'.length).replaceAll('\'', '\'\'')}')`;
@@ -1304,8 +1314,22 @@ class Dashboards {
     };
     down.addEventListener('change', () => moved(down, across, acrossWhich, downWhich));
     across.addEventListener('change', () => moved(across, down, downWhich, acrossWhich));
-    downWhich.addEventListener('change', ask);
-    acrossWhich.addEventListener('change', ask);
+    // A member's children: the member chosen from the dimension's tree, or the choice as it was.
+    const which = (select, dimensionSelect) => async () => {
+      if (select.value === 'member:') {
+        const dim = await dimension(dimensionSelect.value).catch(() => null);
+        const picked = dim ? await chooseMember(dim, { title: `The children of a member of ${dim.name}` }) : null;
+        if (picked === null) {
+          select.value = select.dataset.was;
+          return;
+        }
+        offer(select, dimensionSelect.value, picked);
+      }
+      select.dataset.was = select.value;
+      ask();
+    };
+    downWhich.addEventListener('change', which(downWhich, down));
+    acrossWhich.addEventListener('change', which(acrossWhich, across));
     name.addEventListener('input', () => {
       named = Boolean(name.value.trim());
     });

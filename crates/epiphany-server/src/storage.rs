@@ -22,13 +22,14 @@
 //! A commit is appended to the log and flushed to disk before it is acknowledged. Opening the
 //! directory loads the snapshot, replays the log, and replaces both with a fresh snapshot.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::error::Error;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::UNIX_EPOCH;
 
@@ -231,6 +232,7 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
         directory: directory.to_owned(),
         log: OpenOptions::new().create(true).append(true).open(&log)?,
         log_bytes: recorded.len() as u64,
+        earlier_bytes: Mutex::default(),
         _lock: lock,
     };
     // A log that is new must be known to its folder before a commit is trusted to it.
@@ -670,8 +672,32 @@ struct Files {
     directory: PathBuf,
     log: File,
     log_bytes: u64,
+    /// What each earlier model takes on disk, by the name of its folder, counted once: a
+    /// model kept is never changed again, and a hundred kept of 10,000 dimensions are a
+    /// million files to go over at every look at the server's state.
+    earlier_bytes: Mutex<HashMap<String, u64>>,
     /// Held for as long as the database is open.
     _lock: File,
+}
+
+impl Files {
+    /// What the earlier models under `folder` take on disk, each counted the first time it is asked for.
+    fn earlier_bytes(&self, folder: &Path) -> u64 {
+        let Ok(entries) = fs::read_dir(folder) else {
+            return 0;
+        };
+        let mut counted = self
+            .earlier_bytes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let bytes = |entry: fs::DirEntry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => *counted
+                .entry(entry.file_name().to_string_lossy().into_owned())
+                .or_insert_with(|| bytes_under(&entry.path())),
+            _ => entry.metadata().map_or(0, |file| file.len()),
+        };
+        entries.flatten().map(bytes).sum()
+    }
 }
 
 impl Journal for Files {
@@ -805,7 +831,7 @@ impl Journal for Files {
             log: self.log_bytes,
             snapshot: snapshot.map_or(0, |file| file.len()),
             model: bytes_under(&self.directory.join("model")),
-            earlier_models: bytes_under(&data.join("models")),
+            earlier_models: self.earlier_bytes(&data.join("models")),
         })
     }
 

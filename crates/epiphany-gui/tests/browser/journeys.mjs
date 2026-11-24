@@ -1552,6 +1552,13 @@ async function exploring() {
     await page.waitFor(`document.querySelector('#new-view-cube')?.value === 'General Ledger' && document.querySelector('dialog[open] .view-preview .chart svg')`, 'General Ledger, its view drawn');
     await page.click('dialog[open] [role="radio"]', 'Lines');
     await page.waitFor(`document.querySelector('dialog[open] [role="radio"][aria-checked="true"]')?.textContent === 'Lines' && document.querySelector('dialog[open] .view-preview .chart svg .line')`, 'the view, drawn as lines');
+    // Across, the children of a member chosen from its tree: the months of the first quarter.
+    const across = `document.querySelector('dialog[open] select[aria-label="Its members, across"]')`;
+    await page.evaluate(`(() => { const select = ${across}; select.value = 'member:'; select.dispatchEvent(new Event('change')); })()`);
+    await page.waitFor(`[...document.querySelectorAll('dialog[open]')].some((open) => open.getAttribute('aria-label') === 'The children of a member of Period')`, 'the tree of Period');
+    await page.click('dialog[open] .picker-row[data-name="Q1"]');
+    await page.click('dialog[open] button', 'Apply');
+    await page.waitFor(`${across}?.selectedOptions[0]?.textContent === 'The children of Q1' && document.querySelectorAll('dialog[open] .view-preview .chart .tick').length > 0`, 'the months of Q1, across');
     await page.audit('A new view');
     await page.fill('#new-view-name', 'Accounts by quarter');
     await page.click('dialog[open] button', 'Add it');
@@ -1561,7 +1568,7 @@ async function exploring() {
     const { data } = await page.api('GET', '/model');
     const view = data.model.cubes.find((cube) => cube.name === 'General Ledger').views['Accounts by quarter'];
     const [tile, ...more] = data.model.dashboards.find((each) => each.name === 'Made here')?.tiles ?? [];
-    expect(view?.chart?.kind === 'lines' && view.mdx === 'SELECT {[Period].DefaultMember.Children} ON COLUMNS, {[Account].DefaultMember.Children} ON ROWS FROM [General Ledger]', `The view was kept as ${quoted(view)}.`);
+    expect(view?.chart?.kind === 'lines' && view.mdx === 'SELECT {[Period].[Q1].Children} ON COLUMNS, {[Account].DefaultMember.Children} ON ROWS FROM [General Ledger]', `The view was kept as ${quoted(view)}.`);
     expect(!more.length && tile?.cube === 'General Ledger' && tile.view === 'Accounts by quarter' && tile.show === 'lines', `The dashboard has the tiles ${quoted([tile, ...more])}.`);
     // Taken away, with its view, for the steps after.
     await page.click('button', 'Delete');
