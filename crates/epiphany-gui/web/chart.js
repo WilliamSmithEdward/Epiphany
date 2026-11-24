@@ -411,7 +411,17 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   // the view's format has it in a tip, and briefly on its mark, otherwise.
   const tipOf = (entry, c, value) => [entry.texts?.[c] ?? format(value), entry.name, categories[c]];
   const said = (entry, c) => entry.texts?.[c] ?? compact.format(entry.values[c]);
-  const label = (text, cx, cy, anchor = 'middle') => svg.append(h('text', { class: 'value', x: cx, y: cy, 'text-anchor': anchor }, text));
+  // A value written on its mark, at some 6.5 pixels a character, unless it would run into one
+  // written already: those first written stand, as Power BI hides the labels that collide.
+  const written = [];
+  const label = (text, cx, cy, anchor = 'middle') => {
+    const wide = String(text).length * 6.5;
+    const left = anchor === 'middle' ? cx - wide / 2 : anchor === 'end' ? cx - wide : cx;
+    const box = { left, right: left + wide, top: cy - 10, bottom: cy + 2 };
+    if (written.some((other) => box.left < other.right + 2 && other.left < box.right + 2 && box.top < other.bottom && other.top < box.bottom)) return;
+    written.push(box);
+    svg.append(h('text', { class: 'value', x: cx, y: cy, 'text-anchor': anchor }, text));
+  };
 
   steps.forEach((step, s) => {
     svg.append(h('line', { class: step === 0 ? 'axis' : 'gridline', x1: margin.left, x2: width - margin.right, y1: y(step), y2: y(step) }),

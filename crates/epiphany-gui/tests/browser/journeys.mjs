@@ -790,6 +790,41 @@ async function exploring() {
     expect(painted.lined === 'tone-good tone-bad tone-good tone-bad | tinted plain', `Beside a budget drawn as a line, the bars and swatches are coloured ${painted.lined}.`);
     expect(painted.both === 'c0 c1 c0 c1 c0 c1 c0 c1 | plain plain', `Beside a budget drawn as bars, the bars and swatches are coloured ${painted.both}.`);
   });
+  await step('A chart\'s values on its marks never run into one another, however narrow', async () => {
+    // Three series of a year, two of them close, as bars and as lines from 400 pixels wide to
+    // 1,600: the values written stand clear of one another, as much as their figures' ink.
+    const crowded = await page.evaluate(`(async () => {
+      const { chart } = await import('/chart.js');
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const series = [['Revenue', 135804], ['Net Income', 64735], ['Costs', 71069]]
+        .map(([name, base]) => ({ name, tuple: [], values: months.map((_, c) => base + c * 1234), texts: null }));
+      const problems = [];
+      for (const kind of ['bars', 'lines']) {
+        for (const width of [400, 600, 1000, 1600]) {
+          const box = document.body.appendChild(document.createElement('div'));
+          box.style.width = width + 'px';
+          const element = box.appendChild(chart({ categories: months, tuples: months.map(() => []), series }, kind, { fresh: false, labels: true }));
+          let svg;
+          for (let tries = 0; tries < 100 && !svg; tries += 1) {
+            await new Promise((done) => requestAnimationFrame(done));
+            svg = [...element.querySelectorAll('svg')].find((each) => each.querySelector('text.value'));
+          }
+          const ink = [...(svg?.querySelectorAll('text.value') ?? [])].map((text) => {
+            const at = text.getBoundingClientRect();
+            const baseline = Number(text.getAttribute('y'));
+            return { text: text.textContent, left: at.left, right: at.right, top: baseline - 8, bottom: baseline };
+          });
+          if (!ink.length) problems.push(kind + ' at ' + width + ': no values written');
+          ink.forEach((one, index) => ink.slice(index + 1).forEach((other) => {
+            if (one.left < other.right && other.left < one.right && one.top < other.bottom && other.top < one.bottom) problems.push(kind + ' at ' + width + ': ' + one.text + ' runs into ' + other.text);
+          }));
+          box.remove();
+        }
+      }
+      return problems;
+    })()`);
+    expect(!crowded.length, `Values on the marks: ${crowded.slice(0, 5).join('; ')}.`);
+  });
   await step('A view kept for oneself is listed apart, and taken away', async () => {
     const views = '/cubes/General%20Ledger/private-views';
     await page.click('button', 'Views');
