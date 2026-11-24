@@ -6084,6 +6084,13 @@
             "type": "boolean",
             "description": "A chart writes each value on its mark."
           },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The series, by name, that a chart of bars or areas draws as lines over the rest,\nagainst the same scale: a budget beside the actuals, say."
+          },
           "place": {
             "oneOf": [
               {

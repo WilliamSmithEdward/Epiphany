@@ -565,8 +565,8 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .legend-item { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 28px; white-space: nowrap; padding: 0 var(--s2); border: 1px solid transparent; border-radius: 999px; background: none; color: var(--text-2); font-size: var(--text-s); cursor: pointer; }
 .legend-item:hover { background: var(--surface-2); }
 .legend-item[aria-pressed="false"] { color: var(--text-3); text-decoration: line-through; }
-/* A series against the axis at the right, drawn as a line: its swatch is one. */
-.legend-item.second .swatch { width: 14px; height: 3px; border-radius: 2px; }
+/* A series drawn as a line over the rest: its swatch is one. */
+.legend-item.line .swatch { width: 14px; height: 3px; border-radius: 2px; }
 .legend-item[aria-pressed="false"] .swatch { opacity: .3; }
 .swatch { width: 10px; height: 10px; border-radius: 3px; }
 .chart-tip { position: absolute; z-index: 5; display: flex; flex-direction: column; gap: 2px; min-width: 140px; max-width: 220px; padding: var(--s2) var(--s3); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-2); font-size: var(--text-s); pointer-events: none; }
@@ -628,10 +628,11 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .json-editor { min-height: 420px; }
 .checks { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
 .check { display: inline-flex; align-items: center; gap: 6px; }
-/* A new API key: each part of the server beside how far the key reaches into it. */
-.key-parts { display: flex; flex-direction: column; gap: var(--s3); margin-top: var(--s3); }
-.key-part { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s4); }
-.key-part .hint { margin-top: 2px; }
+/* Rows of a choice each, beside what it is of: how far a new API key reaches into each part of
+   the server, or how a chart draws each of its series. */
+.choice-rows { display: flex; flex-direction: column; gap: var(--s3); margin-top: var(--s3); }
+.choice-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s4); }
+.choice-row .hint { margin-top: 2px; }
 fieldset.field > .check { margin-right: var(--s4); }
 .key-cubes { margin-top: var(--s2); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--radius); }
 .key-cubes[hidden], fieldset.field[hidden] { display: none; }
@@ -1259,8 +1260,8 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
   .tree-tools .search { flex-basis: 100%; }
   /* Fields paired, one above the other; an element role on two lines, its button at the end. */
   .field-pair { grid-template-columns: minmax(0, 1fr); }
-  /* A part of the server above how far a new key reaches into it. */
-  .key-part { grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
+  /* What a row of choices is of, above it. */
+  .choice-row { grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
   .element-role { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .element-role > .button:last-child { justify-self: end; }
   /* On a phone the highlight rules' box decides too, as the filter's always does. Wider, the

@@ -956,8 +956,8 @@ class Dashboards {
   }
 
   /**
-   * A tile's options: how it shows its view, its size, its series and values and the scale
-   * each is drawn against, its name or text, its order, a copy, and removing it.
+   * A tile's options: how it shows its view, its size, its series and values and how each
+   * series is drawn, its name or text, its order, a copy, and removing it.
    */
   tileMenu(index, at) {
     const tile = this.editing.tiles[index];
@@ -965,14 +965,12 @@ class Dashboards {
     const text = tile.show === 'text';
     const charted = !['figure', 'grid', 'heatmap', 'text'].includes(tile.show ?? 'bars');
     const set = (change) => this.change(() => Object.assign(tile, change));
-    // The series of the chart's last answer, by name, any but the last of them to be drawn as
-    // lines against a scale of their own at the right.
+    // The series of the chart's last answer, by name, each to be drawn as a line if asked.
     const last = this.lastShown.get(index);
     const axes = ['bars', 'stacked', 'lines', 'area'].includes(tile.show ?? 'bars');
     const names = axes && last?.tile.cube === tile.cube && last.tile.view === tile.view
       ? shape(last.result, Boolean(tile.by_columns)).series.slice(0, MOST_SERIES).map((entry) => entry.name)
       : [];
-    const right = new Set((tile.second_axis ?? []).filter((name) => names.includes(name)));
     const sized = (w, h) => this.change(() => {
       const places = placesOf(this.editing);
       const [leastW, leastH] = sizeOf(tile).least;
@@ -991,17 +989,10 @@ class Dashboards {
         action: () => set({ show: kind }),
       }))),
       charted ? '-' : null,
-      // Its series turned the other way are others: none of them is at the right.
-      charted ? { label: tile.by_columns ? 'A series for each row' : 'A series for each column', icon: 'swap', action: () => set({ by_columns: !tile.by_columns, second_axis: undefined }) } : null,
+      // Its series turned the other way are others: none of them is drawn as a line.
+      charted ? { label: tile.by_columns ? 'A series for each row' : 'A series for each column', icon: 'swap', action: () => set({ by_columns: !tile.by_columns, lines: undefined, second_axis: undefined }) } : null,
       charted ? { label: tile.labels ? 'Values off the marks' : 'Values on the marks', icon: 'hash', action: () => set({ labels: !tile.labels }) } : null,
-      names.length > 1 ? { heading: 'Against a scale at the right' } : null,
-      ...(names.length > 1 ? names.map((name) => ({
-        label: name,
-        checked: right.has(name),
-        icon: right.has(name) ? 'check' : null,
-        disabled: !right.has(name) && right.size === names.length - 1,
-        action: () => set({ second_axis: right.has(name) ? [...right].filter((each) => each !== name) : [...right, name] }),
-      })) : []),
+      names.length > 1 ? { label: 'How its series are drawn…', icon: 'explore', action: () => this.drawnAs(index, names) } : null,
       { heading: 'Size' },
       ...PRESETS.map(([label, w, h]) => ({ label: `${label}, ${w} × ${h}`, icon: 'columns', action: () => sized(w, h) })),
       '-',
@@ -1039,6 +1030,44 @@ class Dashboards {
       else if (told.trim()) tile.title = told.trim();
       else delete tile.title;
     });
+  }
+
+  /**
+   * How each of a chart's series, `names`, is drawn: as the chart draws the rest, as a line
+   * over them against the same scale, as a budget beside the actuals, or as a line against a
+   * scale of its own at the right, as a margin beside the sums it comes from.
+   */
+  async drawnAs(index, names) {
+    const tile = this.editing.tiles[index];
+    const kind = tile.show ?? 'bars';
+    const options = [
+      ['own', { bars: 'Bars', stacked: 'Stacked', area: 'Area', lines: 'Line' }[kind]],
+      ...(kind === 'lines' ? [] : [['line', 'Line']]),
+      ['right', 'Line, scale at the right'],
+    ];
+    const chosen = Object.fromEntries(names.map((name) => [name,
+      tile.second_axis?.includes(name) ? 'right' : kind !== 'lines' && tile.lines?.includes(name) ? 'line' : 'own']));
+    const rows = names.map((name) => [name, h('div')]);
+    const draw = () => {
+      for (const [name, into] of rows) {
+        choices({ label: name, kind: 'radiogroup', options, chosen: chosen[name], choose: (value) => {
+          chosen[name] = value;
+          draw();
+        }, into });
+      }
+    };
+    draw();
+    const done = await dialog({
+      title: 'How its series are drawn',
+      confirm: 'Done',
+      wide: true,
+      body: h('div', { class: 'facts' },
+        h('div', { class: 'choice-rows' }, rows.map(([name, into]) => h('div', { class: 'choice-row' }, h('span', {}, name), into))),
+        h('p', { class: 'hint' }, 'A line at the right has a scale of its own, for a series of another size than the rest, such as a margin beside the sums it comes from. With every series there, there is no other scale, and the chart draws them all its own way.')),
+    });
+    if (!done) return;
+    const which = (way) => names.filter((name) => chosen[name] === way);
+    this.change(() => Object.assign(tile, { lines: which('line'), second_axis: which('right') }));
   }
 
   /** Puts a tile laid out freely over the others, or beneath them: later tiles are drawn over earlier ones. */
@@ -1205,6 +1234,7 @@ class Dashboards {
         place: kept(places[index], free),
         ...(tile.by_columns ? { by_columns: true } : {}),
         ...(tile.labels ? { labels: true } : {}),
+        ...(tile.lines?.length ? { lines: tile.lines } : {}),
         ...(tile.second_axis?.length ? { second_axis: tile.second_axis } : {}),
       })),
     };

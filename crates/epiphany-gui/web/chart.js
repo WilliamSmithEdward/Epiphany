@@ -115,16 +115,18 @@ function ringSlices(data) {
 
 /**
  * A chart of `data` ({ categories, series }) as `kind`: 'bars', 'stacked', 'lines', 'area',
- * 'ranked' or 'donut', `height` pixels high, or as high as its place where `fill`. `labels`
+ * 'ranked' or 'donut', `height` pixels high, or as high as its place where `fill`. Where it
+ * has axes, the series `lines` names are drawn as lines over the rest, and those `second`
+ * names as lines against a scale of their own on the right. `labels`
  * writes each value on its mark, and `format` writes a value as the view has it. `pick` is
  * called with the series and category of a mark clicked, or chosen with Enter, and `picked`
  * names the one picked, the others fading. `fresh`: the values are new, and come in moving.
  */
-export function chart(data, kind, { height = 380, fill = false, labels = false, format = formatNumber, pick = null, picked = null, fresh = true, second = [] } = {}) {
+export function chart(data, kind, { height = 380, fill = false, labels = false, format = formatNumber, pick = null, picked = null, fresh = true, lines = [], second = [] } = {}) {
   const ring = kind === 'donut';
-  // The series, by name, drawn as lines against a scale of their own on the right, where the
-  // chart has axes.
-  const beside = new Set(ring || kind === 'ranked' ? [] : second);
+  const axes = !ring && kind !== 'ranked';
+  const beside = new Set(axes ? second : []);
+  const over = new Set(axes && kind !== 'lines' ? lines.filter((name) => !beside.has(name)) : []);
   const slices = ring ? ringSlices(data) : null;
   // What the legend lists and the colours tell apart: the series, or a ring's slices.
   const parts = (ring ? slices.map((slice) => slice.name) : data.series.slice(0, MOST_SERIES).map((entry) => entry.name))
@@ -162,9 +164,9 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   let entering = fresh && !still.matches;
 
   const drawLegend = () => {
-    // A series against the axis at the right is shown so: its swatch a line, as it is drawn.
+    // A series drawn as a line over the rest is shown so, its swatch a line.
     legend.replaceChildren(...parts.map((part) => h('button', {
-      class: beside.has(part.name) ? 'legend-item second' : 'legend-item',
+      class: beside.has(part.name) || over.has(part.name) ? 'legend-item line' : 'legend-item',
       'aria-pressed': String(!hidden.has(part.index)),
       title: beside.has(part.name) ? `${part.name}, against the axis at the right` : null,
       onclick: () => {
@@ -191,7 +193,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
       marks.push(shapeElement);
       return shapeElement;
     };
-    const context = { svg, width, height: tall, data, labels, format, mark, colour: (index) => parts[index]?.colour ?? index % COLOURS, shown: (index) => !hidden.has(index), beside };
+    const context = { svg, width, height: tall, data, labels, format, mark, colour: (index) => parts[index]?.colour ?? index % COLOURS, shown: (index) => !hidden.has(index), beside, over };
     let said;
     if (ring) said = drawRing(context, slices);
     else if (kind === 'ranked') said = drawRanked(context);
@@ -304,15 +306,17 @@ function stepWriter(series) {
 }
 
 /**
- * Bars side by side, stacked, lines or areas, over the categories along the bottom; and the
- * series `beside` names as lines against a scale of their own on the right, unless they are
- * all there are.
+ * Bars side by side, stacked, lines or areas, over the categories along the bottom; the
+ * series `over` names as lines over them; and those `beside` names as lines against a scale
+ * of their own on the right, unless they are all there are.
  */
-function drawAxes({ svg, width, height, data, labels, format, mark, colour, shown, beside }, kind) {
+function drawAxes({ svg, width, height, data, labels, format, mark, colour, shown, beside, over }, kind) {
   const all = data.series.slice(0, MOST_SERIES).map((entry, index) => ({ ...entry, index })).filter((entry) => shown(entry.index));
   const right = all.filter((entry) => beside.has(entry.name));
   const apart = right.length > 0 && right.length < all.length;
-  const series = apart ? all.filter((entry) => !beside.has(entry.name)) : all;
+  const left = apart ? all.filter((entry) => !beside.has(entry.name)) : all;
+  const lined = left.filter((entry) => over.has(entry.name));
+  const series = left.filter((entry) => !over.has(entry.name));
   const categories = data.categories;
   const margin = { top: labels ? 24 : 16, right: apart ? 60 : 16, bottom: 40, left: 64 };
   const bandOf = () => (width - margin.left - margin.right) / Math.max(categories.length, 1);
@@ -341,7 +345,10 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
     }
     return [up, down];
   };
-  const steps = reach(kind === 'stacked' ? categories.flatMap((_, c) => stack(c)) : series.flatMap((entry) => entry.values));
+  const steps = reach([
+    ...(kind === 'stacked' ? categories.flatMap((_, c) => stack(c)) : series.flatMap((entry) => entry.values)),
+    ...lined.flatMap((entry) => entry.values),
+  ]);
   // The scale at the right, of the series apart, takes as many steps as the one at the left,
   // the one with fewer reaching higher, so each of its steps lies on a gridline.
   const rightSteps = apart ? reach(right.flatMap((entry) => entry.values)) : [];
@@ -433,11 +440,18 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
       });
     });
   }
-  // The series apart, as lines over the rest, against the scale at the right.
+  // The series drawn as lines over the rest: against the same scale, and those apart against
+  // the scale at the right.
+  for (const entry of lined) drawLine(entry, y, false);
   if (apart) for (const entry of right) drawLine(entry, yRight, false);
   const kindSaid = { lines: 'Line', area: 'Area', stacked: 'Stacked bar' }[kind] ?? 'Bar';
-  const apartSaid = apart ? `, and ${right.map((entry) => entry.name).join(', ')} against an axis at the right,` : '';
-  return `${kindSaid} chart of ${series.map((entry) => entry.name).join(', ')}${apartSaid} across ${categories.length} categories`;
+  const named = (list) => list.map((entry) => entry.name).join(', ');
+  const listed = [
+    series.length ? named(series) : null,
+    lined.length ? `${named(lined)} as lines` : null,
+    apart ? `${named(right)} against an axis at the right` : null,
+  ].filter(Boolean).join('; ');
+  return `${kindSaid} chart of ${listed}, across ${categories.length} categories`;
 }
 
 /** The categories as bars across, the largest of the first series shown at the top. */

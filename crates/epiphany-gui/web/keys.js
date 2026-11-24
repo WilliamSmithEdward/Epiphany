@@ -173,7 +173,7 @@ class KeysPage {
       body: h('div', { class: 'facts' },
         h('div', { class: 'field' }, h('label', { for: 'key-name' }, 'Name'), name),
         h('fieldset', { class: 'field' }, h('legend', {}, 'What it may do'), presets,
-          h('div', { class: 'key-parts' }, offered.map((each) => h('div', { class: 'key-part' },
+          h('div', { class: 'choice-rows' }, offered.map((each) => h('div', { class: 'choice-row' },
             h('div', {}, h('strong', {}, each.title), h('div', { class: 'hint' }, each.hint)),
             rows[each.key]))),
           most.admin === 'none' ? h('span', { class: 'hint' }, 'Changing the model and administration take an administrator.') : null),

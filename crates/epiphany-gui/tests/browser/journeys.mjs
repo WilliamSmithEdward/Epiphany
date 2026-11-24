@@ -1101,27 +1101,35 @@ async function exploring() {
     await page.click('.menu [role="menuitem"]', 'Show the bars again');
     await page.waitFor(`document.querySelector('.dash-tile[data-index="1"] .chart') && !document.querySelector('.dash-tile[data-index="1"] .tile-table')`, 'the bars again');
   });
-  await step('A series of a chart is drawn as a line against a scale of its own at its right, and kept so with the dashboard', async () => {
+  await step('A chart draws a series as a line over its bars and another against a scale of its own at its right, and is kept so with the dashboard', async () => {
     const bars = '.dash-tile[data-index="1"]';
-    const apart = `document.querySelector('${bars} text.tick.right') && document.querySelector('${bars} .legend-item.second')?.textContent === 'UK · Revenue'`;
+    const drawn = `(() => {
+      const lined = [...document.querySelectorAll('${bars} .legend-item.line')].map((item) => item.textContent);
+      return Boolean(document.querySelector('${bars} text.tick.right')) && lined.length === 2
+        && lined.includes('UK · Revenue') && lined.includes('Total Entity · Revenue')
+        && document.querySelectorAll('${bars} path.line').length === 2;
+    })()`;
     await page.click('button', 'Edit');
     await page.waitFor(`document.querySelector('.board.editing ${bars} .chart')`, 'the dashboard, being edited');
     // Laid out freely, the tile of text stands over the bars' head: their options are opened
     // from the keys, Enter on the tile.
     await page.evaluate(`document.querySelector('${bars}').focus()`);
     await page.press('Enter');
-    await page.waitFor(`document.querySelector('.menu [role="menuitemcheckbox"]')`, 'the bars\' options');
-    const offered = await page.evaluate(`[...document.querySelectorAll('.menu [role="menuitemcheckbox"]')].map((item) => item.textContent.trim())`);
-    expect(offered.includes('UK · Revenue'), `The bars offer ${quoted(offered)} to draw against a scale at the right.`);
-    await page.click('.menu [role="menuitemcheckbox"]', 'UK · Revenue');
-    await page.waitFor(apart, 'UK revenue, against a scale at the right');
-    await page.audit('A chart with a scale at its right');
+    await page.click('.menu [role="menuitem"]', 'How its series are drawn…');
+    const series = (name) => `dialog[open] [role="radiogroup"][aria-label="${name}"] [role="radio"]`;
+    await page.waitFor(`document.querySelector('${series('UK · Revenue')}')`, 'how each series is drawn');
+    await page.audit('How a chart\'s series are drawn');
+    await page.click(series('UK · Revenue'), 'Line, scale at the right');
+    await page.click(series('Total Entity · Revenue'), 'Line');
+    await page.click('dialog[open] button', 'Done');
+    await page.waitFor(drawn, 'total revenue as a line over the bars, and UK revenue against a scale at the right');
+    await page.audit('A chart with a line over its bars and a scale at its right');
     await page.click('button', 'Save');
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Saved Quarter'))`, 'the dashboard, saved');
-    const kept = (await page.api('GET', '/model')).data.model.dashboards.find((each) => each.name === 'Quarter');
-    expect(quoted(kept.tiles[1].second_axis) === quoted(['UK · Revenue']), `The bars were kept as ${quoted(kept.tiles[1])}.`);
+    const kept = (await page.api('GET', '/model')).data.model.dashboards.find((each) => each.name === 'Quarter').tiles[1];
+    expect(quoted([kept.lines, kept.second_axis]) === quoted([['Total Entity · Revenue'], ['UK · Revenue']]), `The bars were kept as ${quoted(kept)}.`);
     await page.goto('/dashboards?name=Quarter');
-    await page.waitFor(apart, 'UK revenue, at the right still');
+    await page.waitFor(drawn, 'both lines, drawn as they were');
   });
   await step('A key figure takes the colour of the first of its view\'s rules its value meets', async () => {
     // The view coloured green at nought or more, as a target met.

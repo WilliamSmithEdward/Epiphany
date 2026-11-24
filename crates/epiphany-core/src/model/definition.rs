@@ -159,6 +159,10 @@ pub struct TileDef {
     /// A chart writes each value on its mark.
     #[serde(default, skip_serializing_if = "is_false")]
     pub labels: bool,
+    /// The series, by name, that a chart of bars or areas draws as lines over the rest,
+    /// against the same scale: a budget beside the actuals, say.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lines: Vec<String>,
     /// The series, by name, that a chart draws as lines against a scale of their own on its
     /// right: those of another size than the rest, such as a margin beside the sums of money
     /// it is worked out from.
