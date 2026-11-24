@@ -359,10 +359,12 @@ impl History for HistoryFile {
     /// most lines are passed over at a glance; a user's name may be written in another case,
     /// and is looked for once the line is read. A line cut short, the last after a crash, is
     /// left out.
-    fn find(&self, asked: &Asked, most: usize) -> io::Result<Vec<CellChange>> {
+    fn find(&self, asked: &Asked, skip: usize, most: usize) -> io::Result<Vec<CellChange>> {
         if most == 0 {
             return Ok(Vec::new());
         }
+        // The newest of all, those passed over among them, read forward.
+        let kept = skip.saturating_add(most);
         let file = match File::open(&self.0) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -374,7 +376,7 @@ impl History for HistoryFile {
             .collect::<Result<Vec<_>, _>>()?;
         let holds =
             |line: &[u8], needle: &[u8]| line.windows(needle.len()).any(|part| part == needle);
-        let mut found = VecDeque::with_capacity(most.min(1024));
+        let mut found = VecDeque::with_capacity(kept.min(1024));
         for line in io::BufRead::split(io::BufReader::new(file), b'\n') {
             let line = line?;
             if !needles.iter().all(|needle| holds(&line, needle)) {
@@ -390,7 +392,7 @@ impl History for HistoryFile {
                 if !asked.takes_cell(&cell.cube, &cell.at) {
                     continue;
                 }
-                if found.len() == most {
+                if found.len() == kept {
                     found.pop_front();
                 }
                 found.push_back(CellChange {
@@ -403,7 +405,7 @@ impl History for HistoryFile {
                 });
             }
         }
-        Ok(found.into_iter().rev().collect())
+        Ok(found.into_iter().rev().skip(skip).collect())
     }
 }
 

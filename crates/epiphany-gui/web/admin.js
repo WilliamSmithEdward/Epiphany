@@ -5,9 +5,12 @@ import { empty, failure, go, loading, model, state } from './app.js';
 import { keyTable } from './keys.js';
 import { cellQuery, handOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
-import { dialog, h, icon, invalid, mount, notify, refocus, revealable, when, working } from './ui.js';
+import { dialog, h, icon, invalid, mount, notify, olderButton, refocus, revealable, when, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
+/** How many entries of the audit, and of the changes to cells, are fetched at a time. */
+const AUDIT = 50;
+const CHANGES = 200;
 /** The roles an element takes: hidden, it is not there for the user at all. */
 const ELEMENT_ROLES = { none: 'Hidden', read: 'Can read', write: 'Can write' };
 
@@ -88,12 +91,12 @@ class AdminPage {
         get('/admin/status', { quiet: quietly }),
         get('/admin/users', { quiet: quietly }),
         get('/admin/transactions', { quiet: quietly }),
-        get('/admin/audit?most=50', { quiet: quietly }),
+        get(`/admin/audit?most=${AUDIT}`, { quiet: quietly }),
       ]);
       this.drawStatus(status);
       this.drawUsers(users);
       this.drawTransactions(transactions);
-      this.drawAudit(audit);
+      if (!quietly || !this.auditReadBack) this.drawAudit(audit);
       this.offer(this.userFilter, 'Anyone', (users.users ?? []).map((user) => user.name));
       this.offer(this.cubeFilter, 'Every cube', status.cubes.map((cube) => cube.name));
       this.usersCard.hidden = false;
@@ -204,16 +207,31 @@ class AdminPage {
       'revoke key': (subject) => `Revoked the API key ${subject}`,
     };
     const said = (entry) => says[entry.action]?.(entry.subject) ?? `${entry.action}: ${entry.subject}`;
+    const row = (entry) => h('tr', {},
+      h('td', { class: 'muted' }, when(entry.time)),
+      h('td', {}, h('strong', {}, entry.user)),
+      h('td', {}, said(entry)));
+    const rows = h('tbody', {}, entries.map(row));
+    const all = [...entries];
+    // Read back past its newest part, the audit is left as it is while the page keeps current.
+    this.auditReadBack = false;
     mount(this.auditCard,
       h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Audit'), h('span', { class: 'muted' }, 'Kept on record: each view of the server as another user, and each API key made or revoked')),
       entries.length
         ? h('table', { class: 'table' },
           h('thead', {}, h('tr', {}, h('th', {}, 'When'), h('th', {}, 'Who'), h('th', {}, 'What'))),
-          h('tbody', {}, entries.map((entry) => h('tr', {},
-            h('td', { class: 'muted' }, when(entry.time)),
-            h('td', {}, h('strong', {}, entry.user)),
-            h('td', {}, said(entry))))))
-        : h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'Nothing yet.')));
+          rows)
+        : h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'Nothing yet.')),
+      entries.length === AUDIT ? h('div', { class: 'card-body' }, olderButton({
+        given: () => all,
+        size: AUDIT,
+        fetch: ({ until, skip }) => get(`/admin/audit?most=${AUDIT}&until=${until}&skip=${skip}`, { quiet: true }),
+        add: (part) => {
+          all.push(...part);
+          rows.append(...part.map(row));
+          this.auditReadBack = true;
+        },
+      })) : null);
   }
 
   /**
@@ -436,7 +454,7 @@ class AdminPage {
 
   /** Fetches the changes as the filters ask, the newest 200, and shows them; the last answer fades meanwhile. */
   async loadChanges() {
-    const asked = new URLSearchParams({ most: '200' });
+    const asked = new URLSearchParams({ most: String(CHANGES) });
     if (this.cubeFilter.value) asked.set('cube', this.cubeFilter.value);
     if (this.userFilter.value) asked.set('user', this.userFilter.value);
     if (this.sinceFilter.value) asked.set('since', String(Math.floor(Date.now() / 1000) - Number(this.sinceFilter.value)));
@@ -444,7 +462,7 @@ class AdminPage {
     this.changesList.classList.add('busy');
     try {
       const answer = await get(`/admin/changes?${asked}`, { quiet: true });
-      if (ticket === this.changesTicket) this.drawChanges(answer.changes);
+      if (ticket === this.changesTicket) this.drawChanges(answer.changes, asked);
     } catch (problem) {
       if (ticket === this.changesTicket) mount(this.changesList, h('div', { class: 'card-body' }, h('p', { class: 'error-text' }, problem.message)));
     } finally {
@@ -452,7 +470,8 @@ class AdminPage {
     }
   }
 
-  drawChanges(changes) {
+  /** The changes as `asked`, with a way to the older ones, asked the same way, while there are more. */
+  drawChanges(changes, asked) {
     if (!changes.length) {
       mount(this.changesList, h('div', { class: 'card-body' }, h('p', { class: 'muted' }, 'No change to a cell has been saved as asked.')));
       return;
@@ -460,23 +479,39 @@ class AdminPage {
     const shown = (value) => (value === 0 || value === '' || value === null || value === undefined
       ? h('span', { class: 'muted' }, 'empty')
       : typeof value === 'number' ? value.toLocaleString(undefined, { maximumFractionDigits: 6 }) : String(value));
+    const row = (change) => h('tr', {},
+      h('td', { class: 'muted nowrap' }, when(change.time)),
+      h('td', {}, change.author ?? h('span', { class: 'muted' }, 'Not known')),
+      h('td', {}, change.cube),
+      h('td', {}, change.at.join(' · ')),
+      h('td', { class: 'num-col num' }, shown(change.before)),
+      h('td', { class: 'num-col num' }, h('strong', {}, shown(change.after))),
+      h('td', { class: 'actions' }, h('button', {
+        class: 'button small quiet',
+        'aria-label': `Open ${change.at.join(' · ')} of ${change.cube} in Explore`,
+        title: 'Open the cell in Explore',
+        onclick: () => this.explore(change),
+      }, icon('explore', 14), 'Open')));
+    const rows = h('tbody', {}, changes.map(row));
+    const all = [...changes];
     mount(this.changesList,
       h('table', { class: 'table' },
         h('thead', {}, h('tr', {}, h('th', {}, 'When'), h('th', {}, 'Who'), h('th', {}, 'Cube'), h('th', {}, 'Cell'), h('th', { class: 'num-col' }, 'From'), h('th', { class: 'num-col' }, 'To'), h('th', { class: 'actions' }, ''))),
-        h('tbody', {}, changes.map((change) => h('tr', {},
-          h('td', { class: 'muted nowrap' }, when(change.time)),
-          h('td', {}, change.author ?? h('span', { class: 'muted' }, 'Not known')),
-          h('td', {}, change.cube),
-          h('td', {}, change.at.join(' · ')),
-          h('td', { class: 'num-col num' }, shown(change.before)),
-          h('td', { class: 'num-col num' }, h('strong', {}, shown(change.after))),
-          h('td', { class: 'actions' }, h('button', {
-            class: 'button small quiet',
-            'aria-label': `Open ${change.at.join(' · ')} of ${change.cube} in Explore`,
-            title: 'Open the cell in Explore',
-            onclick: () => this.explore(change),
-          }, icon('explore', 14), 'Open')))))),
-      changes.length === 200 ? h('p', { class: 'hint card-body' }, 'The newest 200. Choose a cube, a user or a time to see others.') : null);
+        rows),
+      changes.length === CHANGES ? h('div', { class: 'card-body' }, olderButton({
+        given: () => all,
+        size: CHANGES,
+        fetch: async ({ until, skip }) => {
+          const older = new URLSearchParams(asked);
+          older.set('until', String(until));
+          older.set('skip', String(skip));
+          return (await get(`/admin/changes?${older}`, { quiet: true })).changes;
+        },
+        add: (part) => {
+          all.push(...part);
+          rows.append(...part.map(row));
+        },
+      })) : null);
   }
 
   /** Opens a changed cell in Explore, alone in the grid, to look about from there. */

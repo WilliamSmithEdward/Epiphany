@@ -1206,7 +1206,12 @@ struct HistoryRequest {
     cube: String,
     /// One element name or alias for each dimension of the cube.
     at: Vec<String>,
-    /// At most this many changes, the newest: 100 unless given, and never more than 1,000.
+    /// Only changes made until this time, in seconds since 1970.
+    until: Option<u64>,
+    /// Pass over this many of the newest first, as `GET /admin/changes` does.
+    skip: Option<usize>,
+    /// At most this many changes, the newest: 100 unless given, and never more than 1,000 at
+    /// a time.
     most: Option<usize>,
 }
 
@@ -1781,23 +1786,27 @@ async fn cell_history(
         let asked = Asked {
             cube: Some(cell.cube),
             at: Some(cell.at),
+            until: request.until,
             ..Asked::default()
         };
         database.history(asked)?
     };
     Ok(Json(HistoryResponse {
-        changes: read_history(history, request.most).await?,
+        changes: read_history(history, request.skip, request.most).await?,
     }))
 }
 
 /// Reads the history of cells as asked, after the database is let go and on a thread of its
-/// own: at most `most` changes, the newest, 100 unless given, and never more than 1,000.
+/// own: at most `most` changes, the newest after the `skip` newest passed over, 100 unless
+/// given, and never more than 1,000 at a time.
 async fn read_history(
     history: HistoryRead,
+    skip: Option<usize>,
     most: Option<usize>,
 ) -> Result<Vec<CellChange>, ApiError> {
     let most = most.unwrap_or(100).clamp(1, 1000);
-    let read = tokio::task::spawn_blocking(move || history.read(most))
+    let skip = skip.unwrap_or(0);
+    let read = tokio::task::spawn_blocking(move || history.read(skip, most))
         .await
         .map_err(|error| {
             ApiError::new(
@@ -1820,7 +1829,11 @@ struct ChangesQuery {
     since: Option<u64>,
     /// Only changes made until this time, in seconds since 1970.
     until: Option<u64>,
-    /// At most this many, the newest: 100 unless given, and never more than 1,000.
+    /// Pass over this many of the newest first. Asked until the time of the oldest change
+    /// given, passing over as many of that time as were given, the next are given, however
+    /// many share a time.
+    skip: Option<usize>,
+    /// At most this many, the newest: 100 unless given, and never more than 1,000 at a time.
     most: Option<usize>,
 }
 
@@ -1849,7 +1862,7 @@ async fn list_changes(
     };
     let history = database.read().unwrap().history(asked)?;
     Ok(Json(HistoryResponse {
-        changes: read_history(history, query.most).await?,
+        changes: read_history(history, query.skip, query.most).await?,
     }))
 }
 
@@ -2972,7 +2985,12 @@ async fn view_as(
 
 #[derive(Deserialize, IntoParams)]
 struct AuditQuery {
-    /// At most this many entries, the newest; 100 if not given, and never more than 1,000.
+    /// Only entries until this time, in seconds since 1970.
+    until: Option<u64>,
+    /// Pass over this many of the newest first, as `GET /admin/changes` does.
+    skip: Option<usize>,
+    /// At most this many entries, the newest; 100 if not given, and never more than 1,000 at
+    /// a time.
     most: Option<usize>,
 }
 
@@ -2995,7 +3013,8 @@ async fn read_audit(
         return Ok(Json(Vec::new()));
     };
     let most = query.most.unwrap_or(100).min(1000);
-    let entries = auth.audit(most).map_err(|error| {
+    let read = auth.audit(query.until, query.skip.unwrap_or(0), most);
+    let entries = read.map_err(|error| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "storage_failed",

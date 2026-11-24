@@ -145,7 +145,11 @@ practice that means:
   value: when, who began its transaction, and each cell's value before and after. A
   snapshot does not replace it. It is written after the commit is safe in the log, without
   waiting on the disk again, and read through for one cell at a time, apart from the
-  database, so that reading a long history holds up no one.
+  database, so that reading a long history holds up no one. It is read back a part at a
+  time, the newest first: each part asked until the time of the oldest change given, passing
+  over (`skip`) as many of that time as were given. A commit of many cells gives them all one
+  time, so a time alone could not say where a part left off; and a change made meanwhile is
+  newer than any asked for. The audit is read back the same way.
 - The engine reaches disk only through the `Journal` trait; the server crate implements it
   with files. A commit is appended to the log and flushed to disk before it is applied in
   memory; if that fails the commit is refused and the transaction stays open.

@@ -6,7 +6,10 @@
 
 import { del, get, part, post } from './api.js';
 import { loading, state } from './app.js';
-import { choices, dialog, formatValue, h, icon, MOD, mount, notify, parseNumber, when, working } from './ui.js';
+import { choices, dialog, formatValue, h, icon, MOD, mount, notify, olderButton, parseNumber, when, working } from './ui.js';
+
+/** How many of a cell's changes are fetched at a time. */
+const HISTORY = 100;
 
 /** Comments: methods of the explorer. */
 export const comments = {
@@ -299,17 +302,31 @@ export const comments = {
   drawHistory(cell) {
     const list = h('ol', { class: 'comment-thread', 'aria-busy': 'true' }, h('li', {}, loading('lines')));
     const pending = h('p', { class: 'history-pending', hidden: true });
+    const more = h('div', { class: 'history-more' });
     const shown = (value) => (value === null || value === undefined || value === 0 || value === ''
       ? h('span', { class: 'muted' }, 'empty')
       : formatValue(value, this.layout.format));
-    post('/cells/history', { cube: this.cube.name, at: cell.at }, { quiet: true }).then((answer) => {
-      mount(list, answer.changes.length
-        ? answer.changes.map((change) => h('li', { class: 'comment' },
-          h('div', { class: 'comment-by' },
-            h('strong', {}, change.author ?? 'Not known'),
-            h('span', { class: 'muted' }, when(change.time))),
-          h('p', { class: 'history-change' }, shown(change.before), ' → ', h('strong', {}, shown(change.after)))))
-        : h('li', { class: 'muted comment-none' }, 'No change has been saved to this cell.'));
+    const item = (change) => h('li', { class: 'comment' },
+      h('div', { class: 'comment-by' },
+        h('strong', {}, change.author ?? 'Not known'),
+        h('span', { class: 'muted' }, when(change.time))),
+      h('p', { class: 'history-change' }, shown(change.before), ' → ', h('strong', {}, shown(change.after))));
+    const asked = { cube: this.cube.name, at: cell.at, most: HISTORY };
+    post('/cells/history', asked, { quiet: true }).then((answer) => {
+      const all = [...answer.changes];
+      mount(list, all.length ? all.map(item) : h('li', { class: 'muted comment-none' }, 'No change has been saved to this cell.'));
+      // However long the history, the older changes are there to be read back.
+      if (all.length === HISTORY) {
+        mount(more, olderButton({
+          given: () => all,
+          size: HISTORY,
+          fetch: async (older) => (await post('/cells/history', { ...asked, ...older }, { quiet: true })).changes,
+          add: (part) => {
+            all.push(...part);
+            list.append(...part.map(item));
+          },
+        }));
+      }
     }, (problem) => {
       mount(list, h('li', { class: 'error-text comment-none' }, problem.message));
     }).finally(() => list.removeAttribute('aria-busy'));
@@ -324,7 +341,7 @@ export const comments = {
         pending.hidden = false;
       }, () => {});
     }
-    return [pending, list];
+    return [pending, list, more];
   },
 
   /** Pins a comment to the cell the panel is open on. */

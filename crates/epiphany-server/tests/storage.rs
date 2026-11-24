@@ -751,7 +751,7 @@ fn the_history_of_a_cell_outlasts_snapshots_and_the_process() {
 
     // Opening again replaces the log with a snapshot; the history stays as it was.
     let database = home.open();
-    let read = |asked: Asked, most: usize| database.history(asked).unwrap().read(most).unwrap();
+    let read = |asked: Asked, most: usize| database.history(asked).unwrap().read(0, most).unwrap();
     let cell = |at: [&str; 4]| Asked {
         cube: Some(CUBE.to_owned()),
         at: Some(at.map(str::to_owned).to_vec()),
@@ -776,8 +776,11 @@ fn the_history_of_a_cell_outlasts_snapshots_and_the_process() {
             (Some("Ada"), number(0.0), number(25.0)),
         ]
     );
-    // The newest, at most as many as asked for; none for a cell never written.
+    // The newest, at most as many as asked for, after any passed over; none for a cell never
+    // written.
     assert_eq!(read(cell(RENT), 1), changes[..1]);
+    let older = database.history(cell(RENT)).unwrap().read(1, 10).unwrap();
+    assert_eq!(older, changes[1..]);
     assert!(read(cell(EXPENSES), 10).is_empty());
 
     // Across the cube, every change; by a user, in any case, theirs; and by time.

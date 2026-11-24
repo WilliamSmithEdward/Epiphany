@@ -776,6 +776,136 @@ async fn a_cells_history_says_who_changed_it_and_from_what_to_what() {
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
+/// Reads a list back a part at a time, as the GUI does: each part until the time of the
+/// oldest given, passing over as many of that time as were given. `asked` gives the address
+/// of a part from where it goes on, `items` the part from its answer.
+async fn by_parts(
+    asked: impl Fn(Option<(u64, usize)>) -> String,
+    read: impl AsyncFn(String) -> Vec<Value>,
+    size: usize,
+) -> Vec<Value> {
+    let mut all: Vec<Value> = Vec::new();
+    // Parts that never came to an end would be the same part asked for again and again.
+    for _ in 0..100 {
+        let from = all.last().map(|oldest| {
+            let time = oldest["time"].as_u64().unwrap();
+            let given = all.iter().filter(|each| each["time"] == time).count();
+            (time, given)
+        });
+        let part = read(asked(from)).await;
+        let last = part.len() < size;
+        all.extend(part);
+        if last {
+            return all;
+        }
+    }
+    panic!("the parts came to no end: {} read", all.len());
+}
+
+#[tokio::test]
+async fn changes_and_the_audit_are_read_back_a_part_at_a_time_however_many_share_a_second() {
+    let (_home, app) = secured("by-parts", None);
+    let token = token(&app).await;
+    // Six cells written in one commit, of one second, and one cell written three times more.
+    let cell =
+        |month: &str| json!({ "cube": "General Ledger", "at": ["Rent", "UK", month, "Budget"] });
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"];
+    let cells: Vec<Value> = months
+        .iter()
+        .map(|month| {
+            let mut written = cell(month);
+            written["value"] = json!(1);
+            written
+        })
+        .collect();
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(&token),
+        Some(json!({ "cells": cells })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    for value in [2, 3, 4] {
+        let mut written = cell("Jan");
+        written["value"] = json!(value);
+        let body = json!({ "cells": [written] });
+        let (status, _, _) = send(&app, "POST", "/cells/write", Some(&token), Some(body)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    let get = |uri: String, list: &'static str| {
+        let (app, token) = (app.clone(), token.clone());
+        async move {
+            let (status, _, body) = send(&app, "GET", &uri, Some(&token), None).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            match list {
+                "" => body.as_array().unwrap().clone(),
+                list => body[list].as_array().unwrap().clone(),
+            }
+        }
+    };
+    let whole = get("/admin/changes?most=1000".to_owned(), "changes").await;
+    assert_eq!(whole.len(), 9);
+    let part = |from: Option<(u64, usize)>| match from {
+        None => "/admin/changes?most=2".to_owned(),
+        Some((until, skip)) => format!("/admin/changes?most=2&until={until}&skip={skip}"),
+    };
+    let read = async |uri: String| get(uri, "changes").await;
+    assert_eq!(by_parts(part, read, 2).await, whole);
+
+    // A cell's own history the same way.
+    let history = |from: Option<(u64, usize)>| {
+        let mut asked = cell("Jan");
+        asked["most"] = json!(1);
+        if let Some((until, skip)) = from {
+            (asked["until"], asked["skip"]) = (json!(until), json!(skip));
+        }
+        asked.to_string()
+    };
+    let posted = async |body: String| {
+        let body: Value = serde_json::from_str(&body).unwrap();
+        let (status, _, answer) =
+            send(&app, "POST", "/cells/history", Some(&token), Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        answer["changes"].as_array().unwrap().clone()
+    };
+    let afters: Vec<Value> = by_parts(history, posted, 1)
+        .await
+        .iter()
+        .map(|change| change["after"].clone())
+        .collect();
+    assert_eq!(afters, [json!(4.0), json!(3.0), json!(2.0), json!(1.0)]);
+
+    // And the audit: five keys made, each on record, read back two at a time.
+    for name in ["One", "Two", "Three", "Four", "Five"] {
+        let made = json!({ "name": name, "cells": "read" });
+        let (status, _, _) = send(&app, "POST", "/keys", Some(&token), Some(made)).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    let whole = get("/admin/audit?most=1000".to_owned(), "").await;
+    assert_eq!(whole.len(), 5);
+    let part = |from: Option<(u64, usize)>| match from {
+        None => "/admin/audit?most=2".to_owned(),
+        Some((until, skip)) => format!("/admin/audit?most=2&until={until}&skip={skip}"),
+    };
+    let read = async |uri: String| get(uri, "").await;
+    let audit = by_parts(part, read, 2).await;
+    assert_eq!(audit, whole);
+    let subjects: Vec<&str> = audit
+        .iter()
+        .map(|entry| {
+            entry["subject"]
+                .as_str()
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(subjects, ["Five", "Four", "Three", "Two", "One"]);
+}
+
 #[tokio::test]
 async fn comments_are_signed_and_only_their_authors_or_an_admin_take_them_away() {
     let home = Home::new("comments");

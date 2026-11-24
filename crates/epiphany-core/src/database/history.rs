@@ -61,8 +61,9 @@ impl Asked {
 
 /// Where the history of cells is kept, to be read apart from the database.
 pub trait History: Send {
-    /// The changes recorded as asked, the newest first, at most `most` of them.
-    fn find(&self, asked: &Asked, most: usize) -> io::Result<Vec<CellChange>>;
+    /// The changes recorded as asked, the newest first, at most `most` of them after
+    /// passing over the newest `skip`.
+    fn find(&self, asked: &Asked, skip: usize, most: usize) -> io::Result<Vec<CellChange>>;
 }
 
 /// The history of cells as asked of it, to be read once the database is let go.
@@ -77,11 +78,13 @@ impl HistoryRead {
         &self.asked
     }
 
-    /// The changes recorded as asked, the newest first, at most `most` of them; none where
-    /// the journal keeps no history.
-    pub fn read(&self, most: usize) -> io::Result<Vec<CellChange>> {
+    /// The changes recorded as asked, the newest first, at most `most` of them after passing
+    /// over the newest `skip`; none where the journal keeps no history. Asked again until the
+    /// time of the oldest given, passing over those of that time already given, they go on
+    /// from where they left off, however many share a time and whatever is recorded meanwhile.
+    pub fn read(&self, skip: usize, most: usize) -> io::Result<Vec<CellChange>> {
         match &self.history {
-            Some(history) => history.find(&self.asked, most),
+            Some(history) => history.find(&self.asked, skip, most),
             None => Ok(Vec::new()),
         }
     }

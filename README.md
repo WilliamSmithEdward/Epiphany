@@ -199,7 +199,7 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `POST /cells/detail` | A leaf cell's supporting detail, the lines its value is the sum of, written with the sum |
 | `POST /cells/spread` | A value shared out among the leaves of a consolidation, leaving any cells held as they are |
 | `POST /cells/explain` | How each cell comes by its value: stored, a rule, a total, fed or not |
-| `POST /cells/history` | The changes saved to a cell, the newest first: when, by whom, and from what to what |
+| `POST /cells/history` | The changes saved to a cell, the newest first: when, by whom, and from what to what; read back a part at a time with `until` and `skip`, as `GET /admin/changes` and `GET /admin/audit` are |
 | `GET /cubes/{cube}/cells` | The cells a cube stores, a page at a time, in a form `/cells/write` takes back |
 | `GET`, `POST /cubes/{cube}/comments`, `DELETE /cubes/{cube}/comments/{id}` | Comments pinned to cells, signed by their authors |
 | `POST /mdx` | An MDX query, optionally stood at other members in place of those its WHERE names (`context`) |

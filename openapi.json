@@ -15,9 +15,36 @@
         "operationId": "read_audit",
         "parameters": [
           {
+            "name": "until",
+            "in": "path",
+            "description": "Only entries until this time, in seconds since 1970.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "skip",
+            "in": "path",
+            "description": "Pass over this many of the newest first, as `GET /admin/changes` does.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
             "name": "most",
             "in": "path",
-            "description": "At most this many entries, the newest; 100 if not given, and never more than 1,000.",
+            "description": "At most this many entries, the newest; 100 if not given, and never more than 1,000 at\na time.",
             "required": true,
             "schema": {
               "type": [
@@ -121,9 +148,19 @@
             }
           },
           {
+            "name": "skip",
+            "in": "query",
+            "description": "Pass over this many of the newest first. Asked until the time of the oldest change\ngiven, passing over as many of that time as were given, the next are given, however\nmany share a time.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
             "name": "most",
             "in": "query",
-            "description": "At most this many, the newest: 100 unless given, and never more than 1,000.",
+            "description": "At most this many, the newest: 100 unless given, and never more than 1,000 at a time.",
             "required": false,
             "schema": {
               "type": "integer",
@@ -5013,7 +5050,24 @@
               "integer",
               "null"
             ],
-            "description": "At most this many changes, the newest: 100 unless given, and never more than 1,000.",
+            "description": "At most this many changes, the newest: 100 unless given, and never more than 1,000 at\na time.",
+            "minimum": 0
+          },
+          "skip": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Pass over this many of the newest first, as `GET /admin/changes` does.",
+            "minimum": 0
+          },
+          "until": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Only changes made until this time, in seconds since 1970.",
             "minimum": 0
           }
         },

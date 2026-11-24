@@ -621,6 +621,31 @@ export function when(seconds) {
   return h('time', { datetime: date.toISOString(), title: exact }, h('span', { class: 'ago' }, ago(date)), h('span', { class: 'exact' }, exact));
 }
 
+/**
+ * A button that fetches the part of a list, given newest first, older than what `given()`
+ * holds, and hands it to `add`; gone once a part comes back short of `size`, the list being
+ * whole. `fetch` is asked with `until`, the oldest time given, and `skip`, how many of that
+ * time were given, as the server's lists go on from where they left off.
+ */
+export function olderButton({ given, size, fetch, add }) {
+  const button = h('button', {
+    class: 'button small older',
+    type: 'button',
+    onclick: () => working(button, async () => {
+      const shown = given();
+      const oldest = shown.at(-1)?.time;
+      try {
+        const part = await fetch({ until: oldest, skip: shown.filter((entry) => entry.time === oldest).length });
+        add(part);
+        if (part.length < size) button.remove();
+      } catch (problem) {
+        notify(problem.message, 'bad');
+      }
+    }),
+  }, icon('down', 14), 'Show older');
+  return button;
+}
+
 // What was said as now grows older while the page is seen.
 setInterval(() => {
   if (document.hidden) return;

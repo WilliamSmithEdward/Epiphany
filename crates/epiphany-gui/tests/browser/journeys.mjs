@@ -803,6 +803,9 @@ async function exploring() {
       return { said: time?.querySelector('.ago')?.textContent, since: (Date.now() - new Date(time?.dateTime)) / 1000 };
     })()`);
     expect(/^(now|\d+ minutes? ago)$/.test(moment.said) && moment.since >= 0 && moment.since < 600, `The change is said to be from ${quoted(moment)}.`);
+    // The note of a change not yet saved, hidden with nothing to say, is not seen standing empty.
+    const note = await page.evaluate(`(() => { const note = document.querySelector('.comment-panel .history-pending'); return { hidden: note.hidden, shown: getComputedStyle(note).display !== 'none' }; })()`);
+    expect(!(note.hidden && note.shown), 'The history\'s note of what is not yet saved stands empty over it.');
     await page.audit('A cell\'s history');
     await page.click('[role="tab"]', 'Detail');
     await page.waitFor(`document.querySelector('.comment-panel .detail-lines')`, 'the detail');

@@ -813,27 +813,37 @@ impl Auth {
         file.sync_data()
     }
 
-    /// What the audit records, the newest first, at most `most` of it. A line cut short, the
-    /// last after a crash, is left out.
-    pub fn audit(&self, most: usize) -> io::Result<Vec<AuditEntry>> {
+    /// What the audit records until a time, if one is given, the newest first: at most `most`
+    /// of it after passing over the newest `skip`, so that it is read back a part at a time,
+    /// as the history of cells is. A line cut short, the last after a crash, is left out.
+    pub fn audit(
+        &self,
+        until: Option<u64>,
+        skip: usize,
+        most: usize,
+    ) -> io::Result<Vec<AuditEntry>> {
         let file = match File::open(self.directory.join(AUDIT)) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error),
         };
-        let mut entries = std::collections::VecDeque::with_capacity(most.min(1024));
+        let kept = skip.saturating_add(most);
+        let mut entries = std::collections::VecDeque::with_capacity(kept.min(1024));
         for line in io::BufReader::new(file).lines() {
             let Ok(entry) = serde_json::from_str::<AuditEntry>(&line?) else {
                 continue;
             };
-            if entries.len() == most {
+            if until.is_some_and(|until| entry.time > until) {
+                continue;
+            }
+            if entries.len() == kept {
                 entries.pop_front();
             }
-            if most > 0 {
+            if kept > 0 {
                 entries.push_back(entry);
             }
         }
-        Ok(entries.into_iter().rev().collect())
+        Ok(entries.into_iter().rev().skip(skip).collect())
     }
 
     /// The user of a live session or an API key, by the name as it was given, what they may

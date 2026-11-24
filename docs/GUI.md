@@ -126,6 +126,11 @@ only way to do something, and modal dialogs where a side panel would keep the da
   headings repeated on every sheet and its shading, highlights and chart colours kept. A grid
   of up to 200,000 cells and a list of up to 10,000 rows are drawn whole for paper; past that,
   the printout says that only the rows in view are on it.
+- **Nothing cut off.** A list kept on the server, newest first, shows its newest part and
+  Show older beneath it while there are more: a cell's history, the changes to cells and the
+  audit in Administration. Each part goes on from the last however many share a second, and
+  the button goes once the list is whole. The audit read back so is left as it is while the
+  page keeps itself current.
 - **Every state designed.** Loading, empty, error with a retry, and refused for want of
   rights. Moving to another page leaves the one shown, still, until the next is drawn: a
   quick load shows no gap, and a slow one the outline of what is coming. Choosing another
