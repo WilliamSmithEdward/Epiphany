@@ -123,7 +123,7 @@ class AdminPage {
       h('div', { class: 'muted' }, label),
       detail ? h('div', { class: 'hint' }, detail) : null);
     mount(this.statusCard,
-      h('div', { class: 'grid-cards' },
+      h('div', { class: 'grid-cards stats' },
         tile('Running for', duration(status.uptime_seconds), 'server', `Epiphany ${status.server} · model version ${status.model_version}`),
         tile('Cells stored', cells.toLocaleString(), 'cube', `In ${counted(status.cubes.length, 'cube')}`),
         tile('Sessions open', status.sessions === null ? '—' : status.sessions.toLocaleString(), 'users', status.sessions === null ? 'No one needs to sign in' : null),

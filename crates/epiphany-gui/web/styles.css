@@ -438,6 +438,12 @@ dialog[open] { animation: pop .16s var(--ease); }
 .grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: var(--s4); }
 .tile { padding: var(--s5); display: flex; flex-direction: column; gap: var(--s2); text-decoration: none; color: inherit; transition: border-color .12s, box-shadow .12s, transform .12s; }
 a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+/* Figures stand in a row where they fit there at 150 pixels each, as many as they are, rather
+   than four to a row with one left over, or two above two; each figure as large as its
+   tile has room for, up to its full size. */
+.grid-cards.stats { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
+.stats > .tile { container-type: inline-size; }
+.stats .stat { font-size: min(28px, 18cqi); }
 .tile .tile-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: var(--radius); background: var(--accent-soft); color: var(--accent-text); }
 .stat { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
 .menu .menu-gap { width: 16px; flex: none; }

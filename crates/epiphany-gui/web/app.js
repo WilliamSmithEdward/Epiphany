@@ -819,7 +819,7 @@ async function overview(target) {
   mount(target, h('div', { class: 'page' },
     h('div', { class: 'page-head' },
       h('div', { class: 'grow' }, h('h1', {}, state.open ? 'Welcome' : `Welcome, ${state.user.name}`), h('p', {}, `Choose a cube to explore, or press ${MOD} K to find anything.`))),
-    h('div', { class: 'grid-cards' },
+    h('div', { class: 'grid-cards stats' },
       stat('Cubes', definition.cubes.length, 'cube'),
       stat('Dimensions', definition.dimensions.length, 'dimension'),
       stat('Elements', elements, 'member'),
