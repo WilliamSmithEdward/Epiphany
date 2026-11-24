@@ -270,6 +270,7 @@ class Dashboards {
       return;
     }
     const editing = Boolean(this.editing);
+    const presenting = this.presenting && !editing;
     // Links from one dashboard to the next, the one shown marked as the page it is.
     const tabs = h('nav', { class: 'dash-tabs', 'aria-label': 'Dashboards' }, this.list().map((dashboard) => h('a', {
       href: `/dashboards?name=${encodeURIComponent(dashboard.name)}`,
@@ -282,7 +283,9 @@ class Dashboards {
         h('h1', { class: 'visually-hidden' }, 'Editing a dashboard'),
         h('input', { class: 'input dash-name', 'aria-label': 'Name of the dashboard', value: shown.name, oninput: (event) => { this.editing.name = event.target.value; this.retitle(); } }),
         h('input', { class: 'input', 'aria-label': 'What the dashboard is for', placeholder: 'What it is for, in a line', value: shown.description ?? '', oninput: (event) => { this.editing.description = event.target.value; this.retitle(); } }))
-      : h('div', { class: 'grow' }, h('h1', {}, shown.name), shown.description ? h('p', {}, shown.description) : null);
+      : h('div', { class: 'grow' },
+        h('div', { class: 'dash-title' }, h('h1', {}, shown.name), presenting ? null : this.updatedNote()),
+        shown.description ? h('p', {}, shown.description) : null);
     this.places = placesOf(shown);
     this.board = h('div', { class: `board${shown.layout === 'free' ? ' free' : ''}${editing ? ' editing' : ''}${editing && (shown.layout !== 'free' || this.snapping) ? ' gridded' : ''}` });
     this.ghost = h('div', { class: 'board-ghost', hidden: true });
@@ -305,7 +308,6 @@ class Dashboards {
       shown.tiles.length || editing
         ? this.board
         : h('div', { class: 'card' }, empty('dashboard', 'No tiles yet', 'An administrator adds tiles that show saved views.')));
-    const presenting = this.presenting && !editing;
     mount(this.target, h('div', { class: `page dashboard${editing ? ' editing' : ''}${this.adding ? ' adding' : ''}${presenting ? ' presenting' : ''}`, onkeydown: (event) => this.key(event) },
       this.list().length > 1 && !editing && !presenting ? tabs : null,
       h('div', { class: 'page-head' }, head, h('div', { class: 'toolbar' }, editing ? this.editActions(shown) : presenting ? this.presentActions() : this.viewActions())),
@@ -322,14 +324,20 @@ class Dashboards {
     else if (presenting && !this.target.contains(document.activeElement)) this.target.querySelector('.page-head .toolbar .button')?.focus({ preventScroll: true });
   }
 
-  /** The buttons over a dashboard shown: when it was run, Refresh and its pace, and for an administrator, Edit, New and Delete. */
-  viewActions() {
+  /**
+   * When the tiles were run, as long ago as it was, beside the dashboard's name rather than
+   * among its buttons, which then fit on one line in a smaller laptop's window.
+   */
+  updatedNote() {
     let updated = when(Date.now() / 1000);
     this.refreshed = () => updated.replaceWith(updated = when(Date.now() / 1000));
+    return h('span', { class: 'muted' }, 'Updated ', updated);
+  }
+
+  /** The buttons over a dashboard shown: Refresh and its pace, and for an administrator, Edit, New and Delete. */
+  viewActions() {
     const pace = Number(localStorage.getItem(refreshKey(this.name)) ?? 0);
     return [
-      // When the tiles were run, as long ago as it was.
-      h('span', { class: 'muted' }, 'Updated ', updated),
       h('button', {
         class: 'button quiet',
         title: 'Run every tile again',

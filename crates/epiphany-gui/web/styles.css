@@ -216,6 +216,7 @@ main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: co
 .page-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s4); margin-bottom: var(--s5); }
 .page-head .grow { flex: 1 1 16rem; }
 .page-head p { color: var(--text-2); margin-top: var(--s1); }
+.dash-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s3); }
 
 @media (max-width: 900px) {
   .shell { grid-template-columns: var(--nav-narrow) 1fr; }
