@@ -569,9 +569,11 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .legend-item.line .swatch { width: 14px; height: 3px; border-radius: 2px; }
 .legend-item[aria-pressed="false"] .swatch { opacity: .3; }
 .swatch { width: 10px; height: 10px; border-radius: 3px; }
-.chart-tip { position: absolute; z-index: 5; display: flex; flex-direction: column; gap: 2px; min-width: 140px; max-width: 220px; padding: var(--s2) var(--s3); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-2); font-size: var(--text-s); pointer-events: none; }
+.chart-tip { position: absolute; z-index: 5; display: flex; flex-direction: column; gap: 2px; min-width: min(140px, 100%); max-width: min(220px, 100%); padding: var(--s2) var(--s3); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-2); font-size: var(--text-s); pointer-events: none; }
 .chart-tip[hidden] { display: none; }
 .chart-tip strong { font-size: var(--text-l); font-variant-numeric: tabular-nums; }
+.chart-tip .tip-series { display: flex; align-items: center; gap: 6px; }
+.chart-tip .swatch { flex: none; }
 .c0 { fill: var(--c0); stroke: var(--c0); background: var(--c0); } .c1 { fill: var(--c1); stroke: var(--c1); background: var(--c1); }
 .c2 { fill: var(--c2); stroke: var(--c2); background: var(--c2); } .c3 { fill: var(--c3); stroke: var(--c3); background: var(--c3); }
 .c4 { fill: var(--c4); stroke: var(--c4); background: var(--c4); } .c5 { fill: var(--c5); stroke: var(--c5); background: var(--c5); }

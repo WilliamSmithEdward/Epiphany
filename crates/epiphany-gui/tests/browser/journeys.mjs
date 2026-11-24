@@ -695,11 +695,11 @@ async function exploring() {
     await page.press('Home');
     await page.waitFor(`document.activeElement?.textContent === 'Grid' && document.querySelector('td[data-r]')`, 'the grid, chosen by the keys');
   });
-  await step('A chart\'s names along its bottom never run into one another nor out of it, however narrow', async () => {
+  await step('A chart\'s names, steps and tips never run into one another nor out of it, however narrow', async () => {
     // Months, short, and names cut short at their longest, charted from 260 pixels wide to
-    // 1,600: those side by side apart, those aslant far enough apart for their lines; and the
+    // 1,600: those side by side apart, those aslant far enough apart for their lines; the
     // steps of its scales, from below nought to past a million at the left and in percent at
-    // the right, within it.
+    // the right, within it; and its points' tips.
     const crowding = await page.evaluate(`(async () => {
       const { chart } = await import('/chart.js');
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -733,6 +733,19 @@ async function exploring() {
           for (const text of svg.querySelectorAll('text')) {
             const at = text.getBoundingClientRect();
             if (at.left < bottom.left - 0.5 || at.right > bottom.right + 0.5) problems.push(width + ': ' + text.textContent + ' runs out at the side');
+          }
+          // The first point's tip and the last's, each with its series' colour, stand within
+          // the chart, and beside the point where there is room.
+          for (const key of ['Home', 'End']) {
+            svg.closest('[tabindex]').dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+            const tip = element.querySelector('.chart-tip');
+            const at = tip.getBoundingClientRect();
+            const area = tip.parentElement.getBoundingClientRect();
+            const point = svg.querySelector('.focused').getBoundingClientRect();
+            const middle = point.left + point.width / 2;
+            if (tip.hidden || !tip.querySelector('.tip-series .swatch')) problems.push(width + ': ' + key + ' shows no tip with its colour');
+            if (at.left < area.left - 0.5 || at.right > area.right + 0.5) problems.push(width + ': the tip of ' + key + ' runs out of the chart');
+            if (width >= 400 && middle >= at.left && middle <= at.right) problems.push(width + ': the tip of ' + key + ' covers its point');
           }
           box.remove();
         }

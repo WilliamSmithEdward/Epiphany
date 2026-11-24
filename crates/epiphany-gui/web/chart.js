@@ -213,11 +213,18 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
 
   const say = (target, x, y) => {
     const [value, name, detail] = target.dataset.tip.split('\n');
-    tip.replaceChildren(h('strong', {}, value), h('span', {}, name), detail ? h('span', { class: 'muted' }, detail) : null);
+    // The series named beside its colour, as the legend has it.
+    const colour = [...target.classList].find((each) => /^c\d+$/.test(each));
+    tip.replaceChildren(h('strong', {}, value),
+      h('span', { class: 'tip-series' }, colour ? h('span', { class: `swatch ${colour}`, 'aria-hidden': 'true' }) : null, name),
+      detail ? h('span', { class: 'muted' }, detail) : null);
     tip.hidden = false;
+    // Beside the point, after it and below it, or before it and above it where there is no
+    // room, and within the chart.
     const box = plot.getBoundingClientRect();
-    tip.style.left = `${Math.max(0, Math.min(x + 12, box.width - 180))}px`;
-    tip.style.top = `${Math.min(y + 12, Math.max(box.height - 60, 0))}px`;
+    const beside = (at, size, room) => Math.max(0, Math.min(at + 12 + size <= room ? at + 12 : at - 12 - size, room - size));
+    tip.style.left = `${beside(x, tip.offsetWidth, box.width)}px`;
+    tip.style.top = `${beside(y, tip.offsetHeight, box.height)}px`;
   };
   const showFocus = () => {
     marks.forEach((each, index) => each.classList.toggle('focused', index === focused));
