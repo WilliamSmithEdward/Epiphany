@@ -670,6 +670,18 @@ async function exploring() {
       return depth('Net Income') === '0' && depth('Revenue') === '1' && depth('Product Revenue') === '2'
         && head('Net Income')?.querySelector('button')?.getAttribute('aria-expanded') === 'true';
     })()`, 'the outline, indented and open');
+    // Explained, a total says what it adds up, and how much each part brings.
+    await page.evaluate(`(() => {
+      const cell = document.querySelector('td[data-r="0"][data-c="0"]');
+      const box = cell.getBoundingClientRect();
+      cell.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: box.x + 5, clientY: box.y + 5 }));
+    })()`);
+    await page.click('.menu [role="menuitem"]', 'Explain this value');
+    await page.waitFor(`[...document.querySelectorAll('dialog[open] .fact')].some((fact) => fact.textContent.startsWith('Adds up, by Account')
+      && fact.textContent.includes('Revenue: ') && fact.textContent.includes('Operating Expenses: '))`, 'what the total adds up');
+    await page.audit('A total, explained');
+    await page.press('Escape');
+    await page.waitFor(`!document.querySelector('dialog[open]')`, 'the explanation, closed');
     await page.click('[role="tab"]', 'MDX');
     // One row, one column and one cell are each counted as one, not as "1 rows".
     await page.fill('textarea.mdx-editor', QUERY.replace(', [Period].[Feb]', '').replace(', [Account].[Rent]', ''));

@@ -1133,6 +1133,24 @@ export const grid = {
   },
 
   /** Says how a cell comes by its value, for a cell named by its row and column members. */
+  /**
+   * What a total adds up, along the first dimension in which its member is one: each child,
+   * its weight, and its value as the grid reads it; null where they cannot be read.
+   */
+  async partsOf(cell) {
+    const place = cell.at.findIndex((name, index) => this.dims.get(this.cube.dimensions[index])?.byName.get(name)?.children.length);
+    if (place < 0) return null;
+    const dimension = this.cube.dimensions[place];
+    const children = this.dims.get(dimension).byName.get(cell.at[place]).children;
+    const cells = children.map((child) => ({ cube: cell.cube, at: cell.at.map((name, index) => (index === place ? child.name : name)) }));
+    try {
+      const answer = await post('/cells/read', { cells, transaction: this.tx ?? undefined });
+      return { dimension, lines: children.map((child, index) => ({ name: child.name, weight: child.weight ?? 1, value: answer.cells[index]?.value ?? null })) };
+    } catch {
+      return null;
+    }
+  },
+
   async explain(rowTuple, columnTuple) {
     const at = new Map();
     for (const filter of this.layout.filters) at.set(filter.dimension, filter.member);
@@ -1157,6 +1175,10 @@ export const grid = {
       return;
     }
     const facts = explanation.cell;
+    // A total no rule gives: what it adds up, and how much each part brings.
+    const parts = facts.kind === 'consolidated' && !facts.rule ? await this.partsOf(cell) : null;
+    const part = ({ name, weight, value }) => h('li', {}, `${weight === 1 ? '' : `${formatNumber(weight)} × `}${name}: `,
+      h('span', { class: 'num' }, typeof value === 'number' ? formatNumber(value, 6) : '(empty)'));
     const how = {
       leaf: facts.rule ? 'Worked out by a rule' : 'Stored in the cube',
       consolidated: facts.rule ? 'Worked out by a rule' : 'Added up from the leaves beneath it',
@@ -1172,6 +1194,7 @@ export const grid = {
         row('Cell', cell.at.join(' · ')),
         row('Value', h('strong', { class: 'num' }, value === '' ? '(empty)' : value)),
         row('How', how),
+        parts ? row(`Adds up, by ${parts.dimension}`, h('ul', { class: 'plain-list' }, parts.lines.map(part))) : null,
         facts.rule ? row('Rule', h('code', { class: 'mono' }, facts.rule.text ?? JSON.stringify(facts.rule))) : null,
         facts.stored !== null && facts.stored !== undefined && facts.rule ? row('Stored beneath it', String(facts.stored)) : null,
         row('Can be written', facts.writable ? 'Yes' : 'No'),
