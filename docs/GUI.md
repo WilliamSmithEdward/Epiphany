@@ -104,7 +104,10 @@ only way to do something, and modal dialogs where a side panel would keep the da
   pages' while the browser is idle once the first page shows, so that going to one waits on
   no files. What the GUI's server sends, its files and the API's answers, goes gzipped to a
   browser that takes it, at gzip's quickest: a dimension of 100,000 elements, 10.8 MB of
-  JSON, comes to 0.56 MB, made in some 8 ms; the files, 541 KB, to about 160 KB.
+  JSON, comes to 0.56 MB, made in some 8 ms; the files, 541 KB, to about 160 KB. A chart is
+  drawn once when it is first shown and again only when its size changes, and every number
+  the grid or a chart writes is written by a formatter made once for its decimals: 5,000
+  categories of bars appear in some 0.36 s, where they took 1.5 (2026-11-24).
 - **Fits a phone.** At a phone's width the bar keeps its marks, the words beside them still
   heard by a screen reader, and so does the model's tree of elements, each element's mark
   saying its type, so that the names have the room; headings and their buttons stack, as do

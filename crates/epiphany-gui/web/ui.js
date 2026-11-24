@@ -531,7 +531,23 @@ export function choices({ label, kind = 'tablist', options, chosen, choose, into
 export function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return value ?? '';
   // Nothing taken from nothing is nothing, not "-0".
-  return (value || 0).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: digits });
+  return decimals(0, digits).format(value || 0);
+}
+
+/**
+ * The reader's locale's way of writing numbers to between `least` and `most` decimals, made
+ * once for each: made afresh for every value, as `toLocaleString` with options is, it took
+ * some 17 µs a number, nearly 40 times as long, for every cell drawn and every mark charted.
+ */
+const formatters = new Map();
+function decimals(least, most) {
+  const key = `${least}:${most}`;
+  let formatter = formatters.get(key);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(undefined, { minimumFractionDigits: least, maximumFractionDigits: most });
+    formatters.set(key, formatter);
+  }
+  return formatter;
 }
 
 /** What each unit a view may show numbers in divides them by, and how it is said. */
@@ -547,7 +563,7 @@ export function formatValue(value, format) {
   if (format.dash_zeros && value === 0) return '–';
   const shown = value / (SCALES[format.scale]?.[0] ?? 1);
   const digits = format.decimals ?? (format.scale ? 1 : 2);
-  const text = Math.abs(shown).toLocaleString(undefined, { minimumFractionDigits: format.decimals ?? 0, maximumFractionDigits: digits });
+  const text = decimals(format.decimals ?? 0, digits).format(Math.abs(shown));
   // A value that rounds to nothing has no sign.
   if (shown >= 0 || /^[0.,\s]*$/.test(text)) return text;
   return format.parentheses ? `(${text})` : `-${text}`;

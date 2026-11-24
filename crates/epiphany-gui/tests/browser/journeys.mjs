@@ -863,6 +863,33 @@ async function exploring() {
     expect(drawn.tip === '30% / North / Q1 · 30', `The first share says ${drawn.tip}.`);
     expect(drawn.said.startsWith('100% stacked bar chart of North, South, West'), `The chart is described as ${drawn.said}.`);
   });
+  await step('A chart is drawn once when it is first shown, and again only when its size changes', async () => {
+    const drawn = await page.evaluate(`(async () => {
+      const { chart } = await import('/chart.js');
+      const categories = Array.from({ length: 200 }, (_, c) => 'Item ' + c);
+      const series = ['A', 'B'].map((name) => ({ name, tuple: [], values: categories.map((_, c) => c + 1), texts: null }));
+      const box = document.body.appendChild(document.createElement('div'));
+      box.style.width = '600px';
+      const element = chart({ categories, tuples: categories.map(() => []), series }, 'bars', { fresh: false });
+      let draws = 0;
+      new MutationObserver((changes) => {
+        draws += changes.flatMap((change) => [...change.addedNodes]).filter((node) => node.nodeName === 'svg').length;
+      }).observe(element.querySelector('.chart-plot'), { childList: true });
+      const frames = (count) => new Promise((done) => {
+        const next = (left) => (left ? requestAnimationFrame(() => next(left - 1)) : done());
+        next(count);
+      });
+      box.append(element);
+      await frames(10);
+      const first = draws;
+      box.style.width = '500px';
+      await frames(10);
+      const resized = draws;
+      box.remove();
+      return { first, resized };
+    })()`);
+    expect(drawn.first === 1 && drawn.resized === 2, `Drawn ${drawn.first} times when first shown and ${drawn.resized - drawn.first} more when made narrower.`);
+  });
   await step('A view kept for oneself is listed apart, and taken away', async () => {
     const views = '/cubes/General%20Ledger/private-views';
     await page.click('button', 'Views');

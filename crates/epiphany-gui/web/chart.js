@@ -221,9 +221,12 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
     }
   };
 
+  // The size the chart is drawn at, and the size it was drawn at last.
+  const size = () => [Math.max(plot.clientWidth, 100), fill ? Math.max(plot.clientHeight, 120) : height];
+  let drawnAt = '';
   const draw = () => {
-    const width = Math.max(plot.clientWidth, 100);
-    const tall = fill ? Math.max(plot.clientHeight, 120) : height;
+    const [width, tall] = size();
+    drawnAt = `${width}x${tall}`;
     const svg = h('svg', { width, height: tall, viewBox: `0 0 ${width} ${tall}`, role: 'img', class: [entering ? 'entering' : '', picked ? 'picking' : ''].join(' ').trim() || null });
     marks = [];
     // A mark of series `s` at category `c`: what it says when pointed at, and whether it is the one picked.
@@ -315,7 +318,9 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
       resize.disconnect();
       return;
     }
-    if (queued) return;
+    // Told of the size it was drawn at, as it is the moment it is first watched, it is not
+    // drawn again: a chart of thousands of marks was drawn twice for nothing.
+    if (queued || size().join('x') === drawnAt) return;
     queued = true;
     requestAnimationFrame(() => {
       queued = false;
