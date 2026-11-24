@@ -653,7 +653,8 @@ async function exploring() {
     await page.fill('textarea.mdx-editor', 'SELECT {NoSuchFunction([Period].[Jan])} ON COLUMNS FROM [General Ledger]');
     await page.click('button', 'Run');
     const back = `[...document.querySelectorAll('.empty button')].find((button) => ['Edit the query', 'Show it in the query'].includes(button.textContent.trim()))`;
-    await page.waitFor(`${back} && ![...document.querySelectorAll('.empty button')].some((button) => button.textContent.trim() === 'Try again')`, 'the query, offered to be mended rather than run again');
+    await page.waitFor(`${back} && ![...document.querySelectorAll('.empty button')].some((button) => button.textContent.trim() === 'Try again')
+      && document.querySelector('.empty h3')?.textContent === 'The query could not be run'`, 'the query, said not to run and offered to be mended rather than run again');
     await page.evaluate(`${back}.click()`);
     await page.waitFor(`document.querySelector('textarea.mdx-editor') && document.querySelector('#mdx-problem')?.textContent.toLowerCase().includes('nosuchfunction')`, 'the query, with what the server said beneath');
   });

@@ -942,7 +942,7 @@ class Explorer {
       const mendable = Boolean(this.layout.mdx) && this.error instanceof ApiError && this.error.status === 422;
       const at = mendable ? this.error.position ?? null : null;
       const show = mendable ? h('button', { class: 'button primary', onclick: () => this.showInQuery(at) }, icon('code', 16), at == null ? 'Edit the query' : 'Show it in the query') : null;
-      mount(this.output, failure(this.error, mendable ? null : () => this.run(), show));
+      mount(this.output, failure(this.error, mendable ? null : () => this.run(), show, mendable ? 'The query could not be run' : null));
       mount(this.statusLine);
       return;
     }
