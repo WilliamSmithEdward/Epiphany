@@ -607,7 +607,9 @@ practice that means:
     rest are sent again together.
   - Dimension functions answer from a copy of the dimension fetched once per connection, and
     made ready once to answer them all: made again for each question, a dimension of a
-    million elements took seconds a formula.
+    million elements took seconds a formula. The copy is made as the answer is read, by a
+    JSON reader of the add-in's own: the framework's serializer took 9 s and 2 GB to read a
+    dimension of a million elements, before the copy was made from what it read.
   - Connect, Disconnect and Refresh commands; a sign-in window that opens when the server
     refuses a request; the address and user name remembered, never the password.
   - Tests that run the connection against a real server, without Excel.

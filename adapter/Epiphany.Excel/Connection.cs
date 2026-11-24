@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -193,8 +194,9 @@ namespace Epiphany.Excel
         /// made again for each, a dimension of a million elements took seconds a question.</summary>
         private async Task<Fetched> Fetch(string dimension)
         {
-            var reply = await Send(HttpMethod.Get, "dimensions/" + Uri.EscapeDataString(dimension), null).ConfigureAwait(false);
-            return new Fetched { Status = reply.Status, Dimension = reply.Ok ? new Dimension(reply.Body) : null };
+            var path = "dimensions/" + Uri.EscapeDataString(dimension);
+            var reply = await Send(HttpMethod.Get, path, null, read: Dimension.Read).ConfigureAwait(false);
+            return new Fetched { Status = reply.Status, Dimension = reply.Body as Dimension };
         }
 
         /// <summary>Forgets the dimensions held, so that the next questions fetch them again.</summary>
@@ -410,8 +412,11 @@ namespace Epiphany.Excel
             return Within(new Dictionary<string, object> { ["cells"] = items.ToArray() });
         }
 
-        /// <summary>Sends one request. A server that cannot be reached gives status zero.</summary>
-        private async Task<Reply> Send(HttpMethod method, string path, object body, bool quietly = false)
+        /// <summary>Sends one request. A server that cannot be reached gives status zero. The
+        /// answer is read by <paramref name="read"/> where one is given and the request
+        /// succeeds, and otherwise as JSON.</summary>
+        private async Task<Reply> Send(HttpMethod method, string path, object body, bool quietly = false,
+            Func<TextReader, object> read = null)
         {
             Interlocked.Increment(ref Requests);
             var reply = new Reply();
@@ -421,10 +426,10 @@ namespace Epiphany.Excel
                 if (body != null)
                     request.Content = new StringContent(Json.Write(body), Encoding.UTF8, "application/json");
                 using (var response = await http.SendAsync(request).ConfigureAwait(false))
+                using (var text = new StreamReader(await response.Content.ReadAsStreamAsync().ConfigureAwait(false)))
                 {
-                    var text = await response.Content.ReadAsStringAsync().ConfigureAwait(false);
                     reply.Status = (int)response.StatusCode;
-                    reply.Body = text == "" ? null : Json.Read(text);
+                    reply.Body = reply.Ok && read != null ? read(text) : Json.Read(text);
                     if (response.Headers.TryGetValues("Epiphany-Model-Version", out var versions))
                     {
                         var before = Interlocked.Exchange(ref version, versions.First());
@@ -437,7 +442,7 @@ namespace Epiphany.Excel
                 }
             }
             catch (Exception error) when (error is HttpRequestException || error is OperationCanceledException
-                || error is ArgumentException || error is InvalidOperationException)
+                || error is ArgumentException || error is InvalidOperationException || error is FormatException)
             {
                 // Unreachable, timed out, or an answer that is not JSON: no server to speak of.
                 reply.Status = 0;

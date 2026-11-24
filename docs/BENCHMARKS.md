@@ -364,6 +364,21 @@ lack. Measured from outside, twice each (2026-11-23):
 | Time to answer | 0.65 to 0.67 s | 0.32 s |
 | Memory at the most | 916 MB | 597 MB |
 
+The Excel add-in read that answer with the serializer the .NET Framework ships, which made
+the whole text into dictionaries and lists before the add-in made its copy of the dimension
+from them. It now reads the answer with a JSON reader of its own as the text comes, making
+each element as it is read. Its copy gives the same answer to every question the dimension
+functions ask, about every element of the sample model's dimensions and every 97th of the
+million, as the copy made the old way. Measured with a test against a release server on the
+model of a million leaves, not kept, three times after (2026-11-23):
+
+| The add-in, a dimension of a million leaves | Before | After |
+| --- | --- | --- |
+| Time to the first answer, fetching included | 11.4 s | 2.9 s |
+| Reading the answer, once fetched | 10.4 to 11.4 s | 2.4 to 2.6 s |
+| Memory at the most | 2,162 MB | 576 to 591 MB |
+| The copy, held | 418 MB | 418 MB |
+
 ## Memory
 
 Measured from outside, on a server built for release and given a cube of four dimensions

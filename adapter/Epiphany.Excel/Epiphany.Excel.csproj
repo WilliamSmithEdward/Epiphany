@@ -19,4 +19,10 @@
     <Reference Include="System.Windows.Forms" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Excel-DNA makes every public static method a worksheet function, so what only the tests
+         need to see is kept internal and shown to them alone. -->
+    <InternalsVisibleTo Include="Epiphany.Excel.Tests" />
+  </ItemGroup>
+
 </Project>
