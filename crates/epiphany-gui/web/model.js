@@ -5,6 +5,7 @@
 import { del, get, part, put } from './api.js';
 import { empty, failure, go, loading } from './app.js';
 import { checkFeeders } from './feeders.js';
+import { chooser, finder, pick } from './finder.js';
 import { beneath, INDENT, marked, openButtons, reveal, Rows, searchBox, treeKey, treeRow, treeRows, twisty } from './tree.js';
 import { choices, counted, dialog, h, icon, invalid, KINDS, menu, mount, notify, parseNumber, refocus, splitter, textWidths, when, widest, working } from './ui.js';
 
@@ -72,40 +73,36 @@ class ModelPage {
     return this.editor?.save();
   }
 
+  /**
+   * The dimensions and cubes, each to open beside the list: found by typing among however
+   * many, a model of ten thousand dimensions drawing only those in view.
+   */
   drawList() {
-    const search = h('input', { class: 'input', type: 'search', placeholder: 'Find', 'aria-label': 'Find a dimension or cube' });
-    const items = h('div', { class: 'model-items' });
-    const draw = () => {
-      const words = search.value.trim().toLowerCase();
-      const entry = (kind, name, iconName, detail) => {
-        if (words && !name.toLowerCase().includes(words)) return null;
-        const current = this.chosen?.[0] === kind && this.chosen[1] === name;
-        return h('a', {
-          class: 'model-item',
-          href: `/model?${kind}=${encodeURIComponent(name)}`,
-          'data-link': '',
-          'aria-current': current ? 'page' : null,
-        }, icon(iconName, 16), h('span', { class: 'grow' }, name), h('span', { class: 'muted' }, detail));
-      };
-      mount(items,
-        h('div', { class: 'model-section' }, h('span', {}, 'Dimensions'),
-          h('button', { class: 'button quiet small icon', 'aria-label': 'Add a dimension', onclick: () => this.addDimension() }, icon('plus', 16))),
-        this.definition.dimensions.map((d) => entry('dimension', d.name, d.type === 'time' ? 'chart' : 'dimension', d.element_count.toLocaleString())),
-        h('div', { class: 'model-section' }, h('span', {}, 'Cubes'),
-          h('button', { class: 'button quiet small icon', 'aria-label': 'Add a cube', onclick: () => this.addCube() }, icon('plus', 16))),
-        this.definition.cubes.map((c) => entry('cube', c.name, 'cube', `${c.dimensions.length}`)));
-    };
-    search.addEventListener('input', draw);
+    const entry = (kind, name, iconName, detail) => ({
+      label: name, icon: iconName, detail, kind, group: kind === 'dimension' ? 'Dimensions' : 'Cubes', href: `/model?${kind}=${encodeURIComponent(name)}`,
+    });
+    const items = () => [
+      ...this.definition.dimensions.map((d) => entry('dimension', d.name, d.type === 'time' ? 'chart' : 'dimension', d.element_count.toLocaleString())),
+      ...this.definition.cubes.map((c) => entry('cube', c.name, 'cube', `${c.dimensions.length}`)),
+    ];
+    const found = finder({ items: items(), label: 'Find a dimension or cube', props: () => ({ class: 'model-item' }) });
     this.versionBadge = h('span', { class: 'badge' });
     mount(this.list,
       h('div', { class: 'model-head' }, h('h1', {}, 'Model'), this.versionBadge,
+        h('button', {
+          class: 'button quiet small icon',
+          'aria-label': 'Add a dimension or a cube',
+          'aria-haspopup': 'menu',
+          title: 'Add a dimension or a cube',
+          onclick: (event) => menu([{ label: 'A dimension…', icon: 'dimension', action: () => this.addDimension() }, { label: 'A cube…', icon: 'cube', action: () => this.addCube() }], event.currentTarget),
+        }, icon('plus', 16)),
         h('button', { class: 'button quiet small icon', 'aria-label': 'Earlier versions of the model', title: 'Earlier versions, to compare and restore', onclick: (event) => this.showHistory(event.currentTarget) }, icon('undo', 16))),
-      h('div', { class: 'search' }, icon('search', 16), search),
-      items);
+      found.element);
     // The items, again, as the model or the one chosen changes; the search stays as typed.
     this.drawItems = () => {
       this.versionBadge.textContent = `Version ${this.version}`;
-      draw();
+      const all = items();
+      found.refresh(all, all.find((item) => item.kind === this.chosen?.[0] && item.label === this.chosen[1]) ?? null);
     };
   }
 
@@ -296,23 +293,38 @@ class ModelPage {
     if (added) go(`/model?dimension=${encodeURIComponent(added)}`);
   }
 
+  /** Adds a cube of the dimensions ticked, found by typing among however many, in the order ticked. */
   async addCube() {
     const name = h('input', { class: 'input', id: 'new-name', required: true });
     const chosen = new Set();
-    const boxes = this.definition.dimensions.map((d) => h('label', { class: 'check' },
-      h('input', { type: 'checkbox', onchange: (event) => (event.target.checked ? chosen.add(d.name) : chosen.delete(d.name)) }), d.name));
+    const order = [];
+    const said = h('p', { class: 'hint', 'aria-live': 'polite' });
+    const tell = () => {
+      said.textContent = order.length ? `In this order: ${order.map((item) => item.label).join(' · ')}` : 'None ticked yet.';
+    };
+    const dimensions = finder({
+      items: this.definition.dimensions.map((d) => ({ label: d.name, icon: d.type === 'time' ? 'chart' : 'dimension', detail: d.element_count.toLocaleString() })),
+      label: 'Find a dimension',
+      chosen,
+      row: 34,
+      choose: (item) => {
+        if (chosen.has(item)) order.push(item);
+        else order.splice(order.indexOf(item), 1);
+        tell();
+      },
+    });
+    tell();
     const added = await dialog({
       title: 'Add a cube',
       confirm: 'Add cube',
       body: h('div', { class: 'facts' },
         h('div', { class: 'field' }, h('label', { for: 'new-name' }, 'Name'), name),
-        h('fieldset', { class: 'field' }, h('legend', {}, 'Dimensions, in order'), h('div', { class: 'checks' }, boxes))),
+        h('fieldset', { class: 'field' }, h('legend', {}, 'Dimensions, in the order ticked'), dimensions.element, said)),
       onsubmit: async () => {
         const value = name.value.trim();
         if (!value) throw invalid(name, 'Give the cube a name.');
-        if (chosen.size < 1) throw invalid(boxes[0]?.querySelector('input'), 'Choose at least one dimension.');
-        const dimensions = this.definition.dimensions.map((d) => d.name).filter((d) => chosen.has(d));
-        const cube = { name: value, dimensions };
+        if (!order.length) throw invalid(dimensions.input, 'Tick at least one dimension.');
+        const cube = { name: value, dimensions: order.map((item) => item.label) };
         if (!(await this.save(`/cubes/${part(value)}`, { cube }))) throw new Error('It was not added.');
         this.replace('cube', cube);
         return value;
@@ -845,27 +857,30 @@ class DimensionEditor extends Editor {
     h('option', { value: '', selected: kind === '' }, 'Any text'),
     h('option', { value: 'values', selected: kind === 'values' }, 'Values listed here'),
     h('option', { value: 'members', selected: kind === 'members' }, 'The elements of a dimension'));
-    let chooser = null;
+    let offered = null;
     if (kind === 'values') {
-      chooser = h('textarea', { class: 'textarea', rows: 4, spellcheck: 'false', 'aria-label': 'The values offered, one to a line', placeholder: 'One value to a line' });
-      chooser.value = picklist.join('\n');
-      chooser.addEventListener('change', () => {
-        element.picklist = chooser.value.split('\n').map((line) => line.trim()).filter(Boolean);
+      offered = h('textarea', { class: 'textarea', rows: 4, spellcheck: 'false', 'aria-label': 'The values offered, one to a line', placeholder: 'One value to a line' });
+      offered.value = picklist.join('\n');
+      offered.addEventListener('change', () => {
+        element.picklist = offered.value.split('\n').map((line) => line.trim()).filter(Boolean);
         this.changed();
       });
     } else if (kind === 'members') {
       // Named as the server names them, ignoring case.
       const same = (name, named) => name.toLowerCase() === named?.toLowerCase();
       const from = dimensions.find((dimension) => same(dimension.name, picklist.dimension));
-      chooser = h('div', { class: 'field-pair' },
-        h('select', {
-          class: 'select',
-          'aria-label': 'The dimension whose elements are offered',
-          onchange: (event) => {
-            element.picklist = { dimension: event.target.value };
+      // The dimension, found by typing among however many.
+      offered = h('div', { class: 'field-pair' },
+        chooser({
+          items: () => dimensions.map((dimension) => ({ label: dimension.name, icon: 'dimension' })),
+          now: from?.name ?? picklist.dimension,
+          label: 'The dimension whose elements are offered',
+          find: 'Find the dimension whose elements are offered',
+          chosen: (name) => {
+            element.picklist = { dimension: name };
             this.changed();
           },
-        }, dimensions.map((dimension) => h('option', { value: dimension.name, selected: dimension === from }, dimension.name))),
+        }),
         h('select', {
           class: 'select',
           'aria-label': 'Its subset, if only those',
@@ -880,7 +895,7 @@ class DimensionEditor extends Editor {
     return h('div', { class: 'field' },
       h('label', { for: 'picklist-kind' }, 'Picklist'),
       how,
-      chooser,
+      offered,
       h('span', { class: 'hint' }, 'Where this is a cube\'s last dimension, its text cells take only the values offered, chosen from a list. Text stored before stays.'));
   }
 
@@ -1178,12 +1193,20 @@ class CubeEditor extends Editor {
       dims.splice(index + step, 0, moved);
       this.changed();
     };
-    const add = h('select', { class: 'select', 'aria-label': 'Add a dimension to the cube' }, h('option', { value: '' }, 'Add a dimension…'), others.map((name) => h('option', { value: name }, name)));
-    add.addEventListener('change', () => {
-      if (!add.value) return;
-      dims.push(add.value);
-      this.changed();
-    });
+    // Any other dimension of the model, found by typing among however many.
+    const sizes = new Map(this.page.definition.dimensions.map((d) => [d.name, d.element_count]));
+    const add = h('button', {
+      class: 'button small',
+      type: 'button',
+      'aria-haspopup': 'dialog',
+      onclick: async (event) => {
+        const items = others.map((name) => ({ label: name, icon: 'dimension', detail: (sizes.get(name) ?? 0).toLocaleString() }));
+        const chosen = await pick({ items, at: event.currentTarget, label: 'Find a dimension to add to the cube' });
+        if (!chosen) return;
+        dims.push(chosen.label);
+        this.changed();
+      },
+    }, icon('plus', 14), 'Add a dimension');
     mount(this.body, h('div', { class: 'card' },
       h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Dimensions'), h('span', { class: 'muted' }, 'Changing them removes the cells stored in the cube.')),
       h('ol', { class: 'dimension-list' }, dims.map((name, index) => h('li', {},
@@ -1198,7 +1221,7 @@ class CubeEditor extends Editor {
           onclick: () => {
             dims.splice(index, 1);
             this.changed();
-            refocus(this.body.querySelector('.dimension-list'), index, this.body.querySelector('.dimension-list ~ .card-body .select'));
+            refocus(this.body.querySelector('.dimension-list'), index, this.body.querySelector('.dimension-list ~ .card-body .button'));
           },
         }, icon('close', 14))))),
       others.length ? h('div', { class: 'card-body toolbar' }, add) : null));

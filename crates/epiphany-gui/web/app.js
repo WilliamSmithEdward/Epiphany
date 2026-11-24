@@ -1,8 +1,9 @@
 // The application: signing in, the shell around every page, and moving between pages.
 
 import { ApiError, api, events, get } from './api.js';
+import { choseLately, finder, lateFirst } from './finder.js';
 import { marked } from './tree.js';
-import { counted, dialog, h, icon, invalid, KINDS, menu, MOD, mount, notify, revealable, when, working } from './ui.js';
+import { counted, cubeSaid, dialog, h, icon, invalid, KINDS, menu, MOD, mount, notify, revealable, when, working } from './ui.js';
 
 /** Who is signed in, and the model as last fetched. */
 export const state = { user: null, open: false, model: null, version: null };
@@ -601,59 +602,15 @@ function setStatus(up) {
 
 /* ---- Command palette ---- */
 
-/** Where the commands chosen lately are kept, the latest first. */
-const RECENT = 'epiphany.palette.recent';
-const RECENT_KEPT = 5;
+/** A command as it is kept among those chosen lately, which come first, with nothing typed and among matches alike. */
 const commandKey = (command) => `${command.kind}: ${command.label}`;
-
-function chosenLately() {
-  try {
-    return JSON.parse(localStorage.getItem(RECENT)) ?? [];
-  } catch {
-    return [];
-  }
-}
-
-/** Whether `word` begins one of the words of `text`. */
-function beginsWord(text, word) {
-  for (let at = text.indexOf(word); at >= 0; at = text.indexOf(word, at + 1)) {
-    if (at === 0 || !/[\p{L}\p{N}]/u.test(text[at - 1])) return true;
-  }
-  return false;
-}
+const latestFirst = (commands) => lateFirst(commands, 'commands', { name: commandKey });
 
 /**
- * The commands with every word typed, in their label or else in what they belong to, the best
- * matches first: words that begin the label, then words that begin one of its words, then
- * any. With nothing typed, the commands chosen lately come first.
+ * Finds a page, cube, view, dashboard or command by a few words of it, and goes there or does
+ * it. Every one is offered, however many, drawn only where the list is seen: a model of 500
+ * cubes and 10,000 dimensions offers some 13,000.
  */
-function ranked(commands, words) {
-  if (!words.length) {
-    const lately = chosenLately();
-    const place = (command) => {
-      const at = lately.indexOf(commandKey(command));
-      return at < 0 ? lately.length : at;
-    };
-    return [...commands].sort((a, b) => place(a) - place(b));
-  }
-  const scored = [];
-  for (const command of commands) {
-    const label = command.label.toLowerCase();
-    const context = command.context?.toLowerCase() ?? '';
-    let score = 0;
-    for (const word of words) {
-      const points = label.startsWith(word) ? 3 : beginsWord(label, word) ? 2 : label.includes(word) || context.includes(word) ? 1 : 0;
-      if (!points) {
-        score = 0;
-        break;
-      }
-      score += points;
-    }
-    if (score) scored.push([score, command]);
-  }
-  return scored.sort((a, b) => b[0] - a[0]).map(([, command]) => command);
-}
-
 async function palette() {
   // One closed a moment ago may wait for its close event to be taken away.
   if (document.querySelector('dialog.palette[open]')) return;
@@ -667,65 +624,27 @@ async function palette() {
   ];
   // The pages are there at once; the cubes and dashboards join them as the model comes.
   let found = [];
-  let finding = !state.model;
-
-  const input = h('input', { placeholder: 'Type a cube, page or command', 'aria-label': 'Search', role: 'combobox', 'aria-expanded': 'true', 'aria-controls': 'palette-list', autocomplete: 'off' });
-  const list = h('ul', { id: 'palette-list', role: 'listbox' });
-  const element = h('dialog', { class: 'palette', 'aria-label': 'Search and commands' }, input, list);
-  let shown = [];
-  let selected = 0;
-  const draw = () => {
-    const words = input.value.toLowerCase().split(/\s+/).filter(Boolean);
-    shown = ranked([...pages, ...found, ...others], words);
-    selected = Math.min(selected, Math.max(0, shown.length - 1));
-    mount(list, shown.length
-      ? shown.map((command, index) => h('li', {
-        role: 'option',
-        id: `palette-${index}`,
-        'aria-selected': String(index === selected),
-        onpointermove: () => {
-          if (selected !== index) {
-            selected = index;
-            draw();
-          }
-        },
-        onclick: () => choose(index),
-      }, icon(command.icon, 16), h('span', {}, marked(command.label, words)), h('span', { class: 'kind' }, command.kind)))
-      : finding ? null : h('li', { class: 'none' }, 'Nothing matches'),
-    finding ? h('li', { class: 'none finding' }, h('span', { class: 'spinner small', 'aria-hidden': 'true' }), 'Finding cubes and dashboards…') : null);
-    input.setAttribute('aria-activedescendant', shown.length ? `palette-${selected}` : '');
-    list.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
-  };
-  const choose = (index) => {
-    const command = shown[index];
-    element.close();
-    if (!command) return;
-    const key = commandKey(command);
-    localStorage.setItem(RECENT, JSON.stringify([key, ...chosenLately().filter((other) => other !== key)].slice(0, RECENT_KEPT)));
-    command.run();
-  };
-  input.addEventListener('input', () => {
-    selected = 0;
-    draw();
+  const element = h('dialog', { class: 'palette', 'aria-label': 'Search and commands' });
+  const finding = state.model ? null : h('p', { class: 'finding' }, h('span', { class: 'spinner small', 'aria-hidden': 'true' }), 'Finding cubes and dashboards…');
+  const list = finder({
+    items: latestFirst([...pages, ...others]),
+    label: 'Type a cube, page or command',
+    row: 40,
+    draw: (command, words) => [icon(command.icon, 16), h('span', { class: 'grow' }, marked(command.label, words)), h('span', { class: 'kind' }, command.kind)],
+    choose: (command) => {
+      element.close();
+      choseLately('commands', commandKey(command));
+      command.run();
+    },
   });
-  input.addEventListener('keydown', (event) => {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-      selected = (selected + (event.key === 'ArrowDown' ? 1 : -1) + shown.length) % Math.max(shown.length, 1);
-      draw();
-    } else if (event.key === 'Enter') {
-      event.preventDefault();
-      choose(selected);
-    }
-  });
+  mount(element, list.element, finding);
   element.addEventListener('close', () => element.remove());
   element.addEventListener('click', (event) => {
     if (event.target === element) element.close();
   });
   document.body.append(element);
-  draw();
   element.showModal();
-  input.focus();
+  list.input.focus();
   try {
     const definition = await model();
     const explore = (cube, view) => `/explore?cube=${encodeURIComponent(cube.name)}${view ? `&view=${encodeURIComponent(view)}` : ''}`;
@@ -744,15 +663,9 @@ async function palette() {
   } catch {
     // The pages are still there to choose.
   }
-  finding = false;
-  if (!element.open) return;
-  // The command chosen stays chosen as the others join the list.
-  const was = shown[selected];
-  draw();
-  if (was && shown.includes(was) && shown.indexOf(was) !== selected) {
-    selected = shown.indexOf(was);
-    draw();
-  }
+  finding?.remove();
+  // The command the keys are on stays so as the others join the list.
+  if (element.open) list.refresh(latestFirst([...pages, ...found, ...others]));
 }
 
 addEventListener('keydown', (event) => {
@@ -796,25 +709,29 @@ async function overview(target) {
     h('div', { class: 'tile-icon' }, icon(iconName, 20)),
     h('div', { class: 'stat' }, value.toLocaleString()),
     h('div', { class: 'muted' }, label));
-  const cubes = definition.cubes.map((cube) => h('a', {
-    class: 'card tile',
-    href: `/explore?cube=${encodeURIComponent(cube.name)}`,
-    'data-link': '',
-  },
-  h('div', { class: 'toolbar' }, h('div', { class: 'tile-icon' }, icon('cube', 20)), h('div', { class: 'grow' }),
-    cube.rules?.length ? h('span', { class: 'badge accent' }, counted(cube.rules.length, 'rule')) : null,
-    views(cube) ? h('span', { class: 'badge' }, counted(views(cube), 'view')) : null),
-  h('h3', {}, cube.name),
-  h('p', { class: 'muted' }, cube.dimensions.join(' · '))));
-  const dashboards = (definition.dashboards ?? []).map((dashboard) => h('a', {
-    class: 'card tile',
-    href: `/dashboards?name=${encodeURIComponent(dashboard.name)}`,
-    'data-link': '',
-  },
-  h('div', { class: 'toolbar' }, h('div', { class: 'tile-icon' }, icon('dashboard', 20)), h('div', { class: 'grow' }),
-    h('span', { class: 'badge' }, counted(dashboard.tiles.length, 'tile'))),
-  h('h3', {}, dashboard.name),
-  dashboard.description ? h('p', { class: 'muted' }, dashboard.description) : null));
+  const explore = (cube) => `/explore?cube=${encodeURIComponent(cube.name)}`;
+  const open = (dashboard) => `/dashboards?name=${encodeURIComponent(dashboard.name)}`;
+  // A dozen or so stand as cards; more are a list to find any in by typing, those opened
+  // lately first: a cube by its name or a dimension of it, a dashboard by its name or what
+  // it is for.
+  const shown = (list, card, item, kind, rest, label) => list.length > CARDS
+    ? h('div', { class: 'card browse' }, finder({ items: lateFirst(list.map(item), kind, { rest }), label, row: 40 }).element)
+    : h('div', { class: 'grid-cards' }, list.map(card));
+  const cubes = shown(definition.cubes, (cube) => h('a', { class: 'card tile', href: explore(cube), 'data-link': '' },
+    h('div', { class: 'toolbar' }, h('div', { class: 'tile-icon' }, icon('cube', 20)), h('div', { class: 'grow' }),
+      cube.rules?.length ? h('span', { class: 'badge accent' }, counted(cube.rules.length, 'rule')) : null,
+      views(cube) ? h('span', { class: 'badge' }, counted(views(cube), 'view')) : null),
+    h('h3', {}, cube.name),
+    h('p', { class: 'muted' }, cube.dimensions.join(' · '))),
+  (cube) => ({ label: cube.name, icon: 'cube', detail: cubeSaid(cube), context: cube.dimensions.join(' '), href: explore(cube) }),
+  'cubes', 'Every cube', 'Find a cube, or a dimension of one');
+  const dashboards = shown(definition.dashboards ?? [], (dashboard) => h('a', { class: 'card tile', href: open(dashboard), 'data-link': '' },
+    h('div', { class: 'toolbar' }, h('div', { class: 'tile-icon' }, icon('dashboard', 20)), h('div', { class: 'grow' }),
+      h('span', { class: 'badge' }, counted(dashboard.tiles.length, 'tile'))),
+    h('h3', {}, dashboard.name),
+    dashboard.description ? h('p', { class: 'muted' }, dashboard.description) : null),
+  (dashboard) => ({ label: dashboard.name, icon: 'dashboard', detail: counted(dashboard.tiles.length, 'tile'), context: dashboard.description, href: open(dashboard) }),
+  'dashboards', 'Every dashboard', 'Find a dashboard');
   // The places visited lately, to go back to where one was.
   const places = placesVisited().map((place) => h('li', {},
     h('a', { href: place.path, 'data-link': '' }, icon(place.icon, 16), h('span', { class: 'grow' }, place.title), when(place.at))));
@@ -829,12 +746,13 @@ async function overview(target) {
     places.length ? h('h2', { class: 'section-title' }, 'Recent') : null,
     places.length ? h('ul', { class: 'recent', 'aria-label': 'Places visited lately' }, places) : null,
     h('h2', { class: 'section-title' }, 'Cubes'),
-    definition.cubes.length
-      ? h('div', { class: 'grid-cards' }, cubes)
-      : empty('cube', 'No cubes yet', 'An administrator adds cubes to the model.'),
-    dashboards.length ? h('h2', { class: 'section-title' }, 'Dashboards') : null,
-    dashboards.length ? h('div', { class: 'grid-cards' }, dashboards) : null));
+    definition.cubes.length ? cubes : empty('cube', 'No cubes yet', 'An administrator adds cubes to the model.'),
+    definition.dashboards?.length ? h('h2', { class: 'section-title' }, 'Dashboards') : null,
+    definition.dashboards?.length ? dashboards : null));
 }
+
+/** The most cubes, or dashboards, the overview shows as cards: past them, it lists them to find in. */
+const CARDS = 12;
 
 /** How many views a cube has saved: they come keyed by name. */
 const views = (cube) => Object.keys(cube.views ?? {}).length;

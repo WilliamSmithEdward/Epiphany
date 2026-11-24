@@ -551,6 +551,12 @@ export function counted(count, noun) {
   return `${count.toLocaleString()} ${noun}${count === 1 ? '' : 's'}`;
 }
 
+/** What a cube holds, as a list of cubes says it beside its name: its views, and its dimensions. */
+export function cubeSaid(cube) {
+  const views = Object.keys(cube.views ?? {}).length;
+  return [views ? counted(views, 'view') : null, counted(cube.dimensions.length, 'dimension')].filter(Boolean).join(' · ');
+}
+
 /** A number as the reader's locale writes it. */
 export function formatNumber(value, digits = 2) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return value ?? '';

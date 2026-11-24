@@ -5,14 +5,17 @@
 // stands where it is put and lines up with the others. A change is saved against the model
 // version it was made from, so that nobody's change is overwritten unseen.
 
-import { del, modelVersion, part, post, put } from './api.js';
-import { announce, empty, failure, go, model, readdress, state } from './app.js';
+import { del, get, modelVersion, part, post, put } from './api.js';
+import { announce, empty, failure, go, loading, model, readdress, state } from './app.js';
 import { COLUMNS, firstFree, inReadingOrder, linesOf, moveOnGrid, nearest, onPage, ontoGrid, resizeOnGrid } from './arrange.js';
 import { seriesNames, shape } from './chart.js';
+import { chooser, choseLately, finder, lateFirst, lately, pick } from './finder.js';
+import { quote } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { csvOf, tsvOf } from './selection.js';
 import { askDrawn, AXES, CHARTS, numbersOf, present, prose } from './tiles.js';
-import { choices, copyText, dialog, download, h, icon, invalid, KINDS, menu, MOD, mount, notify, when, working } from './ui.js';
+import { marked } from './tree.js';
+import { choices, copyText, counted, cubeSaid, dialog, download, h, icon, invalid, KINDS, menu, MOD, mount, notify, when, working } from './ui.js';
 
 /** A row's height and the gap between tiles, in pixels: as the styles have them. */
 const ROW = 40;
@@ -46,9 +49,11 @@ const PRESETS = [['Small', 3, 4], ['Medium', 6, 8], ['Large', 8, 12], ['Full wid
 /** How often the tiles may run again by themselves, in minutes. */
 const EVERY = [[0, 'By hand'], [1, 'Every minute'], [5, 'Every 5 minutes'], [15, 'Every 15 minutes'], [60, 'Every hour']];
 
-/** Where the dashboard shown last, a dashboard's refreshing and freeform snapping are kept, in this browser. */
-const LAST = 'epiphany.dashboards.last';
+/** Where a dashboard's refreshing and freeform snapping are kept, in this browser. */
 const SNAP = 'epiphany.dashboards.snap';
+/** The most dashboards that stand as tabs: past them, those shown lately do, and any is found by typing. */
+const TABS = 8;
+const TABS_LATELY = 5;
 const refreshKey = (name) => `epiphany.dashboard.${name}.refresh`;
 
 export async function render(target, { params, titled }) {
@@ -115,9 +120,9 @@ class Dashboards {
     // Not told which, or told of one there is not, the page shows the dashboard shown last,
     // while there is one of that name, or else the first; and the address names it.
     const named = (wanted) => this.list().find((dashboard) => dashboard.name === wanted)?.name;
-    this.name = named(name) ?? named(localStorage.getItem(LAST)) ?? this.list()[0]?.name ?? null;
+    this.name = named(name) ?? named(lately('dashboards')[0]) ?? this.list()[0]?.name ?? null;
     if (this.name) {
-      localStorage.setItem(LAST, this.name);
+      choseLately('dashboards', this.name);
       if (name !== this.name) readdress(`/dashboards?name=${encodeURIComponent(this.name)}`);
     }
     this.draw();
@@ -216,17 +221,23 @@ class Dashboards {
       this.editing ? h('button', {
         class: 'button small quiet',
         disabled: !offered.length,
+        'aria-haspopup': 'dialog',
         title: offered.length ? 'Offer a choice of member that every tile stands at' : 'Add tiles first: a filter is a dimension of their cubes',
-        onclick: (event) => menu([
-          { heading: 'Filter every tile by' },
-          ...offered.map((dimensionName) => ({
-            label: dimensionName,
-            icon: 'dimension',
-            action: () => this.change(() => {
-              this.editing.filters = [...filters, dimensionName];
-            }),
-          })),
-        ], event.currentTarget),
+        onclick: async (event) => {
+          // Found by typing among however many the tiles' cubes have, those that reach the
+          // most tiles first, as a filter is of most use where it reaches them all.
+          const tiles = shown.tiles.filter((tile) => tile.cube);
+          const reach = new Map(offered.map((dimensionName) => [dimensionName, tiles.filter((tile) => this.cubeHas(tile.cube, dimensionName)).length]));
+          const items = offered
+            .map((dimensionName) => ({ label: dimensionName, icon: 'dimension', detail: reach.get(dimensionName) === tiles.length ? 'Every tile' : `${reach.get(dimensionName)} of ${counted(tiles.length, 'tile')}` }))
+            .sort((a, b) => reach.get(b.label) - reach.get(a.label));
+          const chosen = await pick({ items, at: event.currentTarget, label: 'Filter every tile by' });
+          if (chosen) {
+            this.change(() => {
+              this.editing.filters = [...filters, chosen.label];
+            });
+          }
+        },
       }, icon('plus', 14), 'Add a filter') : null);
   }
 
@@ -273,12 +284,22 @@ class Dashboards {
     }
     const editing = Boolean(this.editing);
     const presenting = this.presenting && !editing;
-    // Links from one dashboard to the next, the one shown marked as the page it is.
-    const tabs = h('nav', { class: 'dash-tabs', 'aria-label': 'Dashboards' }, this.list().map((dashboard) => h('a', {
+    // Links from one dashboard to the next, the one shown marked as the page it is. Past a
+    // handful, those shown lately stand as tabs, in their order, and any is found by typing.
+    const all = this.list();
+    const seen = new Set(lately('dashboards').slice(0, TABS_LATELY));
+    const tabbed = all.length > TABS ? all.filter((dashboard) => seen.has(dashboard.name) || dashboard.name === this.name) : all;
+    const tabs = h('nav', { class: 'dash-tabs', 'aria-label': 'Dashboards' }, tabbed.map((dashboard) => h('a', {
       href: `/dashboards?name=${encodeURIComponent(dashboard.name)}`,
       'data-link': '',
       'aria-current': dashboard.name === this.name ? 'page' : null,
-    }, dashboard.name)));
+    }, dashboard.name)),
+    tabbed.length < all.length ? h('button', {
+      class: 'button quiet small dash-every',
+      'aria-haspopup': 'dialog',
+      title: 'Find any dashboard',
+      onclick: (event) => this.chooseDashboard(event.currentTarget),
+    }, icon('search', 14), `All ${all.length.toLocaleString()}`, icon('down', 12)) : null);
     const head = editing
       ? h('div', { class: 'grow dash-names' },
         // The name is in a field while it is edited, so the page is headed for a screen reader.
@@ -310,6 +331,8 @@ class Dashboards {
       shown.tiles.length || editing
         ? this.board
         : h('div', { class: 'card' }, empty('dashboard', 'No tiles yet', 'An administrator adds tiles that show saved views.')));
+    // The list of what may be added is made afresh only once it has been closed.
+    if (!this.adding) this.drawerElement = null;
     mount(this.target, h('div', { class: `page dashboard${editing ? ' editing' : ''}${this.adding ? ' adding' : ''}${presenting ? ' presenting' : ''}`, onkeydown: (event) => this.key(event) },
       this.list().length > 1 && !editing && !presenting ? tabs : null,
       h('div', { class: 'page-head' }, head, h('div', { class: 'toolbar' }, editing ? this.editActions(shown) : presenting ? this.presentActions() : this.viewActions())),
@@ -735,6 +758,14 @@ class Dashboards {
     });
   }
 
+  /** Goes to another dashboard, found by typing among however many, those shown lately first. */
+  async chooseDashboard(button) {
+    const items = this.list().map((dashboard) => ({ label: dashboard.name, icon: 'dashboard', detail: counted(dashboard.tiles.length, 'tile'), context: dashboard.description }));
+    const current = items.find((item) => item.label === this.name);
+    const chosen = await pick({ items: lateFirst(items, 'dashboards', { rest: 'Every dashboard' }), at: button, label: 'Find a dashboard', current });
+    if (chosen && chosen !== current) go(`/dashboards?name=${encodeURIComponent(chosen.label)}`);
+  }
+
   /** A new dashboard: a blank one, or a copy of the one shown, as Power BI duplicates a page. */
   newMenu(at) {
     const shown = this.current();
@@ -1134,46 +1165,191 @@ class Dashboards {
   }
 
   /**
-   * The views there are to add, and a tile of text: chosen, one takes the first free place;
-   * dragged onto the board, it takes the place it is brought to, the others making way.
+   * What may be added, found by typing among however many: a tile of text, and every view
+   * saved, and a new view of any cube. Chosen, one takes the first free place; dragged onto
+   * the board, the place it is brought to, the others making way. Made once while it is
+   * open, it stays searched and scrolled as the board changes beside it.
    */
   drawer() {
-    const search = h('input', { class: 'input', type: 'search', placeholder: 'Find a view', 'aria-label': 'Find a view to add' });
-    const list = h('div', { class: 'drawer-list' });
-    const item = (tile, name, detail, iconName) => h('button', {
-      class: 'drawer-item',
-      type: 'button',
-      title: 'Choose it to add it, or drag it onto the dashboard',
-      onclick: (event) => {
-        if (event.detail === 0 || !this.dragged) this.addTile(structuredClone(tile));
+    if (this.drawerElement) return this.drawerElement;
+    const items = this.addable();
+    this.adder = finder({
+      items,
+      label: 'Find a view to add',
+      row: 58,
+      nothing: 'No view has those words. New view makes one, of any cube.',
+      draw: (item, words) => [
+        h('span', { class: 'drawer-icon' }, icon(item.icon, 18)),
+        h('span', { class: 'grow' }, h('strong', {}, marked(item.label, words)), h('span', { class: 'muted' }, item.detail)),
+      ],
+      props: (item) => ({ class: 'drawer-item', title: 'Choose it to add it, or drag it onto the dashboard', onpointerdown: (event) => this.bringIn(event, item.tile) }),
+      // The click that ends a drag has added it already.
+      choose: (item) => this.dragged || this.addTile(structuredClone(item.tile)),
+    });
+    this.drawerElement = h('aside', { class: 'card dash-drawer', 'aria-label': 'Add to the dashboard' },
+      h('div', { class: 'drawer-head' }, h('h2', { class: 'grow' }, 'Add'),
+        h('button', { class: 'button small', title: 'A view of any cube, made here and added', onclick: () => this.newView() }, icon('plus', 14), 'New view'),
+        h('button', { class: 'button small quiet icon', 'aria-label': 'Close the list', onclick: () => this.toggleAdding() }, icon('close', 16))),
+      this.adder.element,
+      items.some((item) => item.tile.view) ? null : h('p', { class: 'hint' }, 'No view is saved yet. New view makes one of any cube, here; Explore saves one from what it shows.'));
+    return this.drawerElement;
+  }
+
+  /**
+   * A tile of text, and every view saved, as its chart or else as bars: those of the cubes
+   * on the board first, then of those explored lately, each cube's under its name.
+   */
+  addable() {
+    const onBoard = new Set((this.shown()?.tiles ?? []).map((tile) => tile.cube));
+    const seen = new Set(lately('cubes'));
+    const rank = (cube) => (onBoard.has(cube.name) ? 0 : seen.has(cube.name) ? 1 : 2);
+    const cubes = this.definition.cubes.filter((cube) => Object.keys(cube.views ?? {}).length).sort((a, b) => rank(a) - rank(b));
+    return [
+      { label: 'Text', detail: 'A heading and a few lines', icon: 'text', group: 'Notes', tile: { show: 'text', text: '# A heading\nWhat the tiles beside it show, and why.' } },
+      ...cubes.flatMap((cube) => Object.entries(cube.views).map(([view, saved]) => {
+        // A view saved from its chart is shown as that chart, drawn so; any other as bars.
+        const { kind = 'bars', ...drawn } = saved.chart ?? {};
+        const [said, iconName] = KINDS[kind] ?? KINDS.bars;
+        return { label: view, detail: `${said} · ${cube.name}`, context: cube.name, icon: iconName, group: cube.name, tile: { cube: cube.name, view, show: kind, ...drawn } };
+      })),
+    ];
+  }
+
+  /**
+   * Makes a view of any cube and adds a tile of it, without leaving the dashboard: the cube,
+   * what stands down the side and across, how it is shown and its name, what it shows drawn
+   * as they are chosen. It is saved with the cube for everyone, as Pin saves one.
+   */
+  async newView() {
+    const cubes = this.definition.cubes;
+    const near = this.shown()?.tiles.findLast((tile) => tile.cube)?.cube ?? lately('cubes')[0];
+    let cube = cubes.find((each) => each.name === near) ?? cubes[0];
+    if (!cube) {
+      notify('The model has no cube yet to make a view of.', 'bad');
+      return;
+    }
+    const outline = new Map(this.definition.dimensions.map((each) => [each.name, each]));
+    const cubeButton = chooser({
+      items: () => lateFirst(cubes.map((each) => ({ label: each.name, icon: 'cube', detail: cubeSaid(each) })), 'cubes', { rest: 'Every cube' }),
+      now: cube.name,
+      label: 'Cube',
+      chosen: (name) => {
+        cube = cubes.find((each) => each.name === name);
+        fill();
       },
-      onpointerdown: (event) => this.bringIn(event, tile),
-    }, h('span', { class: 'drawer-icon' }, icon(iconName, 18)), h('span', { class: 'grow' }, h('strong', {}, name), h('span', { class: 'muted' }, detail)));
-    const draw = () => {
-      const words = search.value.trim().toLowerCase();
-      const cubes = this.definition.cubes
-        .map((cube) => ({ cube, views: Object.keys(cube.views ?? {}).filter((view) => !words || `${cube.name} ${view}`.toLowerCase().includes(words)) }))
-        .filter(({ views }) => views.length);
-      mount(list,
-        h('div', { class: 'drawer-section' }, 'Notes'),
-        item({ show: 'text', text: '# A heading\nWhat the tiles beside it show, and why.' }, 'Text', 'A heading and a few lines', 'text'),
-        cubes.length
-          ? cubes.map(({ cube, views }) => [
-            h('div', { class: 'drawer-section' }, cube.name),
-            views.map((view) => {
-              // A view saved from its chart is shown as that chart, drawn so; any other as bars.
-              const { kind = 'bars', ...drawn } = cube.views[view].chart ?? {};
-              return item({ cube: cube.name, view, show: kind, ...drawn }, view, 'Saved view', KINDS[kind]?.[1] ?? 'chart');
-            }),
-          ])
-          : h('p', { class: 'hint' }, words ? 'No view has those words.' : 'No cube has a saved view yet. Save a view in Explore first.'));
+    });
+    cubeButton.id = 'new-view-cube';
+    const down = h('select', { class: 'select', 'aria-label': 'The dimension down the side' });
+    const downWhich = h('select', { class: 'select', 'aria-label': 'Its members, down the side' });
+    const across = h('select', { class: 'select', 'aria-label': 'The dimension across' });
+    const acrossWhich = h('select', { class: 'select', 'aria-label': 'Its members, across' });
+    const shows = h('div');
+    const preview = h('div', { class: 'view-preview' });
+    const name = h('input', { class: 'input', id: 'new-view-name', required: true, maxlength: 120 });
+    const hint = h('span', { class: 'hint' });
+    let show = 'bars';
+    let named = false;
+    let answer = null;
+    let asking = 0;
+    // Which of a dimension's members stand on an axis: its top's children, its top, its leaves or a subset.
+    const offer = (select, dimensionName) => {
+      select.hidden = !dimensionName;
+      const subsets = outline.get(dimensionName)?.subsets ?? [];
+      mount(select, [['children', 'Its top’s children'], ['top', 'Its top alone'], ['leaves', 'Every leaf'], ...subsets.map((subset) => [`subset:${subset}`, `The subset ${subset}`])]
+        .map(([value, label]) => h('option', { value }, label)));
     };
-    search.addEventListener('input', draw);
-    draw();
-    return h('aside', { class: 'card dash-drawer', 'aria-label': 'Add to the dashboard' },
-      h('div', { class: 'drawer-head' }, h('h2', {}, 'Add'), h('button', { class: 'button small quiet icon', 'aria-label': 'Close the list', onclick: () => this.toggleAdding() }, icon('close', 16))),
-      h('div', { class: 'search' }, icon('search', 16), search),
-      list);
+    const setOf = (dimensionName, which) => {
+      const dimensionRef = quote(dimensionName);
+      if (which === 'top') return `{${dimensionRef}.DefaultMember}`;
+      if (which === 'leaves') return `TM1FilterByLevel(TM1SubsetAll(${dimensionRef}), 0)`;
+      if (which.startsWith('subset:')) return `TM1SubsetToSet(${dimensionRef}, '${which.slice('subset:'.length).replaceAll('\'', '\'\'')}')`;
+      return `{${dimensionRef}.DefaultMember.Children}`;
+    };
+    const query = () => `SELECT ${setOf(across.value, acrossWhich.value)} ON COLUMNS${down.value ? `, ${setOf(down.value, downWhich.value)} ON ROWS` : ''} FROM ${quote(cube.name)}`;
+    const drawn = () => mount(preview, answer instanceof Error ? failure(answer, null, null, 'It cannot be shown so') : answer ? present(answer, { show }, { mdx: query() }) : loading('lines'));
+    const ask = async () => {
+      if (!named) name.value = down.value ? `${down.value} by ${across.value}` : across.value;
+      const asked = ++asking;
+      answer = null;
+      drawn();
+      try {
+        const result = await post('/mdx', { mdx: query() }, { quiet: true });
+        if (asked === asking) answer = result;
+      } catch (problem) {
+        if (asked === asking) answer = problem;
+      }
+      if (asked === asking) drawn();
+    };
+    // A cube's dimensions offered, its time across and its largest other down the side to begin with.
+    const fill = () => {
+      hint.textContent = `Saved with ${cube.name} for everyone. A view of the same name is replaced.`;
+      const size = (each) => outline.get(each)?.element_count ?? 0;
+      const columns = cube.dimensions.find((each) => outline.get(each)?.type === 'time') ?? cube.dimensions.at(-1);
+      const rows = cube.dimensions.filter((each) => each !== columns).sort((a, b) => size(b) - size(a))[0] ?? '';
+      mount(down, h('option', { value: '' }, 'Nothing'), cube.dimensions.map((each) => h('option', { value: each, selected: each === rows }, each)));
+      mount(across, cube.dimensions.map((each) => h('option', { value: each, selected: each === columns }, each)));
+      offer(downWhich, down.value);
+      offer(acrossWhich, across.value);
+      ask();
+    };
+
+    // A dimension stands on one axis only: put on the other, it leaves the first.
+    const moved = (select, other, otherWhich, which) => {
+      if (select.value && select.value === other.value) {
+        other.value = [...other.options].map((option) => option.value).find((value) => value !== select.value && value) ?? '';
+        offer(otherWhich, other.value);
+      }
+      offer(which, select.value);
+      ask();
+    };
+    down.addEventListener('change', () => moved(down, across, acrossWhich, downWhich));
+    across.addEventListener('change', () => moved(across, down, downWhich, acrossWhich));
+    downWhich.addEventListener('change', ask);
+    acrossWhich.addEventListener('change', ask);
+    name.addEventListener('input', () => {
+      named = Boolean(name.value.trim());
+    });
+    const drawShows = () => choices({
+      label: 'Shown as',
+      kind: 'radiogroup',
+      options: Object.entries(KINDS).filter(([kind]) => kind !== 'text').map(([kind, [label]]) => [kind, label]),
+      chosen: show,
+      choose: (kind) => {
+        show = kind;
+        drawShows();
+        drawn();
+      },
+      into: shows,
+    });
+    drawShows();
+    fill();
+    const made = await dialog({
+      title: 'A new view',
+      confirm: 'Add it',
+      wide: true,
+      body: h('div', { class: 'facts new-view' },
+        h('div', { class: 'field' }, h('label', { for: 'new-view-cube' }, 'Cube'), cubeButton),
+        h('div', { class: 'field-pair' },
+          h('fieldset', { class: 'field' }, h('legend', {}, 'Down the side'), h('div', { class: 'field-pair' }, down, downWhich)),
+          h('fieldset', { class: 'field' }, h('legend', {}, 'Across'), h('div', { class: 'field-pair' }, across, acrossWhich))),
+        h('fieldset', { class: 'field' }, h('legend', {}, 'Shown as'), shows),
+        preview,
+        h('div', { class: 'field' }, h('label', { for: 'new-view-name' }, 'Name'), name, hint)),
+      onsubmit: async () => {
+        const view = name.value.trim();
+        if (!view) throw invalid(name, 'Give the view a name.');
+        // The cube as it is now, saved against the version it was read at, so that a change
+        // someone else made meanwhile is not overwritten.
+        const saved = await get(`/cubes/${part(cube.name)}`);
+        const views = { ...(saved.views ?? {}), [view]: { mdx: query(), ...(CHARTS.has(show) ? { chart: { kind: show } } : {}) } };
+        await put(`/cubes/${part(cube.name)}`, { based_on: Number(modelVersion ?? state.version), cube: { ...saved, views } });
+        cube.views = views;
+        return { cube: cube.name, view, show };
+      },
+    });
+    if (!made) return;
+    this.adder?.refresh(this.addable());
+    this.addTile(made);
   }
 
   /** Drags a tile from the list onto the board: where it is let go over the board, it is added. */

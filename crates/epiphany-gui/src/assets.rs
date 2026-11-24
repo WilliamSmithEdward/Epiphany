@@ -42,6 +42,7 @@ const FILES: &[(&str, &[u8])] = files![
     "selection.js",
     "tree.js",
     "picker.js",
+    "finder.js",
     "later.js",
     "shortcuts.js",
 ];
@@ -109,6 +110,26 @@ pub(crate) async fn serve(State(gui): State<Gui>, uri: Uri, headers: HeaderMap) 
                 body,
             )
                 .into_response()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FILES;
+
+    /// A file of the folder left out of the program is missing from it: a module the page
+    /// imports and cannot have leaves it blank.
+    #[test]
+    fn every_file_of_the_folder_is_built_in() {
+        let folder = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("web");
+        for entry in std::fs::read_dir(folder).expect("the web folder") {
+            let name = entry.expect("an entry").file_name();
+            let name = name.to_string_lossy();
+            assert!(
+                FILES.iter().any(|(path, _)| *path == name),
+                "{name} is in the web folder but not built in"
+            );
         }
     }
 }

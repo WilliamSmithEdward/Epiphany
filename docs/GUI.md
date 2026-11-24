@@ -164,6 +164,18 @@ only way to do something, and modal dialogs where a side panel would keep the da
   views, dashboards and, for administrators, each dimension and cube of the model. The best
   matches come first, the words typed marked in them, and, with nothing typed, the commands
   chosen lately.
+- **As easy at 500 cubes as at 5.** Wherever one is chosen among many, a cube, a view, a
+  dashboard, a dimension, a user or a filter, it is found by typing, the best first and those
+  chosen lately first, in a list that draws only the rows in view: a model of 500 cubes and
+  10,000 dimensions opens the palette, the model's list or the overview as fast as one of
+  five. A handful still stand as cards, tabs, menus and choices; past a dozen, a list to find
+  in takes their place, the dashboards shown lately staying as tabs beside it. A table of many
+  rows, as the users, shows its first hundred, and more as asked; Explore's filters, many,
+  take a row of their own and scroll there rather than push the grid below the window.
+- **A tile from any cube.** A dashboard being edited adds a new view of any cube from its Add
+  list, without leaving the page: the cube, what stands down the side and across, how it is
+  shown and its name, drawn as they are chosen, and saved with the cube for everyone. The
+  views already saved are listed by cube, the cubes on the board first.
 - **Nothing lost to a session ending.** When the session ends, a sign-in dialog opens over
   the page, and the page, its unsaved changes with it, stays as it was. Signing out asks
   first about changes not saved, as do closing the page and loading it afresh.

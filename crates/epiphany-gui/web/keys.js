@@ -2,7 +2,8 @@
 
 import { del, get, part, post } from './api.js';
 import { empty, failure, loading, model, state } from './app.js';
-import { choices, dialog, h, icon, invalid, mount, notify, when, working } from './ui.js';
+import { finder } from './finder.js';
+import { choices, counted, dialog, h, icon, invalid, mount, notify, when, working } from './ui.js';
 
 /** How far a key may reach into a part, from nowhere on. */
 const LEVELS = ['none', 'read', 'write'];
@@ -132,8 +133,15 @@ class KeysPage {
     const rows = Object.fromEntries(offered.map((each) => [each.key, h('div')]));
     const every = h('input', { type: 'radio', name: 'key-cubes', id: 'key-every-cube', checked: true });
     const only = h('input', { type: 'radio', name: 'key-cubes', id: 'key-only-cubes' });
-    const boxes = definition.cubes.map((cube) => h('label', { class: 'check' }, h('input', { type: 'checkbox', value: cube.name }), cube.name));
-    const list = h('div', { class: 'checks key-cubes' }, boxes);
+    // The cubes it is kept to, ticked as they are found by typing among however many.
+    const kept = new Set();
+    const ticked = h('span', { class: 'hint', 'aria-live': 'polite' });
+    const tell = () => {
+      ticked.textContent = kept.size ? `${counted(kept.size, 'cube')} ticked: ${[...kept].map((item) => item.label).join(' · ')}` : 'None ticked yet.';
+    };
+    const found = finder({ items: definition.cubes.map((cube) => ({ label: cube.name, icon: 'cube' })), label: 'Find a cube', chosen: kept, row: 34, choose: tell });
+    tell();
+    const list = h('div', { class: 'key-cubes' }, found.element, ticked);
     const cubesHint = h('span', { class: 'hint' });
     const cubes = h('fieldset', { class: 'field' }, h('legend', {}, 'Cubes'),
       h('label', { class: 'check' }, every, 'Every cube'),
@@ -188,11 +196,9 @@ class KeysPage {
         const named = name.value.trim();
         if (!named) throw invalid(name, 'Give the key a name, to tell it from your others.');
         if (PARTS.every((each) => chosen[each.key] === 'none')) throw invalid(null, 'Give the key something it may do.');
-        const kept = only.checked && !cubes.hidden
-          ? boxes.map((box) => box.querySelector('input')).filter((box) => box.checked).map((box) => box.value)
-          : [];
-        if (only.checked && !cubes.hidden && !kept.length) throw invalid(boxes[0]?.querySelector('input') ?? only, 'Choose the cubes it reaches, or every cube.');
-        const asked = { name: named, ...chosen, cubes: kept };
+        const keptTo = only.checked && !cubes.hidden ? [...kept].map((item) => item.label) : [];
+        if (only.checked && !cubes.hidden && !keptTo.length) throw invalid(found.input, 'Choose the cubes it reaches, or every cube.');
+        const asked = { name: named, ...chosen, cubes: keptTo };
         const days = Number(lasting.value);
         if (days) asked.expires = Math.floor(Date.now() / 1000) + days * 86_400;
         return post('/keys', asked);

@@ -2,15 +2,23 @@
 
 import { del, get, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, state } from './app.js';
+import { chooser } from './finder.js';
 import { keyTable } from './keys.js';
 import { cellQuery, handOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
+import { searchBox } from './tree.js';
 import { counted, dialog, h, icon, invalid, mount, notify, olderButton, refocus, revealable, when, working } from './ui.js';
 
 const ROLES = { admin: 'Administrator', write: 'Can write', read: 'Can read', none: 'No access' };
 /** How many entries of the audit, and of the changes to cells, are fetched at a time. */
 const AUDIT = 50;
 const CHANGES = 200;
+/** How many users are listed at first, and more at a time; and how many cubes by their cells. */
+const USERS = 100;
+const CUBES = 10;
+/** What the changes to cells are filtered by when they are not. */
+const EVERY_CUBE = 'Every cube';
+const ANYONE = 'Anyone';
 /** The roles an element takes: hidden, it is not there for the user at all. */
 const ELEMENT_ROLES = { none: 'Hidden', read: 'Can read', write: 'Can write' };
 
@@ -97,8 +105,8 @@ class AdminPage {
       this.drawUsers(users);
       this.drawTransactions(transactions);
       if (!quietly || !this.auditReadBack) this.drawAudit(audit);
-      this.offer(this.userFilter, 'Anyone', (users.users ?? []).map((user) => user.name));
-      this.offer(this.cubeFilter, 'Every cube', status.cubes.map((cube) => cube.name));
+      this.userNames = (users.users ?? []).map((user) => user.name);
+      this.cubeNames = status.cubes.map((cube) => cube.name);
       this.usersCard.hidden = false;
       this.auditCard.hidden = !users.signing_in;
       this.transactionsCard.hidden = false;
@@ -132,57 +140,111 @@ class AdminPage {
         tile('On disk', bytes(status.log_bytes === null ? null : status.log_bytes + status.snapshot_bytes + status.model_bytes + status.earlier_models_bytes), 'save',
           `Log ${bytes(status.log_bytes)} · snapshot ${bytes(status.snapshot_bytes)} · model ${bytes(status.model_bytes)} · earlier models ${bytes(status.earlier_models_bytes)}`),
         status.memory_bytes !== null ? tile('Memory held', bytes(status.memory_bytes), 'server', null) : null),
-      status.cubes.length ? h('div', { class: 'card fit' },
-        h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Cells by cube')),
-        h('table', { class: 'table' },
-          h('thead', {}, h('tr', {}, h('th', {}, 'Cube'), h('th', { class: 'num-col' }, 'Cells stored'), h('th', { class: 'bar-col' }, ''))),
-          h('tbody', {}, status.cubes.map((cube) => {
-            const share = cells ? cube.cells / cells : 0;
-            const bar = h('div', { class: 'share' }, h('span', { class: 'share-fill' }));
-            bar.firstChild.style.width = `${Math.max(share * 100, cube.cells ? 1 : 0)}%`;
-            return h('tr', {},
-              h('td', {}, cube.name),
-              h('td', { class: 'num-col num' }, cube.cells.toLocaleString()),
-              h('td', { class: 'bar-col' }, bar));
-          })))) : null);
+      status.cubes.length ? this.cubesByCells(status.cubes, cells) : null);
+  }
+
+  /** The cubes by the cells they store, the most first: the largest ten, or every one when asked. */
+  cubesByCells(cubes, cells) {
+    const most = [...cubes].sort((a, b) => b.cells - a.cells);
+    const shown = this.everyCube ? most : most.slice(0, CUBES);
+    const card = h('div', { class: 'card fit' },
+      h('div', { class: 'card-head' }, h('h3', { class: 'grow' }, 'Cells by cube'), most.length > CUBES ? h('span', { class: 'muted' }, this.everyCube ? `All ${most.length.toLocaleString()}, the most first` : `The ${CUBES} with the most of ${most.length.toLocaleString()}`) : null),
+      h('table', { class: 'table' },
+        h('thead', {}, h('tr', {}, h('th', {}, 'Cube'), h('th', { class: 'num-col' }, 'Cells stored'), h('th', { class: 'bar-col' }, ''))),
+        h('tbody', {}, shown.map((cube) => {
+          const share = cells ? cube.cells / cells : 0;
+          const bar = h('div', { class: 'share' }, h('span', { class: 'share-fill' }));
+          bar.firstChild.style.width = `${Math.max(share * 100, cube.cells ? 1 : 0)}%`;
+          return h('tr', {},
+            h('td', {}, cube.name),
+            h('td', { class: 'num-col num' }, cube.cells.toLocaleString()),
+            h('td', { class: 'bar-col' }, bar));
+        }))),
+      most.length > CUBES ? h('div', { class: 'card-body' }, h('button', {
+        class: 'button small',
+        onclick: () => {
+          this.everyCube = !this.everyCube;
+          card.replaceWith(this.cubesByCells(cubes, cells));
+        },
+      }, this.everyCube ? `Show the ${CUBES} with the most` : `Show all ${most.length.toLocaleString()}`)) : null);
+    return card;
   }
 
   /* ---- Users ---- */
 
+  /**
+   * The users, found by name, a hundred at a time and more as asked. Fetched again every
+   * quarter minute, the list is drawn again only once it has changed, the search as typed.
+   */
   drawUsers(list) {
+    const said = JSON.stringify(list);
+    if (said === this.usersSaid) return;
+    this.usersSaid = said;
+    const typing = document.activeElement === this.userFind?.input;
+    const find = searchBox({ label: 'Find a user', onsearch: (words) => {
+      this.userWords = words;
+      this.usersShown = USERS;
+      draw();
+    } });
+    this.userFind = find;
+    find.input.value = this.userWords ?? '';
     const head = h('div', { class: 'card-head' },
       h('h3', { class: 'grow' }, 'Users'),
+      list.signing_in && list.users.length > USERS / 10 ? find.box : null,
       list.signing_in ? h('button', { class: 'button small primary', onclick: (event) => this.editUser(null, event.currentTarget) }, icon('plus', 14), 'Add user') : null);
     if (!list.signing_in) {
       mount(this.usersCard, head, empty('users', 'No one needs to sign in', 'This server has no users, so it only listens on its own machine. Add the first with “epiphany-server user”, then restart the server; after that, users are managed here.'));
       return;
     }
     const me = state.user?.name?.toLowerCase();
+    const rows = h('tbody');
+    const more = h('div', { class: 'card-body' });
+    this.usersShown ??= USERS;
+    const draw = () => {
+      const words = this.userWords ?? '';
+      const found = words ? list.users.filter((user) => user.name.toLowerCase().includes(words)) : list.users;
+      find.found(found.length, words);
+      mount(rows, found.slice(0, this.usersShown).map(row));
+      const left = found.length - this.usersShown;
+      mount(more, left > 0 ? h('button', { class: 'button small', onclick: () => {
+        this.usersShown += USERS;
+        draw();
+      } }, `Show ${Math.min(USERS, left).toLocaleString()} more of ${found.length.toLocaleString()}`) : null);
+      more.hidden = left <= 0;
+    };
+    // A user's roles, said where there are two or fewer and counted where there are more, as
+    // on a hundred cubes, every one in the title: a row stays a line high.
+    const briefly = (said, noun) => (said.length > 2 ? h('span', { title: said.join('\n') }, counted(said.length, noun)) : said.join(' · ') || '—');
+    const onCubes = (cubes) => briefly(cubes.map(([cube, role]) => `${cube}: ${ROLES[role].toLowerCase()}`), 'cube role');
+    const row = (user) => {
+      const cubes = Object.entries(user.cubes);
+      return h('tr', {},
+        h('td', {}, h('strong', {}, user.name), user.name.toLowerCase() === me ? h('span', { class: 'badge accent you' }, 'You') : null),
+        h('td', {}, h('span', { class: `badge ${user.role === 'admin' ? 'accent' : user.role === 'none' ? 'bad' : ''}` }, ROLES[user.role])),
+        h('td', { class: 'muted' }, onCubes(cubes)),
+        h('td', { class: 'muted' }, briefly(elementRoles(user.elements), 'element role')),
+        h('td', { class: 'nowrap' }, keysSaid(user)),
+        h('td', { class: 'num-col num' }, user.sessions.toLocaleString()),
+        // Each row's buttons name its user, to be told from the next row's.
+        h('td', { class: 'actions' },
+          h('button', { class: 'button small quiet', 'aria-label': `Edit ${user.name}`, onclick: (event) => this.editUser(user, event.currentTarget) }, icon('edit', 14), 'Edit'),
+          user.keys.length ? h('button', { class: 'button small quiet', 'aria-label': `API keys of ${user.name}`, onclick: () => this.showKeys(user) }, icon('key', 14), 'Keys') : null,
+          user.name.toLowerCase() === me ? null : h('button', {
+            class: 'button small quiet',
+            'aria-label': `View as ${user.name}`,
+            title: `See the server as ${user.name} does, reading only. It is kept on record.`,
+            onclick: (event) => working(event.currentTarget, () => this.viewAs(user)),
+          }, icon('eye', 14), 'View as'),
+          h('button', { class: 'button small quiet', 'aria-label': `Sign out ${user.name}`, disabled: !user.sessions, onclick: (event) => working(event.currentTarget, () => this.signOut(user)) }, icon('out', 14), 'Sign out'),
+          h('button', { class: 'button small quiet danger', 'aria-label': `Remove ${user.name}`, onclick: () => this.removeUser(user) }, icon('trash', 14), 'Remove')));
+    };
+    draw();
     mount(this.usersCard, head,
       h('table', { class: 'table' },
         h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Role'), h('th', {}, 'On cubes'), h('th', {}, 'On elements'), h('th', {}, 'API keys'), h('th', { class: 'num-col' }, 'Sessions'), h('th', { class: 'actions' }, ''))),
-        h('tbody', {}, list.users.map((user) => {
-          const cubes = Object.entries(user.cubes);
-          return h('tr', {},
-            h('td', {}, h('strong', {}, user.name), user.name.toLowerCase() === me ? h('span', { class: 'badge accent you' }, 'You') : null),
-            h('td', {}, h('span', { class: `badge ${user.role === 'admin' ? 'accent' : user.role === 'none' ? 'bad' : ''}` }, ROLES[user.role])),
-            h('td', { class: 'muted' }, cubes.length ? cubes.map(([cube, role]) => `${cube}: ${ROLES[role].toLowerCase()}`).join(' · ') : '—'),
-            h('td', { class: 'muted' }, elementRoles(user.elements).join(', ') || '—'),
-            h('td', { class: 'nowrap' }, keysSaid(user)),
-            h('td', { class: 'num-col num' }, user.sessions.toLocaleString()),
-            // Each row's buttons name its user, to be told from the next row's.
-            h('td', { class: 'actions' },
-              h('button', { class: 'button small quiet', 'aria-label': `Edit ${user.name}`, onclick: (event) => this.editUser(user, event.currentTarget) }, icon('edit', 14), 'Edit'),
-              user.keys.length ? h('button', { class: 'button small quiet', 'aria-label': `API keys of ${user.name}`, onclick: () => this.showKeys(user) }, icon('key', 14), 'Keys') : null,
-              user.name.toLowerCase() === me ? null : h('button', {
-                class: 'button small quiet',
-                'aria-label': `View as ${user.name}`,
-                title: `See the server as ${user.name} does, reading only. It is kept on record.`,
-                onclick: (event) => working(event.currentTarget, () => this.viewAs(user)),
-              }, icon('eye', 14), 'View as'),
-              h('button', { class: 'button small quiet', 'aria-label': `Sign out ${user.name}`, disabled: !user.sessions, onclick: (event) => working(event.currentTarget, () => this.signOut(user)) }, icon('out', 14), 'Sign out'),
-              h('button', { class: 'button small quiet danger', 'aria-label': `Remove ${user.name}`, onclick: () => this.removeUser(user) }, icon('trash', 14), 'Remove')));
-        }))));
+        rows),
+      more);
+    if (typing) find.input.focus();
   }
 
   /**
@@ -275,10 +337,12 @@ class AdminPage {
       row.remove();
       refocus(list, index, otherwise);
     };
+    // A cube or a dimension, found by typing among however many.
+    const cubeItems = () => cubes.map((each) => ({ label: each, icon: 'cube' }));
     const addRow = (cube = cubes[0], chosen = 'read') => {
-      const cubeSelect = h('select', { class: 'select', 'aria-label': 'Cube' }, cubes.map((name) => h('option', { value: name, selected: name === cube }, name)));
+      const cubeChoice = chooser({ items: cubeItems, now: cube, label: 'Cube' });
       const roleSelect = h('select', { class: 'select', 'aria-label': 'Role on the cube' }, Object.entries(ROLES).map(([value, label]) => h('option', { value, selected: value === chosen }, label)));
-      const row = h('div', { class: 'cube-role' }, cubeSelect, roleSelect,
+      const row = h('div', { class: 'cube-role' }, cubeChoice, roleSelect,
         h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this cube role', onclick: () => takeAway(rows, row, addCubeRole) }, icon('close', 14)));
       rows.append(row);
     };
@@ -288,24 +352,23 @@ class AdminPage {
     const dimensions = definition.dimensions.map((each) => each.name);
     const elementRows = h('div', { class: 'cube-roles' });
     const addElementRow = (dimensionName = dimensions[0], element = null, chosen = 'none') => {
-      const dimensionSelect = h('select', { class: 'select', 'aria-label': 'Dimension' }, dimensions.map((each) => h('option', { value: each, selected: each === dimensionName }, each)));
-      const elementButton = h('button', { class: 'button', type: 'button' });
-      const roleSelect = h('select', { class: 'select', 'aria-label': 'Role on the element' }, Object.entries(ELEMENT_ROLES).map(([value, label]) => h('option', { value, selected: value === chosen }, label)));
-      const row = h('div', { class: 'cube-role element-role' }, dimensionSelect, elementButton, roleSelect,
-        h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this element role', onclick: () => takeAway(elementRows, row, addElementRole) }, icon('close', 14)));
-      const pick = (picked) => {
+      const elementButton = h('button', { class: 'button element-choice', type: 'button' });
+      const choose = (picked) => {
         row.dataset.element = picked ?? '';
         elementButton.textContent = picked ?? 'Choose an element';
-        elementButton.setAttribute('aria-label', picked ? `Element ${picked}, chosen from ${dimensionSelect.value}` : `Choose an element of ${dimensionSelect.value}`);
+        elementButton.setAttribute('aria-label', picked ? `Element ${picked}, chosen from ${dimensionChoice.value}` : `Choose an element of ${dimensionChoice.value}`);
       };
-      pick(element);
+      const dimensionChoice = chooser({ items: () => dimensions.map((each) => ({ label: each, icon: 'dimension' })), now: dimensionName, label: 'Dimension', chosen: () => choose(null) });
+      const roleSelect = h('select', { class: 'select', 'aria-label': 'Role on the element' }, Object.entries(ELEMENT_ROLES).map(([value, label]) => h('option', { value, selected: value === chosen }, label)));
+      const row = h('div', { class: 'cube-role element-role' }, dimensionChoice, elementButton, roleSelect,
+        h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this element role', onclick: () => takeAway(elementRows, row, addElementRole) }, icon('close', 14)));
+      choose(element);
       elementButton.addEventListener('click', async () => {
-        const dim = await working(elementButton, () => dimension(dimensionSelect.value));
+        const dim = await working(elementButton, () => dimension(dimensionChoice.value));
         if (!dim) return;
         const member = await chooseMember(dim, { title: `An element of ${dim.name}`, current: row.dataset.element || undefined });
-        if (member !== null) pick(member);
+        if (member !== null) choose(member);
       });
-      dimensionSelect.addEventListener('change', () => pick(null));
       elementRows.append(row);
     };
     for (const [dimensionName, roles] of Object.entries(user?.elements ?? {})) {
@@ -340,15 +403,11 @@ class AdminPage {
         if (password.value !== again.value) throw invalid(again, 'The two passwords differ.');
         if (adding && !password.value) throw invalid(password, 'A new user needs a password.');
         const cubeRoles = {};
-        for (const row of rows.children) {
-          const [cube, chosen] = row.querySelectorAll('select');
-          cubeRoles[cube.value] = chosen.value;
-        }
+        for (const row of rows.children) cubeRoles[row.querySelector('.chooser').value] = row.querySelector('select').value;
         const elements = {};
         for (const row of elementRows.children) {
-          const [dimensionSelect, roleSelect] = row.querySelectorAll('select');
-          if (!row.dataset.element) throw invalid(row.querySelector('button'), 'Choose an element for each element role, or take the role away.');
-          (elements[dimensionSelect.value] ??= {})[row.dataset.element] = roleSelect.value;
+          if (!row.dataset.element) throw invalid(row.querySelector('.element-choice'), 'Choose an element for each element role, or take the role away.');
+          (elements[row.querySelector('.chooser').value] ??= {})[row.dataset.element] = row.querySelector('select').value;
         }
         const body = { role: role.value, cubes: cubeRoles, elements };
         if (password.value) body.password = password.value;
@@ -423,9 +482,16 @@ class AdminPage {
    * change, not with the rest of the page every few seconds, the history being long to read.
    */
   buildChanges() {
-    const choice = (label) => h('select', { class: 'select small-select', 'aria-label': label, onchange: () => this.loadChanges() }, h('option', { value: '' }, label));
-    this.cubeFilter = choice('Every cube');
-    this.userFilter = choice('Anyone');
+    // A cube or a user, found by typing among however many, or every one.
+    this.cubeNames = [];
+    this.userNames = [];
+    const choice = (all, names, label, iconName) => {
+      const button = chooser({ items: () => [all, ...names()].map((name) => ({ label: name, icon: iconName })), now: all, label, chosen: () => this.loadChanges() });
+      button.classList.add('small');
+      return button;
+    };
+    this.cubeFilter = choice(EVERY_CUBE, () => this.cubeNames, 'Cube', 'cube');
+    this.userFilter = choice(ANYONE, () => this.userNames, 'User', 'user');
     this.sinceFilter = h('select', { class: 'select small-select', 'aria-label': 'How long ago', onchange: () => this.loadChanges() },
       [['', 'At any time'], ['3600', 'In the last hour'], ['86400', 'In the last day'], ['604800', 'In the last week'], ['2592000', 'In the last 30 days']]
         .map(([value, label]) => h('option', { value }, label)));
@@ -439,24 +505,12 @@ class AdminPage {
     mount(this.changesList, h('div', { class: 'card-body' }, loading('lines')));
   }
 
-  /**
-   * Puts the choices given in a filter, after the one that chooses everything, keeping what
-   * was chosen; left alone while they are the same, so that the page keeping itself current
-   * does not close it under the pointer.
-   */
-  offer(select, all, names) {
-    const listed = names.join('\n');
-    if (select.dataset.listed === listed) return;
-    select.dataset.listed = listed;
-    const chosen = select.value;
-    mount(select, h('option', { value: '' }, all), names.map((name) => h('option', { value: name, selected: name === chosen }, name)));
-  }
 
   /** Fetches the changes as the filters ask, the newest 200, and shows them; the last answer fades meanwhile. */
   async loadChanges() {
     const asked = new URLSearchParams({ most: String(CHANGES) });
-    if (this.cubeFilter.value) asked.set('cube', this.cubeFilter.value);
-    if (this.userFilter.value) asked.set('user', this.userFilter.value);
+    if (this.cubeFilter.value !== EVERY_CUBE) asked.set('cube', this.cubeFilter.value);
+    if (this.userFilter.value !== ANYONE) asked.set('user', this.userFilter.value);
     if (this.sinceFilter.value) asked.set('since', String(Math.floor(Date.now() / 1000) - Number(this.sinceFilter.value)));
     const ticket = (this.changesTicket = (this.changesTicket ?? 0) + 1);
     this.changesList.classList.add('busy');

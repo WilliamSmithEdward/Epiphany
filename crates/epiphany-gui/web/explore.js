@@ -4,12 +4,13 @@
 import { ApiError, del, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, readdress, state } from './app.js';
 import { chart, seriesNames, shape } from './chart.js';
+import { chooser, choseLately, lateFirst, lately, pick } from './finder.js';
 import { CALCULATIONS, cubeOf, defaultLayout, emptiness, folded, handOver, linkedView, linkOf, mdx, namesOf, pathKey, pathsBeneath, quote, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { csvOf } from './selection.js';
 import { askDrawn, AXES, CHARTS } from './tiles.js';
 import { editSet } from './sets.js';
-import { choices, copyText, counted, dialog, download, formatValue, h, icon, invalid, KINDS, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
+import { choices, copyText, counted, cubeSaid, dialog, download, formatValue, h, icon, invalid, KINDS, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
 import { grid, toneOf } from './grid.js';
 import { sandboxes } from './sandboxes.js';
@@ -21,7 +22,7 @@ const said = (entry) => (entry === undefined ? '' : typeof entry === 'string' ? 
 /* ---- The page ---- */
 
 /** Where the cube explored last is kept, in this browser. */
-const LAST = 'epiphany.explore.last';
+
 
 /** The explorer made last, whose transaction is let go when the page is closed. */
 let onPage = null;
@@ -44,7 +45,7 @@ export async function render(target, { params, titled }) {
   // Not told which cube, Explore opens the one explored last, while the model has it, and the
   // address names it; never explored, the first with views saved of it, as the one most worked
   // in, else the first.
-  const last = localStorage.getItem(LAST);
+  const [last] = lately('cubes');
   const first = (definition.cubes.find((each) => Object.keys(each.views ?? {}).length) ?? definition.cubes[0]).name;
   const name = params.get('cube') ?? (definition.cubes.some((each) => each.name === last) ? last : first);
   const cube = definition.cubes.find((candidate) => candidate.name === name);
@@ -53,7 +54,7 @@ export async function render(target, { params, titled }) {
       h('a', { class: 'button', href: '/explore', 'data-link': '' }, 'Explore another cube'))));
     return;
   }
-  localStorage.setItem(LAST, cube.name);
+  choseLately('cubes', cube.name);
   if (!params.has('cube')) readdress(`/explore?cube=${encodeURIComponent(cube.name)}`);
   // The user's sandboxes come with the dimensions, so that the first query runs in the one
   // last worked in.
@@ -74,6 +75,9 @@ export async function render(target, { params, titled }) {
   const named = !handed && !linked && cube.views?.[params.get('view')] ? params.get('view') : null;
   return new Explorer(target, definition, cube, dims, view, kept, named ? (name, unsaved) => titled(`${named} · ${name}`, unsaved) : titled);
 }
+
+/** The most views the Views menu lists: past them, they are found by typing. */
+const MENU_MOST = 12;
 
 /** A saved view's query, and how it is shown, put into a layout: its chart where it has one. */
 function opened(layout, view) {
@@ -362,11 +366,15 @@ class Explorer {
       },
     });
     this.pendingBar = h('div', { class: 'pending', role: 'status', 'aria-live': 'polite', hidden: true });
-    const cubes = h('select', {
-      class: 'select',
-      'aria-label': 'Cube',
-      onchange: (event) => go(`/explore?cube=${encodeURIComponent(event.target.value)}`),
-    }, this.definition.cubes.map((cube) => h('option', { value: cube.name, selected: cube.name === this.cube.name }, cube.name)));
+    // The cube explored, and the way to another, found by typing among however many, those
+    // explored lately first.
+    const cubes = chooser({
+      items: () => lateFirst(this.definition.cubes.map((cube) => ({ label: cube.name, icon: 'cube', detail: cubeSaid(cube) })), 'cubes', { rest: 'Every cube' }),
+      now: this.cube.name,
+      label: 'Cube',
+      chosen: (name) => go(`/explore?cube=${encodeURIComponent(name)}`),
+    });
+    cubes.title = 'Explore another cube';
     const viewButton = h('button', {
       class: 'button',
       'aria-haspopup': 'menu',
@@ -946,12 +954,14 @@ class Explorer {
     if (this.view === 'mdx') return this.drawMdx();
     if (this.view === 'chart' && this.result && !this.error) return this.drawChart();
     if (this.error) {
-      // A query written by hand that the server could not run goes back to be mended, where
-      // it says the problem is if it says, rather than run again to fail the same.
-      const mendable = Boolean(this.layout.mdx) && this.error instanceof ApiError && this.error.status === 422;
+      // A query the server could not run would fail the same run again, so it is not offered
+      // again; one written by hand goes back to be mended, where it says the problem is if
+      // it says. One laid out is changed in the layout.
+      const refused = this.error instanceof ApiError && this.error.status === 422;
+      const mendable = refused && Boolean(this.layout.mdx);
       const at = mendable ? this.error.position ?? null : null;
       const show = mendable ? h('button', { class: 'button primary', onclick: () => this.showInQuery(at) }, icon('code', 16), at == null ? 'Edit the query' : 'Show it in the query') : null;
-      mount(this.output, failure(this.error, mendable ? null : () => this.run(), show, mendable ? 'The query could not be run' : null));
+      mount(this.output, failure(this.error, refused ? null : () => this.run(), show, refused ? 'The query could not be run' : null));
       mount(this.statusLine);
       return;
     }
@@ -1269,8 +1279,26 @@ class Explorer {
     const mine = Object.entries(own);
     const everyones = Object.entries(this.cube.views ?? {});
     const saving = !viewing && (keepsOwn || state.user?.role === 'admin');
+    const actions = [
+      { label: 'Copy a link to this query', icon: 'link', disabled: !this.text, action: () => copyText(linkOf(this.cube.name, this.asView())) },
+      saving ? { label: 'Save this query as a view…', icon: 'save', disabled: !this.text, action: () => this.saveView() } : null,
+      !viewing && state.user?.role === 'admin' ? { label: 'Pin to a dashboard…', icon: 'dashboard', disabled: !this.text, action: () => this.pin() } : null,
+      saving && mine.length ? { label: 'Take one of your views away…', icon: 'trash', action: () => this.removeOwnViews(mine) } : null,
+    ];
     // Each view marked as it opens: as the chart it was saved from, or as its grid.
-    const item = ([name, view]) => ({ label: name, icon: KINDS[view.chart?.kind]?.[1] ?? 'grid', action: open(view) });
+    const kind = (view) => KINDS[view.chart?.kind]?.[1] ?? 'grid';
+    // More than a menu holds at a glance, they are found by typing, and offered by the dozen.
+    if (mine.length + everyones.length > MENU_MOST) {
+      const items = [
+        ...mine.map(([name, view]) => ({ label: name, icon: kind(view), group: 'Your views', view })),
+        ...everyones.map(([name, view]) => ({ label: name, icon: kind(view), group: 'Everyone\'s views', view })),
+      ];
+      const fetched = unfetched ? { label: 'Your views could not be fetched', icon: 'alert', disabled: true, action: () => {} } : null;
+      // The button is at work until the list opens, not while it is open.
+      pick({ items, at: button, label: `Find a view of ${this.cube.name}`, actions: [fetched, ...actions] }).then((chosen) => chosen && open(chosen.view)());
+      return;
+    }
+    const item = ([name, view]) => ({ label: name, icon: kind(view), action: open(view) });
     menu([
       mine.length ? { heading: 'Your views' } : null,
       ...mine.map(item),
@@ -1278,12 +1306,10 @@ class Explorer {
       { heading: everyones.length ? 'Everyone\'s views' : 'No views for everyone yet' },
       ...everyones.map(item),
       '-',
-      { label: 'Copy a link to this query', icon: 'link', disabled: !this.text, action: () => copyText(linkOf(this.cube.name, this.asView())) },
-      saving ? { label: 'Save this query as a view…', icon: 'save', disabled: !this.text, action: () => this.saveView() } : null,
-      !viewing && state.user?.role === 'admin' ? { label: 'Pin to a dashboard…', icon: 'dashboard', disabled: !this.text, action: () => this.pin() } : null,
-      saving && mine.length ? { label: 'Take one of your views away…', icon: 'trash', action: () => this.removeOwnViews(mine) } : null,
+      ...actions,
     ], button);
   }
+
 
   /**
    * The query shown, with the sizes, number format and highlights it is shown with, and the

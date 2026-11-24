@@ -1534,6 +1534,44 @@ async function exploring() {
     await page.click('dialog[open] button', 'Delete');
     await page.waitFor(`!document.querySelector('dialog[open]') && ![...document.querySelectorAll('.dash-tabs a')].some((tab) => tab.textContent === 'Copy of Quarter')`, 'the copy, taken away');
   });
+  await step('A new view of any cube is made from a dashboard\'s Add list and added as a tile, drawn as it is made', async () => {
+    await page.goto('/dashboards?name=Quarter');
+    await page.click('button', 'New');
+    await page.click('.menu [role="menuitem"]', 'A blank dashboard');
+    await page.fill('#dashboard-name', 'Made here');
+    await page.press('Enter');
+    // A blank dashboard opens with what may be added beside it.
+    await page.waitFor(`document.querySelector('.board.editing') && document.querySelector('.dash-drawer')`, 'the dashboard, to be arranged');
+    await page.click('.dash-drawer button', 'New view');
+    await page.waitFor(`document.querySelector('dialog[open]')?.getAttribute('aria-label') === 'A new view'`, 'the new view');
+    // The cube, found by typing in its chooser, as among five hundred.
+    await page.click('#new-view-cube');
+    await page.waitFor(`document.activeElement === document.querySelector('dialog[open] .finder-panel input')`, 'the cubes, to find in');
+    await page.type('ledger');
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('#new-view-cube')?.value === 'General Ledger' && document.querySelector('dialog[open] .view-preview .chart svg')`, 'General Ledger, its view drawn');
+    await page.click('dialog[open] [role="radio"]', 'Lines');
+    await page.waitFor(`document.querySelector('dialog[open] [role="radio"][aria-checked="true"]')?.textContent === 'Lines' && document.querySelector('dialog[open] .view-preview .chart svg .line')`, 'the view, drawn as lines');
+    await page.audit('A new view');
+    await page.fill('#new-view-name', 'Accounts by quarter');
+    await page.click('dialog[open] button', 'Add it');
+    await page.waitFor(`!document.querySelector('dialog[open]') && document.querySelectorAll('.dash-tile').length === 1`, 'its tile, added');
+    await page.click('button', 'Save');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent === 'Saved Made here.')`, 'the dashboard, saved');
+    const { data } = await page.api('GET', '/model');
+    const view = data.model.cubes.find((cube) => cube.name === 'General Ledger').views['Accounts by quarter'];
+    const [tile, ...more] = data.model.dashboards.find((each) => each.name === 'Made here')?.tiles ?? [];
+    expect(view?.chart?.kind === 'lines' && view.mdx === 'SELECT {[Period].DefaultMember.Children} ON COLUMNS, {[Account].DefaultMember.Children} ON ROWS FROM [General Ledger]', `The view was kept as ${quoted(view)}.`);
+    expect(!more.length && tile?.cube === 'General Ledger' && tile.view === 'Accounts by quarter' && tile.show === 'lines', `The dashboard has the tiles ${quoted([tile, ...more])}.`);
+    // Taken away, with its view, for the steps after.
+    await page.click('button', 'Delete');
+    await page.click('dialog[open] button', 'Delete');
+    await page.waitFor(`!document.querySelector('dialog[open]') && ![...document.querySelectorAll('.dash-tabs a')].some((tab) => tab.textContent === 'Made here')`, 'the dashboard, taken away');
+    const cube = (await page.api('GET', '/cubes/General%20Ledger')).data;
+    delete cube.views['Accounts by quarter'];
+    const based = (await page.api('GET', '/model')).data.version;
+    expect((await page.api('PUT', '/cubes/General%20Ledger', { based_on: based, cube })).status === 200, 'The new view was not taken away.');
+  });
   await step('A query is pinned from Explore to a new dashboard, a tile showing it as Explore charts it', async () => {
     // The view opened becomes the cube's layout in Explore: the one before is kept, for the
     // steps after, and put back.
@@ -1799,9 +1837,13 @@ async function changingTheModel() {
     await choose('#element-type', 'string');
     await page.waitFor(`document.querySelector('#picklist-kind')`, 'the picklist');
     await choose('#picklist-kind', 'members');
-    await page.waitFor(`document.querySelector('.field-pair select')`, 'the dimension to offer');
-    await choose('.field-pair select', 'Period');
-    const offered = `[...document.querySelectorAll('.field-pair select:last-of-type option')].map((option) => option.textContent).join()`;
+    await page.waitFor(`document.querySelector('.field-pair .chooser')`, 'the dimension to offer');
+    // Found by typing among the model's dimensions, as among ten thousand.
+    await page.click('.field-pair .chooser');
+    await page.waitFor(`document.activeElement === document.querySelector('.finder-panel input')`, 'the dimensions, to find in');
+    await page.type('period');
+    await page.press('Enter');
+    const offered = `[...document.querySelectorAll('.field-pair select option')].map((option) => option.textContent).join()`;
     await page.waitFor(`${offered} === 'Every element,The subset First half,The subset Months,The subset Quarters'`, 'Period\'s subsets, offered');
     await page.click('button', 'Discard');
     await page.waitFor(`!document.querySelector('.pending:not([hidden])') && !document.querySelector('#picklist-kind')`, 'the change, discarded');
@@ -1870,16 +1912,18 @@ async function administering({ reader }) {
     await page.evaluate(`[...document.querySelectorAll('dialog[open] .element-role')].at(-1).querySelector('button[aria-label="Remove this element role"]').click()`);
     await page.waitFor(`document.querySelectorAll('dialog[open] .element-role').length === 1
       && document.activeElement === document.querySelector('dialog[open] .element-role button[aria-label="Remove this element role"]')`, 'the keys, on the row left');
-    await page.evaluate(`(() => {
-      const select = document.querySelector('dialog[open] .element-role select[aria-label="Dimension"]');
-      select.value = 'Entity';
-      select.dispatchEvent(new Event('change'));
-    })()`);
+    // The dimension, found by typing among the model's, as among ten thousand.
+    await page.click('dialog[open] .element-role .chooser');
+    await page.waitFor(`document.activeElement === document.querySelector('dialog[open] .finder-panel input')`, 'the dimensions, to find in');
+    await page.type('enti');
+    await page.waitFor(`document.querySelector('dialog[open] .finder-panel .finder-item.active')?.textContent === 'Entity'`, 'Entity, found');
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('dialog[open] .element-role .chooser')?.value === 'Entity' && !document.querySelector('.finder-panel')`, 'Entity, chosen');
     await page.click('dialog[open] button', 'Choose an element of Entity');
     await page.waitFor(`[...document.querySelectorAll('dialog[open]')].some((open) => open.getAttribute('aria-label') === 'An element of Entity')`, 'the tree of Entity');
     await page.click('dialog[open] .picker-row', 'UK');
     await page.click('dialog[open] button', 'Apply');
-    await page.waitFor(`document.querySelector('dialog[open] .element-role button')?.getAttribute('aria-label') === 'Element UK, chosen from Entity'`, 'UK, chosen');
+    await page.waitFor(`document.querySelector('dialog[open] .element-role .element-choice')?.getAttribute('aria-label') === 'Element UK, chosen from Entity'`, 'UK, chosen');
     await page.audit('Hiding an element from a user');
     await page.click('dialog[open] button', 'Save');
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes(${quoted(`Saved ${reader.name}`)}))`, 'the user, saved');

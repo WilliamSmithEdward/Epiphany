@@ -1049,7 +1049,7 @@ export const grid = {
         }
       }
     });
-    return { box: h('div', { class: 'search finder' }, icon('search', 16), input, count), input, count };
+    return { box: h('div', { class: 'search grid-finder' }, icon('search', 16), input, count), input, count };
   },
 
   /**
