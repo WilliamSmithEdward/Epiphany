@@ -695,6 +695,42 @@ async function exploring() {
     await page.press('Home');
     await page.waitFor(`document.activeElement?.textContent === 'Grid' && document.querySelector('td[data-r]')`, 'the grid, chosen by the keys');
   });
+  await step('A chart\'s names along its bottom never run into one another nor out of it, however narrow', async () => {
+    // Months, short, and names cut short at their longest, charted from 260 pixels wide to
+    // 1,600: those side by side apart, those aslant far enough apart for their lines.
+    const crowding = await page.evaluate(`(async () => {
+      const { chart } = await import('/chart.js');
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const problems = [];
+      for (const categories of [months, months.map((name) => name + ' · Total Entity · Revenue')]) {
+        const data = { categories, tuples: categories.map(() => []), series: [{ name: 'Revenue', tuple: [], values: categories.map((_, c) => c + 1), texts: null }] };
+        for (const width of [260, 400, 700, 1000, 1600]) {
+          const box = document.body.appendChild(document.createElement('div'));
+          box.style.width = width + 'px';
+          const element = box.appendChild(chart(data, 'bars', { fresh: false }));
+          let svg;
+          for (let tries = 0; tries < 100 && !svg; tries += 1) {
+            await new Promise((done) => requestAnimationFrame(done));
+            svg = [...element.querySelectorAll('svg')].find((each) => each.querySelector('text.tick'));
+          }
+          const names = [...svg.querySelectorAll('text.tick')].filter((tick) => categories.some((name) => name.startsWith(tick.textContent.replace('…', ''))));
+          const aslant = names.some((tick) => tick.hasAttribute('transform'));
+          const boxes = names.map((tick) => tick.getBoundingClientRect());
+          const bottom = svg.getBoundingClientRect();
+          boxes.forEach((each, index) => {
+            const before = boxes[index - 1];
+            if (before && !aslant && before.right > each.left) problems.push(width + ': ' + names[index].textContent + ' runs into the name before it');
+            if (before && aslant && each.right - before.right < 17) problems.push(width + ': ' + names[index].textContent + ' aslant runs into the name before it');
+            if (each.bottom > bottom.bottom || each.left < bottom.left) problems.push(width + ': ' + names[index].textContent + ' runs out of the chart');
+          });
+          if (!names.length) problems.push(width + ': no names along the bottom');
+          box.remove();
+        }
+      }
+      return problems;
+    })()`);
+    expect(!crowding.length, `Along a chart's bottom: ${crowding.join('; ')}.`);
+  });
   await step('A view kept for oneself is listed apart, and taken away', async () => {
     const views = '/cubes/General%20Ledger/private-views';
     await page.click('button', 'Views');

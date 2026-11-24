@@ -314,8 +314,20 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   const apart = right.length > 0 && right.length < all.length;
   const series = apart ? all.filter((entry) => !beside.has(entry.name)) : all;
   const categories = data.categories;
-  const crowded = categories.length > Math.floor(width / 70);
-  const margin = { top: labels ? 24 : 16, right: apart ? 60 : 16, bottom: crowded ? 84 : 40, left: 64 };
+  const margin = { top: labels ? 24 : 16, right: apart ? 60 : 16, bottom: 40, left: 64 };
+  const bandOf = () => (width - margin.left - margin.right) / Math.max(categories.length, 1);
+  // The names along the bottom go aslant where they would not fit side by side, at some 6
+  // pixels a character: beneath them as much room as the longest takes, aslant, and before
+  // them as much as the first reaches to the left of its place. Only every so many are
+  // written where even aslant they would run into one another.
+  const longest = categories.reduce((most, name) => Math.max(most, short(name).length), 0) * 6;
+  const crowded = bandOf() < longest + 8;
+  if (crowded) {
+    margin.bottom = Math.min(Math.max(Math.ceil(longest * 0.65) + 26, 40), 84);
+    margin.left = Math.max(margin.left, Math.ceil(longest * 0.77 - bandOf() / 2) + 4);
+  }
+  const band = bandOf();
+  const every = crowded ? Math.ceil(18 / band) : 1;
   const inner = { width: width - margin.left - margin.right, height: Math.max(height - margin.top - margin.bottom, 20) };
 
   // The range the values reach: stacks add up their positives and negatives apart.
@@ -341,7 +353,6 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
   const y = scale(steps);
   const yRight = apart ? scale(rightSteps) : y;
   const writeRight = apart ? stepWriter(right) : null;
-  const band = inner.width / Math.max(categories.length, 1);
   const x = (c) => margin.left + band * c;
   // A value as the query writes it, where it does, as a calculated member's format has it; as
   // the view's format has it in a tip, and briefly on its mark, otherwise.
@@ -355,6 +366,7 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
     if (apart) svg.append(h('text', { class: 'tick right', x: width - margin.right + 8, y: y(step) + 4, 'text-anchor': 'start' }, writeRight(rightSteps[s])));
   });
   categories.forEach((name, c) => {
+    if (c % every) return;
     const cx = x(c) + band / 2;
     svg.append(crowded
       ? h('text', { class: 'tick', x: cx, y: height - margin.bottom + 14, 'text-anchor': 'end', transform: `rotate(-40 ${cx} ${height - margin.bottom + 14})` }, short(name))
