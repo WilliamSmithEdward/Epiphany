@@ -282,7 +282,7 @@ practice that means:
   - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `XOR` / `NOT`,
     `IS` (the same member, tuple or level, or `NULL`), `IIF`, `CASE` in both its forms
     (`CASE WHEN condition THEN ...` and `CASE value WHEN other THEN ...`, with or without
-    `ELSE`), `NULL`, `IsAncestor`, `IsSibling` (and `INCLUDEMEMBER`), `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`,
+    `ELSE`), `NULL`, `IsAncestor`, `IsSibling` (and `INCLUDEMEMBER`), `IsGeneration` (the leaves being generation 0), `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`,
     `Aggregate`, `Avg`, `Min`, `Max`, `Count` and `.Count`, tuples as cell references,
     `.Name` (and `.Caption`), `.UniqueName`, `.Value`, and `.Properties("name")` for an attribute or for
     `MEMBER_NAME`, `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`,

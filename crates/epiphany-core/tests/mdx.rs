@@ -1562,6 +1562,9 @@ fn a_value_is_chosen_case_by_case() {
     assert_eq!(is("IsAncestor([Period].[H1], [Period].[Feb])"), "yes");
     assert_eq!(is("IsAncestor([Period].[Q2], [Period].[Feb])"), "no");
     assert_eq!(is("IsAncestor([Period].[Feb], [Period].[Feb])"), "no");
+    assert_eq!(is("IsGeneration([Period].[Feb], 0)"), "yes");
+    assert_eq!(is("IsGeneration([Period].[Q1], 1)"), "yes");
+    assert_eq!(is("IsGeneration([Period].[Q1], 0)"), "no");
     assert_eq!(is("IsSibling([Period].[Jan], [Period].[Feb])"), "yes");
     assert_eq!(is("IsSibling([Period].[Jan], [Period].[Apr])"), "no");
     assert_eq!(is("IsSibling([Period].[Jan], [Period].[Jan])"), "no");

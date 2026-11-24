@@ -1588,6 +1588,10 @@ impl<'a> Evaluator<'a> {
                 count(2..=3)?;
                 self.is_sibling(arguments, context).map(Datum::Bool)
             }
+            "ISGENERATION" => {
+                count(2..=2)?;
+                self.is_generation(arguments, context).map(Datum::Bool)
+            }
             "EXTRACT" => {
                 count(2..=usize::MAX)?;
                 let set = self.set(&arguments[0], context)?;
@@ -2738,6 +2742,16 @@ impl<'a> Evaluator<'a> {
                 format!("{{{}}}", tuples.join(", "))
             }
         })
+    }
+
+    /// `IsGeneration(member, n)`: whether the member stands n generations above the leaves,
+    /// the leaves being generation 0, as its level counts.
+    fn is_generation(&self, arguments: &[Expr], context: &Context) -> Evaluated<bool> {
+        let member = self.member(&arguments[0], context)?;
+        let wanted = self.evaluate(&arguments[1], context)?;
+        let wanted = to_number(&self.scalar(wanted, context)?)?;
+        let (_, element) = self.element(member)?;
+        Ok(f64::from(element.level) == wanted)
     }
 
     /// `IsSibling(member, member [, INCLUDEMEMBER])`: whether two members have the same
