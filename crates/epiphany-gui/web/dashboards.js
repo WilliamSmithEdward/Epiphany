@@ -1384,9 +1384,10 @@ class Dashboards {
     };
     // Down the side and across changed over, each with its members, as Explore swaps its axes.
     const swap = h('button', {
-      class: 'button small quiet',
+      class: 'button small quiet icon',
       type: 'button',
-      title: 'Change what stands down the side and across over',
+      'aria-label': 'Swap',
+      title: 'Swap what stands down the side and across',
       onclick: () => {
         if (!down.value) return;
         const member = (value) => (value.startsWith('member:') ? value.slice('member:'.length) : null);
@@ -1401,7 +1402,7 @@ class Dashboards {
         downWhich.dataset.was = downWhich.value;
         ask();
       },
-    }, icon('swap', 14), 'Swap');
+    }, icon('swap', 16));
     downWhich.addEventListener('change', which(downWhich, down));
     acrossWhich.addEventListener('change', which(acrossWhich, across));
     name.addEventListener('input', () => {
@@ -1427,10 +1428,10 @@ class Dashboards {
       wide: true,
       body: h('div', { class: 'facts new-view' },
         h('div', { class: 'field' }, h('label', { for: 'new-view-cube' }, 'Cube'), cubeButton),
-        h('div', { class: 'field-pair' },
+        h('div', { class: 'axes' },
           h('fieldset', { class: 'field' }, h('legend', {}, 'Down the side'), h('div', { class: 'field-pair' }, down, downWhich)),
+          swap,
           h('fieldset', { class: 'field' }, h('legend', {}, 'Across'), h('div', { class: 'field-pair' }, across, acrossWhich))),
-        h('div', { class: 'toolbar' }, swap),
         h('fieldset', { class: 'field' }, h('legend', {}, 'Shown as'), shows),
         preview,
         h('div', { class: 'field' }, h('label', { for: 'new-view-name' }, 'Name'), name, hint)),

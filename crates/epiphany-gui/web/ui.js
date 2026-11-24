@@ -504,10 +504,12 @@ export function menu(items, at) {
   const box = at instanceof Element ? at.getBoundingClientRect() : { left: at.x, bottom: at.y, top: at.y };
   const width = element.offsetWidth;
   const height = element.offsetHeight;
-  element.style.left = `${Math.max(8, Math.min(box.left, innerWidth - width - 8))}px`;
+  // Within the window, its scroll bar not counted.
+  const { clientWidth: wide, clientHeight: high } = document.documentElement;
+  element.style.left = `${Math.max(8, Math.min(box.left, wide - width - 8))}px`;
   const below = box.bottom + 4;
   // Above what opened it where there is no room beneath, it unfolds upwards.
-  const above = below + height > innerHeight - 8;
+  const above = below + height > high - 8;
   element.classList.toggle('above', above);
   element.style.top = `${above ? Math.max(8, box.top - height - 4) : below}px`;
   document.addEventListener('pointerdown', outside, true);

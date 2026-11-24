@@ -140,10 +140,10 @@ const PRINTED = 10_000;
 
 /**
  * The rows of a long list, drawn only where they can be seen in `scroller`, so that a list of
- * any length shows at once and scrolls smoothly. Every row is `row` pixels tall, `ROW` unless said; `draw(index)`
- * makes a row's element. The row holding the focus is kept, wherever it is, so that the keys
- * stay on it as the list scrolls. `covered()` is how much of the scroller's top a heading
- * pinned there hides.
+ * any length shows at once and scrolls smoothly. Every row is `row` pixels tall, `ROW` unless
+ * said, or as tall as `show` is told row by row; `draw(index)` makes a row's element. The row
+ * holding the focus is kept, wherever it is, so that the keys stay on it as the list scrolls.
+ * `covered()` is how much of the scroller's top a heading pinned there hides.
  */
 export class Rows {
   constructor(scroller, draw, { covered = () => 0, row = ROW } = {}) {
@@ -173,14 +173,51 @@ export class Rows {
     new ResizeObserver(() => this.update()).observe(scroller);
   }
 
-  /** Shows `count` rows, drawn afresh. */
-  show(count) {
+  /**
+   * Shows `count` rows, drawn afresh: each `row` pixels tall, or as tall as `tall(index)`
+   * says, as a heading among items may be shorter than they are.
+   */
+  show(count, tall = null) {
     for (const element of this.drawn.values()) element.remove();
     this.drawn.clear();
     this.count = count;
-    this.element.style.height = `${count * this.row}px`;
+    // Where each row begins, where rows are not all alike; worked out once for the list.
+    this.tops = null;
+    if (tall) {
+      this.tops = new Float64Array(count + 1);
+      for (let index = 0; index < count; index += 1) this.tops[index + 1] = this.tops[index] + tall(index);
+    }
+    this.element.style.height = `${this.topOf(count)}px`;
     if (this.printing) this.drawWhole();
     else this.update();
+  }
+
+  /** Where a row begins, down the rows. */
+  topOf(index) {
+    return this.tops ? this.tops[index] : index * this.row;
+  }
+
+  /** How tall a row is. */
+  heightOf(index) {
+    return this.tops ? this.tops[index + 1] - this.tops[index] : this.row;
+  }
+
+  /** The row at `y` pixels down the rows: the last that begins there or above. */
+  indexAt(y) {
+    if (!this.tops) return Math.floor(y / this.row);
+    let [low, high] = [0, this.count];
+    while (low < high) {
+      const middle = (low + high + 1) >> 1;
+      if (this.tops[middle] <= y) low = middle;
+      else high = middle - 1;
+    }
+    return low;
+  }
+
+  /** Puts a row's element where the row begins, as tall as it is where it is not as the others. */
+  stand(element, index) {
+    element.style.top = `${this.topOf(index)}px`;
+    if (this.heightOf(index) !== this.row) element.style.height = `${this.heightOf(index)}px`;
   }
 
   /** How many rows the scroller shows at once. */
@@ -200,8 +237,8 @@ export class Rows {
   update() {
     if (!this.element.isConnected || this.printing) return;
     const top = this.scroller.scrollTop - this.offset();
-    const first = Math.max(0, Math.floor(top / this.row) - 8);
-    const last = Math.min(this.count, Math.ceil((top + this.scroller.clientHeight) / this.row) + 8);
+    const first = Math.max(0, this.indexAt(top) - 8);
+    const last = Math.min(this.count, this.indexAt(top + this.scroller.clientHeight) + 9);
     for (const [index, element] of this.drawn) {
       if ((index < first || index >= last) && !element.contains(document.activeElement)) {
         element.remove();
@@ -230,7 +267,7 @@ export class Rows {
         continue;
       }
       const element = this.draw(index);
-      element.style.top = `${index * this.row}px`;
+      this.stand(element, index);
       this.element.insertBefore(element, next);
       this.drawn.set(index, element);
     }
@@ -239,7 +276,7 @@ export class Rows {
   /** Draws a row in its place, among the others in order, so that the page reads in order. */
   place(index) {
     const element = this.draw(index);
-    element.style.top = `${index * this.row}px`;
+    this.stand(element, index);
     let next = null;
     for (const [other, drawn] of this.drawn) if (other > index && (!next || other < next.index)) next = { index: other, drawn };
     this.element.insertBefore(element, next?.drawn ?? null);
@@ -250,10 +287,11 @@ export class Rows {
   /** A row's element, scrolled into view and drawn if it was not; null past the ends. */
   reveal(index) {
     if (index < 0 || index >= this.count) return null;
-    const top = this.offset() + index * this.row;
+    const top = this.offset() + this.topOf(index);
+    const tall = this.heightOf(index);
     const covered = this.covered();
     if (top < this.scroller.scrollTop + covered) this.scroller.scrollTop = top - covered;
-    else if (top + this.row > this.scroller.scrollTop + this.scroller.clientHeight) this.scroller.scrollTop = top + this.row - this.scroller.clientHeight;
+    else if (top + tall > this.scroller.scrollTop + this.scroller.clientHeight) this.scroller.scrollTop = top + tall - this.scroller.clientHeight;
     this.update();
     return this.drawn.get(index) ?? this.place(index);
   }

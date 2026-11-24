@@ -189,7 +189,7 @@ class AdminPage {
     this.userFind = find;
     find.input.value = this.userWords ?? '';
     const head = h('div', { class: 'card-head' },
-      h('h3', { class: 'grow' }, 'Users'),
+      h('h3', { class: 'grow' }, 'Users', list.signing_in && list.users.length > USERS / 10 ? h('span', { class: 'muted count' }, list.users.length.toLocaleString()) : null),
       list.signing_in && list.users.length > USERS / 10 ? find.box : null,
       list.signing_in ? h('button', { class: 'button small primary', onclick: (event) => this.editUser(null, event.currentTarget) }, icon('plus', 14), 'Add user') : null);
     if (!list.signing_in) {

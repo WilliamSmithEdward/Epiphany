@@ -7,8 +7,9 @@ import { marked, Rows, searchBox } from './tree.js';
 import { h, icon } from './ui.js';
 
 let finders = 0;
-/** What marks a heading among the items shown. */
+/** What marks a heading among the items shown, and how tall its row is, in pixels. */
 const HEADING = Symbol('heading');
+const HEADED = 34;
 
 /** Whether `word` begins one of the words of `text`. */
 function beginsWord(text, word) {
@@ -104,6 +105,8 @@ export function finder({ items, label, choose, chosen = null, current = null, ro
       entry.icon ? icon(entry.icon, 16) : null,
       h('span', { class: 'grow' }, marked(entry.label, words)),
       entry.detail ? h('span', { class: 'finder-detail' }, entry.detail) : null,
+      // The one there is now ticked, in a place every row keeps for it, so their details line up.
+      current && !entry.href ? h('span', { class: 'finder-now' }, entry === current ? icon('check', 14) : null) : null,
     ]);
   }
 
@@ -170,7 +173,10 @@ export function finder({ items, label, choose, chosen = null, current = null, ro
     list.hidden = !found.length;
     at = -1;
     input.removeAttribute('aria-activedescendant');
-    rows.show(shown.length);
+    // A heading takes less room than an item: the first, little above it; the others, a gap
+    // after the group before.
+    const headed = shown.some((entry) => entry[HEADING]);
+    rows.show(shown.length, headed ? (index) => (shown[index][HEADING] ? (index ? HEADED : HEADED - 8) : row) : null);
     const again = shown.indexOf(kept);
     if (again < 0) list.scrollTop = 0;
     go(again >= 0 ? again : 0, 1);
@@ -220,7 +226,7 @@ export function chooser({ items, now, label, chosen = null, find = `Find a ${lab
   const show = (name) => {
     button.value = name;
     button.setAttribute('aria-label', `${label}: ${name}. Choose another`);
-    button.replaceChildren(h('span', { class: 'grow' }, name), icon('down', 14));
+    button.replaceChildren(h('span', { class: 'grow' }, name));
   };
   button.addEventListener('click', async () => {
     const offered = items();
@@ -314,12 +320,14 @@ export function pick({ items, at, label, current = null, actions = [], row, draw
     });
     // Over a dialog, the panel goes in it: the rest of the page lies beneath, out of reach.
     ([...document.querySelectorAll('dialog[open]')].pop() ?? document.body).append(panel);
-    // Beneath what opened it, or above where there is no room, held to that edge as it narrows.
+    // Beneath what opened it, or above where there is no room, held to that edge as it
+    // narrows; within the window, its scroll bar not counted.
     const box = at.getBoundingClientRect();
-    panel.style.left = `${Math.max(8, Math.min(box.left, innerWidth - panel.offsetWidth - 8))}px`;
-    if (box.bottom + 4 + panel.offsetHeight <= innerHeight - 8 || box.top < innerHeight / 2) panel.style.top = `${box.bottom + 4}px`;
+    const { clientWidth: wide, clientHeight: high } = document.documentElement;
+    panel.style.left = `${Math.max(8, Math.min(box.left, wide - panel.offsetWidth - 8))}px`;
+    if (box.bottom + 4 + panel.offsetHeight <= high - 8 || box.top < high / 2) panel.style.top = `${box.bottom + 4}px`;
     else {
-      panel.style.bottom = `${innerHeight - box.top + 4}px`;
+      panel.style.bottom = `${high - box.top + 4}px`;
       panel.classList.add('above');
     }
     document.addEventListener('pointerdown', outside, true);

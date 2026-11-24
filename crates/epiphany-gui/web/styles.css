@@ -299,6 +299,24 @@ input[type="checkbox"][data-refused] { outline: 2px solid var(--bad); outline-of
 .search { position: relative; }
 .search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-3); pointer-events: none; }
 .search .input { width: 100%; padding-left: 34px; height: var(--control-small); }
+/* The search's own button that empties it, drawn as the application's icons are: a small
+   cross, faint until it is pointed at. */
+.search .input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  margin-left: var(--s1);
+  cursor: pointer;
+  background: currentColor;
+  opacity: .5;
+  mask: linear-gradient(45deg, transparent 44%, #000 44%, #000 56%, transparent 56%), linear-gradient(-45deg, transparent 44%, #000 44%, #000 56%, transparent 56%);
+}
+.search .input::-webkit-search-cancel-button:hover { opacity: .85; }
+/* Empty, it takes no room the words written in its place could have. */
+.search .input:placeholder-shown::-webkit-search-cancel-button { display: none; }
+/* Boxes and choices ticked in the application's colour, not the browser's. */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
 
 .badge {
   display: inline-flex; align-items: center; gap: 4px;
@@ -424,11 +442,15 @@ dialog[open] { animation: pop .16s var(--ease); }
 /* ---- Finding one among many: a search over a list drawn where it is seen ---- */
 
 .finder { display: flex; flex-direction: column; gap: var(--s2); min-height: 0; }
-.finder-list { position: relative; min-height: 0; max-height: min(56vh, 520px); overflow: auto; overscroll-behavior: contain; }
+.finder-list { position: relative; min-height: 0; max-height: min(56vh, 520px); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 .finder-list .rows > * { height: var(--row, 36px); }
 .finder-item { display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s3); border-radius: var(--radius-s); color: var(--text-2); text-decoration: none; white-space: nowrap; cursor: pointer; user-select: none; }
-.finder-item.active { background: var(--accent-soft); color: var(--accent-text); }
-.finder-item.current { font-weight: 650; }
+/* The row the keys are on is marked while they are in its list, and the row the pointer is
+   on always: a list on a page, its search not yet in use, marks nothing to begin with. */
+.finder:focus-within .finder-item.active, .finder-item.active:hover { background: var(--accent-soft); color: var(--accent-text); }
+/* The one there is now: in the text's own colour, marked as chosen. */
+.finder-item.current { color: var(--text); font-weight: 600; }
+.finder-now { flex: none; display: inline-flex; width: 14px; color: var(--accent-text); }
 .finder-item > svg { flex: none; }
 .finder-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .finder-item mark { padding: 0; background: none; color: inherit; font-weight: 700; }
@@ -440,9 +462,14 @@ dialog[open] { animation: pop .16s var(--ease); }
 .finder-panel { position: fixed; z-index: 60; display: flex; flex-direction: column; gap: var(--s2); width: min(400px, calc(100vw - 16px)); padding: var(--s2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-2); }
 .finder-actions { display: flex; flex-direction: column; padding-top: var(--s1); border-top: 1px solid var(--line); }
 /* A choice among many, as a select is, its chosen name as long as there is room for. */
-.chooser { max-width: min(360px, 100%); justify-content: flex-start; }
-.chooser .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-weight: 600; }
-.toolbar > .chooser { max-width: min(360px, 40vw); }
+/* A chooser stands for a select, and looks as one: its text as a field's, the select's
+   chevron at its end, pointed at or not; in a toolbar, as heavy as the buttons beside it. */
+.chooser, .chooser:hover { background-image: var(--chevron); background-repeat: no-repeat; background-position: right var(--s3) center; background-size: 14px; }
+.chooser { justify-content: flex-start; max-width: min(360px, 100%); padding: 0 38px 0 var(--s3); font-weight: 400; }
+.chooser:hover { background-color: var(--surface-2); }
+.chooser.small { padding-right: 32px; background-position: right 10px center; background-size: 12px; }
+.chooser .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.toolbar > .chooser { max-width: min(360px, 40vw); font-weight: 500; }
 
 /* ---- Sign-in ---- */
 
@@ -655,9 +682,11 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .model-head { display: flex; align-items: center; justify-content: space-between; }
 /* The page's heading, as large as a section's; the item open beside it, as large as a page's. */
 .model-head h1 { font-size: var(--text-xl); }
+/* In the model's list, the one open is marked as the page shown; the keys and the pointer
+   on another, as the pointer is anywhere. */
 .model-item { gap: var(--s2); }
-.model-item:hover { background: var(--surface-2); color: var(--text); }
-.model-item.current { background: var(--accent-soft); color: var(--accent-text); }
+.model-item:hover, .finder:focus-within .model-item.active { background: var(--surface-2); color: var(--text); }
+.model-item.current, .model-item.current:hover, .finder:focus-within .model-item.current { background: var(--accent-soft); color: var(--accent-text); }
 .model-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .model-pane > .empty { flex: 1; }
 .editor-head { display: flex; align-items: flex-end; gap: var(--s4); padding: var(--s5) var(--s6) var(--s4); border-bottom: 1px solid var(--line); background: var(--surface); }
@@ -703,6 +732,8 @@ fieldset.field > .check { margin-right: var(--s4); }
 .key-cubes { margin-top: var(--s2); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--radius); }
 /* A list to find in, inside a dialog, leaves room for the rest of it. */
 .dialog-body .finder-list { max-height: min(40vh, 360px); }
+/* How many a card's heading counts, beside it. */
+.card-head h3 .count { margin-left: var(--s2); font-weight: 400; }
 /* The key just made, shown this once, to be copied. */
 .key-shown { display: flex; gap: var(--s2); }
 .key-shown .input { flex: 1; min-width: 0; }
@@ -771,7 +802,7 @@ fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(-
 .cube-role { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: var(--s2); align-items: center; }
 .cube-role .select { width: 100%; }
 .element-role { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 0.9fr) auto; }
-.element-role > .button { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; line-height: var(--control); }
+.element-role > .element-choice { display: block; min-width: 0; padding: 0 var(--s3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; line-height: var(--control); font-weight: 400; }
 dialog:has(.cube-roles) { max-width: min(620px, calc(100vw - 32px)); }
 
 /* ---- Dimensions left out of the query ---- */
@@ -1079,10 +1110,14 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .drawer-head { display: flex; align-items: center; gap: var(--s2); }
 /* The list takes the drawer's height, however many views it holds, and scrolls in it. */
 .dash-drawer .finder { flex: 1 1 auto; min-height: 0; }
-.dash-drawer .finder-list { flex: 1 1 auto; max-height: none; }
+.dash-drawer .finder-list { flex: 1 1 auto; max-height: none; margin: 0 calc(var(--s2) * -1); padding: 2px var(--s2) var(--s2); }
 .dash-drawer .rows > .drawer-item { height: calc(var(--row) - 6px); }
 .drawer-item { display: flex; align-items: center; gap: var(--s3); width: 100%; padding: var(--s2); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; cursor: grab; touch-action: none; transition: border-color .12s, transform .12s; }
 .drawer-item:hover { border-color: var(--accent); transform: translateX(-2px); }
+/* The one the keys or the pointer are on: its border and its icon in the accent, the icon's
+   square holding its own against the row's colour. */
+.finder:focus-within .drawer-item.active, .drawer-item.active:hover { border-color: var(--accent); }
+.finder:focus-within .drawer-item.active .drawer-icon, .drawer-item.active:hover .drawer-icon { background: var(--accent); color: var(--on-accent); }
 .drawer-item .grow { display: flex; flex-direction: column; min-width: 0; }
 .drawer-item strong, .drawer-item .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-item .muted { font-size: var(--text-xs); }
@@ -1091,6 +1126,15 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .drag-token.over { opacity: .7; }
 /* A new view, as it will show, drawn as it is made. */
 .view-preview { display: flex; flex-direction: column; height: 260px; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); overflow: hidden; }
+/* What stands down the side and across, Swap between them, level with their choices. */
+.new-view .axes { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: var(--s3); }
+.new-view .axes > .button { margin-bottom: calc((var(--control) - var(--control-small)) / 2); }
+.new-view .axes > .button svg { transform: rotate(90deg); }
+@media (max-width: 600px) {
+  .new-view .axes { grid-template-columns: minmax(0, 1fr); }
+  .new-view .axes > .button { justify-self: center; margin: 0; }
+  .new-view .axes > .button svg { transform: none; }
+}
 .view-preview > * { flex: 1; min-height: 0; }
 .view-preview .chart { padding: 0; border: 0; box-shadow: none; background: none; }
 /* Cubes or dashboards past a dozen, listed to find in rather than laid out as cards. */
@@ -1441,7 +1485,7 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
   }
   .nav a[aria-current="page"], .finder-item.current, .dash-tabs a[aria-current="page"],
   .button[aria-pressed="true"], .segmented button[aria-selected="true"], .segmented button[aria-checked="true"],
-  .finder-item.active, .set-item[aria-selected="true"], .tree-row[aria-selected="true"] {
+  .finder:focus-within .finder-item.active, .finder-item.active:hover, .set-item[aria-selected="true"], .tree-row[aria-selected="true"] {
     forced-color-adjust: none; background: Highlight; color: HighlightText;
   }
   .pivot td.selected::before { display: none; }
