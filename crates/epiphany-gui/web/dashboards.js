@@ -915,7 +915,11 @@ class Dashboards {
       if (!sized) place[start] += best.by;
       else if (best.which === 'end') place[size] += best.by;
       else place[start] += best.by;
-      drawn.push(h('div', { class: `board-guide ${axis}`, style: `${axis === 'x' ? 'left' : 'top'}: ${best.line * step - GAP / 2}px` }));
+      // Placed through its style's properties: a style attribute is refused by the page's
+      // policy, and the line was drawn at the board's edge.
+      const guide = h('div', { class: `board-guide ${axis}` });
+      guide.style[axis === 'x' ? 'left' : 'top'] = `${best.line * step - GAP / 2}px`;
+      drawn.push(guide);
     }
     this.guides.replaceChildren(...drawn);
   }

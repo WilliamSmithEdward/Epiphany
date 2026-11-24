@@ -174,6 +174,7 @@ class Browser {
     const page = new Page(this, sessionId, base);
     await page.call('Page.enable');
     await page.call('Runtime.enable');
+    await page.call('Log.enable');
     // What moves stands still, so that what is checked is what stays on the page; and
     // numbers are written as in the United States, wherever the run is.
     await page.call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
@@ -193,11 +194,15 @@ class Page {
     this.sessionId = sessionId;
     this.base = base;
     this.waiters = new Set();
-    /** Errors the page's scripts threw or reported, which no journey expects. */
+    /**
+     * Errors the page's scripts threw or reported, which no journey expects; and what the
+     * page's own policy refused it, such as a style attribute, which fails without a word.
+     */
     this.errors = [];
     browser.listeners.add(({ method, params, sessionId: from }) => {
       if (from !== sessionId) return;
       if (method === 'Runtime.exceptionThrown') this.errors.push(params.exceptionDetails.exception?.description ?? params.exceptionDetails.text);
+      if (method === 'Log.entryAdded' && params.entry.source === 'security' && params.entry.level === 'error') this.errors.push(params.entry.text);
       if (method === 'Runtime.consoleAPICalled' && params.type === 'error') this.errors.push(params.args.map((arg) => arg.value ?? arg.description).join(' '));
       for (const waiter of this.waiters) {
         if (waiter.method !== method) continue;
