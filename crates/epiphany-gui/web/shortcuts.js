@@ -55,6 +55,9 @@ const KEYS = [
     [['Shift+←', 'Shift+↑', 'Shift+→', 'Shift+↓'], 'Arranged: make it narrower, shorter, wider or taller'],
     [['Enter'], 'Arranged: the tile\'s options'],
     [['Delete'], 'Arranged: take the tile away'],
+    [[`${MOD}+C`, `${MOD}+V`], 'Arranged: copy the tile, and paste it here or on another dashboard'],
+    [[`${MOD}+D`], 'Arranged: a copy of the tile'],
+    [['A'], 'Arranged: what may be added, or its search'],
     [[`${MOD}+Z`, `${MOD}+Y`], 'Arranged: take a change back, or make it again'],
   ]],
 ];

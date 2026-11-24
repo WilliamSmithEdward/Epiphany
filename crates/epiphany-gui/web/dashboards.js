@@ -51,6 +51,8 @@ const EVERY = [[0, 'By hand'], [1, 'Every minute'], [5, 'Every 5 minutes'], [15,
 
 /** Where a dashboard's refreshing and freeform snapping are kept, in this browser. */
 const SNAP = 'epiphany.dashboards.snap';
+/** Where a tile copied is kept, in this browser, to be pasted on this dashboard or another. */
+const COPIED = 'epiphany.dashboards.copied';
 /** The most dashboards that stand as tabs: past them, those shown lately do, and any is found by typing. */
 const TABS = 8;
 const TABS_LATELY = 5;
@@ -674,7 +676,37 @@ class Dashboards {
     } else if (this.editing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') {
       event.preventDefault();
       this.redo();
+    } else if (this.editing && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') {
+      event.preventDefault();
+      this.paste();
+    } else if (this.editing && !event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === 'a') {
+      // What may be added, opened, or its search given the keys.
+      event.preventDefault();
+      if (this.adding) this.target.querySelector('.dash-drawer input')?.focus();
+      else this.toggleAdding();
     }
+  }
+
+  /** Keeps a tile, as it shows its view and without its place, to be pasted here or on another dashboard. */
+  copyTile(index) {
+    const tile = { ...this.editing.tiles[index], place: undefined };
+    localStorage.setItem(COPIED, JSON.stringify(tile));
+    announce(`Copied ${tile.title || tile.view || 'the text'}. ${MOD} V pastes it, here or on another dashboard.`);
+  }
+
+  /** Adds the tile copied last, at the first free place, wherever it was copied from. */
+  paste() {
+    let tile = null;
+    try {
+      tile = JSON.parse(localStorage.getItem(COPIED));
+    } catch {
+      tile = null;
+    }
+    if (!tile) {
+      notify('Nothing is copied to paste: copy a tile first, with the keys on it.');
+      return;
+    }
+    this.addTile(tile);
   }
 
   /* ---- Editing ---- */
@@ -1025,7 +1057,10 @@ class Dashboards {
     return `column ${whole(place.x + 1)}, row ${whole(place.y + 1)}, ${whole(place.w)} wide and ${whole(place.h)} high`;
   }
 
-  /** The arrow keys move a tile, with Shift resize it; Enter opens its options and Delete removes it. */
+  /**
+   * The arrow keys move a tile, with Shift resize it; Enter opens its options and Delete
+   * removes it; Ctrl+C copies it and Ctrl+D adds a copy of it beside the others.
+   */
   tileKey(event, index) {
     if (event.target !== event.currentTarget) return;
     const step = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[event.key];
@@ -1035,6 +1070,12 @@ class Dashboards {
     } else if (event.key === 'Delete' || event.key === 'Backspace') {
       event.preventDefault();
       this.removeTile(index);
+    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c') {
+      event.preventDefault();
+      this.copyTile(index);
+    } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'd') {
+      event.preventDefault();
+      this.addTile(structuredClone({ ...this.editing.tiles[index], place: undefined }));
     } else if (step && !this.narrow) {
       event.preventDefault();
       const free = this.editing.layout === 'free';
