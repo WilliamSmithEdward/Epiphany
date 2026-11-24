@@ -262,6 +262,11 @@ practice that means:
     `StripCalculatedMembers` for the calculated members of a set's dimension.
   - Drilling: `DrilldownMember(set, members [, RECURSIVE])`, `TM1DrilldownMember` (which
     also takes `ALL` for the members), `DrilldownLevel(set [, level])`,
+    `DrillDownLevelTop` and `DrillDownLevelBottom(set, count [, level [, value]])` and
+    `DrillDownMemberTop` and `DrillDownMemberBottom(set, members, count [, value [,
+    RECURSIVE]])`, which open the same members to the children with the largest values or
+    the smallest, as many as `count`; an argument left out between commas is NULL, as in
+    `DrillDownLevelTop(set, 5, , value)`;
     `DrillupMember(set, members)` and `ToggleDrillState(set, members)`, which closes a
     member that is followed by something beneath it and opens any other.
   - Members: `[Dimension].[Member]` by name or alias, `.Parent`, `.FirstChild`,

@@ -408,7 +408,7 @@ impl Parser {
             }
             Token::Word(function) if called => {
                 self.next += 2;
-                Ok(Expr::Call(function.to_uppercase(), self.list(")")?))
+                Ok(Expr::Call(function.to_uppercase(), self.arguments()?))
             }
             Token::Word(_) | Token::Name(_) => self.name(),
             _ => Err(self.error("expected an expression")),
@@ -467,6 +467,23 @@ impl Parser {
     }
 
     /// Comma-separated expressions up to a closing symbol, which is consumed.
+    /// A function's arguments, as `list` reads them, but that one left out between commas, as
+    /// in `DrillDownLevelTop(set, 2, , value)`, is NULL, as MDX reads it.
+    fn arguments(&mut self) -> Parsed<Vec<Expr>> {
+        let mut items = Vec::new();
+        while !self.symbol(")") {
+            if !items.is_empty() {
+                self.expect_symbol(",")?;
+            }
+            let left_out = !items.is_empty() && matches!(self.peek(), Token::Symbol("," | ")"));
+            items.push(match left_out {
+                true => Expr::Call("NULL".to_owned(), Vec::new()),
+                false => self.expression()?,
+            });
+        }
+        Ok(items)
+    }
+
     fn list(&mut self, close: &'static str) -> Parsed<Vec<Expr>> {
         let mut items = Vec::new();
         while !self.symbol(close) {

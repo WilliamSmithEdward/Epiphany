@@ -13,7 +13,7 @@ use epiphany_core::Scalar;
 use epiphany_core::database::{CellWrite, Database};
 use epiphany_core::model::ModelDef;
 
-const FUNCTIONS: [&str; 120] = [
+const FUNCTIONS: [&str; 124] = [
     "Sum",
     "Aggregate",
     "Avg",
@@ -69,6 +69,10 @@ const FUNCTIONS: [&str; 120] = [
     "NameToSet",
     "StrToValue",
     "DrillUpLevel",
+    "DrillDownLevelTop",
+    "DrillDownLevelBottom",
+    "DrillDownMemberTop",
+    "DrillDownMemberBottom",
     "IsGeneration",
     "IIF",
     "IsEmpty",

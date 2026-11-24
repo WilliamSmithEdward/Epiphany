@@ -1593,6 +1593,26 @@ fn a_value_is_chosen_case_by_case() {
         ["Jan", "Feb"]
     );
     assert_eq!(columns("NameToSet(\"[Period].[Feb]\")"), ["Feb"]);
+    // Drilled down to the children with the largest values, or the smallest, an argument
+    // left out between commas.
+    let q2 = "IIF([Period].CurrentMember IS [Period].[Q2], 1, 0)";
+    assert_eq!(
+        columns(&format!("DrillDownLevelTop({{[Period].[H1]}}, 1, , {q2})")),
+        ["H1", "Q2"]
+    );
+    assert_eq!(
+        columns(&format!(
+            "DrillDownLevelBottom({{[Period].[H1]}}, 1, , {q2})"
+        )),
+        ["H1", "Q1"]
+    );
+    let mar = "IIF([Period].CurrentMember IS [Period].[Mar], 1, 0)";
+    assert_eq!(
+        columns(&format!(
+            "DrillDownMemberTop({{[Period].[H1], [Period].[Q1]}}, {{[Period].[Q1]}}, 2, {mar})"
+        )),
+        ["H1", "Q1", "Mar", "Jan"]
+    );
     // Drilled up: without the members below a level, or those furthest beneath the top.
     assert_eq!(
         columns("DrillUpLevel({[Period].[H1], [Period].[Q1], [Period].[Jan], [Period].[Feb]})"),

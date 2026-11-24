@@ -80,6 +80,8 @@ pub(super) struct Member {
 
 /// Members of different dimensions.
 pub(super) type Tuple = Vec<Member>;
+/// What a `...Top` or `...Bottom` drilling function keeps of a member's children, in order.
+type Rank<'r> = &'r dyn Fn(Vec<Tuple>) -> Evaluated<Vec<Tuple>>;
 /// One member per dimension of the cube: the cell an expression is evaluated at.
 pub(super) type Context = Vec<Id>;
 
@@ -559,6 +561,11 @@ fn is_empty(datum: &Datum) -> bool {
 }
 
 /// The single word an argument consists of, in upper case, as flags such as `DESC` are.
+/// An argument given, not left out between commas, which the parser reads as NULL.
+fn given(argument: Option<&Expr>) -> Option<&Expr> {
+    argument.filter(|argument| !matches!(argument, Expr::Call(name, arguments) if name == "NULL" && arguments.is_empty()))
+}
+
 fn flag(argument: Option<&Expr>) -> Option<String> {
     match argument {
         Some(Expr::Name(parts)) if parts.len() == 1 => Some(parts[0].to_uppercase()),
@@ -1975,46 +1982,37 @@ impl<'a> Evaluator<'a> {
             }
             "DRILLDOWNMEMBER" | "TM1DRILLDOWNMEMBER" => {
                 count(2..=3)?;
-                let recursive = match flag(arguments.get(2)).as_deref() {
-                    None => false,
-                    Some("RECURSIVE") => true,
-                    Some(other) => return fail(format!("unknown {function} flag {other}")),
-                };
-                let set = self.set(&arguments[0], context)?;
-                // Every member, where TM1's function is told ALL; else those of the second set.
-                let all = function == "TM1DRILLDOWNMEMBER"
-                    && flag(arguments.get(1)).as_deref() == Some("ALL");
-                let (position, members) = match all {
-                    true => (None, HashSet::new()),
-                    false => self.chosen(self.set(&arguments[1], context)?),
-                };
-                let drilled = |member: Member, _: &Element| all || members.contains(&member);
-                self.drill_down(set, position, recursive, &drilled)
+                self.drilled_down_member(function, arguments, arguments.get(2), None, context)
                     .map(Datum::Set)
+            }
+            "DRILLDOWNMEMBERTOP" | "DRILLDOWNMEMBERBOTTOM" => {
+                count(3..=5)?;
+                let rank = |children: Vec<Tuple>| {
+                    let value = given(arguments.get(3));
+                    self.ranked(function, &arguments[2], value, children, context)
+                };
+                self.drilled_down_member(
+                    function,
+                    arguments,
+                    arguments.get(4),
+                    Some(&rank),
+                    context,
+                )
+                .map(Datum::Set)
             }
             "DRILLDOWNLEVEL" => {
                 count(1..=2)?;
-                let set = self.set(&arguments[0], context)?;
-                let first = |tuple: &Tuple| tuple.first().copied();
-                let opened = match arguments.get(1) {
-                    // The members of the level given.
-                    Some(level) => {
-                        let (position, level) = self.level(level, context)?;
-                        let at = |_: Member, element: &Element| element.level == level;
-                        self.drill_down(set, Some(position), false, &at)
-                    }
-                    // The members furthest beneath the top of their dimension.
-                    None => {
-                        let depths = set
-                            .iter()
-                            .filter_map(first)
-                            .map(|member| self.depth(member));
-                        let deepest = depths.max().unwrap_or(0);
-                        let at = |member: Member, _: &Element| self.depth(member) == deepest;
-                        self.drill_down(set, None, false, &at)
-                    }
+                self.drilled_down_level(arguments, given(arguments.get(1)), None, context)
+                    .map(Datum::Set)
+            }
+            "DRILLDOWNLEVELTOP" | "DRILLDOWNLEVELBOTTOM" => {
+                count(2..=4)?;
+                let rank = |children: Vec<Tuple>| {
+                    let value = given(arguments.get(3));
+                    self.ranked(function, &arguments[1], value, children, context)
                 };
-                opened.map(Datum::Set)
+                self.drilled_down_level(arguments, given(arguments.get(2)), Some(&rank), context)
+                    .map(Datum::Set)
             }
             "DRILLUPMEMBER" => {
                 count(2..=2)?;
@@ -2047,7 +2045,8 @@ impl<'a> Evaluator<'a> {
                 let shut = |member: Member, _: &Element| {
                     members.contains(&member) && !open.contains(&member)
                 };
-                self.drill_down(set, position, false, &shut).map(Datum::Set)
+                self.drill_down(set, position, false, &shut, None)
+                    .map(Datum::Set)
             }
             _ => fail(format!("unknown function {function}")),
         }
@@ -2527,6 +2526,7 @@ impl<'a> Evaluator<'a> {
         position: Option<usize>,
         recursive: bool,
         drilled: &dyn Fn(Member, &Element) -> bool,
+        rank: Option<Rank<'_>>,
     ) -> Evaluated<Vec<Tuple>> {
         let mut found = Vec::new();
         let mut waiting: Vec<(Tuple, bool)> = set.into_iter().rev().map(|t| (t, true)).collect();
@@ -2540,9 +2540,19 @@ impl<'a> Evaluator<'a> {
                 && let Ok((_, element)) = self.element(tuple[place])
                 && drilled(tuple[place], element)
             {
-                for &(child, _) in element.children.iter().rev() {
-                    let mut below = tuple.clone();
-                    below[place].id = Id::Element(child);
+                let mut children: Vec<Tuple> = element
+                    .children
+                    .iter()
+                    .map(|&(child, _)| {
+                        let mut below = tuple.clone();
+                        below[place].id = Id::Element(child);
+                        below
+                    })
+                    .collect();
+                if let Some(rank) = rank {
+                    children = rank(children)?;
+                }
+                for below in children.into_iter().rev() {
                     waiting.push((below, recursive));
                 }
             }
@@ -2749,6 +2759,101 @@ impl<'a> Evaluator<'a> {
                 format!("{{{}}}", tuples.join(", "))
             }
         })
+    }
+
+    /// `DrillDownMember(set, members [, RECURSIVE])` and TM1's, told `ALL` for every member:
+    /// the set, each of the members in it followed by its children; given `rank`, as
+    /// `DrillDownMemberTop` and `...Bottom` are, only the children it keeps.
+    fn drilled_down_member(
+        &self,
+        function: &str,
+        arguments: &[Expr],
+        recursive: Option<&Expr>,
+        rank: Option<Rank<'_>>,
+        context: &Context,
+    ) -> Evaluated<Vec<Tuple>> {
+        let recursive = match flag(recursive).as_deref() {
+            None => false,
+            Some("RECURSIVE") => true,
+            Some(other) => return fail(format!("unknown {function} flag {other}")),
+        };
+        let set = self.set(&arguments[0], context)?;
+        // Every member, where TM1's function is told ALL; else those of the second set.
+        let all =
+            function == "TM1DRILLDOWNMEMBER" && flag(arguments.get(1)).as_deref() == Some("ALL");
+        let (position, members) = match all {
+            true => (None, HashSet::new()),
+            false => self.chosen(self.set(&arguments[1], context)?),
+        };
+        let drilled = |member: Member, _: &Element| all || members.contains(&member);
+        self.drill_down(set, position, recursive, &drilled, rank)
+    }
+
+    /// `DrillDownLevel(set [, level])`: the set, each of its members of the level, or without
+    /// one those furthest beneath the top of their dimension, followed by its children; given
+    /// `rank`, as `DrillDownLevelTop` and `...Bottom` are, only the children it keeps.
+    fn drilled_down_level(
+        &self,
+        arguments: &[Expr],
+        level: Option<&Expr>,
+        rank: Option<Rank<'_>>,
+        context: &Context,
+    ) -> Evaluated<Vec<Tuple>> {
+        let set = self.set(&arguments[0], context)?;
+        match level {
+            Some(level) => {
+                let (position, level) = self.level(level, context)?;
+                let at = |_: Member, element: &Element| element.level == level;
+                self.drill_down(set, Some(position), false, &at, rank)
+            }
+            None => {
+                let first = |tuple: &Tuple| tuple.first().copied();
+                let depths = set
+                    .iter()
+                    .filter_map(first)
+                    .map(|member| self.depth(member));
+                let deepest = depths.max().unwrap_or(0);
+                let at = |member: Member, _: &Element| self.depth(member) == deepest;
+                self.drill_down(set, None, false, &at, rank)
+            }
+        }
+    }
+
+    /// The children a `...Top` or `...Bottom` drilling function keeps: the `count` of them with
+    /// the largest values of `value`, or the smallest, in that order; without a value, the first.
+    fn ranked(
+        &self,
+        function: &str,
+        count: &Expr,
+        value: Option<&Expr>,
+        children: Vec<Tuple>,
+        context: &Context,
+    ) -> Evaluated<Vec<Tuple>> {
+        let wanted = self.number(count, context)?.max(0.0) as usize;
+        let mut along = Along::new(context);
+        let mut keyed = Vec::new();
+        for tuple in children {
+            let value = match value {
+                Some(expression) => {
+                    let context = along.at(&tuple);
+                    let value = self.evaluate(expression, context)?;
+                    self.scalar(value, context)?
+                }
+                None => Datum::Null,
+            };
+            keyed.push((value, tuple));
+        }
+        // Without a value the children keep their order and are only cut short.
+        let bottom = function.ends_with("BOTTOM");
+        keyed.sort_by(|(left, _), (right, _)| match bottom {
+            true => compare(left, right),
+            false => compare(right, left),
+        });
+        Ok(keyed
+            .into_iter()
+            .take(wanted)
+            .map(|(_, tuple)| tuple)
+            .collect())
     }
 
     /// `IsGeneration(member, n)`: whether the member stands n generations above the leaves,
