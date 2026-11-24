@@ -1175,9 +1175,20 @@ async function exploring() {
     await page.click('dialog[open] button', 'Delete');
     await page.waitFor(`!document.querySelector('dialog[open]') && ![...document.querySelectorAll('.dash-tabs a')].some((tab) => tab.textContent === 'Copy of Quarter')`, 'the copy, taken away');
   });
-  await step('A query is pinned from Explore to a new dashboard, a tile showing it as Explore does', async () => {
-    await page.goto('/explore?cube=General%20Ledger');
+  await step('A query is pinned from Explore to a new dashboard, a tile showing it as Explore charts it', async () => {
+    // The view opened becomes the cube's layout in Explore: the one before is kept, for the
+    // steps after, and put back.
+    const layout = `localStorage.getItem('epiphany.explore.General Ledger')`;
+    const before = await page.evaluate(layout);
+    await page.goto(`/explore?cube=General%20Ledger&view=${encodeURIComponent('Quarterly income by entity')}`);
     await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
+    // Charted with total revenue as a line over the bars.
+    await page.click('[role="tab"]', 'Chart');
+    await page.waitFor(`document.querySelector('.chart-pane .chart svg')`, 'the chart');
+    await page.click('.chart-pane button', 'Series…');
+    await page.click('dialog[open] [role="radiogroup"][aria-label="Total Entity · Revenue"] [role="radio"]', 'Line');
+    await page.click('dialog[open] button', 'Done');
+    await page.waitFor(`document.querySelector('.chart-pane .legend-item.line')?.textContent === 'Total Entity · Revenue'`, 'total revenue, as a line over the bars');
     await page.click('button', 'Views');
     await page.click('.menu [role="menuitem"]', 'Pin to a dashboard…');
     await page.fill('#pin-view', 'Pinned');
@@ -1186,9 +1197,9 @@ async function exploring() {
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.startsWith('Pinned to Pins.'))`, 'the query, pinned');
     const { data } = await page.api('GET', '/model');
     const [tile, ...more] = data.model.dashboards.find((each) => each.name === 'Pins')?.tiles ?? [];
-    expect(!more.length && tile?.cube === 'General Ledger' && tile.view === 'Pinned' && tile.show === 'grid', `Pins has the tiles ${quoted([tile, ...more])}.`);
+    expect(!more.length && quoted(tile) === quoted({ cube: 'General Ledger', view: 'Pinned', show: 'bars', place: tile?.place, lines: ['Total Entity · Revenue'] }), `Pins has the tiles ${quoted([tile, ...more])}.`);
     await page.click('.notice a', 'Open it');
-    await page.waitFor(`location.search === '?name=Pins' && document.querySelector('.dash-tile .tile-table [role="cell"]')`, 'the pinned tile');
+    await page.waitFor(`location.search === '?name=Pins' && document.querySelector('.dash-tile .legend-item.line')?.textContent === 'Total Entity · Revenue'`, 'the pinned tile, charted as Explore charted it');
     await page.click('button', 'Delete');
     await page.click('dialog[open] button', 'Delete');
     await page.waitFor(`!document.querySelector('dialog[open]') && ![...document.querySelectorAll('.dash-tabs a')].some((tab) => tab.textContent === 'Pins')`, 'Pins, taken away');
@@ -1197,6 +1208,10 @@ async function exploring() {
     delete cube.views.Pinned;
     const based = (await page.api('GET', '/model')).data.version;
     expect((await page.api('PUT', `/cubes/General%20Ledger`, { based_on: based, cube })).status === 200, 'The pinned view was not taken away.');
+    await page.evaluate(before === null
+      ? `localStorage.removeItem('epiphany.explore.General Ledger')`
+      : `localStorage.setItem('epiphany.explore.General Ledger', ${quoted(before)})`);
+    expect(await page.evaluate(layout) === before, 'Explore\'s layout of the cube was not put back.');
   });
   await step('A change to the model that leaves the dimensions as they were fetches none of them again', async () => {
     await page.goto('/explore?cube=General%20Ledger');

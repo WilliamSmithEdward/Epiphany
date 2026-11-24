@@ -6,7 +6,7 @@
 import { extent, formatNumber, h, icon } from './ui.js';
 
 /** How many series are drawn at most; the rest are left out and said to be. */
-export const MOST_SERIES = 12;
+const MOST_SERIES = 12;
 /** How many colours there are before they repeat. */
 const COLOURS = 10;
 /** How many slices a ring has at most: past that, the smallest are one slice, Other. */
@@ -65,6 +65,9 @@ export function shape(result, byColumns) {
     })),
   };
 }
+
+/** The names of the series of `data` that a chart draws. */
+export const seriesNames = (data) => data.series.slice(0, MOST_SERIES).map((entry) => entry.name);
 
 /**
  * A line of values, small and without axes, to show which way they go: gaps where a value

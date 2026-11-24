@@ -3,11 +3,11 @@
 
 import { ApiError, del, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, readdress, state } from './app.js';
-import { chart, shape } from './chart.js';
+import { chart, seriesNames, shape } from './chart.js';
 import { CALCULATIONS, cubeOf, defaultLayout, emptiness, handOver, linkedView, linkOf, mdx, namesOf, pathKey, pathsBeneath, quote, saved, shown, takeOver } from './layout.js';
 import { chooseMember, dimension } from './picker.js';
 import { csvOf } from './selection.js';
-import { KINDS } from './tiles.js';
+import { askDrawn, AXES, CHARTS, KINDS } from './tiles.js';
 import { editSet } from './sets.js';
 import { choices, copyText, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
@@ -1006,6 +1006,12 @@ class Explorer {
     };
     const data = shape(this.result, settings.byColumns);
     const plotted = data.series.some((entry) => entry.values.some((value) => value !== null));
+    // Any series may be drawn as a line over the rest, or against a scale at the right.
+    const names = AXES.has(settings.kind) ? seriesNames(data) : [];
+    const drawnAs = async () => {
+      const drawn = await askDrawn(settings.kind, names, settings);
+      if (drawn) set(drawn);
+    };
     mount(this.output, h('div', { class: 'chart-pane' },
       h('div', { class: 'toolbar' },
         choices({
@@ -1020,11 +1026,13 @@ class Explorer {
           label: 'Series from',
           options: [[false, 'A series for each row'], [true, 'A series for each column']],
           chosen: Boolean(settings.byColumns),
-          choose: (byColumns) => set({ byColumns }),
+          // Its series turned the other way are others: none of them is drawn as a line.
+          choose: (byColumns) => set({ byColumns, lines: [], second: [] }),
         }),
-        h('button', { class: 'button small quiet', 'aria-pressed': String(Boolean(settings.labels)), onclick: () => set({ labels: !settings.labels }) }, icon('hash', 14), 'Values')),
+        h('button', { class: 'button small quiet', 'aria-pressed': String(Boolean(settings.labels)), onclick: () => set({ labels: !settings.labels }) }, icon('hash', 14), 'Values'),
+        names.length > 1 ? h('button', { class: 'button small quiet', title: 'How its series are drawn', onclick: drawnAs }, icon('explore', 14), 'Series…') : null),
       plotted
-        ? chart(data, settings.kind, { labels: settings.labels, format: (value) => formatValue(value, this.layout.format) })
+        ? chart(data, settings.kind, { labels: settings.labels, lines: settings.lines, second: settings.second, format: (value) => formatValue(value, this.layout.format) })
         : empty('chart', 'Nothing to chart', 'The result has no numbers. Choose other members, or show empty rows.')));
   }
 
@@ -1325,7 +1333,20 @@ class Explorer {
         this.cube.views = views;
         // The tile, added to the dashboard as it is now, where the board has room for it.
         const outline = await get('/model/outline');
-        const tile = { cube: this.cube.name, view, show: show.value };
+        // Charted, it is drawn as here: its series the same way, its values on the marks if
+        // they are here, and the series drawn as lines here drawn so.
+        const settings = this.layout.chart ?? {};
+        const charted = CHARTS.has(show.value);
+        const axes = AXES.has(show.value);
+        const tile = {
+          cube: this.cube.name,
+          view,
+          show: show.value,
+          ...(charted && settings.byColumns ? { by_columns: true } : {}),
+          ...(charted && settings.labels ? { labels: true } : {}),
+          ...(axes && settings.lines?.length ? { lines: settings.lines } : {}),
+          ...(axes && settings.second?.length ? { second_axis: settings.second } : {}),
+        };
         const had = outline.dashboards.find((dashboard) => dashboard.name.toLowerCase() === to.toLowerCase());
         const dashboard = had ? { ...had, tiles: [...had.tiles, tile] } : { name: to, tiles: [tile] };
         await put(`/dashboards/${part(dashboard.name)}`, { based_on: outline.version, dashboard });

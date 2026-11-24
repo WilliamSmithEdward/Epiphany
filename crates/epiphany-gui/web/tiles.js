@@ -7,7 +7,7 @@ import { empty } from './app.js';
 import { chart, shape, sparkline } from './chart.js';
 import { highlighter, toneOf } from './grid.js';
 import { Rows } from './tree.js';
-import { extent, formatValue, h, shownText, widest } from './ui.js';
+import { choices, dialog, extent, formatValue, h, shownText, widest } from './ui.js';
 
 /** The ways a tile shows its view, by name: what each is called, and its icon. */
 export const KINDS = {
@@ -23,7 +23,48 @@ export const KINDS = {
   text: ['Text', 'text'],
 };
 
+/** The ways of showing a view that chart it; of them, those with axes, whose series may be drawn as lines over the rest. */
+export const CHARTS = new Set(['bars', 'stacked', 'lines', 'area', 'ranked', 'donut']);
+export const AXES = new Set(['bars', 'stacked', 'lines', 'area']);
+
 const label = (tuple) => tuple.map((m) => m.name).join(' · ');
+
+/**
+ * Asks how each of the series `names` of a chart of `kind` is drawn: as the chart draws the
+ * rest, as a line over them against the same scale, as a budget beside the actuals, or as a
+ * line against a scale of its own at the right, as a margin beside the sums it comes from.
+ * Gives those to draw as lines over the rest and those at the right, or null if not asked.
+ */
+export async function askDrawn(kind, names, { lines = [], second = [] }) {
+  const options = [
+    ['own', { bars: 'Bars', stacked: 'Stacked', area: 'Area', lines: 'Line' }[kind]],
+    ...(kind === 'lines' ? [] : [['line', 'Line']]),
+    ['right', 'Line, scale at the right'],
+  ];
+  const chosen = Object.fromEntries(names.map((name) => [name,
+    second.includes(name) ? 'right' : kind !== 'lines' && lines.includes(name) ? 'line' : 'own']));
+  const rows = names.map((name) => [name, h('div')]);
+  const draw = () => {
+    for (const [name, into] of rows) {
+      choices({ label: name, kind: 'radiogroup', options, chosen: chosen[name], choose: (way) => {
+        chosen[name] = way;
+        draw();
+      }, into });
+    }
+  };
+  draw();
+  const done = await dialog({
+    title: 'How its series are drawn',
+    confirm: 'Done',
+    wide: true,
+    body: h('div', { class: 'facts' },
+      h('div', { class: 'choice-rows' }, rows.map(([name, into]) => h('div', { class: 'choice-row' }, h('span', {}, name), into))),
+      h('p', { class: 'hint' }, 'A line at the right has a scale of its own, for a series of another size than the rest, such as a margin beside the sums it comes from. With every series there, there is no other scale, and the chart draws them all its own way.')),
+  });
+  if (!done) return null;
+  const which = (way) => names.filter((name) => chosen[name] === way);
+  return { lines: which('line'), second: which('right') };
+}
 
 /**
  * A view's answer as rows of cells, to copy or download: its rows' dimensions over their

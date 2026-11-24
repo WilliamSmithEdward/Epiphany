@@ -8,10 +8,10 @@
 import { del, modelVersion, part, post, put } from './api.js';
 import { announce, empty, failure, go, model, readdress, state } from './app.js';
 import { COLUMNS, firstFree, inReadingOrder, linesOf, moveOnGrid, nearest, onPage, ontoGrid, resizeOnGrid } from './arrange.js';
-import { MOST_SERIES, shape } from './chart.js';
+import { seriesNames, shape } from './chart.js';
 import { chooseMember, dimension } from './picker.js';
 import { csvOf, tsvOf } from './selection.js';
-import { KINDS, numbersOf, present, prose } from './tiles.js';
+import { askDrawn, AXES, CHARTS, KINDS, numbersOf, present, prose } from './tiles.js';
 import { choices, copyText, dialog, download, h, icon, invalid, menu, MOD, mount, notify, when, working } from './ui.js';
 
 /** A row's height and the gap between tiles, in pixels: as the styles have them. */
@@ -963,13 +963,12 @@ class Dashboards {
     const tile = this.editing.tiles[index];
     const free = this.editing.layout === 'free';
     const text = tile.show === 'text';
-    const charted = !['figure', 'grid', 'heatmap', 'text'].includes(tile.show ?? 'bars');
+    const charted = CHARTS.has(tile.show ?? 'bars');
     const set = (change) => this.change(() => Object.assign(tile, change));
     // The series of the chart's last answer, by name, each to be drawn as a line if asked.
     const last = this.lastShown.get(index);
-    const axes = ['bars', 'stacked', 'lines', 'area'].includes(tile.show ?? 'bars');
-    const names = axes && last?.tile.cube === tile.cube && last.tile.view === tile.view
-      ? shape(last.result, Boolean(tile.by_columns)).series.slice(0, MOST_SERIES).map((entry) => entry.name)
+    const names = AXES.has(tile.show ?? 'bars') && last?.tile.cube === tile.cube && last.tile.view === tile.view
+      ? seriesNames(shape(last.result, Boolean(tile.by_columns)))
       : [];
     const sized = (w, h) => this.change(() => {
       const places = placesOf(this.editing);
@@ -1032,42 +1031,11 @@ class Dashboards {
     });
   }
 
-  /**
-   * How each of a chart's series, `names`, is drawn: as the chart draws the rest, as a line
-   * over them against the same scale, as a budget beside the actuals, or as a line against a
-   * scale of its own at the right, as a margin beside the sums it comes from.
-   */
+  /** Asks how each of a chart's series, `names`, is drawn: as the rest, or as a line over them or at the right. */
   async drawnAs(index, names) {
     const tile = this.editing.tiles[index];
-    const kind = tile.show ?? 'bars';
-    const options = [
-      ['own', { bars: 'Bars', stacked: 'Stacked', area: 'Area', lines: 'Line' }[kind]],
-      ...(kind === 'lines' ? [] : [['line', 'Line']]),
-      ['right', 'Line, scale at the right'],
-    ];
-    const chosen = Object.fromEntries(names.map((name) => [name,
-      tile.second_axis?.includes(name) ? 'right' : kind !== 'lines' && tile.lines?.includes(name) ? 'line' : 'own']));
-    const rows = names.map((name) => [name, h('div')]);
-    const draw = () => {
-      for (const [name, into] of rows) {
-        choices({ label: name, kind: 'radiogroup', options, chosen: chosen[name], choose: (value) => {
-          chosen[name] = value;
-          draw();
-        }, into });
-      }
-    };
-    draw();
-    const done = await dialog({
-      title: 'How its series are drawn',
-      confirm: 'Done',
-      wide: true,
-      body: h('div', { class: 'facts' },
-        h('div', { class: 'choice-rows' }, rows.map(([name, into]) => h('div', { class: 'choice-row' }, h('span', {}, name), into))),
-        h('p', { class: 'hint' }, 'A line at the right has a scale of its own, for a series of another size than the rest, such as a margin beside the sums it comes from. With every series there, there is no other scale, and the chart draws them all its own way.')),
-    });
-    if (!done) return;
-    const which = (way) => names.filter((name) => chosen[name] === way);
-    this.change(() => Object.assign(tile, { lines: which('line'), second_axis: which('right') }));
+    const drawn = await askDrawn(tile.show ?? 'bars', names, { lines: tile.lines, second: tile.second_axis });
+    if (drawn) this.change(() => Object.assign(tile, { lines: drawn.lines, second_axis: drawn.second }));
   }
 
   /** Puts a tile laid out freely over the others, or beneath them: later tiles are drawn over earlier ones. */
