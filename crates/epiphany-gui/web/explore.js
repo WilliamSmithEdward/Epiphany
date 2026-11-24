@@ -42,9 +42,11 @@ export async function render(target, { params, titled }) {
     return;
   }
   // Not told which cube, Explore opens the one explored last, while the model has it, and the
-  // address names it.
+  // address names it; never explored, the first with views saved of it, as the one most worked
+  // in, else the first.
   const last = localStorage.getItem(LAST);
-  const name = params.get('cube') ?? (definition.cubes.some((each) => each.name === last) ? last : definition.cubes[0].name);
+  const first = (definition.cubes.find((each) => Object.keys(each.views ?? {}).length) ?? definition.cubes[0]).name;
+  const name = params.get('cube') ?? (definition.cubes.some((each) => each.name === last) ? last : first);
   const cube = definition.cubes.find((candidate) => candidate.name === name);
   if (!cube) {
     mount(target, h('div', { class: 'page' }, empty('cube', `There is no cube called ${name}`, 'It may have been renamed or removed.',
