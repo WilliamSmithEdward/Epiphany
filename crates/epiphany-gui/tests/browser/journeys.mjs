@@ -1153,7 +1153,7 @@ async function exploring() {
     const phone = { width: 390, height: 844 };
     await page.call('Emulation.setDeviceMetricsOverride', { ...phone, deviceScaleFactor: 1, mobile: true });
     try {
-      for (const [path, ready] of [['/', '.tile'], ['/explore?cube=General%20Ledger', 'td[data-r]'], ['/admin', 'table'], ['/model?dimension=Account', '.tree-row'], ['/dashboards?name=Quarter', '.dash-tile']]) {
+      for (const [path, ready] of [['/', '.tile'], ['/explore?cube=General%20Ledger', 'td[data-r]'], ['/admin', 'table'], ['/model?dimension=Account', '.tree-row'], ['/dashboards?name=Quarter', '.dash-tile'], ['/keys', 'main .card']]) {
         await page.goto(path);
         await page.waitFor(`document.querySelector(${quoted(ready)})`, path);
         await page.settled();
