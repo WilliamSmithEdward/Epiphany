@@ -717,6 +717,49 @@ async function exploring() {
     await page.waitFor(`document.querySelector('.pending')?.hidden`, 'the change, saved');
     await checked([]);
   });
+  await step('A change made in a sandbox waits there, marked against the stored value, until it is published', async () => {
+    const cell = 'td[data-r="1"][data-c="1"]';
+    const rent = async (transaction) => (await page.api('POST', '/cells/read', { transaction, cells: [{ cube: 'General Ledger', at: at('Rent', 'Feb') }] })).data.cells[0].value;
+    await page.click('button', 'Stored values');
+    await page.click('.menu [role="menuitem"]', 'New sandbox…');
+    await page.fill('#sandbox-name', 'Plan');
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('.in-sandbox')?.textContent.trim() === 'Plan' && document.querySelector(${quoted(cell)})`, 'the sandbox, worked in');
+    await page.click(cell);
+    await page.waitFor(`document.querySelector(${quoted(cell)}).classList.contains('editable')`, 'the cell to be writable');
+    await page.type('3');
+    await page.waitFor(`document.querySelector('.cell-editor')`, 'the cell\'s editor');
+    await page.type('00');
+    await page.press('Enter');
+    await page.waitFor(`document.querySelector('.pending.sandbox:not([hidden])')?.textContent.includes('Plan changes 1 cell, not yet published')
+      && document.querySelector(${quoted(cell)}).classList.contains('sandboxed')`, 'the change, waiting in the sandbox and marked');
+    // Stored, the rent is as it was; in the sandbox, as typed.
+    const plan = (await page.api('GET', '/sandboxes')).data.find((sandbox) => sandbox.name === 'Plan');
+    const [stored, planned] = [await rent(), await rent(plan.transaction)];
+    expect(stored === 250 && planned === 300, `The rent is ${stored} stored and ${planned} in the sandbox.`);
+    // The stored value beside the sandbox's, struck through.
+    await page.click('button', 'Plan');
+    await page.click('.menu [role="menuitem"]', 'Show stored values beside');
+    await page.waitFor(`document.querySelector(${quoted(`${cell} del.was`)})?.textContent === '250'`, 'the stored value, beside');
+    await page.audit('Working in a sandbox, the stored values beside');
+    // Published, the stored value is the sandbox's, and the sandbox is left empty.
+    await page.click('.pending button', 'Publish');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Published 1 changed cell from Plan to the stored values.'))
+      && !document.querySelector(${quoted(cell)}).classList.contains('sandboxed')`, 'the change, published');
+    const published = await rent();
+    expect(published === 300, `The stored rent is ${published} once the sandbox is published.`);
+    // Deleted, the stored values are worked on again; and the rent as it was, for the steps after.
+    await page.click('button', 'Plan');
+    await page.click('.menu [role="menuitem"]', 'Delete Plan…');
+    await page.click('dialog[open] button', 'Delete');
+    await page.waitFor(`!document.querySelector('.in-sandbox') && [...document.querySelectorAll('button')].some((button) => button.textContent.trim() === 'Stored values')`, 'the stored values, worked on again');
+    const left = (await page.api('GET', '/sandboxes')).data;
+    expect(!left.length, `Sandboxes are left: ${quoted(left)}.`);
+    await page.api('POST', '/cells/write', { cells: [{ cube: 'General Ledger', at: at('Rent', 'Feb'), value: 250 }] });
+    await page.evaluate(`localStorage.removeItem('epiphany.sandbox.compare')`);
+    await page.goto('/explore?cube=General%20Ledger');
+    await page.waitFor(`document.querySelector(${quoted(cell)})?.textContent.trim() === '250'`, 'the rent as it was');
+  });
   await step('The tabs over the grid go along by the arrow keys', async () => {
     await page.click('[role="tab"]', 'Grid');
     await page.press('ArrowRight');
@@ -971,7 +1014,7 @@ async function exploring() {
     await page.fill('#view-name', 'Budget detail');
     expect(await page.evaluate(`!document.querySelector('#view-name').hasAttribute('aria-invalid')`), 'The name stays marked once changed.');
     await page.press('Enter');
-    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('for you alone'))`, 'the view, saved');
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Saved the view “Budget detail”'))`, 'the view, saved');
     const kept = (await page.api('GET', views)).data;
     // The query as typed, laid out over lines as Explore lays it out.
     const asked = (mdx) => mdx?.replace(/\s+/g, ' ').trim();
@@ -998,7 +1041,8 @@ async function exploring() {
     await page.click('.menu [role="menuitem"]', 'Save this query as a view…');
     await page.fill('#view-name', 'Stacked costs');
     await page.press('Enter');
-    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('for you alone'))`, 'the view, saved');
+    // Said by its name: the notice of the view saved a step before may still stand.
+    await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent.includes('Saved the view “Stacked costs”'))`, 'the view, saved');
     const kept = (await page.api('GET', views)).data['Stacked costs'];
     expect(kept?.chart?.kind === 'stacked', `The view was kept as ${quoted(kept)}.`);
     // On the grid as bars again, the view chosen from the list comes as its stacked chart.
