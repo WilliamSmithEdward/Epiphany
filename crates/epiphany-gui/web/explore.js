@@ -937,10 +937,12 @@ class Explorer {
     if (this.view === 'mdx') return this.drawMdx();
     if (this.view === 'chart' && this.result && !this.error) return this.drawChart();
     if (this.error) {
-      // A query written by hand that could not be read says where, to be mended there.
-      const at = this.layout.mdx ? this.error.position : null;
-      const show = at == null ? null : h('button', { class: 'button primary', onclick: () => this.showInQuery(at) }, icon('code', 16), 'Show it in the query');
-      mount(this.output, failure(this.error, () => this.run(), show));
+      // A query written by hand that the server could not run goes back to be mended, where
+      // it says the problem is if it says, rather than run again to fail the same.
+      const mendable = Boolean(this.layout.mdx) && this.error instanceof ApiError && this.error.status === 422;
+      const at = mendable ? this.error.position ?? null : null;
+      const show = mendable ? h('button', { class: 'button primary', onclick: () => this.showInQuery(at) }, icon('code', 16), at == null ? 'Edit the query' : 'Show it in the query') : null;
+      mount(this.output, failure(this.error, mendable ? null : () => this.run(), show));
       mount(this.statusLine);
       return;
     }
@@ -1441,7 +1443,8 @@ class Explorer {
     this.mended = null;
     const said = problem ? h('p', { class: 'error-text', id: 'mdx-problem', role: 'alert' }, problem.message) : null;
     if (problem) {
-      const at = [...editor.value].slice(0, problem.position).join('').length;
+      // Where the server said, or at the end where it said nothing of where.
+      const at = problem.position == null ? editor.value.length : [...editor.value].slice(0, problem.position).join('').length;
       requestAnimationFrame(() => {
         editor.focus();
         editor.setSelectionRange(at, Math.min(at + 1, editor.value.length));

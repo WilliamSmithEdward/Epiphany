@@ -648,6 +648,14 @@ async function exploring() {
     await page.click('button', 'Copy');
     await page.waitFor(`[...document.querySelectorAll('.notice')].some((notice) => notice.textContent === 'Copied.')`, 'the query, copied the older way');
     await page.evaluate(`delete navigator.clipboard`);
+    // A query read but not run, as one of a function there is none of, goes back to be
+    // mended too, with what the server said, and is not offered to be run again.
+    await page.fill('textarea.mdx-editor', 'SELECT {NoSuchFunction([Period].[Jan])} ON COLUMNS FROM [General Ledger]');
+    await page.click('button', 'Run');
+    const back = `[...document.querySelectorAll('.empty button')].find((button) => ['Edit the query', 'Show it in the query'].includes(button.textContent.trim()))`;
+    await page.waitFor(`${back} && ![...document.querySelectorAll('.empty button')].some((button) => button.textContent.trim() === 'Try again')`, 'the query, offered to be mended rather than run again');
+    await page.evaluate(`${back}.click()`);
+    await page.waitFor(`document.querySelector('textarea.mdx-editor') && document.querySelector('#mdx-problem')?.textContent.toLowerCase().includes('nosuchfunction')`, 'the query, with what the server said beneath');
   });
   await step('An MDX query typed in shows what the API answers to it', async () => {
     await page.click('[role="tab"]', 'MDX');
