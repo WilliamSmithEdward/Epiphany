@@ -44,7 +44,7 @@ namespace Epiphany.Excel
         private readonly Dictionary<string, Lazy<HashSet<string>>> held = new Dictionary<string, Lazy<HashSet<string>>>();
 
         /// <summary>Names are compared as the server compares them: ignoring case and spaces.</summary>
-        public static string Key(string name)
+        internal static string Key(string name)
         {
             return new string((name ?? "").Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
         }

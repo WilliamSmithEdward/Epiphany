@@ -5,7 +5,7 @@ namespace Epiphany.Excel
 {
     /// <summary>Just enough reading of a worksheet formula to tell which function it calls and
     /// with which arguments, and to write it out again with one argument changed.</summary>
-    public static class Formula
+    internal static class Formula
     {
         /// <summary>The function, in upper case, and then the text of each argument, of a
         /// formula that is one function call and nothing else. Null for any other formula.</summary>

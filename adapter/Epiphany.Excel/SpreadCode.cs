@@ -13,7 +13,7 @@ namespace Epiphany.Excel
     /// value changes what the cell holds by that percentage, in proportion: "P%10" for a tenth
     /// more.
     /// </summary>
-    public sealed class SpreadCode
+    internal sealed class SpreadCode
     {
         private static readonly Regex Typed = new Regex(
             @"^\s*(LS|LR|P%|P|S|R|C)\s*([+~])?\s*(.*?)\s*$",
