@@ -33,7 +33,7 @@ const MOST_TEXT: usize = 1_000_000;
 /// The words that tell a function how to go about its work. Where one of them stands alone
 /// it is that word, even in a model with a dimension of the same name; the dimension is
 /// then written in brackets with its hierarchy, as `[Desc].[Desc]`.
-const FLAGS: [&str; 17] = [
+const FLAGS: [&str; 18] = [
     "ALL",
     "ASC",
     "DESC",
@@ -49,6 +49,7 @@ const FLAGS: [&str; 17] = [
     "BEFORE_AND_AFTER",
     "SELF_BEFORE_AFTER",
     "LEAVES",
+    "INCLUDEMEMBER",
     "INCLUDEEMPTY",
     "EXCLUDEEMPTY",
 ];
@@ -1168,6 +1169,11 @@ impl<'a> Evaluator<'a> {
                 count(1..=1)?;
                 Ok(Datum::Set(distinct(self.set(&arguments[0], context)?)))
             }
+            // A set's order is kept whatever is asked: Unorder says only that it need not be.
+            "UNORDER" => {
+                count(1..=1)?;
+                Ok(Datum::Set(self.set(&arguments[0], context)?))
+            }
             "HEAD" | "TAIL" => {
                 count(1..=2)?;
                 let mut set = self.set(&arguments[0], context)?;
@@ -1517,75 +1523,7 @@ impl<'a> Evaluator<'a> {
             }
             "DESCENDANTS" => {
                 count(1..=3)?;
-                let member = self.member(&arguments[0], context)?;
-                // How far down: a number of steps, or as far as a level.
-                let (mut distance, mut level) = (None, None);
-                match arguments
-                    .get(1)
-                    .map(|argument| self.evaluate(argument, context))
-                {
-                    Some(Ok(Datum::Level(position, to))) => {
-                        self.of_level(member, position)?;
-                        level = Some(to);
-                    }
-                    Some(steps) => {
-                        distance = Some(to_number(&self.scalar(steps?, context)?)? as usize);
-                    }
-                    None => {}
-                }
-                let which = flag(arguments.get(2)).unwrap_or_else(|| "SELF".to_owned());
-                // Which of the members the flag takes: those before the distance or level,
-                // from the member itself down; those at it; those after it. LEAVES takes the
-                // leaves beneath, wherever they stand.
-                let (before, at, after) = match which.as_str() {
-                    "SELF" => (false, true, false),
-                    "AFTER" => (false, false, true),
-                    "BEFORE" => (true, false, false),
-                    "SELF_AND_AFTER" => (false, true, true),
-                    "SELF_AND_BEFORE" => (true, true, false),
-                    "BEFORE_AND_AFTER" => (true, false, true),
-                    "SELF_BEFORE_AFTER" => (true, true, true),
-                    "LEAVES" => (false, false, false),
-                    _ => return fail(format!("unknown DESCENDANTS flag {which}")),
-                };
-                // Without a distance or a level, the member and everything below it are at
-                // it. Levels count up from the leaves, so what comes after a level has a
-                // lower number.
-                let wanted = |depth: usize, element: &Element| {
-                    if which == "LEAVES" {
-                        return element.children.is_empty();
-                    }
-                    let (above, on, below) = match (distance, level) {
-                        (Some(distance), _) => {
-                            (depth < distance, depth == distance, depth > distance)
-                        }
-                        (_, Some(level)) => (
-                            element.level > level,
-                            element.level == level,
-                            element.level < level,
-                        ),
-                        _ => (false, true, true),
-                    };
-                    (before && above) || (at && on) || (after && below)
-                };
-                let (id, _) = self.element(member)?;
-                let dimension = self.dimension(member.position);
-                let mut found = Vec::new();
-                let mut seen = HashSet::new();
-                let mut pending = vec![(id, 0)];
-                // Parents before children, children in their declared order.
-                while let Some((id, depth)) = pending.pop() {
-                    let element = &dimension.elements[id as usize];
-                    if wanted(depth, element) && seen.insert(id) {
-                        found.push(vec![Member {
-                            position: member.position,
-                            id: Id::Element(id),
-                        }]);
-                    }
-                    let children = element.children.iter().rev();
-                    pending.extend(children.map(|&(child, _)| (child, depth + 1)));
-                }
-                Ok(Datum::Set(found))
+                self.descendants(arguments, context).map(Datum::Set)
             }
             "ANCESTOR" | "ANCESTORS" => {
                 count(2..=2)?;
@@ -1645,6 +1583,10 @@ impl<'a> Evaluator<'a> {
                 Ok(Datum::Bool(
                     above.position == below.position && self.beneath(below, above),
                 ))
+            }
+            "ISSIBLING" => {
+                count(2..=3)?;
+                self.is_sibling(arguments, context).map(Datum::Bool)
             }
             "EXTRACT" => {
                 count(2..=usize::MAX)?;
@@ -2616,6 +2558,96 @@ impl<'a> Evaluator<'a> {
         })
     }
 
+    /// `Descendants(member [, distance | level [, flag]])`: the members beneath a member,
+    /// parents before children, as far down as the distance or level and as the flag says.
+    fn descendants(&self, arguments: &[Expr], context: &Context) -> Evaluated<Vec<Tuple>> {
+        let member = self.member(&arguments[0], context)?;
+        // How far down: a number of steps, or as far as a level.
+        let (mut distance, mut level) = (None, None);
+        match arguments
+            .get(1)
+            .map(|argument| self.evaluate(argument, context))
+        {
+            Some(Ok(Datum::Level(position, to))) => {
+                self.of_level(member, position)?;
+                level = Some(to);
+            }
+            Some(steps) => {
+                distance = Some(to_number(&self.scalar(steps?, context)?)? as usize);
+            }
+            None => {}
+        }
+        let which = flag(arguments.get(2)).unwrap_or_else(|| "SELF".to_owned());
+        // Which of the members the flag takes: those before the distance or level,
+        // from the member itself down; those at it; those after it. LEAVES takes the
+        // leaves beneath, wherever they stand.
+        let (before, at, after) = match which.as_str() {
+            "SELF" => (false, true, false),
+            "AFTER" => (false, false, true),
+            "BEFORE" => (true, false, false),
+            "SELF_AND_AFTER" => (false, true, true),
+            "SELF_AND_BEFORE" => (true, true, false),
+            "BEFORE_AND_AFTER" => (true, false, true),
+            "SELF_BEFORE_AFTER" => (true, true, true),
+            "LEAVES" => (false, false, false),
+            _ => return fail(format!("unknown DESCENDANTS flag {which}")),
+        };
+        // Without a distance or a level, the member and everything below it are at
+        // it. Levels count up from the leaves, so what comes after a level has a
+        // lower number.
+        let wanted = |depth: usize, element: &Element| {
+            if which == "LEAVES" {
+                return element.children.is_empty();
+            }
+            let (above, on, below) = match (distance, level) {
+                (Some(distance), _) => (depth < distance, depth == distance, depth > distance),
+                (_, Some(level)) => (
+                    element.level > level,
+                    element.level == level,
+                    element.level < level,
+                ),
+                _ => (false, true, true),
+            };
+            (before && above) || (at && on) || (after && below)
+        };
+        let (id, _) = self.element(member)?;
+        let dimension = self.dimension(member.position);
+        let mut found = Vec::new();
+        let mut seen = HashSet::new();
+        let mut pending = vec![(id, 0)];
+        // Parents before children, children in their declared order.
+        while let Some((id, depth)) = pending.pop() {
+            let element = &dimension.elements[id as usize];
+            if wanted(depth, element) && seen.insert(id) {
+                found.push(vec![Member {
+                    position: member.position,
+                    id: Id::Element(id),
+                }]);
+            }
+            let children = element.children.iter().rev();
+            pending.extend(children.map(|&(child, _)| (child, depth + 1)));
+        }
+        Ok(found)
+    }
+
+    /// `IsSibling(member, member [, INCLUDEMEMBER])`: whether two members have the same
+    /// parent, or are both at the top. A member is its own sibling only where INCLUDEMEMBER
+    /// says so.
+    fn is_sibling(&self, arguments: &[Expr], context: &Context) -> Evaluated<bool> {
+        let one = self.member(&arguments[0], context)?;
+        let other = self.member(&arguments[1], context)?;
+        let itself = match flag(arguments.get(2)).as_deref() {
+            None => false,
+            Some("INCLUDEMEMBER") => true,
+            Some(word) => return fail(format!("unknown ISSIBLING flag {word}")),
+        };
+        if one.position != other.position {
+            return Ok(false);
+        }
+        let (id, _) = self.element(one)?;
+        let (of, _) = self.element(other)?;
+        Ok((itself || id != of) && self.siblings(other)?.contains(&id))
+    }
     /// `Order(set, expression [, ASC | DESC | BASC | BDESC])`. The first two keep each member
     /// under its parent and order siblings by value; the last two order by value alone.
     fn order(&self, arguments: &[Expr], context: &Context) -> Evaluated<Vec<Tuple>> {

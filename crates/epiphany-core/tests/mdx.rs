@@ -1562,6 +1562,17 @@ fn a_value_is_chosen_case_by_case() {
     assert_eq!(is("IsAncestor([Period].[H1], [Period].[Feb])"), "yes");
     assert_eq!(is("IsAncestor([Period].[Q2], [Period].[Feb])"), "no");
     assert_eq!(is("IsAncestor([Period].[Feb], [Period].[Feb])"), "no");
+    assert_eq!(is("IsSibling([Period].[Jan], [Period].[Feb])"), "yes");
+    assert_eq!(is("IsSibling([Period].[Jan], [Period].[Apr])"), "no");
+    assert_eq!(is("IsSibling([Period].[Jan], [Period].[Jan])"), "no");
+    assert_eq!(
+        is("IsSibling([Period].[Jan], [Period].[Jan], INCLUDEMEMBER)"),
+        "yes"
+    );
+    assert_eq!(
+        columns("Unorder({[Period].[Feb], [Period].[Jan]})"),
+        ["Feb", "Jan"]
+    );
     assert_eq!(text("[Period].DefaultMember.Name"), "H1");
 
     for (mdx, expected) in [

@@ -245,7 +245,7 @@ practice that means:
     (`COLUMNS`, `ROWS`, `PAGES`, `CHAPTERS`, `SECTIONS`) or numbered (`ON 0`, `ON AXIS(1)`).
   - Sets: braces, `.Members`, `.AllMembers`, `.Children`, `.Siblings`, ranges
     (`first : last`), `CrossJoin` and `*`, `Union` and `+`, `Except`, `Intersect`,
-    `Distinct`, `Head`, `Tail`, `Subset`, `.Item`, `TopCount`, `BottomCount`, `Generate`,
+    `Distinct`, `Unorder`, `Head`, `Tail`, `Subset`, `.Item`, `TopCount`, `BottomCount`, `Generate`,
     `Filter`, `Order` (`ASC`, `DESC`, `BASC`, `BDESC`), `Descendants` (distance and
     `SELF`, `AFTER`, `BEFORE`, `SELF_AND_AFTER`, `SELF_AND_BEFORE`, `BEFORE_AND_AFTER`,
     `SELF_BEFORE_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and
@@ -278,7 +278,7 @@ practice that means:
   - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `XOR` / `NOT`,
     `IS` (the same member, tuple or level, or `NULL`), `IIF`, `CASE` in both its forms
     (`CASE WHEN condition THEN ...` and `CASE value WHEN other THEN ...`, with or without
-    `ELSE`), `NULL`, `IsAncestor`, `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`,
+    `ELSE`), `NULL`, `IsAncestor`, `IsSibling` (and `INCLUDEMEMBER`), `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`,
     `Aggregate`, `Avg`, `Min`, `Max`, `Count` and `.Count`, tuples as cell references,
     `.Name`, `.UniqueName`, `.Value`, and `.Properties("name")` for an attribute or for
     `MEMBER_NAME`, `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`,
