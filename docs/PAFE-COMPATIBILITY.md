@@ -95,7 +95,7 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 
 | Case | Adapter | PAfE |
 | --- | --- | --- |
-| A double click on a cell whose formula is one `SUBNM` call, or **Choose element** in the Epiphany menu | A window lists the elements of the formula's subset, shown by the alias if the formula names one. Typing narrows the list. The element chosen is written into the formula by name | PAfE opens its set editor; unverified |
+| A double click on a cell whose formula is one `SUBNM` call, or **Choose element** in the Epiphany menu | A window lists the elements of the formula's subset, shown by the alias if the formula names one. Typing narrows the list, and the window says how many it shows; Up, Down, Page Up and Page Down move the choice. A subset of a million elements is listed and narrowed at once. The element chosen is written into the formula by name | PAfE opens its set editor; unverified |
 | The dimension, subset or alias given as a reference or a formula | Worked out by Excel first | Unverified |
 | A cell whose formula is anything else, or whose subset cannot be listed | The double click edits the cell, as in any worksheet | Unverified |
 

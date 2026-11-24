@@ -55,12 +55,12 @@ if ($Drive) {
             $form = Find 'Choose an element'
             $all = $form.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
             $box = @($all | Where-Object { $_.Current.ClassName -like '*.EDIT.*' })[0]
-            $list = @($all | Where-Object { $_.Current.ClassName -like '*.LISTBOX.*' })[0]
-            # LB_GETCOUNT: how many elements the list holds, before and after narrowing it.
-            $before = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x018B, [IntPtr]::Zero, $null)
+            $list = @($all | Where-Object { $_.Current.ClassName -like '*.SysListView32.*' })[0]
+            # LVM_GETITEMCOUNT: how many elements the list holds, before and after narrowing it.
+            $before = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x1004, [IntPtr]::Zero, $null)
             [void][Native.Control]::SendMessage([IntPtr]$box.Current.NativeWindowHandle, 0x000C, [IntPtr]::Zero, 'ma')
             Start-Sleep -Milliseconds 300
-            $after = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x018B, [IntPtr]::Zero, $null)
+            $after = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x1004, [IntPtr]::Zero, $null)
             Add-Content $Drive "list narrowed from $before to $after"
             Press $form 'OK'
             return

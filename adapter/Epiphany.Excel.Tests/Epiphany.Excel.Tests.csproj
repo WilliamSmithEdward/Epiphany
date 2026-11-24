@@ -11,6 +11,7 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
     <Reference Include="System.Net.Http" />
+    <Reference Include="System.Windows.Forms" />
     <ProjectReference Include="..\Epiphany.Excel\Epiphany.Excel.csproj" />
   </ItemGroup>
 
