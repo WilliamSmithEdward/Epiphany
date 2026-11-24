@@ -32,6 +32,15 @@ function ticks(low, high, count = 5) {
   return out;
 }
 
+/**
+ * The colour of a bar of the series coloured `index`: that of the tone `tone(value)` gives,
+ * the tone of the first of the view's rules the value meets, or else the series'.
+ */
+const paint = (index, value, tone) => {
+  const rule = tone?.(value);
+  return rule ? `tone-${rule}` : `c${index}`;
+};
+
 /** A name cut to `most` characters, marked where it was cut. */
 const short = (name, most = 18) => (name.length > most ? `${name.slice(0, most - 1)}…` : name);
 
@@ -121,11 +130,13 @@ function ringSlices(data) {
  * 'ranked' or 'donut', `height` pixels high, or as high as its place where `fill`. Where it
  * has axes, the series `lines` names are drawn as lines over the rest, and those `second`
  * names as lines against a scale of their own on the right. `labels`
- * writes each value on its mark, and `format` writes a value as the view has it. `pick` is
+ * writes each value on its mark, and `format` writes a value as the view has it. `tone(value)`
+ * gives the tone a value takes by the view's rules, if any, which each bar of the only series
+ * drawn as bars takes for its colour. `pick` is
  * called with the series and category of a mark clicked, or chosen with Enter, and `picked`
  * names the one picked, the others fading. `fresh`: the values are new, and come in moving.
  */
-export function chart(data, kind, { height = 380, fill = false, labels = false, format = formatNumber, pick = null, picked = null, fresh = true, lines = [], second = [] } = {}) {
+export function chart(data, kind, { height = 380, fill = false, labels = false, format = formatNumber, tone = null, pick = null, picked = null, fresh = true, lines = [], second = [] } = {}) {
   const ring = kind === 'donut';
   const axes = !ring && kind !== 'ranked';
   const beside = new Set(axes ? second : []);
@@ -196,7 +207,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
       marks.push(shapeElement);
       return shapeElement;
     };
-    const context = { svg, width, height: tall, data, labels, format, mark, colour: (index) => parts[index]?.colour ?? index % COLOURS, shown: (index) => !hidden.has(index), beside, over };
+    const context = { svg, width, height: tall, data, labels, format, mark, colour: (index) => parts[index]?.colour ?? index % COLOURS, shown: (index) => !hidden.has(index), beside, over, tone };
     let said;
     if (ring) said = drawRing(context, slices);
     else if (kind === 'ranked') said = drawRanked(context);
@@ -214,7 +225,7 @@ export function chart(data, kind, { height = 380, fill = false, labels = false, 
   const say = (target, x, y) => {
     const [value, name, detail] = target.dataset.tip.split('\n');
     // The series named beside its colour, as the legend has it.
-    const colour = [...target.classList].find((each) => /^c\d+$/.test(each));
+    const colour = [...target.classList].find((each) => /^(c\d+|tone-\w+)$/.test(each));
     tip.replaceChildren(h('strong', {}, value),
       h('span', { class: 'tip-series' }, colour ? h('span', { class: `swatch ${colour}`, 'aria-hidden': 'true' }) : null, name),
       detail ? h('span', { class: 'muted' }, detail) : null);
@@ -320,13 +331,16 @@ function stepWriter(series) {
  * series `over` names as lines over them; and those `beside` names as lines against a scale
  * of their own on the right, unless they are all there are.
  */
-function drawAxes({ svg, width, height, data, labels, format, mark, colour, shown, beside, over }, kind) {
+function drawAxes({ svg, width, height, data, labels, format, mark, colour, shown, beside, over, tone }, kind) {
   const all = data.series.slice(0, MOST_SERIES).map((entry, index) => ({ ...entry, index })).filter((entry) => shown(entry.index));
   const right = all.filter((entry) => beside.has(entry.name));
   const apart = right.length > 0 && right.length < all.length;
   const left = apart ? all.filter((entry) => !beside.has(entry.name)) : all;
   const lined = left.filter((entry) => over.has(entry.name));
   const series = left.filter((entry) => !over.has(entry.name));
+  // The only series drawn as bars, or stacked, takes its view's rules' colours bar by bar:
+  // with more, colour tells the series apart.
+  const toned = series.length === 1 ? tone : null;
   const categories = data.categories;
 
   // The range the values reach: stacks add up their positives and negatives apart.
@@ -431,7 +445,7 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
         if (value > 0) up = to;
         else down = to;
         const box = { x: x(c) + (band - thick) / 2, y: Math.min(y(from), y(to)), width: thick, height: Math.max(Math.abs(y(to) - y(from)), 1) };
-        svg.append(mark(h('rect', { class: `bar c${colour(entry.index)}`, ...box }), { s: entry.index, c, lines: tipOf(entry, c, value) }));
+        svg.append(mark(h('rect', { class: `bar ${paint(colour(entry.index), value, toned)}`, ...box }), { s: entry.index, c, lines: tipOf(entry, c, value) }));
         if (labels && box.height > 14) label(said(entry, c), box.x + thick / 2, box.y + box.height / 2 + 4);
       }
     });
@@ -444,7 +458,7 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
         if (!value) return;
         const left = x(c) + (band - group) / 2 + s * each + 1;
         svg.append(mark(h('rect', {
-          class: `bar c${colour(entry.index)}`,
+          class: `bar ${paint(colour(entry.index), value, toned)}`,
           x: left,
           y: Math.min(y(0), y(value)),
           width: Math.max(each - 2, 1),
@@ -470,7 +484,7 @@ function drawAxes({ svg, width, height, data, labels, format, mark, colour, show
 }
 
 /** The categories as bars across, the largest of the first series shown at the top. */
-function drawRanked({ svg, width, height, data, labels, format, mark, colour, shown }) {
+function drawRanked({ svg, width, height, data, labels, format, mark, colour, shown, tone }) {
   const entry = data.series.slice(0, MOST_SERIES).map((each, index) => ({ ...each, index })).find((each) => shown(each.index));
   const ranked = data.categories.map((name, c) => ({ name, c, value: entry?.values[c] })).filter((item) => item.value !== null && item.value !== undefined)
     .sort((a, b) => b.value - a.value);
@@ -490,7 +504,7 @@ function drawRanked({ svg, width, height, data, labels, format, mark, colour, sh
   ranked.forEach((item, rank) => {
     const top = margin.top + band * rank + (band - thick) / 2;
     if (band >= 11) svg.append(h('text', { class: 'tick', x: margin.left - 8, y: top + thick / 2 + 4, 'text-anchor': 'end' }, short(item.name, 28)));
-    svg.append(mark(h('rect', { class: `bar c${colour(entry.index)}`, x: Math.min(x(0), x(item.value)), y: top, width: Math.max(Math.abs(x(item.value) - x(0)), 1), height: thick, rx: 2 }),
+    svg.append(mark(h('rect', { class: `bar ${paint(colour(entry.index), item.value, tone)}`, x: Math.min(x(0), x(item.value)), y: top, width: Math.max(Math.abs(x(item.value) - x(0)), 1), height: thick, rx: 2 }),
       { s: entry.index, c: item.c, lines: [entry.texts?.[item.c] ?? format(item.value), item.name, `${rank + 1} of ${ranked.length}`] }));
     if (labels && band >= 11) svg.append(h('text', { class: 'value', x: x(Math.max(item.value, 0)) + 6, y: top + thick / 2 + 4 }, entry.texts?.[item.c] ?? compact.format(item.value)));
   });

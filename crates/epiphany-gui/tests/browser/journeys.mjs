@@ -754,6 +754,40 @@ async function exploring() {
     })()`);
     expect(!crowding.length, `Along a chart's bottom: ${crowding.join('; ')}.`);
   });
+  await step('A chart\'s only series of bars takes its view\'s rules\' colours bar by bar, and several series keep their own', async () => {
+    // A variance, green at nought or more and red below, alone, ranked, beside a budget drawn
+    // as a line, and beside a budget drawn as bars too.
+    const painted = await page.evaluate(`(async () => {
+      const { chart } = await import('/chart.js');
+      const tone = (value) => (value >= 0 ? 'good' : 'bad');
+      const categories = ['Q1', 'Q2', 'Q3', 'Q4'];
+      const variance = { name: 'Variance', tuple: [], values: [120, -40, 75, -10], texts: null };
+      const budget = { name: 'Budget', tuple: [], values: [100, 90, 80, 70], texts: null };
+      const drawn = async (series, kind, lines = []) => {
+        const box = document.body.appendChild(document.createElement('div'));
+        box.style.width = '500px';
+        const element = box.appendChild(chart({ categories, tuples: categories.map(() => []), series }, kind, { fresh: false, tone, lines }));
+        let bars = [];
+        for (let tries = 0; tries < 100 && !bars.length; tries += 1) {
+          await new Promise((done) => requestAnimationFrame(done));
+          bars = [...element.querySelectorAll('.bar')];
+        }
+        const colours = bars.map((bar) => [...bar.classList].find((each) => /^(c\\d+|tone-\\w+)$/.test(each))).join(' ');
+        box.remove();
+        return colours;
+      };
+      return {
+        alone: await drawn([variance], 'bars'),
+        ranked: await drawn([variance], 'ranked'),
+        lined: await drawn([variance, budget], 'bars', ['Budget']),
+        both: await drawn([variance, budget], 'bars'),
+      };
+    })()`);
+    expect(painted.alone === 'tone-good tone-bad tone-good tone-bad', `The variance's bars are coloured ${painted.alone}.`);
+    expect(painted.ranked === 'tone-good tone-good tone-bad tone-bad', `The variance's ranked bars are coloured ${painted.ranked}.`);
+    expect(painted.lined === painted.alone, `Beside a budget drawn as a line, the variance's bars are coloured ${painted.lined}.`);
+    expect(painted.both === 'c0 c1 c0 c1 c0 c1 c0 c1', `Beside a budget drawn as bars, the bars are coloured ${painted.both}.`);
+  });
   await step('A view kept for oneself is listed apart, and taken away', async () => {
     const views = '/cubes/General%20Ledger/private-views';
     await page.click('button', 'Views');
@@ -1173,6 +1207,9 @@ async function exploring() {
     expect(put.status === 200, `The view's rule was not kept: ${quoted(put.data)}`);
     await page.goto('/dashboards?name=Quarter');
     await page.waitFor(`document.querySelector('.figure-value.tone-good')`, 'the key figure, in the rule\'s colour');
+    // The bars, of many series, keep their series' colours.
+    await page.waitFor(`document.querySelector('.dash-tile[data-index="1"] .bar')`, 'the bars');
+    expect(await page.evaluate(`!document.querySelector('.dash-tile .bar[class*="tone-"]')`), 'Bars of many series took their view\'s rule\'s colour.');
   });
   await step('A dashboard is presented over the whole screen, the arrows going on to the next, and Escape ends it', async () => {
     const based = (await page.api('GET', '/model')).data.version;

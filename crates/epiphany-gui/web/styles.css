@@ -574,6 +574,11 @@ select.cell-editor { appearance: none; text-align: left; padding-right: 26px; ba
 .chart-tip strong { font-size: var(--text-l); font-variant-numeric: tabular-nums; }
 .chart-tip .tip-series { display: flex; align-items: center; gap: 6px; }
 .chart-tip .swatch { flex: none; }
+/* A bar in the tone of the first of its view's rules it meets, and its tip's swatch. */
+.chart .bar.tone-good, .chart-tip .swatch.tone-good { fill: var(--good); background: var(--good); }
+.chart .bar.tone-bad, .chart-tip .swatch.tone-bad { fill: var(--bad); background: var(--bad); }
+.chart .bar.tone-warn, .chart-tip .swatch.tone-warn { fill: var(--warn); background: var(--warn); }
+.chart .bar.tone-accent, .chart-tip .swatch.tone-accent { fill: var(--accent); background: var(--accent); }
 .c0 { fill: var(--c0); stroke: var(--c0); background: var(--c0); } .c1 { fill: var(--c1); stroke: var(--c1); background: var(--c1); }
 .c2 { fill: var(--c2); stroke: var(--c2); background: var(--c2); } .c3 { fill: var(--c3); stroke: var(--c3); background: var(--c3); }
 .c4 { fill: var(--c4); stroke: var(--c4); background: var(--c4); } .c5 { fill: var(--c5); stroke: var(--c5); background: var(--c5); }

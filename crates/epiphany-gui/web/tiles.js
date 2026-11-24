@@ -103,6 +103,7 @@ export function present(result, tile, view, { pick = null, picked = null, fresh 
     lines: tile.lines ?? [],
     second: tile.second_axis ?? [],
     format: (value) => formatValue(value, format),
+    tone: view?.highlights?.rules?.length ? (value) => toneOf(view.highlights, value) : null,
     pick: pick && (({ series, category }) => pick([...data.series[series].tuple, ...data.tuples[category]], `s:${series}|c:${category}`)),
     picked: at ? { series: Number(at[1]), category: Number(at[2]) } : null,
     fresh,

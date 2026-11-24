@@ -11,7 +11,7 @@ import { askDrawn, AXES, CHARTS, KINDS } from './tiles.js';
 import { editSet } from './sets.js';
 import { choices, copyText, dialog, download, formatValue, h, icon, invalid, menu, MOD, mount, notify, parseNumber, refocus, SCALES, splitter, textWidths, working } from './ui.js';
 import { comments } from './comments.js';
-import { grid } from './grid.js';
+import { grid, toneOf } from './grid.js';
 import { sandboxes } from './sandboxes.js';
 import { writeback } from './writeback.js';
 
@@ -1032,7 +1032,13 @@ class Explorer {
         h('button', { class: 'button small quiet', 'aria-pressed': String(Boolean(settings.labels)), onclick: () => set({ labels: !settings.labels }) }, icon('hash', 14), 'Values'),
         names.length > 1 ? h('button', { class: 'button small quiet', title: 'How its series are drawn', onclick: drawnAs }, icon('explore', 14), 'Series…') : null),
       plotted
-        ? chart(data, settings.kind, { labels: settings.labels, lines: settings.lines, second: settings.second, format: (value) => formatValue(value, this.layout.format) })
+        ? chart(data, settings.kind, {
+          labels: settings.labels,
+          lines: settings.lines,
+          second: settings.second,
+          format: (value) => formatValue(value, this.layout.format),
+          tone: this.layout.highlights?.rules?.length ? (value) => toneOf(this.layout.highlights, value) : null,
+        })
         : empty('chart', 'Nothing to chart', 'The result has no numbers. Choose other members, or show empty rows.')));
   }
 
