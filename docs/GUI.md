@@ -175,7 +175,8 @@ only way to do something, and modal dialogs where a side panel would keep the da
   matches come first, the words typed marked in them, and, with nothing typed, the commands
   chosen lately.
 - **As easy at 500 cubes as at 5.** Wherever one is chosen among many, a cube, a view, a
-  dashboard, a dimension, a user or a filter, it is found by typing, the best first and those
+  dashboard, a dimension, a user, a filter or an earlier version of the model, one kept at
+  every save, it is found by typing, the best first and those
   chosen lately first, in a list that draws only the rows in view: a model of 500 cubes and
   10,000 dimensions opens the palette, the model's list or the overview as fast as one of
   five. A handful still stand as cards, tabs, menus and choices; past a dozen, a list to find

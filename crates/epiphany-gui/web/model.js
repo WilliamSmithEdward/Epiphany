@@ -200,20 +200,23 @@ class ModelPage {
       return;
     }
     if (!earlier) return;
-    const list = h('ul', { class: 'history-list' }, earlier.length
-      ? earlier.map((kept) => h('li', {},
-        h('span', { class: 'grow' }, h('strong', {}, `Version ${kept.version}`), kept.name !== String(kept.version) ? h('span', { class: 'muted' }, ` (${kept.name})`) : null),
-        h('span', { class: 'muted' }, kept.saved ? when(kept.saved) : null),
-        h('button', {
-          class: 'button small',
-          type: 'button',
-          // Each row's button says which version it is for, heard apart from the others, and
-          // begins with the words shown, which speech input says to press it.
-          'aria-label': `Compare and restore version ${kept.version}…`,
-          onclick: (event) => this.compare(kept, event.currentTarget),
-        }, 'Compare and restore…')))
-      : h('li', { class: 'muted' }, 'No earlier versions are kept yet: each change to the model keeps the one it replaces.'));
-    await dialog({ title: 'Earlier versions of the model', confirm: 'Close', cancel: null, body: list });
+    // One is kept at every save: however many, they are listed newest first, drawn as they
+    // are seen, and found by typing a version's number. Each is compared, and restored, as
+    // it is chosen.
+    const found = earlier.length
+      ? finder({
+        items: earlier.map((kept) => ({ label: `Version ${kept.version}${kept.name === String(kept.version) ? '' : ` (${kept.name})`}`, kept })),
+        label: 'Find a version',
+        draw: (item, words) => [
+          h('span', { class: 'grow' }, marked(item.label, words)),
+          item.kept.saved ? h('span', { class: 'finder-detail' }, when(item.kept.saved)) : null,
+          h('span', { class: 'history-action' }, 'Compare and restore…'),
+        ],
+        choose: (item) => this.compare(item.kept, found.element.querySelector('.finder-item.active')),
+      })
+      : null;
+    const body = found?.element ?? h('p', { class: 'muted' }, 'No earlier versions are kept yet: each change to the model keeps the one it replaces.');
+    await dialog({ title: 'Earlier versions of the model', confirm: 'Close', cancel: null, body });
   }
 
   /** Shows what restoring an earlier model would change, and restores it if asked to. */

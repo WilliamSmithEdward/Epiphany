@@ -1293,6 +1293,9 @@ body:has(.dashboard.presenting) :is(.bar, .nav) { display: none; }
 .history-list li > * { white-space: nowrap; }
 .history-list li:hover { background: var(--surface-2); }
 .history-list .grow { flex: 1; }
+/* What choosing an earlier version does, said on the one pointed at or that the keys are on. */
+.history-action { flex: none; font-size: var(--text-s); color: var(--accent-text); opacity: 0; transition: opacity .12s; }
+.finder-item:hover .history-action, .finder:focus-within .finder-item.active .history-action { opacity: 1; }
 
 /* ---- Comments ---- */
 
@@ -1338,7 +1341,9 @@ html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height
 .output > .loading { padding: var(--s5); }
 /* A button at work: after a moment its label gives way to a spinner. */
 .button[aria-busy="true"] { position: relative; pointer-events: none; animation: hush 0s .15s both; }
-.button[aria-busy="true"]::after { content: ""; position: absolute; inset: 0; margin: auto; width: 14px; height: 14px; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite, appear .1s .15s both; }
+.button[aria-busy="true"]::after, .finder-item[aria-busy="true"] .history-action::after { content: ""; position: absolute; inset: 0; margin: auto; width: 14px; height: 14px; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite, appear .1s .15s both; }
+/* An earlier version being compared: its action a turning circle until the comparison comes. */
+.finder-item[aria-busy="true"] .history-action { position: relative; opacity: 1; color: transparent; }
 .button.primary[aria-busy="true"]::after { border-color: color-mix(in oklab, var(--on-accent) 40%, transparent); border-top-color: var(--on-accent); }
 .button.danger[aria-busy="true"]::after { border-top-color: var(--bad); }
 .chip-main[aria-busy="true"] { opacity: .6; pointer-events: none; }

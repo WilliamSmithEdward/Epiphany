@@ -1857,7 +1857,7 @@ async function changingTheModel() {
   });
   await step('An earlier version of the model is compared with the model as it is', async () => {
     await page.click('button', 'Earlier versions of the model');
-    await page.click('dialog[open] .history-list button');
+    await page.click('dialog[open] .finder-item');
     // The newest earlier version is the model before FR was added: Entity alone differs.
     await page.waitFor(`document.querySelector('dialog[open] .plain-list')?.textContent === 'Dimensions put back as they were: Entity'`, 'the comparison');
     await page.press('Escape');
