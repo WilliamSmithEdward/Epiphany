@@ -9,6 +9,1065 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/admin/audit": {
+      "get": {
+        "summary": "What the audit records, the newest first: each view of the server as another user, and\neach API key made or revoked, by whom and when. For administrators.",
+        "operationId": "read_audit",
+        "parameters": [
+          {
+            "name": "until",
+            "in": "path",
+            "description": "Only entries until this time, in seconds since 1970.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "skip",
+            "in": "path",
+            "description": "Pass over this many of the newest first, as `GET /admin/changes` does.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "most",
+            "in": "path",
+            "description": "At most this many entries, the newest; 100 if not given, and never more than 1,000 at\na time.",
+            "required": true,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What the audit records",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuditEntry"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The audit could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/changes": {
+      "get": {
+        "summary": "The changes saved to the cells of every cube, or of one, the newest first: who made each,\nwhen, to which cell, from what to what. Narrowed by cube, by user, and by time.",
+        "operationId": "list_changes",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "query",
+            "description": "Only changes to this cube.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user",
+            "in": "query",
+            "description": "Only changes made by this user, in any case.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "description": "Only changes made from this time on, in seconds since 1970.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "until",
+            "in": "query",
+            "description": "Only changes made until this time, in seconds since 1970.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "skip",
+            "in": "query",
+            "description": "Pass over this many of the newest first. Asked until the time of the oldest change\ngiven, passing over as many of that time as were given, the next are given, however\nmany share a time.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "most",
+            "in": "query",
+            "description": "At most this many, the newest: 100 unless given, and never more than 1,000 at a time.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The changes, the newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown cube, or the query is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/models": {
+      "get": {
+        "summary": "The models kept from before the current one, newest first. One is restored with\n`POST /admin/models/{name}/restore`, which makes it the newest version. For administrators.",
+        "operationId": "list_earlier_models",
+        "responses": {
+          "200": {
+            "description": "The earlier models kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EarlierModel"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/models/{name}": {
+      "get": {
+        "summary": "A model kept from before the current one, with the version it was. For administrators.",
+        "operationId": "get_earlier_model",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name it is kept under, as the list of earlier models gives it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The earlier model",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelView"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No earlier model is kept under that name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The kept model could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/models/{name}/changes": {
+      "get": {
+        "summary": "What restoring an earlier model would change: the dimensions, cubes and dashboards it\nbrings back, takes away and puts back as they were, by name, so that neither model is\nsent, however large. For administrators.",
+        "operationId": "earlier_model_changes",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name it is kept under, as the list of earlier models gives it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "What restoring it would change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Restoring"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No earlier model is kept under that name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The kept model could not be read",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/models/{name}/restore": {
+      "post": {
+        "summary": "Makes an earlier model the current one again, as its newest version: the one it replaces\nis kept among the earlier models, so that this too can be undone, and stored cells that no\nlonger fit are removed. The model is read where it is kept rather than sent, however large.\nFor administrators.",
+        "operationId": "restore_earlier_model",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The name it is kept under, as the list of earlier models gives it",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Restore"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The earlier model is the current one",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelUpdate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No earlier model is kept under that name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale version, or a transaction holds a lock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The kept model could not be read, or the change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/status": {
+      "get": {
+        "summary": "The state of the server: the cells each cube stores, what it keeps on disk, its open\nsessions and transactions, and how long it has run. For administrators.",
+        "operationId": "server_status",
+        "responses": {
+          "200": {
+            "description": "The state of the server",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/transactions": {
+      "get": {
+        "summary": "The open transactions, the longest idle first. One is ended with\n`POST /transactions/{id}/rollback`. For administrators.",
+        "operationId": "list_transactions",
+        "responses": {
+          "200": {
+            "description": "The open transactions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TransactionInfo"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users": {
+      "get": {
+        "summary": "The users, with their roles and how many sessions each has open. For administrators.",
+        "operationId": "list_users",
+        "responses": {
+          "200": {
+            "description": "The users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{name}": {
+      "put": {
+        "summary": "Adds a user, or changes one's role, cube roles or password. It takes effect at once:\nthe user's open sessions hold the new roles from their next request. For administrators.",
+        "operationId": "put_user",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The user, ignoring case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "The user was saved"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users, so none can be added while it runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A new user has no password, the change would leave no administrator, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Removes a user and ends their sessions. The last administrator cannot be removed. For\nadministrators.",
+        "operationId": "delete_user",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The user, ignoring case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The user was removed"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no such user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "It would leave no administrator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{name}/keys/{id}": {
+      "delete": {
+        "summary": "Revokes one of a user's API keys: it stops working at once. For administrators.",
+        "operationId": "revoke_users_key",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The user, ignoring case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The key's id, which follows epk_ at its start",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The key was revoked"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no such user, or they have no such key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/users/{name}/sessions": {
+      "delete": {
+        "summary": "Ends every session of a user, who must sign in again. For administrators.",
+        "operationId": "end_sessions",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The user, ignoring case",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The sessions were ended",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ended"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no such user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/admin/view-as": {
+      "post": {
+        "summary": "Starts a view of the server as another user has it: a session of theirs that may only\nread what they may read, and none of their sandboxes, naming the administrator viewing.\nIt is recorded in the audit first. Sign out of it as of any session. For administrators.",
+        "operationId": "view_as",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewAsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The view's session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "There is no such user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The view could not be recorded, so it is not given",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cells/detail": {
+      "post": {
+        "summary": "Writes a leaf cell's supporting detail, the lines its value is the sum of, and the sum to\nthe cell, as one write. A value written to the cell plainly later takes the detail away,\nfor its lines no longer add up to it; `POST /cells/explain` gives a cell's detail.",
+        "operationId": "write_detail",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DetailRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another transaction holds a lock",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The cell cannot be written, the lines are not a detail it can have, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/cells/explain": {
       "post": {
         "summary": "Says how each cell comes by its value: stored, calculated by a rule or added up, whether\nit can be written, and whether it is fed. A cell that cannot be explained reports its own\nerror.",
@@ -35,7 +1094,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -56,6 +1115,74 @@
           },
           "422": {
             "description": "The request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cells/history": {
+      "post": {
+        "summary": "The changes committed to a cell, the newest first: when, by whom, and from what to what.\nThe history is read after the database is let go, so that a long one holds up nobody.",
+        "operationId": "cell_history",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HistoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The cell's changes, the newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HistoryResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No such cell, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The history could not be read",
             "content": {
               "application/json": {
                 "schema": {
@@ -93,7 +1220,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -151,7 +1278,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -232,7 +1359,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -294,33 +1421,54 @@
         }
       }
     },
-    "/cubes/{cube}/feeders/check": {
+    "/cubes/{cube}/cells": {
       "get": {
-        "summary": "Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's\nconsolidations therefore leave out. It works every calculated leaf out, so it is slow on\na large cube. At most a hundred cells are returned; none means the feeders are complete\nfor the data held, or the cube is not fed.",
-        "operationId": "check_feeders",
+        "summary": "Lists the cells a cube stores: its leaf cells that hold a value, with neither totals nor\ncells a rule calculates. They come in a fixed order, so the whole can be taken a page at\na time, and what comes out can be written back with `POST /cells/write`, to this server or\nanother.",
+        "operationId": "stored_cells",
         "parameters": [
           {
             "name": "cube",
             "in": "path",
+            "description": "Cube name, ignoring case and spaces",
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "description": "How many stored cells to pass over first. Zero unless given.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "The most cells to return. Ten thousand unless given.",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
             }
           }
         ],
         "responses": {
           "200": {
-            "description": "The cells found",
+            "description": "The cells of the page",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/FeederCheck"
+                  "$ref": "#/components/schemas/StoredCells"
                 }
               }
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -340,7 +1488,524 @@
             }
           },
           "422": {
+            "description": "Unknown cube",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cubes/{cube}/comments": {
+      "get": {
+        "summary": "The comments on a cube's cells.",
+        "operationId": "list_comments",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The comments, the oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comments"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown cube",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Pins a comment to a cell, signed by its author. Takes a user who may write to the cube.",
+        "operationId": "add_comment",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommentPost"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The comment as kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Comment"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown cube",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unknown cell, a comment empty or too long, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The comment could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cubes/{cube}/comments/{id}": {
+      "delete": {
+        "summary": "Takes a comment away: its author may, and an administrator.",
+        "operationId": "remove_comment",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Taken away"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown cube or comment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cubes/{cube}/feeders/check": {
+      "get": {
+        "summary": "Looks for leaf cells that a rule gives a value but no feeder feeds, which a fed cube's\nconsolidations therefore leave out. It works every calculated leaf out, so it is slow on\na large cube. It stops at the first hundred it finds, saying where in `next`, to be given\nas `after` to go on from there; none found means the feeders are complete for the data\nheld, or the cube is not fed.",
+        "operationId": "check_feeders",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "after",
+            "in": "path",
+            "description": "Where an earlier check stopped, as its `next` said: the check goes on from there.",
+            "required": true,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The cells found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FeederCheck"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "`after` is not a place the check stopped at",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
             "description": "Unknown cube, or a rule failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cubes/{cube}/private-views": {
+      "get": {
+        "summary": "The signed-in user's own views of a cube, by name: queries saved for them alone, beside\nthe cube's views, which everybody sees. A view as the user sees none of them.",
+        "operationId": "list_private_views",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "description": "Cube name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user's views of the cube",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/ViewDef"
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown cube, or a server without users, which has no views of anybody's own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/cubes/{cube}/private-views/{name}": {
+      "put": {
+        "summary": "Saves a view of a cube for the signed-in user alone, in place of one of theirs of the\nsame name, case and spaces aside. Its query is run first, as theirs: it must select from\nthe cube, and they must be able to read what it reads. Each user's views may take 4 MiB.",
+        "operationId": "put_private_view",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The view's name, up to 120 characters",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ViewDef"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown cube, or a server without users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The query fails or selects from another cube, the name will not do, or the user's views would take too much room",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The view could not be kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Takes one of the signed-in user's own views away; of a cube that is gone, too.",
+        "operationId": "delete_private_view",
+        "parameters": [
+          {
+            "name": "cube",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Taken away"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user has no such view, or the server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The views could not be kept",
             "content": {
               "application/json": {
                 "schema": {
@@ -386,7 +2051,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -455,7 +2120,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -522,7 +2187,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -588,7 +2253,7 @@
           },
           {
             "name": "based_on",
-            "in": "path",
+            "in": "query",
             "description": "The model version the removal was decided from.",
             "required": true,
             "schema": {
@@ -610,7 +2275,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -672,6 +2337,408 @@
         }
       }
     },
+    "/dashboards/{name}": {
+      "put": {
+        "summary": "Replaces one dashboard, or adds it if the model has none of that name. Every tile must\nshow a view the cube has. Dashboards are kept with the model, under its version.",
+        "operationId": "put_dashboard",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The dashboard to replace, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DashboardPut"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The dashboard was replaced or added",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelUpdate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A tile shows no view the cube has, or the request body is malformed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Removes one dashboard.",
+        "operationId": "delete_dashboard",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Dashboard name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "based_on",
+            "in": "query",
+            "description": "The model version the removal was decided from.",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dashboard was removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelUpdate"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dashboard",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Stale version",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dimensions/{dimension}/private-subsets": {
+      "get": {
+        "summary": "The signed-in user's own subsets of a dimension, by name: lists of members kept for them\nalone, beside the dimension's subsets, which everybody sees. A member since taken out of\nthe dimension is left out. A view as the user sees none of them.",
+        "operationId": "list_private_subsets",
+        "parameters": [
+          {
+            "name": "dimension",
+            "in": "path",
+            "description": "Dimension name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user's subsets of the dimension, each its members' names in order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "propertyNames": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dimension, or a server without users, which has no subsets of anybody's own",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dimensions/{dimension}/private-subsets/{name}": {
+      "put": {
+        "summary": "Saves a subset of a dimension for the signed-in user alone, in place of one of theirs of\nthe same name, case and spaces aside. Each member must be the dimension's, by name or\nalias. Each user's subsets may take 4 MiB.",
+        "operationId": "put_private_subset",
+        "parameters": [
+          {
+            "name": "dimension",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "description": "The subset's name, up to 120 characters",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnSubset"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Saved"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dimension, or a server without users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A member is not the dimension's, there are none, the name will not do, or the user's subsets would take too much room",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The subset could not be kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "summary": "Takes one of the signed-in user's own subsets away; of a dimension that is gone, too.",
+        "operationId": "delete_private_subset",
+        "parameters": [
+          {
+            "name": "dimension",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Taken away"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user has no such subset, or the server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The subsets could not be kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/dimensions/{name}": {
       "get": {
         "summary": "One dimension, with each element's level, parents, children and attributes.",
@@ -699,7 +2766,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -766,7 +2833,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -832,7 +2899,7 @@
           },
           {
             "name": "based_on",
-            "in": "path",
+            "in": "query",
             "description": "The model version the removal was decided from.",
             "required": true,
             "schema": {
@@ -854,7 +2921,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -916,6 +2983,330 @@
         }
       }
     },
+    "/dimensions/{name}/definition": {
+      "get": {
+        "summary": "One dimension's definition, as it is edited and put back with `PUT /dimensions/{name}`:\nwhat the model's editor asks for, rather than the whole model. The elements hidden from\nthe user are left out, as `GET /model` leaves them out.",
+        "operationId": "get_dimension_definition",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Dimension name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The dimension's definition",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DimensionDef"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dimension",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dimensions/{name}/elements": {
+      "post": {
+        "summary": "Part of one dimension: the elements named, found by their names, above or beneath others,\nor at the top, each as a whole dimension gives it; for a page that holds a dimension of a\nmillion elements in parts, as it shows them, rather than whole.",
+        "operationId": "dimension_part",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Dimension name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElementsAsked"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The part asked for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DimensionPart"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dimension",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/keys": {
+      "get": {
+        "summary": "The signed-in user's API keys, never the keys themselves; whether they may make more, and\nthe most a new one may be given.",
+        "operationId": "list_keys",
+        "responses": {
+          "200": {
+            "description": "The user's keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KeyList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users, so it takes no keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Makes an API key for the signed-in user, who must be an administrator or let by one. It\nis given what it may do in each part of the server, never more than the user may, and\nmay be kept to particular cubes; at every request it is held to what the user may do\nthen. The key itself is in the answer, and is not given again.",
+        "operationId": "make_key",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The key, given this once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NewKey"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users, so it takes no keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "No name, a name taken, more than the user may do, a cube that is not there, or a malformed request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The key could not be saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/keys/{id}": {
+      "delete": {
+        "summary": "Revokes one of the signed-in user's API keys: it stops working at once.",
+        "operationId": "revoke_key",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "The key's id, which follows epk_ at its start",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The key was revoked"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user has no such key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The server has no users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The change could not be saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/mdx": {
       "post": {
         "summary": "Answers an MDX query.",
@@ -942,7 +3333,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1000,7 +3391,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1046,7 +3437,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1087,6 +3478,202 @@
           },
           "500": {
             "description": "The change could not be stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/model/outline": {
+      "get": {
+        "summary": "The model in outline: every cube, with its rules, views and checks, and every dashboard,\nbut each dimension only by its name, type and number of elements. What lists the cubes\nand views asks for this; `GET /dimensions/{name}` gives a dimension whole.",
+        "operationId": "get_outline",
+        "responses": {
+          "200": {
+            "description": "The model, without its dimensions' elements",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelOutline"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes": {
+      "get": {
+        "summary": "The signed-in user's sandboxes, in the order of their names. Values are read, written,\nspread and queried in one with its transaction; `POST /transactions/{id}/commit`\npublishes them, and `POST /transactions/{id}/rollback` empties it.",
+        "operationId": "list_sandboxes",
+        "responses": {
+          "200": {
+            "description": "The user's sandboxes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Sandbox"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "Makes a sandbox for the signed-in user: a transaction kept under a name, which holds no\nlocks, never expires and outlives the server, for values to wait in until they are\npublished.",
+        "operationId": "create_sandbox",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SandboxRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "The new sandbox, empty",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sandbox"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The user has a sandbox of that name, or a sandbox cannot be called that",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The sandbox could not be kept",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sandboxes/{name}": {
+      "delete": {
+        "summary": "Deletes one of the signed-in user's sandboxes, with the values it holds.",
+        "operationId": "delete_sandbox",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The user has no sandbox of that name",
             "content": {
               "application/json": {
                 "schema": {
@@ -1154,7 +3741,7 @@
             }
           },
           "429": {
-            "description": "The name has been given too many wrong passwords; the Retry-After header says how many seconds to wait",
+            "description": "The name has been given too many wrong passwords, or too many sign-ins are waiting to be checked; the Retry-After header says how many seconds to wait",
             "content": {
               "application/json": {
                 "schema": {
@@ -1176,7 +3763,7 @@
             "description": "Signed out"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1200,7 +3787,7 @@
     },
     "/transactions": {
       "post": {
-        "summary": "Begins a transaction. It is rolled back if left idle.",
+        "summary": "Begins a transaction, signed with the user who begins it: the history of cells records\nits commit as theirs. It is rolled back if left idle.",
         "operationId": "begin_transaction",
         "responses": {
           "201": {
@@ -1214,7 +3801,7 @@
             }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1238,7 +3825,7 @@
     },
     "/transactions/{id}/commit": {
       "post": {
-        "summary": "Stores a transaction's pending writes in one step and ends it.",
+        "summary": "Stores a transaction's pending writes in one step and ends it. A sandbox's are published,\nchecked and locked as any commit's, and the sandbox stays open, empty. Values go only\ninto cubes the user may write to now, however long ago they were written.",
         "operationId": "commit_transaction",
         "parameters": [
           {
@@ -1257,7 +3844,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1278,6 +3865,26 @@
           },
           "404": {
             "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Publishing a sandbox: another transaction holds a lock, or has one of its cells pending",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Publishing a sandbox: one of its values can no longer be written where it is",
             "content": {
               "application/json": {
                 "schema": {
@@ -1330,7 +3937,7 @@
             "description": "Done"
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1382,10 +3989,10 @@
         }
       }
     },
-    "/transactions/{id}/rollback": {
-      "post": {
-        "summary": "Discards a transaction's pending writes and ends it.",
-        "operationId": "rollback_transaction",
+    "/transactions/{id}/point": {
+      "get": {
+        "summary": "Says how far a transaction has come: a point to take it back to later.",
+        "operationId": "transaction_point",
         "parameters": [
           {
             "name": "id",
@@ -1399,11 +4006,18 @@
           }
         ],
         "responses": {
-          "204": {
-            "description": "Done"
+          "200": {
+            "description": "The point the transaction has come to",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransactionPoint"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Not signed in, or the session has ended",
+            "description": "Not signed in, the session has ended, or the API key is not in force",
             "content": {
               "application/json": {
                 "schema": {
@@ -1424,6 +4038,132 @@
           },
           "404": {
             "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions/{id}/rollback": {
+      "post": {
+        "summary": "Discards a transaction's pending writes and ends it. A sandbox is emptied, and stays.",
+        "operationId": "rollback_transaction",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transaction",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transactions/{id}/undo": {
+      "post": {
+        "summary": "Takes back a transaction's writes since a point it came to, the last first, so that each\ncell is pending as it was then. Spreads and batches go back whole. The transaction stays\nopen.",
+        "operationId": "undo_transaction",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UndoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown transaction, or a point it has not come to",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The request body is malformed",
             "content": {
               "application/json": {
                 "schema": {
@@ -1460,6 +4200,14 @@
           },
           "message": {
             "type": "string"
+          },
+          "position": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Where in an MDX query the problem was found, counted in characters from zero.",
+            "minimum": 0
           }
         }
       },
@@ -1470,6 +4218,36 @@
           "numeric",
           "alias"
         ]
+      },
+      "AuditEntry": {
+        "type": "object",
+        "description": "One thing kept on record: when, by whom, what, and as or of whom.",
+        "required": [
+          "time",
+          "user",
+          "action",
+          "subject"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "What they did: `view as`, `make key` or `revoke key`."
+          },
+          "subject": {
+            "type": "string",
+            "description": "Whom it was done as, or what to: a key by its name and the start of it, and whose it\nis where that is not the user's own."
+          },
+          "time": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When, in seconds since 1970.",
+            "minimum": 0
+          },
+          "user": {
+            "type": "string",
+            "description": "Who did it."
+          }
+        }
       },
       "AxisResult": {
         "type": "object",
@@ -1486,6 +4264,72 @@
               }
             },
             "description": "Each tuple holds one member per dimension on the axis."
+          }
+        }
+      },
+      "BTreeMap": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "description": "What a user may do. Each role may also do what the ones before it may.",
+            "enum": [
+              "none",
+              "read",
+              "write",
+              "admin"
+            ]
+          },
+          "propertyNames": {
+            "type": "string"
+          }
+        },
+        "propertyNames": {
+          "type": "string"
+        }
+      },
+      "CellChange": {
+        "type": "object",
+        "description": "A change to a cell, as the history gives it back.",
+        "required": [
+          "time",
+          "cube",
+          "at",
+          "before",
+          "after"
+        ],
+        "properties": {
+          "after": {
+            "$ref": "#/components/schemas/Scalar",
+            "description": "What it held after."
+          },
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One element name for each dimension of the cube."
+          },
+          "author": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Who made it: the user who began the transaction it came in, where the server knew."
+          },
+          "before": {
+            "$ref": "#/components/schemas/Scalar",
+            "description": "What the cell held before: zero, or empty text, where it held nothing."
+          },
+          "cube": {
+            "type": "string"
+          },
+          "time": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was committed, in seconds since 1970.",
+            "minimum": 0
           }
         }
       },
@@ -1567,6 +4411,19 @@
         },
         "additionalProperties": false
       },
+      "ChartKind": {
+        "type": "string",
+        "description": "A kind of chart, as a view or a dashboard's tile draws one.",
+        "enum": [
+          "bars",
+          "stacked",
+          "shares",
+          "lines",
+          "area",
+          "ranked",
+          "donut"
+        ]
+      },
       "ChildDef": {
         "type": "object",
         "required": [
@@ -1579,6 +4436,112 @@
           "weight": {
             "type": "number",
             "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Comment": {
+        "type": "object",
+        "description": "A note pinned to a cell.",
+        "required": [
+          "id",
+          "cube",
+          "at",
+          "author",
+          "written",
+          "text"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One element name for each dimension of the cube."
+          },
+          "author": {
+            "type": "string",
+            "description": "Who wrote it."
+          },
+          "cube": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "text": {
+            "type": "string"
+          },
+          "written": {
+            "type": "integer",
+            "format": "int64",
+            "description": "When it was written, in seconds since 1970.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "CommentPost": {
+        "type": "object",
+        "required": [
+          "at",
+          "text"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The cell: one element name or alias for each dimension of the cube."
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Comments": {
+        "type": "object",
+        "required": [
+          "comments"
+        ],
+        "properties": {
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Comment"
+            },
+            "description": "The oldest first."
+          }
+        }
+      },
+      "Comparison": {
+        "type": "string",
+        "description": "How a number is compared with a rule's value.",
+        "enum": [
+          "above",
+          "at_least",
+          "below",
+          "at_most",
+          "equals"
+        ]
+      },
+      "ContextMember": {
+        "type": "object",
+        "description": "A member to stand at, by its dimension and its name or alias.",
+        "required": [
+          "dimension",
+          "member"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "string"
+          },
+          "member": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -1613,6 +4576,13 @@
             },
             "description": "Statements that calculate cells, each `[N: | C: | S:] area = expression`. The area is a\nmember or a tuple, such as `[Account].[Margin]`; the expression is written as in MDX.\nThe first rule that covers a cell decides it."
           },
+          "validations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ValidationDef"
+            },
+            "description": "Checks of the values in the cube's cells, in the order they are made."
+          },
           "views": {
             "type": "object",
             "description": "Saved queries against this cube, by name.",
@@ -1645,6 +4615,154 @@
         },
         "additionalProperties": false
       },
+      "CubeStatus": {
+        "type": "object",
+        "required": [
+          "name",
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "integer",
+            "description": "How many leaf cells it stores.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "DashboardDef": {
+        "type": "object",
+        "description": "A page of tiles, each showing a view saved with a cube.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "description": {
+            "type": "string",
+            "description": "What the dashboard is for, shown beneath its name."
+          },
+          "filters": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Dimensions the page offers a choice of member for. Every tile whose cube has one\nstands at the member chosen, in place of the one its view names, unless the view\nplaces the dimension on an axis."
+          },
+          "layout": {
+            "$ref": "#/components/schemas/DashboardLayout",
+            "description": "How the tiles are laid out."
+          },
+          "name": {
+            "type": "string"
+          },
+          "tiles": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TileDef"
+            },
+            "description": "The tiles, in the order they are laid out; in a free layout, each over those before."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DashboardLayout": {
+        "type": "string",
+        "description": "How a dashboard lays its tiles out.",
+        "enum": [
+          "grid",
+          "free"
+        ]
+      },
+      "DashboardPut": {
+        "type": "object",
+        "required": [
+          "based_on",
+          "dashboard"
+        ],
+        "properties": {
+          "based_on": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model version the dashboard was edited from.",
+            "minimum": 0
+          },
+          "dashboard": {
+            "$ref": "#/components/schemas/DashboardDef"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DetailRequest": {
+        "type": "object",
+        "required": [
+          "cube",
+          "at",
+          "lines"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One element name or alias for each dimension of the cube."
+          },
+          "cube": {
+            "type": "string"
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Line"
+            },
+            "description": "The lines the cell's value is the sum of. None take the detail away and leave the\nvalue as it is."
+          },
+          "transaction": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Hold the detail and its value in this transaction, or this sandbox, until it commits.\nWithout it they are committed at once.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "Differences": {
+        "type": "object",
+        "description": "Of one kind, what restoring an earlier model brings back, takes away and puts back as it\nwas, each by its name, in the order the model lists them.",
+        "required": [
+          "brought_back",
+          "taken_away",
+          "put_back"
+        ],
+        "properties": {
+          "brought_back": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Those the earlier model has and the current one has not."
+          },
+          "put_back": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Those both have, but not alike."
+          },
+          "taken_away": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Those the current model has and the earlier one has not."
+          }
+        }
+      },
       "DimensionDef": {
         "type": "object",
         "required": [
@@ -1668,6 +4786,13 @@
               "$ref": "#/components/schemas/ElementDef"
             }
           },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Names for the dimension's levels, from the leaves up: the first names level zero. A\nquery may then say `[Period].[Quarter]` for the level, unless an element has that\nname, and `Ytd`, `Qtd`, `Mtd` and `Wtd` look for the levels named Year, Quarter,\nMonth and Week."
+          },
           "name": {
             "type": "string"
           },
@@ -1686,6 +4811,110 @@
           }
         },
         "additionalProperties": false
+      },
+      "DimensionOutline": {
+        "type": "object",
+        "description": "A dimension as the outline of the model gives it: by its name, type and size, and the\nnames of its subsets.",
+        "required": [
+          "name",
+          "type",
+          "element_count",
+          "subsets",
+          "changed_in"
+        ],
+        "properties": {
+          "changed_in": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model version in which it last changed: `GET /dimensions/{name}` says the same of it\nin every version since, so a copy of what it said is good until this changes.",
+            "minimum": 0
+          },
+          "element_count": {
+            "type": "integer",
+            "description": "How many elements it has.",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string"
+          },
+          "subsets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of its subsets, in name order."
+          },
+          "type": {
+            "$ref": "#/components/schemas/DimensionType"
+          }
+        }
+      },
+      "DimensionPart": {
+        "type": "object",
+        "description": "Part of a dimension, as a user may see it: what the dimension is, and the elements asked\nfor, each once, as a whole dimension gives them, a consolidation with its count of leaves.\nAn element's children are listed where the page is to go down from it: one whose children\nwere asked for, one beneath another asked for whole, and one on the way to an element named\nor found; any other only counts them, as most of those sent are not opened, and the 10,000\nchildren of a member opened listed a million grandchildren between them.",
+        "required": [
+          "name",
+          "type",
+          "levels",
+          "attributes",
+          "size",
+          "elements"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeType"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "elements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ElementView"
+            }
+          },
+          "found": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Where asked to find, the names found, in their order."
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of the levels, from the leaves up, where the model gives them."
+          },
+          "name": {
+            "type": "string"
+          },
+          "roots": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Where asked for, the top elements' names, in their order."
+          },
+          "size": {
+            "type": "integer",
+            "description": "How many elements the user may see.",
+            "minimum": 0
+          },
+          "type": {
+            "$ref": "#/components/schemas/DimensionType"
+          }
+        }
       },
       "DimensionPut": {
         "type": "object",
@@ -1709,7 +4938,8 @@
       "DimensionType": {
         "type": "string",
         "enum": [
-          "standard"
+          "standard",
+          "time"
         ]
       },
       "DimensionView": {
@@ -1717,6 +4947,8 @@
         "description": "A dimension with the hierarchy facts derived from its definition.",
         "required": [
           "name",
+          "type",
+          "levels",
           "attributes",
           "elements",
           "subsets"
@@ -1738,12 +4970,19 @@
             },
             "description": "Elements in declaration order."
           },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of the levels, from the leaves up, where the model gives them."
+          },
           "name": {
             "type": "string"
           },
           "subsets": {
             "type": "object",
-            "description": "The element names each subset selects, in the subset's order.",
+            "description": "The element names each subset selects, in the subset's order; for a subset that reads\ncells, as the stored cells stand now.",
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -1753,6 +4992,45 @@
             "propertyNames": {
               "type": "string"
             }
+          },
+          "subsets_reading_cells": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The subsets that read cells, which select what the cells say when they are used."
+          },
+          "type": {
+            "$ref": "#/components/schemas/DimensionType"
+          }
+        }
+      },
+      "EarlierModel": {
+        "type": "object",
+        "description": "A model kept from before the current one.",
+        "required": [
+          "name",
+          "version"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "The name it is kept under, to ask for it by."
+          },
+          "saved": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When it was saved, in seconds since 1970, where the journal can say.",
+            "minimum": 0
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model version it was.",
+            "minimum": 0
           }
         }
       },
@@ -1783,6 +5061,17 @@
           "name": {
             "type": "string"
           },
+          "picklist": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PicklistDef",
+                "description": "For a string element of a cube's last dimension, the values its text cells may take:\noffered as a list where they are written, and any other refused. Text stored before\nis kept."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "type": {
             "$ref": "#/components/schemas/ElementType"
           }
@@ -1799,13 +5088,11 @@
       },
       "ElementView": {
         "type": "object",
+        "description": "An element and its place in the hierarchy. Its parents, children and attributes are left\nout where it has none, as a leaf has no children: in a large dimension, most of the\nelements are leaves, and the empty lists were half of what was sent.",
         "required": [
           "name",
           "type",
-          "level",
-          "parents",
-          "children",
-          "attributes"
+          "level"
         ],
         "properties": {
           "attributes": {
@@ -1817,11 +5104,27 @@
               "type": "string"
             }
           },
+          "child_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "In part of a dimension, where its children are not listed, how many it has.",
+            "minimum": 0
+          },
           "children": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ChildDef"
             }
+          },
+          "leaves": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "In part of a dimension, for a consolidation, how many numeric leaves it counts: what\na page holding it without the elements beneath it cannot count itself.",
+            "minimum": 0
           },
           "level": {
             "type": "integer",
@@ -1838,8 +5141,82 @@
               "type": "string"
             }
           },
+          "picklist": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "For a string element with a picklist, the values its text cells may be given."
+          },
           "type": {
             "$ref": "#/components/schemas/ElementType"
+          }
+        }
+      },
+      "ElementsAsked": {
+        "type": "object",
+        "description": "What part of a dimension to send, each part asked for adding to the rest.",
+        "properties": {
+          "ancestors": {
+            "type": "boolean",
+            "description": "With every element above those named and those found, for the way down to each."
+          },
+          "children_of": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The children of these elements."
+          },
+          "descendants_of": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every element beneath these elements, however deep."
+          },
+          "find": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The first elements whose name holds this text, whatever its case."
+          },
+          "most": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many `find` gives at most: 50 unless said, and never more than 1,000.",
+            "minimum": 0
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "These elements, by name: one there is not, or that the user may not see, left out."
+          },
+          "roots": {
+            "type": "boolean",
+            "description": "The top elements: those with no parent the user may see."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Ended": {
+        "type": "object",
+        "required": [
+          "ended"
+        ],
+        "properties": {
+          "ended": {
+            "type": "integer",
+            "description": "How many sessions were ended.",
+            "minimum": 0
           }
         }
       },
@@ -1919,9 +5296,18 @@
           "value",
           "kind",
           "writable",
-          "fed_by"
+          "fed_by",
+          "invalid",
+          "detail"
         ],
         "properties": {
+          "detail": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Line"
+            },
+            "description": "The lines the cell's value is the sum of, where it was written with supporting detail."
+          },
           "fed": {
             "type": [
               "boolean",
@@ -1935,6 +5321,13 @@
               "$ref": "#/components/schemas/FedBy"
             },
             "description": "The feeders that feed the cell, when asked for."
+          },
+          "invalid": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Invalid"
+            },
+            "description": "The checks of the cube that the cell's value breaks, in the order they are made."
           },
           "kind": {
             "$ref": "#/components/schemas/CellKind"
@@ -1992,6 +5385,13 @@
           "unfed"
         ],
         "properties": {
+          "next": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Where the check stopped, having found a hundred: given as `after`, it goes on from\nthere. None once every cell has been looked at."
+          },
           "unfed": {
             "type": "array",
             "items": {
@@ -2000,6 +5400,292 @@
             "description": "Calculated leaf cells that hold a value but are not fed."
           }
         }
+      },
+      "Geometry": {
+        "type": "object",
+        "description": "The sizes a grid was given by hand: the height of its rows and the widths of columns,\neach column known by a key of the client's choosing. Sizes not given are fitted to the\ncontent.",
+        "properties": {
+          "row_height": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "The height of every row, in pixels.",
+            "minimum": 0
+          },
+          "widths": {
+            "type": "object",
+            "description": "The width of each column, in pixels, by key.",
+            "additionalProperties": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "HighlightRule": {
+        "type": "object",
+        "description": "A colour for the numbers that meet a test against a value.",
+        "required": [
+          "test",
+          "value",
+          "tone"
+        ],
+        "properties": {
+          "test": {
+            "$ref": "#/components/schemas/Comparison"
+          },
+          "tone": {
+            "$ref": "#/components/schemas/Tone"
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Highlights": {
+        "type": "object",
+        "description": "How a view draws the eye to numbers: bars, shades, and colours by rule. Totals take no\nbar or shade, being out of scale with what they add up.",
+        "properties": {
+          "bars": {
+            "type": "boolean",
+            "description": "A bar beneath each number, as long as its share of the largest in its column."
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HighlightRule"
+            },
+            "description": "Colours for the numbers that meet a test; the first rule a number meets decides."
+          },
+          "shades": {
+            "type": "boolean",
+            "description": "Each number shaded from the lowest in its column to the highest."
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryRequest": {
+        "type": "object",
+        "required": [
+          "cube",
+          "at"
+        ],
+        "properties": {
+          "at": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "One element name or alias for each dimension of the cube."
+          },
+          "cube": {
+            "type": "string"
+          },
+          "most": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "At most this many changes, the newest: 100 unless given, and never more than 1,000 at\na time.",
+            "minimum": 0
+          },
+          "skip": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Pass over this many of the newest first, as `GET /admin/changes` does.",
+            "minimum": 0
+          },
+          "until": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Only changes made until this time, in seconds since 1970.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "HistoryResponse": {
+        "type": "object",
+        "required": [
+          "changes"
+        ],
+        "properties": {
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CellChange"
+            },
+            "description": "The newest first."
+          }
+        }
+      },
+      "Invalid": {
+        "type": "object",
+        "description": "A check of a cube that a cell's value breaks.",
+        "required": [
+          "message",
+          "refuses"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "What the check says of such a value."
+          },
+          "refuses": {
+            "type": "boolean",
+            "description": "Whether the check refuses such a value as it is written. One it breaks all the same\nwas there before the check was."
+          }
+        }
+      },
+      "KeyList": {
+        "type": "object",
+        "description": "A user's keys as they see them.",
+        "required": [
+          "allowed",
+          "most",
+          "keys"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean",
+            "description": "Whether they may make keys: an administrator always, anyone else once an\nadministrator lets them."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeyView"
+            },
+            "description": "Their keys, the newest first."
+          },
+          "most": {
+            "$ref": "#/components/schemas/Permissions",
+            "description": "The most a key of theirs may be given now."
+          }
+        }
+      },
+      "KeyRequest": {
+        "type": "object",
+        "description": "A key to make: how far it reaches into each part of the server, `none`, `read` or\n`write`, a part not given being one it does not reach.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "admin": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Administration: everything under `/admin`."
+          },
+          "cells": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Cells: reading them, with queries, views, history and comments; writing and\nspreading them, with transactions, locks, sandboxes and comments."
+          },
+          "cubes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The cubes whose cells it reaches, every cube if none are named. A key kept to\nparticular cubes may not change the model or administer the server."
+          },
+          "expires": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "When it stops working, in seconds since 1970; it lasts until revoked if not given.",
+            "minimum": 0
+          },
+          "model": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The model: its dimensions, cubes and dashboards."
+          },
+          "name": {
+            "type": "string",
+            "description": "What to call the key, unlike any other key of the user's."
+          }
+        },
+        "additionalProperties": false
+      },
+      "KeyView": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Permissions"
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "name",
+              "created"
+            ],
+            "properties": {
+              "created": {
+                "type": "integer",
+                "format": "int64",
+                "description": "When it was made, in seconds since 1970.",
+                "minimum": 0
+              },
+              "expires": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "When it stops working, in seconds since 1970; it lasts until revoked where there is\nno such time.",
+                "minimum": 0
+              },
+              "id": {
+                "type": "string",
+                "description": "What follows `epk_` at the start of the key: it names the key in lists and to revoke\nit, and is not enough of it to use."
+              },
+              "name": {
+                "type": "string",
+                "description": "What its user calls it."
+              },
+              "used": {
+                "type": [
+                  "integer",
+                  "null"
+                ],
+                "format": "int64",
+                "description": "When it was last used, in seconds since 1970; never, where there is no such time. It\nis noted at every use and saved every few minutes, so the last uses before the server\nstopped may be missed.",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "An API key as its user and administrators see it: never the key itself."
+      },
+      "Line": {
+        "type": "object",
+        "description": "One line of a cell's supporting detail.",
+        "required": [
+          "value"
+        ],
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "What the line is, such as `Flights to Lisbon`."
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
       },
       "LockMode": {
         "type": "string",
@@ -2078,6 +5764,25 @@
           "calculated"
         ]
       },
+      "MembersDef": {
+        "type": "object",
+        "description": "The elements of a dimension, or of one of its subsets, as a picklist offers them.",
+        "required": [
+          "dimension"
+        ],
+        "properties": {
+          "dimension": {
+            "type": "string"
+          },
+          "subset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "ModelDef": {
         "type": "object",
         "properties": {
@@ -2087,6 +5792,13 @@
               "$ref": "#/components/schemas/CubeDef"
             }
           },
+          "dashboards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardDef"
+            },
+            "description": "Pages of saved views, each shown as a chart, a figure or a grid."
+          },
           "dimensions": {
             "type": "array",
             "items": {
@@ -2095,6 +5807,42 @@
           }
         },
         "additionalProperties": false
+      },
+      "ModelOutline": {
+        "type": "object",
+        "description": "The model in outline: its cubes and dashboards whole, and its dimensions without their\nelements, so that it stays small however large the dimensions grow.",
+        "required": [
+          "version",
+          "dimensions",
+          "cubes",
+          "dashboards"
+        ],
+        "properties": {
+          "cubes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CubeDef"
+            }
+          },
+          "dashboards": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DashboardDef"
+            }
+          },
+          "dimensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DimensionOutline"
+            }
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Counts up by one with every update.",
+            "minimum": 0
+          }
+        }
       },
       "ModelPut": {
         "type": "object",
@@ -2155,12 +5903,134 @@
           }
         }
       },
+      "NewKey": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/KeyView"
+          },
+          {
+            "type": "object",
+            "required": [
+              "key"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "description": "The key, given this once: only its hash is kept. Send it with every request as\n`Authorization: Bearer <key>`."
+              }
+            }
+          }
+        ]
+      },
+      "NumberFormat": {
+        "type": "object",
+        "description": "How numbers are shown. Only the showing changes: values are read, written and copied in\nfull.",
+        "properties": {
+          "dash_zeros": {
+            "type": "boolean",
+            "description": "Zeros shown as a dash."
+          },
+          "decimals": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Digits after the decimal sign, always shown.",
+            "minimum": 0
+          },
+          "parentheses": {
+            "type": "boolean",
+            "description": "Negative numbers in parentheses, as accounts show them, rather than after a minus."
+          },
+          "scale": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Scale",
+                "description": "The unit numbers are shown in."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "OwnSubset": {
+        "type": "object",
+        "description": "A subset a user keeps for themself: the members it holds, in order.",
+        "required": [
+          "elements"
+        ],
+        "properties": {
+          "elements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The members, by name or alias; each is kept by its name."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Permissions": {
+        "type": "object",
+        "description": "What an API key may do in each part of the server, each `none`, `read` or `write`, and on\nwhich cubes. A key never does more than its user may: what it is given is held at every\nrequest to what they may do then.",
+        "required": [
+          "cells",
+          "model",
+          "admin"
+        ],
+        "properties": {
+          "admin": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Everything under `/admin`: reading the server's state, users, audit and changes;\nmanaging users and their sessions."
+          },
+          "cells": {
+            "$ref": "#/components/schemas/Role",
+            "description": "Cells: reading them, with queries, views, history and comments; writing and spreading\nthem, with transactions, locks, sandboxes and comments."
+          },
+          "cubes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The cubes whose cells the key reaches, by name; every cube where none are named."
+          },
+          "model": {
+            "$ref": "#/components/schemas/Role",
+            "description": "The model: reading its dimensions, cubes and dashboards; changing them."
+          }
+        }
+      },
+      "PicklistDef": {
+        "oneOf": [
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/schemas/MembersDef"
+          }
+        ],
+        "description": "The values a text cell may take: given one by one, or the elements of a dimension, or of\none of its subsets, in order."
+      },
       "QueryRequest": {
         "type": "object",
         "required": [
           "mdx"
         ],
         "properties": {
+          "context": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContextMember"
+            },
+            "description": "Members to stand at, each in place of the member the query's WHERE names for its\ndimension, or beside them. An axis that places one of their dimensions keeps only its\nmembers at that member or beneath it, and the query's own calculated members. A page's\nselectors use it to show one saved query at other members."
+          },
           "mdx": {
             "type": "string",
             "description": "The query text, for example `SELECT {[Entity].[US]} ON COLUMNS FROM [General Ledger]`."
@@ -2210,6 +6080,16 @@
           "cube": {
             "type": "string"
           },
+          "formatted": {
+            "type": "array",
+            "items": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": "The cells written out, one for each of `cells`, where a calculated member that\ndecides them has a `FORMAT_STRING`: as its pattern says, the way `Format` writes a\nnumber or a date, and null for the others. Left out where no calculated member of the\nquery has a format."
+          },
           "slicer": {
             "type": "array",
             "items": {
@@ -2258,6 +6138,48 @@
           }
         }
       },
+      "Restore": {
+        "type": "object",
+        "required": [
+          "based_on"
+        ],
+        "properties": {
+          "based_on": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The model version the restoring was decided from.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "Restoring": {
+        "type": "object",
+        "description": "What restoring an earlier model would change, by the names of what changes.",
+        "required": [
+          "version",
+          "dimensions",
+          "cubes",
+          "dashboards"
+        ],
+        "properties": {
+          "cubes": {
+            "$ref": "#/components/schemas/Differences"
+          },
+          "dashboards": {
+            "$ref": "#/components/schemas/Differences"
+          },
+          "dimensions": {
+            "$ref": "#/components/schemas/Differences"
+          },
+          "version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The version the earlier model was.",
+            "minimum": 0
+          }
+        }
+      },
       "Role": {
         "type": "string",
         "description": "What a user may do. Each role may also do what the ones before it may.",
@@ -2267,6 +6189,42 @@
           "write",
           "admin"
         ]
+      },
+      "Sandbox": {
+        "type": "object",
+        "description": "A sandbox as its owner sees it.",
+        "required": [
+          "name",
+          "transaction",
+          "pending"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "pending": {
+            "type": "integer",
+            "description": "How many cells it holds values for, not yet published.",
+            "minimum": 0
+          },
+          "transaction": {
+            "$ref": "#/components/schemas/u64",
+            "description": "The transaction to read, write and query in it with. It is kept and never expires."
+          }
+        }
+      },
+      "SandboxRequest": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "A name none of the user's other sandboxes has, case and spaces aside."
+          }
+        },
+        "additionalProperties": false
       },
       "Scalar": {
         "oneOf": [
@@ -2278,6 +6236,108 @@
             "type": "string"
           }
         ]
+      },
+      "Scale": {
+        "type": "string",
+        "description": "A unit numbers are shown in.",
+        "enum": [
+          "thousands",
+          "millions",
+          "billions"
+        ]
+      },
+      "ServerStatus": {
+        "type": "object",
+        "description": "The state of the server.",
+        "required": [
+          "server",
+          "model_version",
+          "uptime_seconds",
+          "cubes",
+          "transactions"
+        ],
+        "properties": {
+          "cubes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CubeStatus"
+            },
+            "description": "The cells each cube stores."
+          },
+          "earlier_models_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bytes of every model kept from before it.",
+            "minimum": 0
+          },
+          "log_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bytes of recorded commits since the last snapshot.",
+            "minimum": 0
+          },
+          "memory_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The memory the server holds, where the operating system says.",
+            "minimum": 0
+          },
+          "model_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bytes of the model as it is.",
+            "minimum": 0
+          },
+          "model_version": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "server": {
+            "type": "string",
+            "description": "The version of the server program."
+          },
+          "sessions": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many sessions are open; none on a server that asks no one to sign in.",
+            "minimum": 0
+          },
+          "snapshot_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "The bytes of the last snapshot.",
+            "minimum": 0
+          },
+          "transactions": {
+            "type": "integer",
+            "description": "How many transactions are open.",
+            "minimum": 0
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long the server has been running, in seconds.",
+            "minimum": 0
+          }
+        }
       },
       "Session": {
         "type": "object",
@@ -2298,6 +6358,10 @@
               "type": "string"
             }
           },
+          "elements": {
+            "$ref": "#/components/schemas/BTreeMap",
+            "description": "The elements with a role of their own, which holds beneath them too."
+          },
           "idle_seconds": {
             "type": "integer",
             "format": "int64",
@@ -2311,6 +6375,13 @@
           "token": {
             "type": "string",
             "description": "Send this with every request, as `Authorization: Bearer <token>`."
+          },
+          "viewer": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a view as another user, the administrator viewing."
           }
         }
       },
@@ -2348,6 +6419,16 @@
           },
           "cube": {
             "type": "string"
+          },
+          "holds": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": "Cells the spread leaves as they are, each by one element name or alias for each\ndimension: a leaf, or a consolidated cell whose leaves are all held. The value given is\nshared among the other leaves, less what the held ones add to it."
           },
           "method": {
             "$ref": "#/components/schemas/SpreadMethod"
@@ -2418,6 +6499,28 @@
           }
         }
       },
+      "StoredCells": {
+        "type": "object",
+        "description": "Some of the stored cells of a cube.",
+        "required": [
+          "total",
+          "cells"
+        ],
+        "properties": {
+          "cells": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CellWrite"
+            },
+            "description": "The cells of this page, in a form `POST /cells/write` takes back."
+          },
+          "total": {
+            "type": "integer",
+            "description": "How many cells the cube stores in all.",
+            "minimum": 0
+          }
+        }
+      },
       "SubsetDef": {
         "oneOf": [
           {
@@ -2452,6 +6555,170 @@
         ],
         "description": "A selection of a dimension's elements."
       },
+      "TileDef": {
+        "type": "object",
+        "description": "One tile of a dashboard: a view of a cube and how it is shown, or a few lines of text.",
+        "properties": {
+          "by_columns": {
+            "type": "boolean",
+            "description": "A chart's series are the view's columns, rather than its rows."
+          },
+          "cube": {
+            "type": "string",
+            "description": "The cube of the view shown; none for a tile of text."
+          },
+          "labels": {
+            "type": "boolean",
+            "description": "A chart writes each value on its mark."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The series, by name, that a chart of bars or areas draws as lines over the rest,\nagainst the same scale: a budget beside the actuals, say."
+          },
+          "place": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/TilePlace",
+                "description": "Where the tile stands and how large it is. Without one it takes the next place\nthere is, as wide as `width` says."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "second_axis": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The series, by name, that a chart draws as lines against a scale of their own on its\nright: those of another size than the rest, such as a margin beside the sums of money\nit is worked out from."
+          },
+          "show": {
+            "$ref": "#/components/schemas/TileShow"
+          },
+          "text": {
+            "type": "string",
+            "description": "What a tile of text says: a line that begins `# ` is a heading, one that begins `- `\nan item of a list, and an empty line ends a paragraph."
+          },
+          "title": {
+            "type": "string",
+            "description": "A title of its own; the view's name unless given."
+          },
+          "view": {
+            "type": "string",
+            "description": "A view saved with the cube."
+          },
+          "width": {
+            "type": "integer",
+            "format": "int32",
+            "description": "How many of two columns the tile takes where it has no `place`: one or two.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "TilePlace": {
+        "type": "object",
+        "description": "Where a tile stands on its dashboard's page: in columns from the left, of the twelve\nacross, and in rows from the top, each of a fixed height. A free layout may place a tile\nbetween them.",
+        "required": [
+          "x",
+          "y",
+          "w",
+          "h"
+        ],
+        "properties": {
+          "h": {
+            "type": "number",
+            "format": "double",
+            "description": "Rows high."
+          },
+          "w": {
+            "type": "number",
+            "format": "double",
+            "description": "Columns wide."
+          },
+          "x": {
+            "type": "number",
+            "format": "double"
+          },
+          "y": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TileShow": {
+        "type": "string",
+        "description": "How a tile shows its view.",
+        "enum": [
+          "figure",
+          "bars",
+          "stacked",
+          "shares",
+          "lines",
+          "area",
+          "ranked",
+          "donut",
+          "grid",
+          "heatmap",
+          "text"
+        ]
+      },
+      "Tone": {
+        "type": "string",
+        "description": "What a highlight says of a number.",
+        "enum": [
+          "good",
+          "bad",
+          "warn",
+          "accent"
+        ]
+      },
+      "TransactionInfo": {
+        "type": "object",
+        "description": "An open transaction.",
+        "required": [
+          "transaction",
+          "idle_seconds",
+          "pending"
+        ],
+        "properties": {
+          "idle_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "description": "How long since it was last used, in seconds.",
+            "minimum": 0
+          },
+          "pending": {
+            "type": "integer",
+            "description": "How many writes it holds, waiting to be committed.",
+            "minimum": 0
+          },
+          "transaction": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TransactionPoint": {
+        "type": "object",
+        "description": "How far a transaction has come.",
+        "required": [
+          "point"
+        ],
+        "properties": {
+          "point": {
+            "type": "integer",
+            "description": "How many writes the transaction has been given. Its writes since this point can be\ntaken back with `POST /transactions/{id}/undo`.",
+            "minimum": 0
+          }
+        }
+      },
       "TransactionView": {
         "type": "object",
         "required": [
@@ -2465,6 +6732,205 @@
           }
         }
       },
+      "UndoRequest": {
+        "type": "object",
+        "required": [
+          "to"
+        ],
+        "properties": {
+          "to": {
+            "type": "integer",
+            "description": "The point to go back to, as `GET /transactions/{id}/point` gave it.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "UserList": {
+        "type": "object",
+        "description": "The users of the server.",
+        "required": [
+          "signing_in",
+          "users"
+        ],
+        "properties": {
+          "signing_in": {
+            "type": "boolean",
+            "description": "Whether the server asks users to sign in. Without users it does not, and none can be\nadded while it runs."
+          },
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserView"
+            }
+          }
+        }
+      },
+      "UserPut": {
+        "type": "object",
+        "description": "A user to add or change.",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "cubes": {
+            "type": "object",
+            "description": "Cubes on which the user has another role in place of that one.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "elements": {
+            "$ref": "#/components/schemas/BTreeMap",
+            "description": "Elements with a role of their own, by dimension and element: none, read or write. It\nholds beneath the element too, unless a nearer element has its own; an element beneath\nseveral takes the highest of theirs. An administrator is bound by none."
+          },
+          "makes_keys": {
+            "type": [
+              "boolean",
+              "null"
+            ],
+            "description": "Whether the user may make API keys; kept as it is if not given, and false for a new\nuser. Administrators always may. A user who may no longer make keys loses theirs."
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A new password. A new user needs one; without it a user's password is kept."
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UserView": {
+        "type": "object",
+        "description": "A user as an administrator sees them: never the password.",
+        "required": [
+          "name",
+          "role",
+          "cubes",
+          "sessions",
+          "makes_keys",
+          "keys"
+        ],
+        "properties": {
+          "cubes": {
+            "type": "object",
+            "description": "The cubes on which the user has another role in place of that one.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Role"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "elements": {
+            "$ref": "#/components/schemas/BTreeMap",
+            "description": "The elements with a role of their own, by dimension and element: `none`, `read` or\n`write`, holding beneath them too where nearer elements have none."
+          },
+          "keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KeyView"
+            },
+            "description": "The user's API keys, the newest first."
+          },
+          "makes_keys": {
+            "type": "boolean",
+            "description": "Whether an administrator lets the user make API keys. Administrators always may."
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role",
+            "description": "What the user may do."
+          },
+          "sessions": {
+            "type": "integer",
+            "description": "How many sessions the user has open.",
+            "minimum": 0
+          }
+        }
+      },
+      "ValidationDef": {
+        "type": "object",
+        "description": "A check of the values in an area of a cube. A value written where it does not hold is\nrefused, or, where the check only warns, kept and marked as breaking it.",
+        "required": [
+          "cells",
+          "valid",
+          "message"
+        ],
+        "properties": {
+          "cells": {
+            "type": "string",
+            "description": "The cells checked: an area as a rule names one, such as `N: [Account].[Salaries]`;\n`N:`, `C:` or `S:` before it keeps to leaf, consolidated or text cells."
+          },
+          "message": {
+            "type": "string",
+            "description": "What is said of a value where the check does not hold."
+          },
+          "refuse": {
+            "type": "boolean",
+            "description": "Whether such a value is refused as it is written, rather than kept and warned of."
+          },
+          "valid": {
+            "type": "string",
+            "description": "What holds wherever a value is acceptable, written as a rule's expression is and\nworked out at each cell checked, such as `[Account].[Salaries] >= 0`. True, any number\nbut zero and any text but none hold; so does an expression that cannot be worked out."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ViewAsRequest": {
+        "type": "object",
+        "required": [
+          "user"
+        ],
+        "properties": {
+          "user": {
+            "type": "string",
+            "description": "The user to view the server as, ignoring case."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ViewChart": {
+        "type": "object",
+        "description": "How a view is charted, as it was when it was saved from its chart.",
+        "properties": {
+          "by_columns": {
+            "type": "boolean",
+            "description": "A series for each of the view's columns, rather than each of its rows."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChartKind"
+          },
+          "labels": {
+            "type": "boolean",
+            "description": "Each value written on its mark."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The series, by name, drawn as lines over the rest, against the same scale."
+          },
+          "second_axis": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The series, by name, drawn as lines against a scale of their own at the right."
+          }
+        },
+        "additionalProperties": false
+      },
       "ViewDef": {
         "type": "object",
         "description": "A saved query against a cube.",
@@ -2472,6 +6938,50 @@
           "mdx"
         ],
         "properties": {
+          "chart": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ViewChart",
+                "description": "The chart the view was saved from: it opens as that chart, drawn so, and as its grid\nwithout one."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "format": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NumberFormat",
+                "description": "How the view shows its numbers; as the reader's locale writes them unless given."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "geometry": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Geometry",
+                "description": "The sizes the grid of the view was given, kept with it."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "highlights": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/Highlights",
+                "description": "How the view draws the eye to some numbers."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "mdx": {
             "type": "string",
             "description": "The MDX query, which must select from the cube the view belongs to."
@@ -2502,12 +7012,18 @@
           }
         },
         "additionalProperties": false
+      },
+      "u64": {
+        "type": "integer",
+        "format": "int64",
+        "minimum": 0
       }
     },
     "securitySchemes": {
       "session": {
         "type": "http",
-        "scheme": "bearer"
+        "scheme": "bearer",
+        "description": "A session's token, from POST /sessions, or an API key, from POST /keys, which starts epk_. A key is held to what it was given and to what its user may do."
       }
     }
   },

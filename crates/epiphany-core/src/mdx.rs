@@ -5,18 +5,63 @@ mod lexer;
 mod parser;
 mod rules;
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fmt;
 
 use serde::Serialize;
 
 use crate::Scalar;
-use crate::model::{Cube, DimensionId, ElementId, Model, key};
+use crate::access::Access;
+use crate::model::{DimensionId, ElementId, Model, key};
 
-pub(crate) use parser::Query;
+pub(crate) use eval::Read;
+
+/// Finds a subset the one asking a query keeps for themself, by its dimension's name and its
+/// own: the names of its members.
+pub type Own<'a> = &'a dyn Fn(&str, &str) -> Option<Vec<String>>;
+
+/// Who asks a query, as far as answering it goes.
+#[derive(Clone, Copy)]
+pub struct Asker<'a> {
+    /// Which cubes, by name, they may read. The query's own cube and any it looks cells up in
+    /// must be among them; what the model's rules read is the model's business.
+    pub may_read: &'a dyn Fn(&str) -> bool,
+    /// Members, `(dimension, member)`, to stand at in place of those the query's WHERE
+    /// names for their dimensions, or beside them; an axis that places one of their
+    /// dimensions decides it.
+    pub standing: &'a [(&'a str, &'a str)],
+    /// The subsets they keep for themselves, which `TM1SubsetToSet` with "private" finds:
+    /// by dimension and name, the names of a subset's members. None where nobody asks, as
+    /// for the model's views, which cannot take anyone's.
+    pub own: Option<Own<'a>>,
+    /// The elements they may see, where some are hidden from them: those are not there for
+    /// the query at all, though the totals they add up to still count them.
+    pub access: Option<&'a Access>,
+}
+
+impl Asker<'static> {
+    /// Anyone at all: who may read every cube, stands nowhere, keeps no subsets of their own
+    /// and sees every element.
+    pub const ANYONE: Self = Self {
+        may_read: &every,
+        standing: &[],
+        own: Some(&nobodys),
+        access: None,
+    };
+}
+
+fn every(_: &str) -> bool {
+    true
+}
+
+fn nobodys(_: &str, _: &str) -> Option<Vec<String>> {
+    None
+}
+pub(crate) use parser::{Expr, Query};
 pub use rules::{Feeder, Rule};
 pub(crate) use rules::{
-    Outcome, compile_feeder, compile_rule, evaluate_rule, feeder_targets, matches,
+    Outcome, compile_feeder, compile_rule, evaluate_rule, feeder_targets, holds, matches,
 };
 
 /// Parses the text of a query.
@@ -24,23 +69,32 @@ pub(crate) fn parse(text: &str) -> Result<Query, MdxError> {
     parser::Parser::new(lexer::lex(text)?).query()
 }
 
-/// The elements an MDX set over one dimension selects. The set is worked out from the
-/// dimension alone: every cell it might read is empty.
+/// The elements an MDX set over one dimension selects, worked out from the dimension alone
+/// with every cell read as empty; and the set itself where it reads any cube's cells, through
+/// `LookupCube`, to be worked out again, as the cells then stand, whenever it is used.
 pub(crate) fn subset(
     model: &Model,
     dimension: DimensionId,
     text: &str,
-) -> Result<Vec<ElementId>, MdxError> {
+) -> Result<(Vec<ElementId>, Option<Expr>), MdxError> {
     let set = parser::Parser::new(lexer::lex(text)?).set()?;
-    let alone = Cube {
-        name: String::new(),
-        dimensions: vec![dimension],
-        views: Vec::new(),
-        rules: Vec::new(),
-        feeders: Vec::new(),
-        sparse: false,
+    let read = Cell::new(false);
+    let noting = |_: usize, _: &[ElementId]| {
+        read.set(true);
+        Ok(Scalar::Number(0.0))
     };
-    eval::elements(model, &alone, &set)
+    let elements = eval::elements(model, dimension, &set, &noting)?;
+    Ok((elements, read.get().then_some(set)))
+}
+
+/// The elements a set over one dimension selects now, reading cells through `read`.
+pub(crate) fn subset_now(
+    model: &Model,
+    dimension: DimensionId,
+    set: &Expr,
+    read: Read,
+) -> Result<Vec<ElementId>, MdxError> {
+    eval::elements(model, dimension, set, read)
 }
 
 /// Checks that a view's query can be answered by its cube, by running it with every cell
@@ -54,8 +108,14 @@ pub(crate) fn check_view(model: &Model, cube_id: usize, text: &str) -> Result<()
             query.cube
         )));
     }
+    // Nobody asks the model's own views.
+    let nobody = Asker {
+        own: None,
+        ..Asker::ANYONE
+    };
+    let empty = |_: usize, _: &mut dyn FnMut(&[ElementId])| false;
     query
-        .evaluate(model, cube_id, &eval::no_cells, &|_| ())
+        .evaluate(model, cube_id, &eval::no_cells, &|_| (), &empty, &nobody)
         .map(drop)
 }
 
@@ -103,6 +163,12 @@ pub struct QueryResult {
     /// nor on an axis stands at its first top element.
     pub slicer: Vec<MemberResult>,
     pub cells: Vec<Option<Scalar>>,
+    /// The cells written out, one for each of `cells`, where a calculated member that
+    /// decides them has a `FORMAT_STRING`: as its pattern says, the way `Format` writes a
+    /// number or a date, and null for the others. Left out where no calculated member of the
+    /// query has a format.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub formatted: Vec<Option<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

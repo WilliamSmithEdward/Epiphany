@@ -55,12 +55,12 @@ if ($Drive) {
             $form = Find 'Choose an element'
             $all = $form.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
             $box = @($all | Where-Object { $_.Current.ClassName -like '*.EDIT.*' })[0]
-            $list = @($all | Where-Object { $_.Current.ClassName -like '*.LISTBOX.*' })[0]
-            # LB_GETCOUNT: how many elements the list holds, before and after narrowing it.
-            $before = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x018B, [IntPtr]::Zero, $null)
+            $list = @($all | Where-Object { $_.Current.ClassName -like '*.SysListView32.*' })[0]
+            # LVM_GETITEMCOUNT: how many elements the list holds, before and after narrowing it.
+            $before = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x1004, [IntPtr]::Zero, $null)
             [void][Native.Control]::SendMessage([IntPtr]$box.Current.NativeWindowHandle, 0x000C, [IntPtr]::Zero, 'ma')
             Start-Sleep -Milliseconds 300
-            $after = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x018B, [IntPtr]::Zero, $null)
+            $after = [Native.Control]::SendMessage([IntPtr]$list.Current.NativeWindowHandle, 0x1004, [IntPtr]::Zero, $null)
             Add-Content $Drive "list narrowed from $before to $after"
             Press $form 'OK'
             return
@@ -77,25 +77,19 @@ if ($Drive) {
     return
 }
 
-$repo = Split-Path $PSScriptRoot
-$port = 8080
-$directory = Join-Path ([IO.Path]::GetTempPath()) "epiphany-excel-signin-$PID"
-$xll = "$repo\adapter\Epiphany.Excel\bin\Release\net472\publish\Epiphany64-packed.xll"
-$binary = "$repo\target\debug\epiphany-server.exe"
+. "$PSScriptRoot\check-common.ps1"
 $log = "$directory\driver.log"
 # Made up for this run; the user exists only in the scratch directory.
 $env:EPIPHANY_CHECK_NAME = 'ada'
 $env:EPIPHANY_CHECK_PASSWORD = 'test-only-' + [Guid]::NewGuid().ToString('N')
 
-if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { throw "port $port is in use; stop the server that has it first" }
-New-Item -ItemType Directory $directory | Out-Null
-Copy-Item -Recurse "$repo\crates\epiphany-core\tests\fixtures\model" "$directory\model"
+New-Home
 Set-Content -Encoding ascii "$directory\password.txt" $env:EPIPHANY_CHECK_PASSWORD
 Start-Process -Wait -WindowStyle Hidden $binary -ArgumentList 'user', "`"$directory`"", $env:EPIPHANY_CHECK_NAME -RedirectStandardInput "$directory\password.txt"
 Remove-Item "$directory\password.txt"
 Set-Content -Encoding ascii $log 'started'
 
-$server = $null; $excel = $null; $driver = $null; $excelPid = [uint32]0; $failures = 1
+$driver = $null
 # Excel answers nothing while one of the add-in's windows is open, so every call waits its turn.
 function Excel([scriptblock]$call) {
     for ($tries = 0; $tries -lt 60; $tries++) {
@@ -113,16 +107,8 @@ function Shown([int]$row, [string]$expected) {
     return $text
 }
 try {
-    $server = Start-Process -PassThru -WindowStyle Hidden $binary -ArgumentList 'serve', "`"$directory`"", "127.0.0.1:$port"
-    Start-Sleep -Seconds 2
-    if ($server.HasExited) { throw 'the server did not start' }
-
-    $excel = New-Object -ComObject Excel.Application
-    # Remember which process this instance is, so that only it is ever stopped.
-    Add-Type -Namespace Native -Name Window -MemberDefinition '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);'
-    [void][Native.Window]::GetWindowThreadProcessId([IntPtr]$excel.Hwnd, [ref]$excelPid)
-    $excel.DisplayAlerts = $false
-    "registered: $($excel.RegisterXLL($xll))"
+    Start-Server
+    Start-Excel
     $settings = Join-Path ([string]$excel.ExecuteExcel4Macro('GET.WORKSPACE(23)') -replace '\\Microsoft\\Excel\\XLSTART$', '') 'Epiphany\adapter.json'
     $book = $excel.Workbooks.Add()
     $sheet = $book.Worksheets.Item(1)
@@ -137,6 +123,8 @@ try {
     $checks = [ordered]@{}
     $checks['the window opened, a wrong password was refused, the right one accepted'] = @(Get-Content $log).Count -eq 4
     $checks['a formula answers once signed in'] = (Shown 1 '0') -eq '0'
+    Excel { $sheet.Cells.Item(4, 1).Formula = '=TM1USER("")' }
+    $checks['TM1USER gives the name signed in'] = (Shown 4 $env:EPIPHANY_CHECK_NAME) -eq $env:EPIPHANY_CHECK_NAME
     $checks['the address and the name were saved, not the password'] = [bool](Excel { $excel.ExecuteExcel4Macro("FILES(`"$settings`")") -is [string] })
 
     # Choosing an element: the list of the whole dimension, narrowed to the months with 'ma'.
@@ -155,7 +143,10 @@ try {
     Excel { $excel.Run('Disconnect') } | Out-Null
     # Not asked for again unasked: after Disconnect a refused formula just shows #N/A.
     Excel { $sheet.Cells.Item(2, 1).Formula = $read -f 'Feb' }
-    $checks['after Disconnect a formula is refused'] = (Shown 2 '#N/A') -eq '#N/A'
+    $refused = Shown 2 '#N/A'
+    if ($refused -ne '#N/A') { "after Disconnect the formula shows <$refused>" }
+    $checks['after Disconnect a formula is refused'] = $refused -eq '#N/A'
+    $checks['and TM1USER gives no name'] = (Shown 4 '') -eq ''
 
     $failures = 0
     foreach ($check in $checks.GetEnumerator()) {
@@ -167,16 +158,8 @@ try {
 }
 finally {
     if ($driver -and -not $driver.HasExited) { Stop-Process -Id $driver.Id -Force }
-    if ($excel) {
-        # Signing in saved a settings file; Excel removes it, having written it.
-        try { if ($settings) { [void]$excel.ExecuteExcel4Macro("FILE.DELETE(`"$settings`")") } } catch {}
-        try { $excel.Quit() } catch {}
-        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($excel)
-    }
-    Start-Sleep -Seconds 2
-    if ($excelPid) { Get-Process -Id $excelPid -ErrorAction SilentlyContinue | Where-Object Name -eq 'EXCEL' | Stop-Process -Force -ErrorAction SilentlyContinue }
-    if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-    Start-Sleep -Seconds 1
-    Remove-Item -Recurse -Force $directory -ErrorAction SilentlyContinue
+    # Signing in saved a settings file; Excel removes it, having written it.
+    try { if ($excel -and $settings) { [void]$excel.ExecuteExcel4Macro("FILE.DELETE(`"$settings`")") } } catch {}
+    Stop-All
 }
 exit $failures

@@ -217,6 +217,27 @@ fn cells_of_a_cube_with_rules_read_together_equal_cells_read_one_by_one() {
         assert_eq!(read(&together, ["World", "Q1", "Tax"]), 110.0);
         assert_eq!(read(&together, ["World", "Q1", "Price"]), 2.5);
         assert_eq!(read(&together, ["World", "Q1", "Profit"]), 100.0);
+
+        // The same inside a transaction that changes revenue, the source of the rule.
+        let (mut together, mut one_by_one) = (together, one_by_one);
+        let change = |at: [&str; 3], value: f64| CellWrite {
+            cube: "Sales".to_owned(),
+            at: at.map(str::to_owned).to_vec(),
+            value: Scalar::Number(value),
+        };
+        let pending = [
+            change(["North", "Jan", "Revenue"], 0.0),
+            change(["South", "Feb", "Revenue"], 30.0),
+            change(["South", "Jan", "Units"], 4.0),
+        ];
+        let (within, alone) = (together.begin(), one_by_one.begin());
+        together.write(Some(within), &pending).unwrap();
+        one_by_one.write(Some(alone), &pending).unwrap();
+        let expected: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(Some(alone), cell))
+            .collect();
+        assert_eq!(together.read_many(Some(within), &cells), expected);
     }
 }
 
@@ -295,6 +316,63 @@ fn a_rule_that_depends_on_itself_is_reported() {
     );
 }
 
+/// A balance carried forward from day to day: each day's is the day before's and its own flow.
+fn carried(days: usize, balance: &str) -> Database {
+    let leaf = |name: String| json!({ "name": name, "type": "numeric" });
+    let days: Vec<Json> = (1..=days).map(|day| leaf(format!("D{day}"))).collect();
+    let before = "([Account].[Balance], [Day].CurrentMember.PrevMember)";
+    let rule = format!(
+        "[Account].[Balance] = {}",
+        balance.replace("BEFORE", before)
+    );
+    let definition = serde_json::from_value(json!({
+        "dimensions": [
+            { "name": "Day", "elements": days },
+            { "name": "Account", "elements": [leaf("Flow".to_owned()), leaf("Balance".to_owned())] }
+        ],
+        "cubes": [{ "name": "Ledger", "dimensions": ["Day", "Account"], "rules": [rule] }]
+    }))
+    .unwrap();
+    let mut database = Database::new(definition).unwrap();
+    write(&mut database, "Ledger", &["D1", "Flow"], 5.0);
+    write(&mut database, "Ledger", &["D3", "Flow"], 2.0);
+    database
+}
+
+#[test]
+fn a_chain_of_rules_is_followed_however_long() {
+    let balance =
+        |database: &Database, day: &str| database.read(None, &cell("Ledger", &[day, "Balance"]));
+    let seven = Ok(Scalar::Number(7.0));
+    let plain = carried(30_000, "[Account].[Flow] + BEFORE");
+    assert_eq!(balance(&plain, "D3"), seven);
+    // Far more days than can be worked out one inside another.
+    assert_eq!(balance(&plain, "D30000"), seven);
+    assert_eq!(balance(&plain, "D15000"), seven);
+    let sum = "SELECT {[Day].[D29999], [Day].[D30000]} ON COLUMNS FROM [Ledger] WHERE [Account].[Balance]";
+    let result = plain.query(None, sum).unwrap();
+    assert_eq!(
+        result.cells,
+        [Some(Scalar::Number(7.0)), Some(Scalar::Number(7.0))]
+    );
+
+    // The same with each day's rule a nest of functions.
+    let nested = format!(
+        "{}[Account].[Flow] + BEFORE{}",
+        "IIF(1 = 1, ".repeat(20),
+        ", 0)".repeat(20)
+    );
+    assert_eq!(balance(&carried(5_000, &nested), "D5000"), seven);
+
+    // A circle too long to see at once is still a circle: the first day's balance is the
+    // last day's.
+    let round = "[Account].[Flow] + ([Account].[Balance], \
+                 IIF([Day].CurrentMember IS [Day].[D1], [Day].[D5000], [Day].CurrentMember.PrevMember))";
+    match balance(&carried(5_000, round), "D9") {
+        Err(Error::Rule(message)) => assert!(message.ends_with("depends on itself"), "{message}"),
+        other => panic!("expected a circle, found {other:?}"),
+    }
+}
 #[test]
 fn bad_rules_and_feeders_make_the_model_invalid() {
     let cases = [
@@ -393,10 +471,39 @@ fn a_cell_that_nothing_feeds_is_left_out_and_can_be_found() {
 }
 
 #[test]
+fn the_cells_nothing_feeds_are_found_a_part_at_a_time() {
+    // Only the north's January is fed: the north's February and the south's January are not.
+    let database = priced(json!([
+        "([Account].[Units], [Region].[North], [Month].[Jan]) => [Account].[Revenue]"
+    ]));
+    let every = database.unfed("Sales", 10).unwrap();
+    let missing = [["North", "Feb", "Revenue"], ["South", "Jan", "Revenue"]];
+    assert_eq!(every, missing.map(|at| cell("Sales", &at)).to_vec());
+    // A cell at a time, each part going on from where the one before stopped, the same come.
+    let (mut found, mut after) = (Vec::new(), None);
+    loop {
+        let part = database.unfed_after("Sales", 1, after.as_deref()).unwrap();
+        found.extend(part.cells);
+        match part.next {
+            Some(next) => after = Some(next),
+            None => break,
+        }
+    }
+    assert_eq!(found, every);
+    // A place the check never gave is refused.
+    let nowhere = database.unfed_after("Sales", 1, Some("nowhere"));
+    assert!(matches!(nowhere, Err(Error::NotFound(_))), "{nowhere:?}");
+}
+
+#[test]
 fn a_cell_explains_how_it_comes_by_its_value() {
     let feeder = "([Account].[Units], [Region].[North]) => [Account].[Revenue]";
     let database = priced(json!([feeder]));
-    let explain = |at: [&str; 3]| database.explain(None, &cell("Sales", &at), true).unwrap();
+    let explain = |at: [&str; 3]| {
+        database
+            .explain(None, &cell("Sales", &at), true, None)
+            .unwrap()
+    };
 
     // A calculated leaf that is fed, and by what.
     let revenue = explain(["North", "Jan", "Revenue"]);
@@ -412,7 +519,9 @@ fn a_cell_explains_how_it_comes_by_its_value() {
             "fed_by": [{
                 "feeder": { "number": 1, "text": feeder },
                 "from": { "cube": "Sales", "at": ["North", "Jan", "Units"] }
-            }]
+            }],
+            "invalid": [],
+            "detail": []
         })
     );
     // A calculated leaf that nothing feeds.
@@ -433,13 +542,18 @@ fn a_cell_explains_how_it_comes_by_its_value() {
         serde_json::to_value(&total).unwrap(),
         json!({
             "value": 50.0, "kind": "consolidated", "stored": null, "writable": false,
-            "rule": null, "fed": null, "fed_by": []
+            "rule": null, "fed": null, "fed_by": [], "invalid": [], "detail": []
         })
     );
     // In a cube that is not fed, nothing is said about feeding.
     let unfed = priced(json!([]));
     let revenue = unfed
-        .explain(None, &cell("Sales", &["North", "Jan", "Revenue"]), true)
+        .explain(
+            None,
+            &cell("Sales", &["North", "Jan", "Revenue"]),
+            true,
+            None,
+        )
         .unwrap();
     assert_eq!(
         (revenue.fed, revenue.writable, revenue.value),
@@ -494,7 +608,7 @@ fn feeders_reach_consolidations_other_cubes_and_further_feeders() {
 }
 
 /// On random cubes with a rule over a random leaf, a fully fed cube and an unfed one agree on
-/// every cell, and both agree with working the rule out by hand.
+/// every cell, read one by one or all together.
 #[test]
 fn fed_and_unfed_cubes_agree_on_random_data() {
     for seed in 0..12 {
@@ -513,9 +627,13 @@ fn fed_and_unfed_cubes_agree_on_random_data() {
             model["cubes"][0]["feeders"] = feeders;
             Database::new(serde_json::from_value(model).unwrap()).unwrap()
         };
+        // Unfed and fed, each twice: once to read cells one by one, once to read them together.
+        let fed = json!(["[d2].[e1] => [d2].[e0]", "[d2].[e2] => [d2].[e0]"]);
         let mut databases = [
             with(json!([])),
-            with(json!(["[d2].[e1] => [d2].[e0]", "[d2].[e2] => [d2].[e0]"])),
+            with(fed.clone()),
+            with(json!([])),
+            with(fed),
         ];
         let mut writes = Vec::new();
         for _ in 0..30 {
@@ -537,20 +655,40 @@ fn fed_and_unfed_cubes_agree_on_random_data() {
             .map(|id| format!("e{id}"))
             .chain(["all".to_owned()])
             .collect();
+        let mut cells = Vec::new();
         for first in &names {
             for second in &names {
                 for third in &names {
-                    let cell = CellRef {
+                    cells.push(CellRef {
                         cube: "C".to_owned(),
                         at: vec![first.clone(), second.clone(), third.clone()],
-                    };
-                    let [unfed, fed] = databases
-                        .each_ref()
-                        .map(|database| database.read(None, &cell));
-                    assert_eq!(fed, unfed, "seed {seed} at {:?}", cell.at);
+                    });
                 }
             }
         }
-        assert_eq!(databases[1].unfed("C", 5), Ok(Vec::new()), "seed {seed}");
+        let [unfed, fed, unfed_together, fed_together] = &databases;
+        let one_by_one = |database: &Database| -> Vec<_> {
+            cells.iter().map(|cell| database.read(None, cell)).collect()
+        };
+        let expected = one_by_one(unfed);
+        for (index, cell) in cells.iter().enumerate() {
+            assert_eq!(
+                fed.read(None, cell),
+                expected[index],
+                "seed {seed} at {:?}",
+                cell.at
+            );
+        }
+        assert_eq!(
+            unfed_together.read_many(None, &cells),
+            expected,
+            "seed {seed}"
+        );
+        assert_eq!(
+            fed_together.read_many(None, &cells),
+            expected,
+            "seed {seed}"
+        );
+        assert_eq!(fed.unfed("C", 5), Ok(Vec::new()), "seed {seed}");
     }
 }

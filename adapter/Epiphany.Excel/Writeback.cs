@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using ExcelDna.Integration;
@@ -9,9 +8,11 @@ using Microsoft.Office.Interop.Excel;
 namespace Epiphany.Excel
 {
     /// <summary>Typing over a cell that holds a DBRW or DBR formula writes the typed value to
-    /// the cube cell the formula reads, and puts the formula back. Two things are remembered
-    /// to do it: where each such formula reads from, noted as it is calculated, and the
-    /// formulas of the selected cells, noted before anything can be typed over them.</summary>
+    /// the cube cell the formula reads, and puts the formula back. One thing is remembered to
+    /// do it: the formulas of the selected cells, noted before anything can be typed over
+    /// them. Which cube cell a formula reads is worked out from the formula when it is typed
+    /// over, and not kept by where the formula stood: rows are inserted and ranges sorted,
+    /// and a note kept by address would then be a note about another formula.</summary>
     internal static class Writeback
     {
         // Selections and changes of more cells than this are left alone.
@@ -24,9 +25,7 @@ namespace Epiphany.Excel
             public string[] At;
         }
 
-        private static readonly object Gate = new object();
-        // By worksheet cell, as "[Book]Sheet!R1C1".
-        private static readonly Dictionary<string, Source> Sources = new Dictionary<string, Source>();
+        // The read formulas of the selected cells, by worksheet cell as "[Book]Sheet!R1C1".
         private static readonly Dictionary<string, string> Held = new Dictionary<string, string>();
         private static Application excel;
 
@@ -40,25 +39,38 @@ namespace Epiphany.Excel
             Hold(excel.ActiveSheet, excel.Selection as Range);
         }
 
-        /// <summary>Notes which cube cell the formula now being calculated reads.</summary>
-        public static void Reads(Connection connection, string cube, string[] at)
+        /// <summary>The cube cell a read formula reads, each argument worked out by Excel as it
+        /// stands on the formula's sheet. Null if an argument has no value just now or names
+        /// an environment that is not known.</summary>
+        private static Source Read(Worksheet sheet, string formula)
         {
-            if (!(XlCall.Excel(XlCall.xlfCaller) is ExcelReference caller))
-                return;
-            var key = Key((string)XlCall.Excel(XlCall.xlSheetNm, caller), caller.RowFirst + 1, caller.ColumnFirst + 1);
-            lock (Gate)
-                Sources[key] = new Source { Connection = connection, Cube = cube, At = at };
-        }
-
-        private static string Key(string sheet, int row, int column)
-        {
-            return sheet + "!R" + row + "C" + column;
+            var arguments = new List<string>();
+            foreach (var argument in Formula.Call(formula).Skip(1))
+            {
+                var value = sheet.Evaluate(argument);
+                if (value is Range range)
+                    value = range.Value2;
+                // A number is a name too, a year say; anything else is an error or nothing.
+                var text = value is double number
+                    ? Numbers.Text(number)
+                    : value as string;
+                if (text == null)
+                    return null;
+                arguments.Add(text);
+            }
+            if (arguments.Count == 0)
+                return null;
+            var cube = arguments[0];
+            var connection = AddIn.For(ref cube);
+            return connection == null
+                ? null
+                : new Source { Connection = connection, Cube = cube, At = arguments.Skip(1).ToArray() };
         }
 
         private static string Key(Range cell)
         {
             var sheet = cell.Worksheet;
-            return Key("[" + ((Workbook)sheet.Parent).Name + "]" + sheet.Name, cell.Row, cell.Column);
+            return "[" + ((Workbook)sheet.Parent).Name + "]" + sheet.Name + "!R" + cell.Row + "C" + cell.Column;
         }
 
         /// <summary>True for a formula that is one DBRW or DBR call and nothing else.</summary>
@@ -100,9 +112,6 @@ namespace Epiphany.Excel
                 {
                     var key = Key(cell);
                     var formula = cell.Formula as string ?? "";
-                    Source source;
-                    lock (Gate)
-                        Sources.TryGetValue(key, out source);
                     if (formula.StartsWith("="))
                     {
                         // The formula itself was entered or edited.
@@ -110,12 +119,16 @@ namespace Epiphany.Excel
                         if (IsRead(formula))
                             Held[key] = formula;
                     }
-                    else if (source != null && Held.TryGetValue(key, out var held))
+                    else if (Held.TryGetValue(key, out var held))
                     {
                         restored.Add(new KeyValuePair<Range, string>(cell, held));
                         var value = cell.Value2;
-                        if (value is double || value is string)
-                            writes.Add(Write(source, value));
+                        if (!(value is double) && !(value is string))
+                            continue;
+                        // A formula whose cube cell cannot be told is put back with nothing
+                        // written, and counted among the values that were not.
+                        var source = Read(cell.Worksheet, held);
+                        writes.Add(source == null ? Task.FromResult<object>(Connection.KeyError) : Write(source, value));
                     }
                 }
                 if (restored.Count == 0)
@@ -140,46 +153,40 @@ namespace Epiphany.Excel
             }
         }
 
-        // What may be typed to spread a value over a consolidation, as TM1's clients have it:
-        // a letter for the method and then the value, "P1200" say.
-        private static readonly Dictionary<char, string> Methods = new Dictionary<char, string>
-        {
-            ['P'] = "proportional", ['S'] = "equal", ['R'] = "repeat",
-        };
-
-        /// <summary>The method and value of a typed spread, or null for anything else.</summary>
-        internal static KeyValuePair<string, double>? Spreading(object typed)
-        {
-            var text = (typed as string ?? "").Trim().ToUpperInvariant();
-            if (text.Length < 2 || !Methods.TryGetValue(text[0], out var method)
-                || !double.TryParse(text.Substring(1), NumberStyles.Float, CultureInfo.InvariantCulture, out var value))
-                return null;
-            return new KeyValuePair<string, double>(method, value);
-        }
-
         /// <summary>Writes a typed value. A number typed into a string cell is written as text,
-        /// and a letter and a number typed over a consolidation spread the number.</summary>
+        /// and a spreading code typed over a consolidation spreads its number.</summary>
         private static async Task<object> Write(Source source, object value)
         {
             // What was typed can be meant in more than one way, and only the server knows which
             // fits the cell. Each is tried in turn until one is taken: a spread, where it has
             // the form of one; the value as typed; and then the number of a spread written to
             // a leaf, or a number written to a string cell as text.
-            var spread = Spreading(value);
+            var spread = SpreadCode.Parse(value);
+            double? comesTo = null;
+            if (spread != null && spread.Relative)
+            {
+                // Added to, taken from or changed by a percentage of what the cell holds, which
+                // is asked for first.
+                var before = await source.Connection.Read(source.Cube, source.At).ConfigureAwait(false);
+                if (before is double held)
+                    comesTo = spread.ComesTo(held);
+            }
+            else if (spread != null)
+                comesTo = spread.Value;
             var answer = (object)Connection.KeyError;
-            if (spread.HasValue)
+            if (comesTo.HasValue)
                 answer = await source.Connection
-                    .Spread(source.Cube, source.At, spread.Value.Value, spread.Value.Key)
+                    .Spread(source.Cube, source.At, comesTo.Value, spread.Method)
                     .ConfigureAwait(false);
             if (Equals(answer, Connection.KeyError))
                 answer = await source.Connection.Write(source.Cube, source.At, value).ConfigureAwait(false);
             if (!Equals(answer, Connection.KeyError))
                 return answer;
             object other = null;
-            if (spread.HasValue)
-                other = spread.Value.Value;
+            if (comesTo.HasValue)
+                other = comesTo.Value;
             else if (value is double number)
-                other = number.ToString("R", CultureInfo.InvariantCulture);
+                other = Numbers.Text(number);
             return other == null
                 ? answer
                 : await source.Connection.Write(source.Cube, source.At, other).ConfigureAwait(false);
@@ -197,7 +204,7 @@ namespace Epiphany.Excel
                 var lost = answers.Count(answer => ReferenceEquals(answer, Connection.Unavailable));
                 var message = refused + lost == 0 ? null
                     : "Epiphany: " + (refused + lost) + " of " + answers.Length + " values not written ("
-                        + (refused > 0 ? "the cell is consolidated, calculated or of another type" : "no connection") + ")";
+                        + (refused > 0 ? "the cell is consolidated, calculated, of another type or not to be found" : "no connection") + ")";
                 ExcelAsyncUtil.QueueAsMacro(() =>
                 {
                     excel.StatusBar = message ?? AddIn.Standing;

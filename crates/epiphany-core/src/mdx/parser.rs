@@ -12,6 +12,9 @@ pub(crate) enum Expr {
     Name(Vec<String>),
     /// A name already found to be an element of the dimension at a position in the cube.
     Member(usize, ElementId),
+    /// A name already found to be a calculated member of the dimension at a position in the
+    /// cube: the position, and the member's place among those of the query.
+    Calculated(usize, usize),
     /// A name already found to be the dimension at a position in the cube.
     Dimension(usize),
     /// `{ a, b, ... }`
@@ -45,6 +48,9 @@ pub(super) struct MemberDef {
     /// Where a cell has several calculated members, the highest is calculated last, over
     /// the results of the others.
     pub(super) solve_order: f64,
+    /// The pattern, as `Format` takes one, that the cells the member decides are written out
+    /// by.
+    pub(super) format: Option<Expr>,
 }
 
 #[derive(Debug)]
@@ -62,16 +68,21 @@ const AXES: [&str; 5] = ["COLUMNS", "ROWS", "PAGES", "CHAPTERS", "SECTIONS"];
 
 /// Binary operators from loosest to tightest. `NOT` sits between `AND` and the comparisons.
 const LEVELS: [&[&str]; 5] = [
-    &["OR"],
+    &["OR", "XOR"],
     &["AND"],
-    &["=", "<>", "<=", ">=", "<", ">"],
+    &["=", "<>", "<=", ">=", "<", ">", "IS"],
     &["+", "-"],
     &["*", "/"],
 ];
 const COMPARISONS: usize = 2;
 
 /// The words that may follow a dot without being part of a name.
-const METHODS: [&str; 21] = [
+const METHODS: [&str; 27] = [
+    "DIMENSION",
+    "HIERARCHY",
+    "DEFAULTMEMBER",
+    "FIRSTSIBLING",
+    "LASTSIBLING",
     "LEVEL",
     "LEVELS",
     "ORDINAL",
@@ -89,22 +100,34 @@ const METHODS: [&str; 21] = [
     "CURRENTMEMBER",
     "NAME",
     "UNIQUENAME",
+    "CAPTION",
     "VALUE",
     "PROPERTIES",
     "FIRSTCHILD",
     "LASTCHILD",
 ];
 
+/// How deeply expressions may sit inside one another. Reading and working out an expression
+/// both go as deep as it does, and text of a few thousand brackets would otherwise run the
+/// thread out of stack and take the server with it.
+const DEEPEST: usize = 32;
+
 pub(super) struct Parser {
     tokens: Vec<(Token, usize)>,
     next: usize,
+    /// How many expressions are being read inside one another.
+    depth: usize,
 }
 
 type Parsed<T> = Result<T, MdxError>;
 
 impl Parser {
     pub(super) fn new(tokens: Vec<(Token, usize)>) -> Self {
-        Self { tokens, next: 0 }
+        Self {
+            tokens,
+            next: 0,
+            depth: 0,
+        }
     }
 
     pub(super) fn query(mut self) -> Parsed<Query> {
@@ -117,9 +140,9 @@ impl Parser {
                     };
                     self.expect_word("AS")?;
                     let expression = self.definition()?;
-                    // Properties follow as `, NAME = value`. Only the solve order matters
-                    // here; the others, such as a format, are accepted and ignored.
-                    let mut solve_order = 0.0;
+                    // Properties follow as `, NAME = value`. The solve order and the format
+                    // matter here; the others, such as a colour, are accepted and ignored.
+                    let (mut solve_order, mut format) = (0.0, None);
                     while self.symbol(",") {
                         let Token::Word(property) = self.advance() else {
                             return Err(self.error("expected a property name"));
@@ -131,12 +154,15 @@ impl Parser {
                                 Expr::Number(number) => number,
                                 _ => return Err(self.error("SOLVE_ORDER takes a number")),
                             };
+                        } else if property.eq_ignore_ascii_case("FORMAT_STRING") {
+                            format = Some(value);
                         }
                     }
                     members.push(MemberDef {
                         name,
                         expression,
                         solve_order,
+                        format,
                     });
                 } else if self.word("SET") {
                     let Expr::Name(name) = self.name()? else {
@@ -168,6 +194,21 @@ impl Parser {
             true => Some(self.expression()?),
             false => None,
         };
+        // The properties of each cell a tool asks for, as Excel does: each cell's value is
+        // given whatever is asked.
+        if self.word("CELL") {
+            if !self.word("PROPERTIES") {
+                return Err(self.error("expected PROPERTIES after CELL"));
+            }
+            loop {
+                if !matches!(self.advance(), Token::Word(_)) {
+                    return Err(self.error("expected the name of a cell property"));
+                }
+                if !self.symbol(",") {
+                    break;
+                }
+            }
+        }
         self.expect_end()?;
         Ok(Query {
             members,
@@ -283,7 +324,8 @@ impl Parser {
             return self.unary();
         }
         if level == COMPARISONS && self.word("NOT") {
-            return Ok(Expr::Not(Box::new(self.binary(level)?)));
+            let operand = self.nested(|parser| parser.binary(COMPARISONS))?;
+            return Ok(Expr::Not(Box::new(operand)));
         }
         let mut left = self.binary(level + 1)?;
         while let Some(operator) = self.operator(LEVELS[level]) {
@@ -307,7 +349,23 @@ impl Parser {
         found
     }
 
+    /// Reads an expression that sits inside another, one level further down. Every way of
+    /// putting one expression inside another comes through here.
+    fn nested(&mut self, read: fn(&mut Self) -> Parsed<Expr>) -> Parsed<Expr> {
+        if self.depth == DEEPEST {
+            return Err(self.error(&format!("expressions are nested more than {DEEPEST} deep")));
+        }
+        self.depth += 1;
+        let expression = read(self);
+        self.depth -= 1;
+        expression
+    }
+
     fn unary(&mut self) -> Parsed<Expr> {
+        self.nested(Self::operand)
+    }
+
+    fn operand(&mut self) -> Parsed<Expr> {
         if self.symbol("-") {
             return Ok(Expr::Negate(Box::new(self.unary()?)));
         }
@@ -355,13 +413,51 @@ impl Parser {
                     _ => Ok(Expr::Tuple(items)),
                 }
             }
+            Token::Word(word) if word.eq_ignore_ascii_case("CASE") => {
+                self.advance();
+                self.case()
+            }
+            Token::Word(word) if !called && word.eq_ignore_ascii_case("NULL") => {
+                self.advance();
+                Ok(Expr::Call("NULL".to_owned(), Vec::new()))
+            }
             Token::Word(function) if called => {
                 self.next += 2;
-                Ok(Expr::Call(function.to_uppercase(), self.list(")")?))
+                Ok(Expr::Call(function.to_uppercase(), self.arguments()?))
             }
             Token::Word(_) | Token::Name(_) => self.name(),
             _ => Err(self.error("expected an expression")),
         }
+    }
+
+    /// What follows `CASE`: either `WHEN condition THEN value ...`, or a value and then
+    /// `WHEN other THEN value ...` for what it may equal, with or without an `ELSE value`,
+    /// as far as `END`. It becomes a call whose arguments are each condition and its value
+    /// in turn, and last the value of `ELSE` if there is one.
+    fn case(&mut self) -> Parsed<Expr> {
+        let subject = match matches!(self.peek(), Token::Word(word) if word.eq_ignore_ascii_case("WHEN"))
+        {
+            true => None,
+            false => Some(self.expression()?),
+        };
+        let mut arguments = Vec::new();
+        while self.word("WHEN") {
+            let when = self.expression()?;
+            arguments.push(match &subject {
+                Some(subject) => Expr::Binary(Box::new(subject.clone()), "=", Box::new(when)),
+                None => when,
+            });
+            self.expect_word("THEN")?;
+            arguments.push(self.expression()?);
+        }
+        if arguments.is_empty() {
+            return Err(self.error("expected WHEN"));
+        }
+        if self.word("ELSE") {
+            arguments.push(self.expression()?);
+        }
+        self.expect_word("END")?;
+        Ok(Expr::Call("CASE".to_owned(), arguments))
     }
 
     /// A dotted name. It stops before a dot that introduces a method.
@@ -386,6 +482,23 @@ impl Parser {
     }
 
     /// Comma-separated expressions up to a closing symbol, which is consumed.
+    /// A function's arguments, as `list` reads them, but that one left out between commas, as
+    /// in `DrillDownLevelTop(set, 2, , value)`, is NULL, as MDX reads it.
+    fn arguments(&mut self) -> Parsed<Vec<Expr>> {
+        let mut items = Vec::new();
+        while !self.symbol(")") {
+            if !items.is_empty() {
+                self.expect_symbol(",")?;
+            }
+            let left_out = !items.is_empty() && matches!(self.peek(), Token::Symbol("," | ")"));
+            items.push(match left_out {
+                true => Expr::Call("NULL".to_owned(), Vec::new()),
+                false => self.expression()?,
+            });
+        }
+        Ok(items)
+    }
+
     fn list(&mut self, close: &'static str) -> Parsed<Vec<Expr>> {
         let mut items = Vec::new();
         while !self.symbol(close) {

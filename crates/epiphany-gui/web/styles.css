@@ -1,0 +1,1520 @@
+/* Epiphany: design tokens, then layout, then components. */
+
+:root {
+  color-scheme: light;
+  --font: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --mono: "Cascadia Code", "JetBrains Mono", ui-monospace, "SF Mono", Consolas, monospace;
+
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --surface-2: #f1f3f6;
+  --surface-3: #e8ebf0;
+  --line: #e2e6ec;
+  --line-strong: #cdd3dc;
+  --text: #121826;
+  --text-2: #4a5466;
+  --text-3: #5f6878;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef0ff;
+  --accent-text: #3730a3;
+  --on-accent: #ffffff;
+  --good: #0f7b4a;
+  --good-soft: #e4f6ec;
+  --warn: #9a5b00;
+  --warn-soft: #fff4dc;
+  --bad: #c0262d;
+  --bad-soft: #fdecec;
+  --total: #f3f5fb;
+  --total-strong: #e9edf9;
+  --focus: #4f46e5;
+  --shadow-1: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 8%);
+  --shadow-2: 0 4px 8px -2px rgb(16 24 40 / 10%), 0 2px 4px -2px rgb(16 24 40 / 6%);
+  --shadow-3: 0 20px 40px -12px rgb(16 24 40 / 25%);
+
+  --radius-s: 6px;
+  --radius: 8px;
+  --radius-l: 12px;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 20px; --s6: 24px; --s8: 32px;
+  --text-xs: 12px; --text-s: 13px; --text-m: 14px; --text-l: 16px; --text-xl: 20px; --text-2xl: 24px;
+  --bar: 56px;
+  --nav: 232px;
+  --nav-narrow: 64px;
+  --ease: cubic-bezier(.2, .8, .2, 1);
+  /* Controls side by side share a height: buttons, text boxes and choices alike. */
+  --control: 36px;
+  --control-small: 32px;
+  /* The arrow of every choice, drawn the same way whatever the browser draws. */
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%235f6878' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238a94a6' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  --bg: #0d1117;
+  --surface: #151b24;
+  --surface-2: #1b2230;
+  --surface-3: #232c3b;
+  --line: #273041;
+  --line-strong: #364155;
+  --text: #e7ebf2;
+  --text-2: #b3bccb;
+  --text-3: #8a94a6;
+  --accent: #8b87ff;
+  --accent-hover: #a5a2ff;
+  --accent-soft: #24234a;
+  --accent-text: #c7c5ff;
+  --on-accent: #0d1117;
+  --good: #4cc38a;
+  --good-soft: #13291f;
+  --warn: #f0b44c;
+  --warn-soft: #2e2412;
+  --bad: #ff6b6b;
+  --bad-soft: #351a1c;
+  --total: #18202c;
+  --total-strong: #1e2838;
+  --focus: #a5a2ff;
+  --shadow-1: 0 1px 2px rgb(0 0 0 / 40%);
+  --shadow-2: 0 6px 16px -4px rgb(0 0 0 / 50%);
+  --shadow-3: 0 24px 48px -12px rgb(0 0 0 / 60%);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 400 var(--text-m)/1.45 var(--font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
+/* No word left alone on a paragraph's last line, and a heading's lines even, where the
+   browser can; what is kept to one line stays so. */
+p { text-wrap-style: pretty; }
+h1, h2, h3 { text-wrap-style: balance; }
+h1 { font-size: var(--text-2xl); }
+h2 { font-size: var(--text-xl); }
+h3 { font-size: var(--text-l); }
+p { margin: 0; }
+/* A link in running text, a paragraph's or a notice's, in the accent's colour for text: the
+   browser's own blue is hardly to be seen on the dark theme. */
+:is(p, .notice) a:not([class]) { color: var(--accent-text); text-underline-offset: 2px; }
+button, input, select, textarea { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--radius-s); }
+::selection { background: var(--accent-soft); }
+.visually-hidden { position: absolute !important; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* Hidden is hidden, whatever display a class gives: a button's own display left a hidden
+   one shown. */
+[hidden] { display: none !important; }
+/* A moment is said as long ago as it was on screen, and as the moment itself on paper. */
+time > .exact { display: none; }
+.muted { color: var(--text-3); }
+.mono { font-family: var(--mono); font-size: var(--text-s); }
+.num { font-variant-numeric: tabular-nums; }
+
+/*
+ * Without motion, what moves stands still: an animation once, at once, rather than flickering
+ * forever, and a change of style at once, with no transition at all. (The shortest transition
+ * would still be one, of every property, drawn for a frame as it begins: a hover's line drawn
+ * at the top of a cell, then at the bottom.)
+ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0s !important; scroll-behavior: auto !important; }
+}
+
+/* ---- Shell ---- */
+
+.shell {
+  display: grid;
+  grid-template: "bar bar" var(--bar) "nav main" 1fr / var(--nav) 1fr;
+  height: 100vh;
+  transition: grid-template-columns .2s var(--ease);
+}
+.shell[data-nav="narrow"] { grid-template-columns: var(--nav-narrow) 1fr; }
+/* The first stop of the keys, out of sight until it has them. */
+.skip {
+  position: fixed; top: var(--s2); left: var(--s2); z-index: 200;
+  padding: var(--s2) var(--s4); border: 1px solid var(--line-strong); border-radius: var(--radius-s);
+  background: var(--surface); color: var(--text); font-weight: 600; text-decoration: none;
+  box-shadow: var(--shadow-2); transform: translateY(calc(-100% - var(--s4)));
+}
+.skip:focus { transform: none; }
+/* Reached from the skip link, the page takes the keys without a ring around all of it. */
+.main:focus { outline: none; }
+
+.bar {
+  grid-area: bar;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 0 var(--s4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+  z-index: 3;
+}
+.brand { display: flex; align-items: center; gap: var(--s2); font-weight: 650; font-size: var(--text-l); letter-spacing: -0.02em; text-decoration: none; color: var(--text); }
+.brand img { width: 28px; height: 28px; }
+.bar .spacer { flex: 1; }
+
+.search-button {
+  display: flex; align-items: center; gap: var(--s2);
+  width: min(420px, 40vw);
+  height: 36px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-3);
+  cursor: pointer;
+}
+.search-button:hover { border-color: var(--line-strong); }
+.search-button span { flex: 1; text-align: left; }
+kbd {
+  font: 500 11px/1 var(--font);
+  padding: 3px 6px;
+  border: 1px solid var(--line-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-2);
+}
+
+.status { display: inline-flex; align-items: center; gap: 6px; font-size: var(--text-s); color: var(--text-2); }
+.status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
+.status[data-state="down"]::before { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+
+.nav {
+  grid-area: nav;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s3) var(--s2);
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  overflow: hidden auto;
+}
+.nav a {
+  display: flex; align-items: center; gap: var(--s3);
+  height: 38px;
+  padding: 0 var(--s3);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  text-decoration: none;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.nav a:hover { background: var(--surface-2); color: var(--text); }
+.nav a[aria-current="page"] { background: var(--accent-soft); color: var(--accent-text); }
+.nav a svg { flex: none; }
+.nav .section { margin: var(--s4) var(--s3) var(--s1); font-size: var(--text-xs); font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .06em; }
+.shell[data-nav="narrow"] .nav .label, .shell[data-nav="narrow"] .nav .section { display: none; }
+.shell[data-nav="narrow"] .nav a { justify-content: center; padding: 0; }
+.nav .grow { flex: 1; }
+
+main.main { grid-area: main; overflow: hidden; display: flex; flex-direction: column; min-width: 0; }
+.page { flex: 1; overflow: auto; padding: var(--s6) var(--s8); }
+/* The title takes what room is left beside the buttons, and at least enough to be read: where
+   there is not that much, the buttons go beneath it rather than squeeze it a word to a line. */
+.page-head { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--s4); margin-bottom: var(--s5); }
+.page-head .grow { flex: 1 1 16rem; }
+.page-head p { color: var(--text-2); margin-top: var(--s1); }
+.dash-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s1) var(--s3); }
+/* How often the tiles run again by themselves: a clock and its chevron, close; running so,
+   the clock in the accent. */
+.button.pace { gap: var(--s1); padding: 0 var(--s2) 0 var(--s3); }
+.button.pace.on > svg:first-child { color: var(--accent-text); }
+
+@media (max-width: 900px) {
+  .shell { grid-template-columns: var(--nav-narrow) 1fr; }
+  .shell .nav .label, .shell .nav .section { display: none; }
+  .shell .nav a { justify-content: center; padding: 0; }
+  .page { padding: var(--s4); }
+  .search-button span, .search-button kbd { display: none; }
+  .search-button { width: 36px; justify-content: center; padding: 0; }
+}
+
+/* ---- Controls ---- */
+
+.button {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s2);
+  height: var(--control);
+  padding: 0 var(--s4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.button:hover { background: var(--surface-2); }
+.button:disabled { opacity: .5; cursor: not-allowed; }
+.button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.button.danger { color: var(--bad); }
+.button.danger:hover { background: var(--bad-soft); border-color: var(--bad); }
+.button.quiet { border-color: transparent; background: transparent; color: var(--text-2); }
+.button.quiet:hover { background: var(--surface-2); color: var(--text); }
+.button.small { height: var(--control-small); padding: 0 var(--s3); font-size: var(--text-s); }
+.button.icon { width: var(--control); padding: 0; }
+.button.small.icon { width: var(--control-small); }
+.button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field label { font-size: var(--text-s); font-weight: 550; color: var(--text-2); }
+.input, .select, .textarea {
+  height: var(--control);
+  padding: 0 var(--s3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  transition: border-color .12s, box-shadow .12s;
+}
+.textarea { height: auto; padding: var(--s3); resize: vertical; font-family: var(--mono); font-size: var(--text-s); line-height: 1.6; }
+/* Words to read, a comment or a tile's text, in the page's type; queries and lists in code's. */
+.textarea.words { font-family: inherit; font-size: var(--text-m); line-height: 1.5; }
+/* The arrow stands as far in from the right as the text does from the left. */
+.select { appearance: none; padding-right: 38px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right var(--s3) center; background-size: 14px; text-overflow: ellipsis; cursor: pointer; }
+/* The open list's choices, given room from its edges. */
+.select option { padding: 6px var(--s4) 6px var(--s3); }
+.input:hover, .select:hover, .textarea:hover { border-color: var(--text-3); }
+.input:focus, .select:focus, .textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.input[aria-invalid="true"] { border-color: var(--bad); }
+/* A field a dialog refused, until it is changed: in the colour of the refusal beneath it, with
+   the ring of the keys in that colour while it has them. */
+:is(.input, .select, .textarea, .button)[data-refused] { border-color: var(--bad); }
+:is(.input, .select, .textarea, .button)[data-refused]:focus { box-shadow: 0 0 0 3px var(--bad-soft); }
+input[type="checkbox"][data-refused] { outline: 2px solid var(--bad); outline-offset: 2px; }
+/* A password field and, inside its end, the button that shows what was typed. */
+.revealable { display: flex; flex-direction: column; }
+.reveal-field { position: relative; display: flex; }
+.reveal-field > .input { flex: 1; min-width: 0; padding-right: 40px; }
+.reveal-field > .reveal { position: absolute; top: 50%; right: 4px; display: grid; place-items: center; width: 30px; height: 28px; padding: 0; border: 0; border-radius: var(--radius-s); background: none; color: var(--text-3); cursor: pointer; transform: translateY(-50%); }
+.reveal-field > .reveal:hover { color: var(--text); background: var(--surface-2); }
+/* Said only while it is so; there, and empty, the rest of the time, for a screen reader to hear it come. */
+.revealable > .caps:not(:empty) { margin-top: 4px; color: var(--warn); }
+.hint { font-size: var(--text-xs); color: var(--text-3); }
+.error-text { font-size: var(--text-s); color: var(--bad); }
+
+.search { position: relative; }
+.search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); color: var(--text-3); pointer-events: none; }
+.search .input { width: 100%; padding-left: 34px; height: var(--control-small); }
+/* The search's own button that empties it, drawn as the application's icons are: a small
+   cross, faint until it is pointed at. */
+.search .input::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 10px;
+  height: 10px;
+  margin-left: var(--s1);
+  cursor: pointer;
+  background: currentColor;
+  opacity: .5;
+  mask: linear-gradient(45deg, transparent 44%, #000 44%, #000 56%, transparent 56%), linear-gradient(-45deg, transparent 44%, #000 44%, #000 56%, transparent 56%);
+}
+.search .input::-webkit-search-cancel-button:hover { opacity: .85; }
+/* Empty, it takes no room the words written in its place could have. */
+.search .input:placeholder-shown::-webkit-search-cancel-button { display: none; }
+/* Boxes and choices ticked in the application's colour, not the browser's. */
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  height: 22px; padding: 0 8px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+}
+.badge.accent { background: var(--accent-soft); color: var(--accent-text); }
+.badge.good { background: var(--good-soft); color: var(--good); }
+.badge.warn { background: var(--warn-soft); color: var(--warn); }
+.badge.bad { background: var(--bad-soft); color: var(--bad); }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  box-shadow: var(--shadow-1);
+}
+.card-head { display: flex; align-items: center; gap: var(--s3); padding: var(--s4) var(--s5); border-bottom: 1px solid var(--line); }
+.card-head .grow { flex: 1; }
+.card-body { padding: var(--s5); }
+
+.toolbar { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.toolbar .divider { width: 1px; height: 24px; background: var(--line); margin: 0 var(--s1); }
+.toolbar .grow { flex: 1; }
+
+.segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius); }
+.segmented button { height: 28px; padding: 0 var(--s3); border: 0; border-radius: var(--radius-s); background: transparent; color: var(--text-2); font-weight: 550; font-size: var(--text-s); cursor: pointer; }
+.segmented button[aria-selected="true"], .segmented button[aria-checked="true"] { background: var(--surface); color: var(--text); box-shadow: var(--shadow-1); }
+
+/* ---- Feedback ---- */
+
+.notices { position: fixed; right: var(--s5); bottom: 96px; display: flex; flex-direction: column; gap: var(--s2); z-index: 50; }
+.notice {
+  display: flex; align-items: flex-start; gap: var(--s3);
+  min-width: 300px; max-width: 440px;
+  padding: var(--s3) var(--s4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  animation: rise .2s var(--ease);
+}
+.notice.good { border-left-color: var(--good); }
+.notice.bad { border-left-color: var(--bad); }
+.notice p { flex: 1; }
+@keyframes rise { from { transform: translateY(8px); opacity: 0; } }
+
+/* Together in the middle of whatever room it is given, its lines not spread over it. */
+.empty { display: grid; place-items: center; align-content: center; gap: var(--s3); padding: var(--s8); text-align: center; color: var(--text-2); }
+.empty > svg { color: var(--text-3); }
+.empty h3 { color: var(--text); }
+.empty p { max-width: 420px; }
+
+.skeleton { background: linear-gradient(90deg, var(--surface-2), var(--surface-3), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.2s infinite; border-radius: var(--radius-s); }
+@keyframes shimmer { to { background-position: -200% 0; } }
+.spinner { width: 18px; height: 18px; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.banner { display: flex; gap: var(--s3); align-items: center; padding: var(--s3) var(--s4); border-radius: var(--radius); background: var(--warn-soft); color: var(--warn); font-weight: 500; }
+.banner.bad { background: var(--bad-soft); color: var(--bad); }
+
+/* ---- Dialogs and menus ---- */
+
+/* A dialog is as wide as its fields, lists and tables need, between a width a form reads well
+   at and the window's. Its paragraphs fill that width and wrap within it, never widening it. */
+dialog {
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-l);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-3);
+  width: fit-content;
+  min-width: min(440px, calc(100vw - 32px));
+  max-width: min(920px, calc(100vw - 32px));
+}
+.dialog-body p { contain: inline-size; text-wrap: pretty; }
+dialog::backdrop { background: rgb(8 12 20 / 45%); backdrop-filter: blur(2px); }
+dialog[open] { animation: pop .16s var(--ease); }
+@keyframes pop { from { transform: translateY(6px) scale(.98); opacity: 0; } }
+.dialog-head { display: flex; align-items: center; gap: var(--s3); padding: var(--s4) var(--s5); border-bottom: 1px solid var(--line); }
+.dialog-head h2 { flex: 1; font-size: var(--text-l); }
+.dialog-body { padding: var(--s5); display: flex; flex-direction: column; gap: var(--s4); max-height: 65vh; overflow: auto; }
+.dialog-foot { display: flex; justify-content: flex-end; gap: var(--s2); padding: var(--s4) var(--s5); border-top: 1px solid var(--line); background: var(--surface-2); border-radius: 0 0 var(--radius-l) var(--radius-l); }
+
+.palette { width: min(620px, calc(100vw - 32px)); max-width: none; margin-top: 12vh; }
+.palette .finder { gap: 0; }
+.palette .search .input { height: 52px; padding: 0 var(--s5) 0 46px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; font-size: var(--text-l); box-shadow: none; outline: none; }
+.palette .search > svg { left: 18px; }
+.palette .finder-list { max-height: 50vh; margin: var(--s2); }
+.palette .kind { flex: none; font-size: var(--text-xs); color: var(--text-3); }
+.palette .finder-none { padding: var(--s5); }
+
+.menu {
+  position: fixed;
+  min-width: 220px;
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: var(--s1);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+  z-index: 60;
+}
+.menu button, .finder-actions button { display: flex; width: 100%; align-items: center; gap: var(--s3); height: 34px; padding: 0 var(--s3); border: 0; border-radius: var(--radius-s); background: none; text-align: left; cursor: pointer; color: var(--text); }
+.menu button:hover, .menu button:focus-visible, .finder-actions button:hover, .finder-actions button:focus-visible { background: var(--surface-2); outline: none; }
+.menu button:disabled, .finder-actions button:disabled { color: var(--text-3); cursor: default; background: none; }
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: var(--s1) 0; }
+.menu .menu-label { padding: var(--s2) var(--s3) var(--s1); font-size: var(--text-xs); font-weight: 600; color: var(--text-3); }
+/* A menu, or a list to find in, opened beside its button unfolds from it: downwards, or
+   upwards where it opens above. */
+.menu, .finder-panel { transform-origin: top left; animation: unfold .12s var(--ease); }
+.menu.above, .finder-panel.above { transform-origin: bottom left; animation-name: unfold-up; }
+@keyframes unfold { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+@keyframes unfold-up { from { opacity: 0; transform: translateY(4px) scale(.98); } }
+
+/* ---- Finding one among many: a search over a list drawn where it is seen ---- */
+
+.finder { display: flex; flex-direction: column; gap: var(--s2); min-height: 0; }
+.finder-list { position: relative; min-height: 0; max-height: min(56vh, 520px); overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+.finder-list .rows > * { height: var(--row, 36px); }
+.finder-item { display: flex; align-items: center; gap: var(--s3); padding: 0 var(--s3); border-radius: var(--radius-s); color: var(--text-2); text-decoration: none; white-space: nowrap; cursor: pointer; user-select: none; }
+/* The row the keys are on is marked while they are in its list, and the row the pointer is
+   on always: a list on a page, its search not yet in use, marks nothing to begin with. */
+.finder:focus-within .finder-item.active, .finder-item.active:hover { background: var(--accent-soft); color: var(--accent-text); }
+/* The one there is now: in the text's own colour, marked as chosen. */
+.finder-item.current { color: var(--text); font-weight: 600; }
+.finder-now { flex: none; display: inline-flex; width: 14px; color: var(--accent-text); }
+.finder-item > svg { flex: none; }
+.finder-item .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.finder-item mark { padding: 0; background: none; color: inherit; font-weight: 700; }
+.finder-detail { flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis; font-size: var(--text-xs); font-weight: 400; color: var(--text-3); }
+.finder-group { display: flex; align-items: flex-end; padding: 0 var(--s3) 6px; font-size: var(--text-xs); font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--text-3); }
+.finder-tick { flex: none; display: grid; place-items: center; width: 16px; height: 16px; border: 1.5px solid var(--line-strong); border-radius: 4px; color: transparent; }
+.finder-item[aria-selected="true"] .finder-tick { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
+.finder-none { margin: 0; padding: var(--s4); text-align: center; color: var(--text-3); }
+.finder-panel { position: fixed; z-index: 60; display: flex; flex-direction: column; gap: var(--s2); width: min(400px, calc(100vw - 16px)); padding: var(--s2); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-2); }
+.finder-actions { display: flex; flex-direction: column; padding-top: var(--s1); border-top: 1px solid var(--line); }
+/* A choice among many, as a select is, its chosen name as long as there is room for. */
+/* A chooser stands for a select, and looks as one: its text as a field's, the select's
+   chevron at its end, pointed at or not; in a toolbar, as heavy as the buttons beside it. */
+.chooser, .chooser:hover { background-image: var(--chevron); background-repeat: no-repeat; background-position: right var(--s3) center; background-size: 14px; }
+.chooser { justify-content: flex-start; max-width: min(360px, 100%); padding: 0 38px 0 var(--s3); font-weight: 400; }
+.chooser:hover { background-color: var(--surface-2); }
+.chooser.small { padding-right: 32px; background-position: right 10px center; background-size: 12px; }
+.chooser .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.toolbar > .chooser { max-width: min(360px, 40vw); font-weight: 500; }
+
+/* ---- Sign-in ---- */
+
+.sign-in { min-height: 100vh; display: grid; place-items: center; padding: var(--s6); background: radial-gradient(1200px 600px at 10% -10%, var(--accent-soft), transparent 60%), var(--bg); }
+.sign-in .card { width: min(400px, 100%); padding: var(--s8); display: flex; flex-direction: column; gap: var(--s5); box-shadow: var(--shadow-2); }
+.sign-in .brand { font-size: var(--text-xl); }
+.sign-in .brand img { width: 36px; height: 36px; }
+.sign-in form { display: flex; flex-direction: column; gap: var(--s4); }
+.sign-in .button { height: 40px; }
+
+/* ---- Lists and tables ---- */
+
+.table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: var(--text-m); }
+.table th { position: sticky; top: 0; text-align: left; font-size: var(--text-xs); font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; padding: var(--s3) var(--s4); background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.table td { padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line); }
+.table tr:last-child td { border-bottom: 0; }
+.table tbody tr:hover td { background: var(--surface-2); }
+.table .actions { text-align: right; white-space: nowrap; }
+
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); gap: var(--s4); }
+.tile { padding: var(--s5); display: flex; flex-direction: column; gap: var(--s2); text-decoration: none; color: inherit; transition: border-color .12s, box-shadow .12s, transform .12s; }
+a.tile:hover { border-color: var(--accent); box-shadow: var(--shadow-2); transform: translateY(-1px); }
+/* Figures stand in a row where they fit there at 150 pixels each, as many as they are, rather
+   than four to a row with one left over, or two above two; each figure as large as its
+   tile has room for, up to its full size. */
+.grid-cards.stats { grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr)); }
+.stats > .tile { container-type: inline-size; }
+.stats .stat { font-size: min(28px, 18cqi); }
+.tile .tile-icon { width: 36px; height: 36px; display: grid; place-items: center; border-radius: var(--radius); background: var(--accent-soft); color: var(--accent-text); }
+.stat { font-size: 28px; font-weight: 650; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.menu .menu-gap { width: 16px; flex: none; }
+.section-title { margin: var(--s8) 0 var(--s4); }
+/* The places visited lately: a row each, its name as long as it needs and when beside it. */
+.recent { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.recent a { display: flex; align-items: center; gap: var(--s3); min-height: 44px; padding: var(--s2) var(--s4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); text-decoration: none; }
+.recent a:hover { border-color: var(--accent); }
+.recent a > svg { flex: none; color: var(--accent-text); }
+.recent .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent time { flex: none; font-size: var(--text-xs); color: var(--text-3); }
+
+/* ---- Explorer ---- */
+
+.explorer { position: relative; display: grid; grid-template-columns: var(--fields, 280px) minmax(0, 1fr); height: 100%; min-height: 0; }
+.fields { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); border-right: 1px solid var(--line); background: var(--surface); overflow: auto; }
+.fields-head { display: flex; align-items: baseline; justify-content: space-between; }
+.fields-hint { margin-top: auto; }
+.field-list { display: flex; flex-direction: column; gap: 2px; }
+.field-row { display: flex; align-items: center; gap: var(--s2); height: 38px; padding: 0 var(--s1) 0 var(--s2); border-radius: var(--radius); cursor: grab; color: var(--text-2); }
+.field-row:hover { background: var(--surface-2); color: var(--text); }
+.field-row .drag { color: var(--text-3); display: inline-flex; }
+.field-name { flex: 1; font-weight: 550; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.matches { list-style: none; margin: 2px 0 var(--s2) 34px; padding: 0; }
+.match { display: flex; align-items: center; gap: var(--s2); width: 100%; height: 30px; padding: 0 var(--s2); border: 0; border-radius: var(--radius-s); background: none; color: var(--text-2); cursor: pointer; text-align: left; }
+.match:hover { background: var(--accent-soft); color: var(--accent-text); }
+
+.work { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.work-head { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4) var(--s5) var(--s3); border-bottom: 1px solid var(--line); background: var(--surface); }
+.work-head .select { min-width: 200px; font-weight: 600; }
+.toolbar .button span { white-space: nowrap; }
+
+.layout-bar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--s2); }
+.layout-bar > .banner { grid-column: 1 / -1; }
+.layout-bar .banner .grow { flex: 1; }
+.zone { display: flex; flex-wrap: wrap; align-items: center; align-content: flex-start; gap: var(--s2); min-height: 48px; padding: var(--s2); border: 1px dashed var(--line-strong); border-radius: var(--radius); background: var(--surface-2); transition: border-color .12s, background .12s; }
+.dragging .zone { border-color: var(--accent); }
+.zone.over { background: var(--accent-soft); border-style: solid; }
+.zone-label { display: inline-flex; align-items: center; gap: 4px; width: 100%; font-size: var(--text-xs); font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+.zone-empty { font-size: var(--text-s); color: var(--text-3); }
+/* Three filters or more take the whole row, the rows and columns side by side beneath them;
+   past three rows of chips they scroll where they stand. A cube of twenty-six dimensions had
+   its filters a chip to a line, 1,168 pixels high, and the grid below the window. */
+@media (min-width: 601px) {
+  .layout-bar:has(> .zone[data-place="filters"] > .chip ~ .chip ~ .chip) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .layout-bar > .zone[data-place="filters"]:has(> .chip ~ .chip ~ .chip) { grid-column: 1 / -1; }
+  .zone[data-place="filters"] { max-height: 188px; overflow-y: auto; scrollbar-width: thin; }
+}
+.chip { display: inline-flex; align-items: stretch; max-width: 100%; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-1); cursor: grab; }
+.chip:hover { border-color: var(--accent); }
+.chip-main { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; padding: 4px var(--s2) 4px var(--s3); border: 0; background: none; cursor: pointer; text-align: left; line-height: 1.25; }
+.chip-main strong { font-size: var(--text-s); }
+.chip-summary { font-size: var(--text-xs); color: var(--text-2); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-more { display: grid; place-items: center; width: 26px; border: 0; border-left: 1px solid var(--line); border-radius: 0 var(--radius) var(--radius) 0; background: none; color: var(--text-3); cursor: pointer; }
+.chip-more:hover { color: var(--text); background: var(--surface-2); }
+
+.output { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; position: relative; background: var(--bg); }
+.output.busy::after, .tile-body.busy::after, .changes.busy::after { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 50% 100%; background-repeat: no-repeat; animation: progress 1s linear infinite; }
+@keyframes progress { from { background-position: -50% 0; } to { background-position: 150% 0; } }
+.output > .empty { flex: 1; }
+.status-line { display: flex; align-items: center; gap: var(--s4); min-height: 34px; padding: 0 var(--s5); border-top: 1px solid var(--line); background: var(--surface); font-size: var(--text-s); }
+/* With nothing to say, as beneath a chart or the query, it takes no room: its view has it. */
+.status-line:empty { display: none; }
+
+.pivot-scroll { flex: 1; overflow: auto; }
+.pivot { border-collapse: separate; border-spacing: 0; font-size: var(--text-s); font-variant-numeric: tabular-nums; width: max-content; background: var(--surface); }
+.pivot th, .pivot td { padding: 0 var(--s3); height: 32px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); white-space: nowrap; }
+.pivot thead th { position: sticky; top: 0; z-index: 2; background: var(--surface-2); font-weight: 600; color: var(--text); text-align: right; }
+.pivot thead th.col-head { text-align: center; }
+.pivot thead th.total { background: var(--total-strong); }
+.pivot th.corner { left: 0; z-index: 3; text-align: left; color: var(--text-3); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .05em; vertical-align: bottom; padding-bottom: var(--s2); }
+.pivot tbody th { position: sticky; left: 0; z-index: 1; background: var(--surface); text-align: left; font-weight: 500; }
+.pivot tbody th.total { font-weight: 650; }
+.pivot td { text-align: right; min-width: 72px; color: var(--text); }
+.pivot td.s { text-align: left; }
+.pivot td.total { background: var(--total); font-weight: 600; }
+.pivot tr.total-row td { background: var(--total); }
+.pivot tr.total-row td.total { background: var(--total-strong); }
+.pivot td.negative { color: var(--bad); }
+.pivot tbody tr:hover td, .pivot tbody tr:hover th { background-color: var(--accent-soft); }
+.pivot td:focus { outline: 2px solid var(--focus); outline-offset: -2px; background: var(--accent-soft); }
+/* A row's member stands a step in for each member opened above it, its heading's --depth;
+   and a line runs down from the button of each member opened, through every row beneath it,
+   as a tree's guides do, so that what a member holds reads at a glance. */
+.member-label { display: inline-flex; align-items: center; gap: 6px; padding-left: calc(var(--depth, 0) * 20px); }
+.pivot tbody th[style*="--depth"]::before { content: ""; position: absolute; top: 0; bottom: 0; left: var(--s3); width: calc(var(--depth) * 20px); background: repeating-linear-gradient(to right, transparent 0 8px, var(--line-strong) 8px 9px, transparent 9px 20px); pointer-events: none; }
+.twisty { display: inline-grid; place-items: center; width: 18px; height: 18px; flex: none; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--surface); color: var(--text-2); cursor: pointer; padding: 0; }
+/* The space a leaf keeps where its parent has a button, so that names line up: never seen, never pressed. */
+span.twisty { border-color: transparent; background: none; cursor: inherit; }
+button.twisty:hover { border-color: var(--accent); color: var(--accent-text); }
+
+/* Its tree draws only the rows in view, so it has no width of its own to fit: it keeps one. */
+.picker { display: flex; flex-direction: column; gap: var(--s3); width: min(34rem, calc(100vw - 80px)); }
+.picker .select { height: var(--control-small); font-size: var(--text-s); }
+/* As tall as its members, up to most of the window. */
+.picker-tree { max-height: min(56vh, 620px); min-height: 120px; overflow: auto; padding: var(--s1); border: 1px solid var(--line); border-radius: var(--radius); }
+.picker-row .muted { font-size: var(--text-xs); }
+
+.mdx-pane { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s5); overflow: auto; }
+.mdx-editor { min-height: 260px; }
+
+.facts { display: flex; flex-direction: column; gap: var(--s2); }
+.fact { display: grid; grid-template-columns: 140px 1fr; gap: var(--s3); padding: var(--s2) 0; border-bottom: 1px solid var(--line); }
+
+@media (max-width: 1100px) {
+  .explorer { grid-template-columns: 1fr; }
+  .fields { display: none; }
+}
+
+/* ---- Writing back ---- */
+
+.pivot td.editable { cursor: cell; }
+.pivot td.edited, .pivot tbody tr:hover td.edited { background: var(--warn-soft); color: var(--text); font-weight: 600; }
+.pivot td.edited::after { content: ""; float: right; width: 6px; height: 6px; margin: -6px -10px 0 4px; border-radius: 50%; background: var(--warn); }
+.pivot td:has(.cell-editor) { padding: 0; }
+.cell-editor { width: 100%; min-width: 104px; height: 31px; padding: 0 var(--s3); border: 2px solid var(--accent); background: var(--surface); text-align: right; font: inherit; font-variant-numeric: tabular-nums; outline: none; }
+/* A text cell with a picklist: marked with the arrow every choice has, and given a choice to edit. */
+select.cell-editor { appearance: none; text-align: left; padding-right: 26px; background: var(--surface) var(--chevron) no-repeat right 8px center / 12px; cursor: pointer; }
+.pivot tbody td.picklist.editable { padding-right: 24px; background-image: var(--chevron); background-repeat: no-repeat; background-position: right 8px center; background-size: 12px; }
+.pending { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s5); border-top: 1px solid var(--line); background: var(--warn-soft); color: var(--warn); font-weight: 600; font-size: var(--text-s); }
+.pending .grow { flex: 1; }
+
+/* ---- Charts ---- */
+
+:root {
+  --c0: #4f46e5; --c1: #0ea5a4; --c2: #f59e0b; --c3: #e11d48; --c4: #2563eb;
+  --c5: #16a34a; --c6: #9333ea; --c7: #ea580c; --c8: #0891b2; --c9: #64748b;
+}
+:root[data-theme="dark"] {
+  --c0: #8b87ff; --c1: #2dd4bf; --c2: #fbbf24; --c3: #fb7185; --c4: #60a5fa;
+  --c5: #4ade80; --c6: #c084fc; --c7: #fb923c; --c8: #22d3ee; --c9: #94a3b8;
+}
+.chart-pane { display: flex; flex-direction: column; gap: var(--s4); padding: var(--s5); overflow: auto; }
+.chart { margin: 0; display: flex; flex-direction: column; gap: var(--s3); padding: var(--s5); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-l); box-shadow: var(--shadow-1); }
+.chart-area { position: relative; }
+.chart-plot { width: 100%; min-height: 380px; }
+.chart svg { display: block; overflow: visible; }
+.chart .gridline { stroke: var(--line); stroke-width: 1; }
+.chart .axis { stroke: var(--line-strong); stroke-width: 1; }
+.chart .tick { fill: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
+.chart .bar { transition: opacity .12s; }
+/* Past the ten colours a series takes one of them again, lighter, and past twenty lighter
+   still: no two series look alike. */
+.chart :is(.bar, .line, .dot, .slice).tint-1, .swatch.tint-1 { opacity: .6; }
+.chart :is(.bar, .line, .dot, .slice).tint-2, .swatch.tint-2 { opacity: .35; }
+.chart :is(.bar, .dot):is(:hover, .hovered) { opacity: .8; }
+/* The dot the pointer is on or nearest grows a little, found rather than hit. */
+.chart .dot.hovered { r: 6px; }
+.chart .line { fill: none; stroke-width: 2.25; stroke-linejoin: round; stroke-linecap: round; }
+.chart .dot { stroke: var(--surface); stroke-width: 2; }
+.chart-legend { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s2); }
+.legend-item { display: inline-flex; flex: none; align-items: center; gap: 6px; height: 28px; white-space: nowrap; padding: 0 var(--s2); border: 1px solid transparent; border-radius: 999px; background: none; color: var(--text-2); font-size: var(--text-s); cursor: pointer; }
+.legend-item:hover { background: var(--surface-2); }
+.legend-item[aria-pressed="false"] { color: var(--text-3); text-decoration: line-through; }
+/* A series drawn as a line over the rest: its swatch is one. */
+.legend-item.line .swatch { width: 14px; height: 3px; border-radius: 2px; }
+.legend-item[aria-pressed="false"] .swatch { opacity: .3; }
+.swatch { width: 10px; height: 10px; border-radius: 3px; }
+.chart-tip { position: absolute; z-index: 5; display: flex; flex-direction: column; gap: 2px; min-width: min(140px, 100%); max-width: min(220px, 100%); padding: var(--s2) var(--s3); background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow-2); font-size: var(--text-s); pointer-events: none; }
+.chart-tip strong { font-size: var(--text-l); font-variant-numeric: tabular-nums; }
+.chart-tip .tip-series { display: flex; align-items: center; gap: 6px; }
+.chart-tip .swatch { flex: none; }
+/* A bar in the tone of the first of its view's rules it meets, and its tip's swatch. */
+.chart .bar.tone-good, .chart-tip .swatch.tone-good { fill: var(--good); background: var(--good); }
+.chart .bar.tone-bad, .chart-tip .swatch.tone-bad { fill: var(--bad); background: var(--bad); }
+.chart .bar.tone-warn, .chart-tip .swatch.tone-warn { fill: var(--warn); background: var(--warn); }
+.chart .bar.tone-accent, .chart-tip .swatch.tone-accent { fill: var(--accent); background: var(--accent); }
+.c0 { fill: var(--c0); stroke: var(--c0); background: var(--c0); } .c1 { fill: var(--c1); stroke: var(--c1); background: var(--c1); }
+.c2 { fill: var(--c2); stroke: var(--c2); background: var(--c2); } .c3 { fill: var(--c3); stroke: var(--c3); background: var(--c3); }
+.c4 { fill: var(--c4); stroke: var(--c4); background: var(--c4); } .c5 { fill: var(--c5); stroke: var(--c5); background: var(--c5); }
+.c6 { fill: var(--c6); stroke: var(--c6); background: var(--c6); } .c7 { fill: var(--c7); stroke: var(--c7); background: var(--c7); }
+.c8 { fill: var(--c8); stroke: var(--c8); background: var(--c8); } .c9 { fill: var(--c9); stroke: var(--c9); background: var(--c9); }
+.chart .bar.c0, .chart .bar.c1, .chart .bar.c2, .chart .bar.c3, .chart .bar.c4, .chart .bar.c5, .chart .bar.c6, .chart .bar.c7, .chart .bar.c8, .chart .bar.c9 { stroke: none; }
+.chart .line.c0, .chart .line.c1, .chart .line.c2, .chart .line.c3, .chart .line.c4, .chart .line.c5, .chart .line.c6, .chart .line.c7, .chart .line.c8, .chart .line.c9 { fill: none; }
+
+/* ---- Model ---- */
+
+.model-page { position: relative; display: grid; grid-template-columns: var(--model-list, 260px) minmax(0, 1fr); height: 100%; min-height: 0; }
+.model-page > .splitter { left: calc(var(--model-list, 260px) - 3px); }
+.model-list { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); border-right: 1px solid var(--line); background: var(--surface); overflow: hidden; }
+/* The list takes the pane's height, however many it holds, and scrolls in it. */
+.model-list .finder { flex: 1 1 auto; min-height: 0; }
+.model-list .finder-list { flex: 1 1 auto; max-height: none; }
+.model-head { display: flex; align-items: center; justify-content: space-between; }
+/* The page's heading, as large as a section's; the item open beside it, as large as a page's. */
+.model-head h1 { font-size: var(--text-xl); }
+/* In the model's list, the one open is marked as the page shown; the keys and the pointer
+   on another, as the pointer is anywhere. */
+.model-item { gap: var(--s2); }
+.model-item:hover, .finder:focus-within .model-item.active { background: var(--surface-2); color: var(--text); }
+.model-item.current, .model-item.current:hover, .finder:focus-within .model-item.current { background: var(--accent-soft); color: var(--accent-text); }
+.model-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.model-pane > .empty { flex: 1; }
+.editor-head { display: flex; align-items: flex-end; gap: var(--s4); padding: var(--s5) var(--s6) var(--s4); border-bottom: 1px solid var(--line); background: var(--surface); }
+.editor-head .grow { flex: 1; }
+.editor-head h2 { font-size: var(--text-2xl); }
+.editor-body { flex: 1; min-height: 0; overflow: auto; padding: var(--s5) var(--s6); display: flex; flex-direction: column; }
+/*
+ * The elements beside the one being edited: the list as wide as its names need, or as it
+ * was dragged; each card as tall as its content, up to the height there is, past which it
+ * scrolls within; what width is left over stays beyond them, not between a name and its type.
+ */
+/* The list as wide as its longest name needs, short of leaving the element's pane less than
+   its least beside it: a name longer than that scrolls within the list. */
+.element-layout { --element-list-shown: min(var(--element-list, 420px), calc(100% - 320px - var(--s4))); position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: var(--element-list-shown) minmax(320px, 520px); grid-template-rows: minmax(0, 1fr); gap: var(--s4); align-items: start; justify-content: start; }
+.element-layout > .splitter { left: calc(var(--element-list-shown) + 5px); }
+.element-list .card-head h3 { white-space: nowrap; }
+.element-list, .element-detail { display: flex; flex-direction: column; max-height: 100%; min-height: 0; }
+.element-list .element-tree { flex: 1 1 auto; min-height: 0; overflow: auto; padding: var(--s1) var(--s2) var(--s2); }
+.element-detail { overflow: auto; }
+.element-detail .card-head { border-bottom: 1px solid var(--line); }
+.json-card { flex: 1; min-height: 0; }
+.json-card .json-editor { flex: 1; resize: none; }
+/* A consolidation's children, drawn as they come into view: each row its controls and a gap. */
+.child-list { position: relative; max-height: min(60vh, 540px); overflow: auto; }
+.child-list .rows > * { height: 36px; }
+.child-row { display: flex; align-items: center; gap: var(--s2); padding-bottom: 4px; }
+.child-row .grow { flex: 1; }
+.input.weight { width: 90px; height: var(--control-small); text-align: right; }
+.attribute-row { display: grid; grid-template-columns: 160px 1fr; align-items: center; gap: var(--s3); }
+.dimension-list { list-style: none; margin: 0; padding: var(--s2); }
+.dimension-list li { display: flex; align-items: center; gap: var(--s2); height: 40px; padding: 0 var(--s3); border-radius: var(--radius); }
+.dimension-list li:hover { background: var(--surface-2); }
+.dimension-list .grow { flex: 1; font-weight: 550; }
+.json-editor { min-height: 420px; }
+.checks { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); }
+.check { display: inline-flex; align-items: center; gap: 6px; }
+/* Rows of a choice each, beside what it is of: how far a new API key reaches into each part of
+   the server, or how a chart draws each of its series. */
+.choice-rows { display: flex; flex-direction: column; gap: var(--s3); margin-top: var(--s3); }
+.choice-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--s4); }
+.choice-row .hint { margin-top: 2px; }
+fieldset.field > .check { margin-right: var(--s4); }
+.key-cubes { margin-top: var(--s2); padding: var(--s2) var(--s3); border: 1px solid var(--line); border-radius: var(--radius); }
+/* A list to find in, inside a dialog, leaves room for the rest of it. */
+.dialog-body .finder-list { max-height: min(40vh, 360px); }
+/* How many a card's heading counts, beside it. */
+.card-head h3 .count { margin-left: var(--s2); font-weight: 400; }
+/* The key just made, shown this once, to be copied. */
+.key-shown { display: flex; gap: var(--s2); }
+.key-shown .input { flex: 1; min-width: 0; }
+fieldset.field { border: 0; padding: 0; margin: 0; }
+fieldset.field legend { font-size: var(--text-s); font-weight: 550; color: var(--text-2); margin-bottom: 6px; }
+.plain-list { margin: 0; padding-left: var(--s5); }
+/* Back to the list from the one open, where the list is not beside it. */
+.editor-back { display: none; align-items: center; gap: var(--s1); margin-bottom: var(--s2); font-size: var(--text-s); color: var(--accent-text); text-decoration: none; }
+.editor-back:hover { text-decoration: underline; }
+/* Too narrow for the list beside the one open, one at a time: the list, or the one open. */
+@media (max-width: 1100px) {
+  .element-layout { flex: none; grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .element-list .element-tree { max-height: 60vh; }
+  .model-page { grid-template-columns: minmax(0, 1fr); }
+  .model-page > .splitter, .element-layout > .splitter, .model-page.editing > .model-list, .model-page:not(.editing) > .model-pane { display: none; }
+  .model-list { border-right: 0; }
+  .editor-back { display: inline-flex; }
+}
+.textarea { width: 100%; }
+
+/* ---- Text boxes: their width follows their place ---- */
+
+.input, .select, .textarea { min-width: 0; max-width: 100%; }
+.field > .input, .field > .select, .field > .textarea, .card-body > .textarea, .facts > .textarea, .mdx-pane > .textarea { width: 100%; }
+.toolbar > .input { flex: 1 1 220px; }
+.toolbar > .select { flex: 0 1 auto; min-width: 160px; }
+.attribute-row .input, .attribute-row .select { width: 100%; }
+.card-body.toolbar { gap: var(--s3); }
+.facts { gap: var(--s4); }
+.dialog-body .field { gap: var(--s2); }
+
+/* ---- Administration ---- */
+
+.page > .card, .page > .admin-section { margin-bottom: var(--s5); }
+.admin-section { display: flex; flex-direction: column; gap: var(--s4); }
+.table .num-col { text-align: right; width: 140px; }
+.table .bar-col { width: 32%; }
+/* Changes to cells: fetched again, the last answer fades after a moment. */
+.changes { position: relative; }
+.changes.busy > .table { opacity: .6; transition: opacity .3s .5s; }
+.nowrap { white-space: nowrap; }
+.card-head { flex-wrap: wrap; }
+/*
+ * A card as wide as its table, rather than the table's columns spread across the page; and
+ * its table as wide as the card, where the card's head is the wider.
+ */
+.card.fit { width: fit-content; max-width: 100%; overflow-x: auto; }
+.card.fit .table .bar-col { width: 240px; }
+.share { height: 8px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.share-fill { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+.table td.actions .button + .button { margin-left: var(--s1); }
+.table td.actions { padding-top: var(--s2); padding-bottom: var(--s2); }
+/* In a smaller laptop's window a table's cells keep closer, its numbers no wider than they
+   are, and a row's buttons go onto a second line, so that they stay in sight rather than
+   past the card's edge. */
+@media (max-width: 1280px) {
+  .table th, .table td { padding-left: var(--s3); padding-right: var(--s3); }
+  .table .num-col { width: auto; }
+  .table td:is(.actions, .nowrap) { white-space: normal; }
+}
+.badge.you { margin-left: var(--s2); }
+/* Two fields side by side, each as narrow as the room leaves it rather than as wide as it would be. */
+.field-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--s3); }
+.cube-roles { display: flex; flex-direction: column; gap: var(--s2); }
+.cube-roles:empty { display: none; }
+.cube-role { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: var(--s2); align-items: center; }
+.cube-role .select { width: 100%; }
+.element-role { grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(0, 0.9fr) auto; }
+.element-role > .element-choice { display: block; min-width: 0; padding: 0 var(--s3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; line-height: var(--control); font-weight: 400; }
+dialog:has(.cube-roles) { max-width: min(620px, calc(100vw - 32px)); }
+
+/* ---- Dimensions left out of the query ---- */
+
+.badge.unused { background: none; border: 1px dashed var(--line-strong); color: var(--text-3); }
+.fields.over { background: var(--accent-soft); outline: 2px dashed var(--accent); outline-offset: -6px; }
+
+/* ---- The set editor ---- */
+
+dialog.wide { width: 100%; max-width: min(1180px, calc(100vw - 48px)); }
+dialog.wide .dialog-body { max-height: none; }
+/* Most of the window's height, the lists within it scrolling. */
+.set-editor { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: var(--s4); height: min(74vh, 820px); }
+.set-pane { display: flex; flex-direction: column; gap: var(--s3); min-width: 0; min-height: 0; }
+.set-pane-head { display: flex; align-items: baseline; gap: var(--s3); }
+.set-pane-head .grow { flex: 1; }
+.set-pane .toolbar { gap: var(--s2); min-height: 32px; }
+.select.small-select { height: var(--control-small); font-size: var(--text-s); min-width: 0; }
+.set-tree, .set-list { flex: 1; min-height: 140px; overflow: auto; margin: 0; padding: var(--s1); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.set-item { display: flex; align-items: center; gap: 6px; padding: 0 var(--s2); border-radius: var(--radius-s); cursor: default; user-select: none; }
+.set-item:hover { background: var(--surface-2); }
+.set-item[aria-selected="true"] { background: var(--accent-soft); color: var(--accent-text); }
+.set-item:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.set-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.set-attribute { width: 110px; flex: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-s); color: var(--text-2); }
+.set-in { width: 26px; flex: none; display: inline-flex; justify-content: flex-end; }
+.set-head-row { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; height: 28px; padding: 0 var(--s2) 0 6px; background: var(--surface-2); border-radius: var(--radius-s); font-size: var(--text-xs); font-weight: 600; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; }
+.set-moves { display: flex; flex-direction: column; justify-content: center; gap: var(--s2); }
+.set-moves .button { justify-content: flex-start; width: 132px; }
+.set-moves hr { width: 100%; border: 0; border-top: 1px solid var(--line); margin: var(--s1) 0; }
+.set-item .drag { color: var(--text-3); cursor: grab; display: inline-flex; }
+.set-index { width: 28px; text-align: right; font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.set-level { font-size: var(--text-xs); }
+.set-item.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.set-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); height: 100%; padding: var(--s5); text-align: center; color: var(--text-3); }
+.set-none { padding: var(--s3); }
+/* One pane above the other, each at its own height, and the dialog's body scrolling as any
+   dialog's does: in a height shared, the first would be drawn over the second. */
+@media (max-width: 900px) {
+  dialog.wide .dialog-body { max-height: 65vh; }
+  .set-editor { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; height: auto; }
+  .set-tree, .set-list { flex: none; height: min(45vh, 420px); }
+  .set-moves { flex-direction: row; flex-wrap: wrap; }
+  .set-moves .button { width: auto; }
+  .set-moves hr { display: none; }
+}
+
+/* ---- Filtering the set editor by rules ---- */
+
+/* In a pane too short for it and the tree beneath, it scrolls, leaving the tree its room. */
+.filter-panel { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); overflow: auto; container: rules / inline-size; }
+/* The rules share one grid, so that their fields line up and the words that join them take
+   the room they need on one line. */
+.rules { display: grid; grid-template-columns: max-content minmax(7.5rem, 1fr) minmax(4.5rem, 0.7fr) minmax(9.5rem, 1.2fr) auto; gap: var(--s2); align-items: center; }
+.rule { display: contents; }
+.rules > .hint { grid-column: 1 / -1; }
+/* In a box too narrow for that line, as a pane of the set editor or a phone's dialog, a rule
+   takes two, its fields still lined up with the other rules': its first choice beside the
+   word that joins it and its button at the end of that line, the rest beneath. */
+@container rules (max-width: 31rem) {
+  .rules { grid-template-columns: max-content minmax(0, 1fr) minmax(0, 1fr) auto; row-gap: var(--s3); }
+  .rule { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; row-gap: var(--s1); align-items: center; }
+  .rule > :nth-child(2) { grid-column: 2 / 4; }
+  .rule > :nth-child(3) { grid-column: 1 / 3; }
+  .rule > :nth-child(4) { grid-column: 3 / 5; }
+  .rule > :last-child { grid-area: 1 / 4; }
+}
+.rule .select, .rule .input { width: 100%; height: var(--control-small); font-size: var(--text-s); }
+.rule-join { font-size: var(--text-s); white-space: nowrap; }
+.filter-count:empty { display: none; }
+.filter-panel .segmented button { height: 26px; }
+.input[readonly] { background: var(--surface-2); color: var(--text-2); }
+.input[readonly]:focus { border-color: var(--line-strong); box-shadow: none; }
+
+/* ---- Attributes in the grid ---- */
+
+.pivot th.row-attribute { font-weight: 400; color: var(--text-2); background: var(--surface); border-left: 1px dashed var(--line); }
+.pivot th.col-attribute { font-weight: 400; color: var(--text-2); font-size: var(--text-xs); background: var(--surface-2); }
+.pivot thead tr.attribute-row-head th { height: 26px; }
+
+/* ---- Grid geometry: fitted, then sized by hand ---- */
+
+.pivot.sized { table-layout: fixed; }
+.pivot.sized td, .pivot.sized th { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pivot tbody th, .pivot tbody td { height: var(--row-height, 32px); }
+.pivot th .member-label { max-width: 100%; }
+/* The column the rows are in order by: an arrow beside its name, the way the order goes. */
+.pivot th .sort-mark { display: inline-flex; margin-left: 4px; vertical-align: -2px; color: var(--accent-text); }
+.col-resize { position: absolute; top: 0; right: 0; width: 7px; height: 100%; cursor: col-resize; z-index: 4; touch-action: none; }
+.col-resize::after { content: ""; position: absolute; top: 20%; bottom: 20%; right: 2px; width: 2px; border-radius: 1px; background: transparent; transition: background .12s; }
+.col-resize:hover::after, .resizing .col-resize:active::after { background: var(--accent); }
+.row-resize { position: absolute; left: 0; right: 0; bottom: 0; height: 6px; cursor: row-resize; z-index: 4; touch-action: none; }
+.row-resize:hover { box-shadow: inset 0 -2px 0 var(--accent); }
+.pivot tbody th.pinned { position: sticky; }
+.resizing { user-select: none; cursor: col-resize; }
+/* Only the rows in view are drawn: rows as tall as the rest stand above and below them. */
+.pivot tr.spacer td { height: 0; padding: 0; border: 0; background: none; }
+.pivot tbody tr.spacer:hover td { background: none; }
+/* The widest content of each column, for the columns to fit to, taking no room. */
+.pivot tr.measure { visibility: collapse; }
+.pivot-scroll:focus { outline: none; }
+/* Where rows come and go as it scrolls, the browser is not to hold the view to one of them. */
+.pivot-scroll, .picker-tree, .element-tree, .set-tree, .set-list { overflow-anchor: none; }
+
+/* ---- Cells chosen ---- */
+
+/* A tint laid over whatever the cell shows, totals and changes among them. */
+.pivot td.selected { position: relative; }
+.pivot td.selected::before { content: ""; position: absolute; inset: 0; background: color-mix(in oklab, var(--accent) 22%, transparent); pointer-events: none; }
+.pivot th[data-r1], .pivot th[data-c1], .pivot th.corner { cursor: pointer; }
+.pivot thead th.in-selection { color: var(--accent); box-shadow: inset 0 -2px 0 var(--accent); }
+.pivot tbody th.in-selection { color: var(--accent); box-shadow: inset -2px 0 0 var(--accent); }
+.pivot td { user-select: none; }
+.selection-summary { display: flex; gap: var(--s4); margin-left: auto; font-variant-numeric: tabular-nums; }
+.selection-summary:empty { display: none; }
+
+/* ---- Trees: searching in place, opening and closing ---- */
+
+.search .search-count { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); font-size: var(--text-xs); color: var(--text-3); pointer-events: none; white-space: nowrap; }
+.search:has(.search-count:not(:empty)) .input { padding-right: 84px; }
+mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inherit; border-radius: 2px; padding: 0 1px; }
+.tree-tools, .picker-tools { display: flex; align-items: center; gap: var(--s2); }
+.tree-tools .search, .picker-tools .search { flex: 1; min-width: 0; }
+.element-list .tree-tools { padding: var(--s2) var(--s3) 0; }
+/* Rows drawn only where they can be seen: each in its place, all the same height, within a scroller that is their offset parent. */
+.picker-tree, .element-tree, .set-tree, .set-list, .rows { position: relative; }
+.rows > * { position: absolute; left: 0; right: 0; height: 28px; }
+.tree-none { padding: var(--s3); }
+/* A row of any tree, indented to its depth (18 pixels a level, as tree.js has it). */
+.tree-row { display: flex; align-items: center; gap: 6px; padding: 0 var(--s2) 0 calc(var(--depth, 0) * 18px + 6px); border-radius: var(--radius-s); white-space: nowrap; cursor: pointer; user-select: none; }
+.tree-row:hover { background: var(--surface-2); }
+.tree-row[aria-selected="true"] { background: var(--accent-soft); color: var(--accent-text); }
+.tree-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.tree-row.context { color: var(--text-3); }
+.tree-row.context svg { opacity: .6; }
+.tree-row .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.choice { width: 14px; height: 14px; flex: none; border: 1.5px solid var(--line-strong); border-radius: 50%; }
+.picker-row[aria-selected="true"] .choice { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--surface), inset 0 0 0 8px var(--accent); }
+
+/* ---- Finding in the grid, and keys on its headings ---- */
+
+.grid-finder { width: 230px; }
+.grid-finder .input { height: var(--control); }
+.pivot th.found::before, .pivot th.found-current::before { content: ""; position: absolute; inset: 0; pointer-events: none; background: color-mix(in oklab, var(--warn) 24%, transparent); }
+.pivot th.found-current::before { background: color-mix(in oklab, var(--warn) 40%, transparent); box-shadow: inset 0 0 0 2px var(--warn); }
+.pivot th:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.pivot th[data-member] { cursor: pointer; }
+
+/* ---- Dashboards ---- */
+
+.dash-tabs { display: flex; gap: var(--s1); margin-bottom: var(--s4); overflow-x: auto; border-bottom: 1px solid var(--line); }
+.dash-tabs a { padding: var(--s2) var(--s3); color: var(--text-2); text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; font-weight: 550; }
+.dash-tabs a:hover { color: var(--text); }
+.dash-tabs a[aria-current="page"] { color: var(--accent-text); border-bottom-color: var(--accent); }
+.dash-tabs .dash-every { flex: none; align-self: center; margin-left: auto; }
+.dash-names { display: flex; flex-direction: column; gap: var(--s2); }
+.dash-names .input { max-width: 520px; }
+.dash-name { font-size: var(--text-xl); font-weight: 650; height: 42px; }
+.dash-work { display: flex; align-items: flex-start; gap: var(--s4); }
+.board-frame { flex: 1; min-width: 0; }
+.stack-hint { display: none; margin-bottom: var(--s3); }
+.board-frame:has(> .board.editing.stacked) > .stack-hint { display: block; }
+
+/* The board: twelve columns across and rows of a fixed height, a tile standing on them at
+   its --x and --y, --w columns wide and --h rows high. Moved, a tile slides to its place. */
+.board {
+  --dash-row: 40px; --dash-gap: 16px;
+  --col: calc((100% - 11 * var(--dash-gap)) / 12);
+  position: relative;
+  height: calc(var(--rows, 1) * (var(--dash-row) + var(--dash-gap)) - var(--dash-gap));
+  transition: height .2s var(--ease);
+}
+.dash-tile, .board-ghost {
+  position: absolute;
+  left: calc(var(--x) * (var(--col) + var(--dash-gap)));
+  top: calc(var(--y) * (var(--dash-row) + var(--dash-gap)));
+  width: calc(var(--w) * var(--col) + (var(--w) - 1) * var(--dash-gap));
+  height: calc(var(--h) * var(--dash-row) + (var(--h) - 1) * var(--dash-gap));
+}
+.dash-tile {
+  container: tile / size;
+  display: flex; flex-direction: column; min-width: 0;
+  transition: left .22s var(--ease), top .22s var(--ease), width .22s var(--ease), height .22s var(--ease), transform .22s var(--ease), box-shadow .15s;
+}
+/* Too narrow for its columns, the board stands its tiles one above the other, as they are read. */
+.board.stacked { display: flex; flex-direction: column; gap: var(--dash-gap); height: auto; }
+.board.stacked > .dash-tile:not(.focused) { position: relative; left: auto; top: auto; width: auto; order: var(--order); }
+.board.stacked > .board-ghost, .board.stacked > .board-guides { display: none; }
+
+.tile-head { display: flex; align-items: flex-start; gap: var(--s1); padding: var(--s3) var(--s3) var(--s1) var(--s4); }
+.tile-head .grow { flex: 1; min-width: 0; }
+.tile-head h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tile-head p { font-size: var(--text-xs); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Shown, a tile's buttons show as it is pointed at or holds the keys, where there is a pointer to
+   point; edited, they show always, as what a tile can do should be in sight while it is arranged. */
+@media (hover: hover) {
+  .board:not(.editing) .dash-tile:not(:hover, :focus-within) :is(.tile-head .button, .tile-corner) { opacity: 0; }
+}
+.tile-head .button, .tile-corner { transition: opacity .12s; }
+.tile-corner { position: absolute; top: var(--s2); right: var(--s2); z-index: 3; display: flex; gap: 2px; }
+.tile-body { position: relative; flex: 1; min-height: 0; padding: 0 var(--s4) var(--s4); display: flex; flex-direction: column; overflow: hidden; }
+.tile-body > .empty { flex: 1; padding: var(--s4); }
+/* The outline a tile holds until its answer comes, as tall as the tile. */
+.tile-body > .skeleton { flex: 1; min-height: 0; }
+.tile-body.busy > :not(.skeleton) { opacity: .6; transition: opacity .3s .5s; }
+.dash-tile .chart { padding: 0; border: 0; box-shadow: none; background: none; }
+.dash-tile .chart-legend { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+/* The legend between the arrows that go along it, where it is kept to one line. */
+.legend-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.legend-row > .chart-legend { flex: 1; min-width: 0; }
+/* The arrows as tall as the legend's items: shown once the chart is drawn and its legend
+   found too long, they leave the row's height, and so the chart's, as they were, and the
+   chart is not drawn a second time a few pixels shorter. */
+.legend-row > .button.legend-along { flex: none; width: 28px; height: 28px; }
+/* Where it goes on past an edge, the legend fades into it rather than stopping short. */
+.chart-legend.more-before { mask-image: linear-gradient(to right, transparent, #000 var(--s5)); }
+.chart-legend.more-after { mask-image: linear-gradient(to left, transparent, #000 var(--s5)); }
+.chart-legend.more-before.more-after { mask-image: linear-gradient(to right, transparent, #000 var(--s5), #000 calc(100% - var(--s5)), transparent); }
+.chart.fill { flex: 1; min-height: 0; gap: var(--s2); }
+.chart.fill .chart-area { flex: 1; min-height: 0; }
+.chart.fill .chart-plot { position: absolute; inset: 0; min-height: 0; }
+
+/* A tile of text: words on the page rather than a card, but where it is arranged. */
+.text-tile { background: transparent; border-color: transparent; box-shadow: none; }
+.text-tile .tile-body { padding: var(--s3) var(--s4); overflow: auto; }
+.board.editing .text-tile { border: 1px dashed var(--line-strong); }
+/* Laid out freely and shown, a tile of text lets what lies beneath it be pointed at and
+   clicked wherever it has no words: a note set over a chart leaves the chart's marks in
+   reach. Its words, each block as wide as they are, and its buttons are still its own. */
+.board.free:not(.editing) .text-tile:not(.focused) { pointer-events: none; }
+.board.free:not(.editing) .text-tile:not(.focused) :is(.prose > *, .tile-head .button, .tile-corner) { pointer-events: auto; }
+.board.free:not(.editing) .text-tile .prose { align-items: flex-start; }
+.prose { display: flex; flex-direction: column; gap: var(--s2); color: var(--text-2); }
+.prose h3 { font-size: var(--text-xl); color: var(--text); }
+.prose ul { margin: 0; padding-left: var(--s5); }
+
+/* A key figure, as large as its tile allows. */
+.figure { display: flex; flex-direction: column; justify-content: center; gap: var(--s1); flex: 1; min-height: 0; }
+.figure-value { font-size: clamp(20px, min(22cqmin, 13cqi), 120px); line-height: 1.05; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 650; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.figure-value.negative, .figure-value.tone-bad { color: var(--bad); }
+.figure-value.tone-good { color: var(--good); }
+.figure-value.tone-warn { color: var(--warn); }
+.figure-value.tone-accent { color: var(--accent-text); }
+.figure-name { font-size: var(--text-s); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.figure-change { display: flex; align-items: center; gap: 6px; font-size: var(--text-s); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.figure-trend { display: flex; align-items: center; gap: var(--s3); margin-top: var(--s1); min-width: 0; }
+.figure-trend .muted { font-size: var(--text-xs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sparkline .line { fill: none; stroke-width: 2; }
+@container tile (max-height: 250px) { .figure-trend { display: none; } }
+@container tile (min-width: 480px) { .figure { align-items: center; text-align: center; } }
+
+/* A table of every row, drawn only where it is seen: names down the left, columns across the
+   top, both kept in sight. */
+.tile-table { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); font-size: var(--text-s); font-variant-numeric: tabular-nums; }
+.tile-table:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+.tile-row { display: grid; grid-template-columns: var(--heading) repeat(var(--count), minmax(72px, 1fr)); align-items: stretch; border-top: 1px solid var(--line); }
+.tile-table .rows, .tile-row { min-width: calc(var(--heading) + var(--count) * 72px); }
+.tile-row.head { position: sticky; top: 0; z-index: 2; height: 30px; border-top: 0; background: var(--surface-2); font-weight: 600; color: var(--text-2); }
+.tile-row > span { display: flex; align-items: center; min-width: 0; padding: 0 var(--s2); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tile-row > .n { justify-content: flex-end; }
+.tile-row > [role="rowheader"], .tile-row > .corner { position: sticky; left: 0; z-index: 1; background: var(--surface); font-weight: 500; color: var(--text); }
+.tile-row.head > .corner { z-index: 3; background: var(--surface-2); }
+.tile-row.total > span { font-weight: 650; }
+.tile-row .negative { color: var(--bad); }
+.row-pick { all: unset; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.row-pick:hover { color: var(--accent-text); text-decoration: underline; }
+.row-pick:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
+.tile-table.pickable .tile-row > [role="cell"]:hover { box-shadow: inset 0 0 0 1px var(--accent); cursor: pointer; }
+.tile-row.picked > span, .tile-row > .picked { background-color: var(--accent-soft); color: var(--accent-text); }
+.tile-table.heat .tile-row { border-top-color: var(--surface); }
+/* Shaded no further than half, the text stands out from every shade, in either theme. */
+.tile-table.heat .shade { background-color: color-mix(in oklab, var(--accent) calc(var(--shade) * 50%), var(--surface)); }
+
+/* Editing: the grid's points showing, the tiles taken up anywhere, and moved as one is. */
+.board.editing { min-height: calc(6 * (var(--dash-row) + var(--dash-gap))); }
+.board.editing.gridded {
+  background-image: radial-gradient(circle, var(--line-strong) 1.2px, transparent 1.7px);
+  background-size: calc((100% + var(--dash-gap)) / 12) calc(var(--dash-row) + var(--dash-gap));
+  background-position: calc(var(--dash-gap) / -2) calc(var(--dash-gap) / -2);
+}
+.board.editing .dash-tile { cursor: grab; user-select: none; touch-action: none; }
+.board.editing .tile-body { pointer-events: none; }
+.board.editing .dash-tile:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.board.arranging, .board.arranging .dash-tile { cursor: grabbing; }
+/* Laid out freely and being arranged, a tile pointed at or holding the keys stands over those
+   it overlaps, its head and handles in reach; shown, each keeps its place in the stack. */
+.board.editing.free .dash-tile:is(:hover, :focus-within) { z-index: 40 !important; }
+.dash-tile.lifted { z-index: 50 !important; box-shadow: var(--shadow-3); opacity: .96; transition: none; }
+.dash-tile.sizing { z-index: 50 !important; transition: none; }
+.dash-tile.sizing::after { content: attr(data-size); position: absolute; right: 12px; bottom: 12px; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: var(--text-xs); font-weight: 600; font-variant-numeric: tabular-nums; }
+.board-ghost { z-index: 0; border: 2px dashed var(--accent); border-radius: var(--radius-l); background: color-mix(in oklab, var(--accent) 10%, transparent); pointer-events: none; transition: left .15s var(--ease), top .15s var(--ease), width .15s var(--ease), height .15s var(--ease); }
+.board-guides { position: absolute; inset: 0; z-index: 60; pointer-events: none; }
+.board-guide { position: absolute; border: 0 dashed var(--accent); }
+.board-guide.x { top: -8px; bottom: -8px; border-left-width: 1px; }
+.board-guide.y { left: -8px; right: -8px; border-top-width: 1px; }
+.board-empty { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: var(--s3); padding: var(--s5); border: 2px dashed var(--line-strong); border-radius: var(--radius-l); color: var(--text-3); text-align: center; }
+/* The handles a tile is resized by: on its edges, and a grip in its corner. */
+.handle { position: absolute; z-index: 4; opacity: 0; transition: opacity .12s; }
+.board.editing .dash-tile:is(:hover, :focus-within, .sizing) .handle { opacity: 1; }
+.handle.e, .handle.w { top: 14px; bottom: 14px; width: 10px; cursor: ew-resize; }
+.handle.n, .handle.s { left: 14px; right: 14px; height: 10px; cursor: ns-resize; }
+.handle.e { right: -5px; } .handle.w { left: -5px; } .handle.n { top: -5px; } .handle.s { bottom: -5px; }
+.handle.ne, .handle.nw, .handle.se, .handle.sw { width: 16px; height: 16px; }
+.handle.se { right: 2px; bottom: 2px; cursor: nwse-resize; background: linear-gradient(135deg, transparent 0 52%, var(--text-3) 52% 60%, transparent 60% 70%, var(--text-3) 70% 78%, transparent 78%); }
+.handle.nw { left: -4px; top: -4px; cursor: nwse-resize; }
+.handle.ne { right: -4px; top: -4px; cursor: nesw-resize; }
+.handle.sw { left: -4px; bottom: -4px; cursor: nesw-resize; }
+.handle.e::after, .handle.w::after, .handle.n::after, .handle.s::after { content: ""; position: absolute; inset: 0; margin: auto; border-radius: 999px; background: var(--accent); }
+.handle.e::after, .handle.w::after { width: 4px; height: 28px; }
+.handle.n::after, .handle.s::after { width: 28px; height: 4px; }
+
+/* The list of what may be added, beside the board, and what is dragged from it. */
+.dash-drawer { position: sticky; top: 0; flex: none; width: 300px; max-height: calc(100vh - var(--bar) - 2 * var(--s6)); display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4); overflow: hidden; animation: rise .2s var(--ease); }
+.drawer-head { display: flex; align-items: center; gap: var(--s2); }
+/* The list takes the drawer's height, however many views it holds, and scrolls in it. */
+.dash-drawer .finder { flex: 1 1 auto; min-height: 0; }
+.dash-drawer .finder-list { flex: 1 1 auto; max-height: none; margin: 0 calc(var(--s2) * -1); padding: 2px var(--s2) var(--s2); }
+.dash-drawer .rows > .drawer-item { height: calc(var(--row) - 6px); }
+.drawer-item { display: flex; align-items: center; gap: var(--s3); width: 100%; padding: var(--s2); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; cursor: grab; touch-action: none; transition: border-color .12s, transform .12s; }
+.drawer-item:hover { border-color: var(--accent); transform: translateX(-2px); }
+/* The one the keys or the pointer are on: its border and its icon in the accent, the icon's
+   square holding its own against the row's colour. */
+.finder:focus-within .drawer-item.active, .drawer-item.active:hover { border-color: var(--accent); }
+.finder:focus-within .drawer-item.active .drawer-icon, .drawer-item.active:hover .drawer-icon { background: var(--accent); color: var(--on-accent); }
+.drawer-item .grow { display: flex; flex-direction: column; min-width: 0; }
+.drawer-item strong, .drawer-item .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-item .muted { font-size: var(--text-xs); }
+.drawer-icon { flex: none; width: 34px; height: 34px; display: grid; place-items: center; border-radius: var(--radius); background: var(--accent-soft); color: var(--accent-text); }
+.drag-token { position: fixed; z-index: 80; display: flex; align-items: center; gap: var(--s2); padding: var(--s2) var(--s3) var(--s2) var(--s2); border: 1px solid var(--accent); border-radius: var(--radius); background: var(--surface); box-shadow: var(--shadow-3); font-weight: 600; pointer-events: none; transform: translate(-50%, -50%) rotate(-2deg); transition: opacity .12s; }
+.drag-token.over { opacity: .7; }
+/* A new view, as it will show, drawn as it is made. */
+.view-preview { display: flex; flex-direction: column; height: 260px; padding: var(--s3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); overflow: hidden; }
+/* What stands down the side and across, Swap between them, level with their choices. */
+.new-view .axes { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: end; gap: var(--s3); }
+.new-view .axes > .button { margin-bottom: calc((var(--control) - var(--control-small)) / 2); }
+.new-view .axes > .button svg { transform: rotate(90deg); }
+@media (max-width: 600px) {
+  .new-view .axes { grid-template-columns: minmax(0, 1fr); }
+  .new-view .axes > .button { justify-self: center; margin: 0; }
+  .new-view .axes > .button svg { transform: none; }
+}
+.view-preview > * { flex: 1; min-height: 0; }
+.view-preview .chart { padding: 0; border: 0; box-shadow: none; background: none; }
+/* Cubes or dashboards past a dozen, listed to find in rather than laid out as cards. */
+.browse { padding: var(--s3); }
+@media (max-width: 900px) {
+  .dash-work { flex-direction: column-reverse; align-items: stretch; }
+  .dash-drawer { position: static; width: auto; max-height: 45vh; }
+}
+
+/* Presenting: the dashboard alone over the whole screen, or the whole window where the
+   browser allows no more, with what only works it put away. */
+body:has(.dashboard.presenting) .shell { grid-template: "main" 1fr / 1fr; }
+body:has(.dashboard.presenting) :is(.bar, .nav) { display: none; }
+.main:fullscreen { background: var(--bg); }
+.dashboard.presenting :is(.tile-head .button, .tile-corner) { display: none; }
+/* Presented, the board fills the screen beneath its head: its rows as tall as that takes, but
+   never shorter than they are worked on, a board too tall for the screen scrolling as ever. */
+.dashboard.presenting { display: flex; flex-direction: column; }
+.dashboard.presenting > .dash-work { flex: 1; min-height: 0; align-items: stretch; }
+.dashboard.presenting .board-frame { container-type: size; }
+.dashboard.presenting .board { --dash-row: max(40px, (100cqh - (var(--rows, 1) - 1) * var(--dash-gap)) / var(--rows, 1)); }
+
+/* A tile shown over the whole page, the dashboard dimmed beneath it. */
+.board > .dash-tile.focused { position: fixed; z-index: 70 !important; left: 3vw; top: calc(var(--bar) + 3vh); width: 94vw; height: calc(100vh - var(--bar) - 6vh); box-shadow: var(--shadow-3); transition: none; animation: pop .16s var(--ease); }
+.focus-backdrop { position: fixed; inset: 0; z-index: 69; background: rgb(8 12 20 / 45%); backdrop-filter: blur(2px); animation: appear .15s; }
+
+/* Charts, coming in: bars rise, lines draw themselves and a ring's slices grow, once. */
+.chart .area { stroke: none; opacity: .18; }
+.chart .area.tint-1 { opacity: .11; }
+.chart .area.tint-2 { opacity: .07; }
+.chart .slice { stroke: var(--surface); stroke-width: 2; }
+.chart .value { fill: var(--text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; pointer-events: none; }
+.chart .value.on-slice { fill: var(--on-accent); }
+.chart .ring-whole { fill: var(--text); font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.chart .mark { cursor: default; transition: opacity .15s, r .15s var(--ease); }
+.chart-plot:focus-visible { outline: 2px solid var(--focus); outline-offset: 4px; border-radius: var(--radius-s); }
+.chart .mark.focused { stroke: var(--text); stroke-width: 2; }
+.chart svg.picking .mark:not(.picked) { opacity: .3; }
+.chart .mark.picked { stroke: var(--text); stroke-width: 1.5; }
+.dash-tile .chart .mark[data-s], .dash-tile .chart-plot.near { cursor: pointer; }
+.chart svg.entering .bar, .chart svg.entering .dot, .chart svg.entering .slice { transform-box: fill-box; transform-origin: center bottom; animation: grow .45s var(--ease) both; }
+.chart svg.entering .slice { transform-origin: center; }
+.chart svg.entering .line { stroke-dasharray: 1; animation: draw .7s var(--ease) both; }
+.chart svg.entering .area { animation: appear .7s .2s both; }
+@keyframes grow { from { transform: scale(.6, 0); opacity: 0; } }
+@keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .dash-tile, .board-ghost, .board { transition: none; }
+}
+
+/* ---- Cells that may be written, marked as such ---- */
+
+.pivot td.editable:not(.edited) { background: color-mix(in oklab, var(--good) 8%, var(--surface)); }
+.pivot tbody tr:hover td.editable:not(.edited) { background-color: color-mix(in oklab, var(--good) 10%, var(--accent-soft)); }
+.legend-input::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; background: color-mix(in oklab, var(--good) 22%, var(--surface)); border: 1px solid color-mix(in oklab, var(--good) 45%, transparent); }
+
+/* ---- Viewing the server as another user ---- */
+
+.viewing { display: inline-flex; align-items: center; gap: var(--s2); padding: 3px 3px 3px var(--s3); border: 1px solid var(--accent); border-radius: 999px; background: var(--accent-soft); color: var(--accent-text); font-size: var(--text-s); white-space: nowrap; }
+.viewing .button { height: var(--control-small); border-radius: 999px; }
+
+/* ---- Values with supporting detail, and the detail beside the grid ---- */
+
+.pivot td.detailed { text-decoration: underline dotted var(--text-3); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+.detail { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s3) var(--s4); overflow: auto; }
+.detail-lines { display: flex; flex-direction: column; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.detail-lines li { display: grid; grid-template-columns: minmax(0, 1fr) 7.5rem auto; gap: var(--s2); align-items: center; }
+.detail-lines .num, .detail .num { text-align: right; font-variant-numeric: tabular-nums; }
+.detail-read { display: flex; flex-direction: column; gap: var(--s1); margin: 0; padding: 0; list-style: none; }
+.detail-read li { display: flex; gap: var(--s3); }
+.detail-read .grow { flex: 1; }
+
+/* ---- Values that break a check of their cube ---- */
+
+.pivot td.invalid { text-decoration: underline wavy var(--bad); text-decoration-skip-ink: none; text-underline-offset: 4px; }
+.legend-invalid::before { content: "123" / ""; margin-right: 6px; color: var(--text-3); text-decoration: underline wavy var(--bad); text-decoration-skip-ink: none; text-underline-offset: 3px; }
+
+/* ---- Sandboxes ---- */
+
+/* The button that says where the values come from, accented while a sandbox is worked in. */
+.sandbox-button { max-width: 240px; }
+.sandbox-button .clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sandbox-button.in-sandbox { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+/* A cell whose value a sandbox changes, and the stored value struck through before it when compared. */
+.pivot tbody td.sandboxed:not(.edited) { background-color: color-mix(in oklab, var(--accent) 12%, var(--surface)); color: var(--accent-text); font-weight: 600; }
+.pivot tbody tr:hover td.sandboxed:not(.edited) { background-color: color-mix(in oklab, var(--accent) 18%, var(--surface)); }
+.pivot td del.was { margin-right: var(--s2); color: var(--text-3); font-weight: 400; }
+.legend-sandboxed::before { content: ""; display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; background: color-mix(in oklab, var(--accent) 22%, var(--surface)); border: 1px solid color-mix(in oklab, var(--accent) 45%, transparent); }
+.pending.sandbox { background: var(--accent-soft); color: var(--accent-text); }
+
+/* ---- A dashboard's filters ---- */
+
+.dash-filters { display: flex; align-items: center; flex-wrap: wrap; gap: var(--s2); margin: calc(var(--s2) * -1) 0 var(--s4); color: var(--text-3); }
+.dash-filter { cursor: default; }
+.dash-filter .chip-summary { color: var(--text); }
+
+/* ---- Number formats ---- */
+
+.format-sample { display: flex; gap: var(--s5); padding: var(--s3) var(--s4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface-2); font-variant-numeric: tabular-nums; }
+
+/* ---- Totals that take a value to spread ---- */
+
+.pivot td.spreadable { cursor: cell; }
+/*
+ * A cell that takes a value says so under the pointer: a line beneath its value, inside the
+ * cell and clear of its edges, so that it never seems to belong to the row below. Whole for a
+ * value of its own, dashed for a total that spreads what is typed. A data bar keeps its bar.
+ */
+.pivot tbody td:is(.editable, .spreadable):not(.data-bar):hover {
+  background-image: linear-gradient(var(--accent), var(--accent));
+  background-repeat: no-repeat;
+  background-position: left var(--s3) bottom 6px;
+  background-size: calc(100% - 2 * var(--s3)) 2px;
+}
+.pivot tbody td.spreadable:not(.data-bar):hover { background-image: repeating-linear-gradient(to right, var(--accent) 0 4px, transparent 4px 7px); }
+
+/* ---- Held cells ---- */
+
+.pivot td.held { box-shadow: inset 3px 0 0 var(--text-3); }
+.pivot td.held.selected { box-shadow: inset 3px 0 0 var(--text-3); }
+.badge.held-badge { background: var(--surface-3); }
+
+/* ---- A query paused while its layout is built ---- */
+
+.output.stale { opacity: .55; filter: grayscale(.4); transition: opacity .15s; }
+
+/* ---- Highlights: bars, shades and tones ---- */
+
+.pivot td.data-bar:not(.edited), .tile-table .data-bar { background-image: linear-gradient(to right, color-mix(in oklab, var(--accent) 28%, transparent) var(--bar), transparent var(--bar)); background-repeat: no-repeat; }
+.pivot td.data-bar.negative:not(.edited), .tile-table .data-bar.negative { background-image: linear-gradient(to right, color-mix(in oklab, var(--bad) 28%, transparent) var(--bar), transparent var(--bar)); }
+.pivot td.shade:not(.edited), .tile-table .shade { background-color: color-mix(in oklab, var(--accent) calc(var(--shade) * 38%), var(--surface)); }
+.pivot td.tone-good:not(.edited), .tile-table .tone-good { background-color: var(--good-soft); color: var(--good); font-weight: 600; }
+.pivot td.tone-bad:not(.edited), .tile-table .tone-bad { background-color: var(--bad-soft); color: var(--bad); font-weight: 600; }
+.pivot td.tone-warn:not(.edited), .tile-table .tone-warn { background-color: var(--warn-soft); font-weight: 600; }
+.pivot td.tone-accent:not(.edited), .tile-table .tone-accent { background-color: var(--accent-soft); color: var(--accent-text); font-weight: 600; }
+
+/* ---- Earlier versions of the model ---- */
+
+.history-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s1); }
+.history-list li { display: flex; align-items: center; gap: var(--s4); padding: var(--s2) var(--s3); border-radius: var(--radius); }
+.history-list li > * { white-space: nowrap; }
+.history-list li:hover { background: var(--surface-2); }
+.history-list .grow { flex: 1; }
+/* What choosing an earlier version does, said on the one pointed at or that the keys are on. */
+.history-action { flex: none; font-size: var(--text-s); color: var(--accent-text); opacity: 0; transition: opacity .12s; }
+.finder-item:hover .history-action, .finder:focus-within .finder-item.active .history-action { opacity: 1; }
+
+/* ---- Comments ---- */
+
+.output-row { flex: 1; min-height: 0; display: flex; }
+.output-row > .output { min-width: 0; }
+.pivot td.commented { position: relative; }
+.comment-mark { position: absolute; top: 0; right: 0; width: 0; height: 0; padding: 0; border: 0; border-style: solid; border-width: 0 9px 9px 0; border-color: transparent var(--warn) transparent transparent; background: none; cursor: pointer; }
+.comment-mark:hover, .comment-mark:focus-visible { border-right-color: var(--accent); }
+.comment-panel { width: var(--comments, 340px); flex: none; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--surface); min-height: 0; }
+.comment-head { display: flex; align-items: flex-start; gap: var(--s2); padding: var(--s4); border-bottom: 1px solid var(--line); }
+.comment-head .grow { flex: 1; min-width: 0; }
+.comment-head p { font-size: var(--text-xs); margin-top: 2px; overflow-wrap: anywhere; }
+.comment-thread { flex: 1; overflow: auto; list-style: none; margin: 0; padding: var(--s3) var(--s4); display: flex; flex-direction: column; gap: var(--s3); }
+/* A cell's older changes, to be read back, beneath those shown. */
+.history-more { padding: 0 var(--s4) var(--s3); }
+.history-more:empty { display: none; }
+.comment { padding: var(--s3); border-radius: var(--radius); background: var(--surface-2); }
+.comment p { margin-top: var(--s1); white-space: pre-wrap; overflow-wrap: anywhere; }
+.comment-by { display: flex; align-items: center; gap: var(--s2); font-size: var(--text-s); }
+.comment-by .muted { font-size: var(--text-xs); flex: 1; }
+.comment-none { padding: var(--s3) 0; }
+.comment-new { padding: var(--s3) var(--s4) var(--s4); border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: var(--s2); }
+.comment-new .toolbar .grow { flex: 1; }
+.comment-head .segmented { margin-bottom: var(--s2); }
+/* A cell's history: each change from what to what, and one not yet saved, first. */
+.history-change { font-variant-numeric: tabular-nums; }
+.history-pending { display: flex; align-items: center; gap: var(--s2); margin: var(--s3) var(--s4) 0; padding: var(--s2) var(--s3); border-radius: var(--radius); background: var(--warn-soft); color: var(--warn); font-size: var(--text-s); }
+
+/* ---- Waiting ---- */
+
+/* A call under way for more than a moment: a bar moving along the top of the window. */
+html.waiting body::after { content: ""; position: fixed; inset: 0 0 auto; height: 3px; z-index: 60; pointer-events: none; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: progress 1.1s linear infinite; }
+/* What is waited on shows after a moment, so that what is quick shows nothing. */
+@keyframes appear { from { opacity: 0; } }
+.loading { display: flex; flex-direction: column; gap: var(--s5); animation: appear .25s .15s both; }
+.loading .lines { display: flex; flex-direction: column; gap: var(--s3); }
+.loading .panes { display: grid; grid-template-columns: minmax(180px, 260px) minmax(0, 1fr); gap: var(--s6); }
+.loading .skeleton.title { height: 30px; width: min(320px, 60%); }
+.loading .skeleton.card { height: 116px; }
+.loading .skeleton.line { height: 14px; }
+.loading .skeleton.line:nth-child(3n + 2) { width: 84%; }
+.loading .skeleton.line:nth-child(3n) { width: 68%; }
+.output > .loading { padding: var(--s5); }
+/* A button at work: after a moment its label gives way to a spinner. */
+.button[aria-busy="true"] { position: relative; pointer-events: none; animation: hush 0s .15s both; }
+.button[aria-busy="true"]::after, .finder-item[aria-busy="true"] .history-action::after { content: ""; position: absolute; inset: 0; margin: auto; width: 14px; height: 14px; border: 2px solid var(--line-strong); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite, appear .1s .15s both; }
+/* An earlier version being compared: its action a turning circle until the comparison comes. */
+.finder-item[aria-busy="true"] .history-action { position: relative; opacity: 1; color: transparent; }
+.button.primary[aria-busy="true"]::after { border-color: color-mix(in oklab, var(--on-accent) 40%, transparent); border-top-color: var(--on-accent); }
+.button.danger[aria-busy="true"]::after { border-top-color: var(--bad); }
+.chip-main[aria-busy="true"] { opacity: .6; pointer-events: none; }
+@keyframes hush { to { color: transparent; } }
+.spinner.small { width: 14px; height: 14px; flex: none; }
+.status-line .running { display: inline-flex; align-items: center; gap: var(--s2); }
+.palette .finding { display: flex; align-items: center; justify-content: center; gap: var(--s2); margin: 0; padding: var(--s4); color: var(--text-3); }
+/* Run again, the grid fades after a moment, to say its numbers are about to change. */
+.output > .pivot-scroll { transition: opacity .15s; }
+.output.busy > .pivot-scroll { opacity: .6; transition: opacity .3s .5s; }
+
+/* ---- Panes sized to their content, or by hand ---- */
+
+/* A handle on a pane's edge: dragged, or moved by the arrow keys, it sets the pane's width. */
+.splitter { position: absolute; top: 0; bottom: 0; width: 6px; z-index: 6; cursor: col-resize; touch-action: none; }
+.splitter::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 2px; background: transparent; transition: background .12s; }
+.splitter:hover::after, .splitter:active::after, .splitter:focus-visible::after { background: var(--accent); }
+.splitter:focus-visible { outline: none; }
+.explorer > .splitter { left: calc(var(--fields, 280px) - 3px); }
+.output-row { position: relative; }
+.output-row > .splitter { left: auto; right: calc(var(--comments, 340px) - 3px); }
+.comment-panel[hidden] + .splitter { display: none; }
+
+/* Toggles that belong together, under one short label. */
+.toggle-group { display: inline-flex; align-items: center; gap: 2px; }
+.toggle-label { padding: 0 var(--s1); font-size: var(--text-xs); color: var(--text-3); white-space: nowrap; }
+.open-group { display: inline-flex; align-items: center; gap: 2px; flex: 0 1 auto; min-width: 0; }
+
+/* ---- Dragging in the set editor ---- */
+
+/* Where a drop would go: a line before or after a member, or around a place that takes it. */
+.set-item.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.set-list.drop-target { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.set-tree.drop-target { outline: 2px dashed var(--bad); outline-offset: -4px; background: color-mix(in oklab, var(--bad) 6%, var(--surface)); }
+.set-moves .button.drop-target { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+/* Several members dragged at once show as their count. */
+.drag-count { position: fixed; top: -100px; left: -100px; padding: 4px 10px; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: var(--text-s); font-weight: 600; white-space: nowrap; }
+@media (max-width: 1100px) { .explorer > .splitter { display: none; } }
+
+/* ---- Keyboard shortcuts ---- */
+
+/* Side by side where the dialog is wide enough, each section a list of keys and what they do. */
+.shortcuts-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr)); gap: var(--s5) var(--s6); }
+.shortcuts-section h3 { margin: 0 0 var(--s3); font-size: 13px; }
+.shortcuts { display: grid; grid-template-columns: minmax(auto, 190px) 1fr; gap: var(--s2) var(--s4); margin: 0; align-items: baseline; }
+.shortcuts dt { display: flex; flex-wrap: wrap; gap: 4px var(--s2); }
+.shortcuts dd { margin: 0; color: var(--text-2); text-wrap: pretty; }
+.keys { display: inline-flex; align-items: center; gap: 2px; white-space: nowrap; color: var(--text-3); }
+
+/* ---- A phone's width ---- */
+
+/* The bar keeps its marks, the words beside them heard but not shown; a heading and its
+   buttons stack; and the explorer's buttons go along one row that scrolls sideways, for the
+   grid to stay in view. */
+@media (max-width: 600px) {
+  .bar { gap: var(--s2); padding: 0 var(--s2); }
+  /* Heard, not seen: the bar's words beside its marks, and an element's type beside its
+     name, which its mark says, the name taking the room. */
+  .bar .brand span, .bar .button .label, .dashboard .page-head .toolbar .button .label, .element-row .element-type { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  /* A dashboard's buttons their marks alone, square, without the chevrons of those that open
+     menus: on one line, a phone's width as narrow as it may be. */
+  .dashboard .page-head .toolbar .button:is(:has(> .label), .pace) { width: var(--control); padding: 0; }
+  .dashboard .page-head .toolbar .button > svg:last-child:not(:first-child) { display: none; }
+  .bar .status { gap: 0; font-size: 0; }
+  .editor-head, .card-head { flex-wrap: wrap; }
+  .editor-head, .work-head { padding: var(--s3); }
+  .work-head > .toolbar + .toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
+  /* The layout's zones a row each, the label beside the chips and the chips going on across,
+     so that the grid has the height they took. Wider, they stand side by side. */
+  .layout-bar { grid-template-columns: 1fr; gap: var(--s1); }
+  .zone { flex-wrap: nowrap; min-height: 0; padding: var(--s1) var(--s2); overflow-x: auto; scrollbar-width: none; }
+  .zone-label { width: auto; flex: none; min-width: 4.75rem; }
+  .tree-tools { flex-wrap: wrap; }
+  .tree-tools .search { flex-basis: 100%; }
+  /* Fields paired, one above the other; an element role on two lines, its button at the end. */
+  .field-pair { grid-template-columns: minmax(0, 1fr); }
+  /* What a row of choices is of, above it. */
+  .choice-row { grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
+  .element-role { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .element-role > .button:last-child { justify-self: end; }
+  /* On a phone the highlight rules' box decides too, as the filter's always does. Wider, the
+     dialog grows to fit each rule on one line, which it could not were the box to decide. */
+  .field:has(> .rules) { container: rules / inline-size; }
+  /* A cell's comments, history and detail over the whole screen, the grid having no room
+     beside them, nor they beneath it. */
+  .comment-panel { position: fixed; inset: 0; z-index: 40; width: auto; border-left: 0; }
+  .output-row > .splitter { display: none; }
+  .status-line { flex-wrap: wrap; gap: var(--s1) var(--s4); padding: var(--s1) var(--s3); }
+}
+
+/* ---- Printing ---- */
+
+/* On paper the light palette, whatever the screen's, as paper is white. The page alone,
+   without the bar, the list of pages or what only controls it; and everything at its full
+   length, as paper does not scroll. */
+@media print {
+  :root, :root[data-theme="dark"] {
+    color-scheme: light;
+    --bg: #fff; --surface: #fff; --surface-2: #f3f4f6; --surface-3: #e8ebf0;
+    --line: #cdd3dc; --line-strong: #9aa3b2;
+    --text: #000; --text-2: #333; --text-3: #555;
+    --accent: #3730a3; --accent-soft: #eef0ff; --accent-text: #3730a3; --on-accent: #fff;
+    --good: #0f7b4a; --good-soft: #e4f6ec; --warn: #9a5b00; --warn-soft: #fff4dc; --bad: #c0262d; --bad-soft: #fdecec;
+    --total: #f3f5fb; --total-strong: #e9edf9;
+    --shadow-1: none; --shadow-2: none; --shadow-3: none;
+  }
+  .skip, .bar, .nav, .notices, .fields, .model-list, .work-head > .toolbar, .comment-panel, .pending,
+  .splitter, .dash-tabs, .page-head .toolbar, .dash-filters button, .tile-head .button, .tile-corner, .dash-drawer, .handle, .legend-along,
+  .zone:not(:has(.chip)), .chip-more, .pivot .twisty, .card-head > .button, .editor-head > .button,
+  .editor-head .segmented, .tree-tools, .table .actions { display: none !important; }
+  html, body, .shell, .main, .explorer, .work, .output-row, .output { display: block; }
+  html, body, .shell, .main, .page, .explorer, .work, .output-row, .output, .pivot-scroll, .tile-table,
+  .mdx-pane, .chart-pane, .editor-body, .element-tree, .element-detail, .child-list, .card.fit {
+    height: auto !important; max-height: none !important; overflow: visible !important;
+  }
+  .work-head { border: 0; padding: 0 0 var(--s3); }
+  /* The page's name, to a screen reader alone on screen, heads the paper. */
+  .explorer h1.visually-hidden { position: static !important; width: auto; height: auto; clip: auto; margin-bottom: var(--s3); }
+  /* Where the grid stands and how it is laid out, said in a line. */
+  .layout-bar { display: flex; flex-wrap: wrap; gap: var(--s1) var(--s5); margin-bottom: var(--s3); }
+  .zone { min-height: 0; padding: 0; border: 0; background: none; gap: var(--s1) var(--s3); }
+  .zone-label { width: auto; }
+  .chip { border: 0; background: none; box-shadow: none; }
+  .chip-main { flex-direction: row; align-items: baseline; gap: 4px; padding: 0; }
+  .chip-main strong::after { content: ":"; }
+  .chip-summary { max-width: none; font-size: var(--text-s); color: var(--text); }
+  /* Headings pinned for scrolling stand in their places, and repeat on every sheet. */
+  .pivot th, .table th { position: static !important; }
+  .pivot thead, .table thead { display: table-header-group; }
+  .pivot tr, .table tr, .tile, .dash-tile { break-inside: avoid; }
+  /* Rows drawn in their places for scrolling, or standing for those not drawn, follow on. */
+  .pivot tr.spacer { display: none; }
+  .rows { height: auto !important; }
+  .rows > * { position: static !important; }
+  /* A dashboard's tiles one after another, as they are read, each as high as on screen. */
+  .board { display: flex !important; flex-direction: column; gap: var(--s4); height: auto !important; background: none !important; }
+  .board > .dash-tile { position: relative !important; left: auto !important; top: auto !important; width: auto !important; order: var(--order); }
+  .board-ghost, .board-guides, .focus-backdrop { display: none !important; }
+  /* On paper a tile's legend lists every series, on as many lines as it takes. */
+  .dash-tile .chart-legend { flex-wrap: wrap; overflow: visible; mask-image: none; }
+  /* Shading, highlights and the colours of a chart's series say something, where browsers
+     leave backgrounds out; charts drawn wider than the paper fit it. */
+  .pivot, .chart { print-color-adjust: exact; }
+  .chart svg { max-width: 100%; height: auto; }
+  /* What is chosen or found is for the screen; how long ago a moment was is for now. */
+  .pivot td.selected::before, .pivot th:is(.found, .found-current)::before, time > .ago { display: none; }
+  time > .exact { display: inline; }
+  [data-part]::before {
+    content: "Only the rows in view are printed, of " attr(data-rows) ".";
+    display: block; margin-bottom: var(--s3); color: var(--text-2);
+  }
+  .pivot-scroll[data-part]::before { content: "Only the rows in view are printed, of " attr(data-rows) ". Export the grid to have them all."; }
+}
+
+/* ---- High contrast ---- */
+
+/* In Windows' high contrast the system gives every colour, and backgrounds and shadows go.
+   What only they said, where the keys are or what is chosen, says itself with an outline or
+   the system's own highlight; what is only a colour, as a data bar, gives way to the number. */
+@media (forced-colors: active) {
+  .input:focus, .select:focus, .textarea:focus, .menu button:focus-visible, .splitter:focus-visible {
+    outline: 2px solid Highlight; outline-offset: 1px;
+  }
+  .nav a[aria-current="page"], .finder-item.current, .dash-tabs a[aria-current="page"],
+  .button[aria-pressed="true"], .segmented button[aria-selected="true"], .segmented button[aria-checked="true"],
+  .finder:focus-within .finder-item.active, .finder-item.active:hover, .set-item[aria-selected="true"], .tree-row[aria-selected="true"] {
+    forced-color-adjust: none; background: Highlight; color: HighlightText;
+  }
+  .pivot td.selected::before { display: none; }
+  .pivot td.selected { outline: 2px solid Highlight; outline-offset: -2px; }
+  .picker-row[aria-selected="true"] .choice { forced-color-adjust: none; background: Highlight; box-shadow: none; }
+  .badge, .chip { border: 1px solid CanvasText; }
+  .skip:focus { outline: 2px solid Highlight; }
+}

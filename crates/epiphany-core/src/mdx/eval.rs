@@ -5,14 +5,61 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use super::parser::{Axis, Expr, Query};
-use super::{AxisResult, MdxError, MemberResult, MemberType, QueryResult};
+use super::{Asker, AxisResult, MdxError, MemberResult, MemberType, Own, QueryResult};
 use crate::Scalar;
-use crate::model::{Cube, Dimension, Element, ElementId, ElementType, Model, key};
+use crate::access::Access;
+use crate::model::{
+    Cube, Dimension, DimensionId, DimensionType, Element, ElementId, ElementType, Model, key,
+};
+
+mod dates;
+mod format;
+mod sparse;
+
+use dates::{Interval, Parts};
+use sparse::Laid;
 
 /// The most cells one query may return.
 const MOST_CELLS: usize = 1_000_000;
+/// The most tuples a set may hold while a query is worked out. A cross join multiplies, and
+/// without a limit one short query could ask for more memory than there is.
+const MOST_TUPLES: usize = 1_000_000;
+/// The most steps one query, or one rule at one cell, may take to work out: every part of an
+/// expression worked out is a step. Calculated members that each use the one before twice
+/// double the work at every member, and a few dozen of them would otherwise never finish.
+const MOST_STEPS: u64 = 100_000_000;
+/// The most characters a text worked out may hold, which the same doubling would outgrow.
+const MOST_TEXT: usize = 1_000_000;
+/// The words that tell a function how to go about its work. Where one of them stands alone
+/// it is that word, even in a model with a dimension of the same name; the dimension is
+/// then written in brackets with its hierarchy, as `[Desc].[Desc]`.
+const FLAGS: [&str; 19] = [
+    "ALL",
+    "ASC",
+    "DESC",
+    "BASC",
+    "BDESC",
+    "POST",
+    "RECURSIVE",
+    "SELF",
+    "AFTER",
+    "BEFORE",
+    "SELF_AND_AFTER",
+    "SELF_AND_BEFORE",
+    "BEFORE_AND_AFTER",
+    "SELF_BEFORE_AFTER",
+    "LEAVES",
+    "INCLUDEMEMBER",
+    "CONSTRAINED",
+    "INCLUDEEMPTY",
+    "EXCLUDEEMPTY",
+];
 /// How deeply calculated members may refer to one another.
 const DEEPEST: u32 = 32;
+/// How much of the thread's stack they may take in doing so, in bytes. A member worked out
+/// inside another uses stack in proportion to how much its expression nests, and a build
+/// without optimisation uses several times more; a thread that runs out ends the process.
+const MOST_STACK: usize = 512 * 1024;
 
 pub(super) type Evaluated<T> = Result<T, MdxError>;
 /// Reads a cell of a cube, by the cube's position in the model.
@@ -34,6 +81,8 @@ pub(super) struct Member {
 
 /// Members of different dimensions.
 pub(super) type Tuple = Vec<Member>;
+/// What a `...Top` or `...Bottom` drilling function keeps of a member's children, in order.
+type Rank<'r> = &'r dyn Fn(Vec<Tuple>) -> Evaluated<Vec<Tuple>>;
 /// One member per dimension of the cube: the cell an expression is evaluated at.
 pub(super) type Context = Vec<Id>;
 
@@ -61,8 +110,13 @@ pub(super) enum Datum {
 struct Calculated<'a> {
     position: usize,
     name: &'a str,
-    expression: &'a Expr,
+    expression: Expr,
     solve_order: f64,
+    /// The pattern the cells it decides are written out by, as `Format` writes them.
+    format: Option<Expr>,
+    /// The members and tuples the expression names outright, where they are the same at
+    /// every cell and so need finding only once.
+    named: Option<Vec<Tuple>>,
 }
 
 pub(super) struct Evaluator<'a> {
@@ -73,14 +127,28 @@ pub(super) struct Evaluator<'a> {
     read: Read<'a>,
     /// Told which cells of the cube are about to be read, so that they can be added up together.
     expect: Expect<'a>,
+    /// Shows the cells of the cube that may hold something, if it can.
+    occupied: Occupied<'a>,
+    /// The subsets of the one asking, for `TM1SubsetToSet` with "private"; none where nobody
+    /// asks, as for the model's views, subsets and rules.
+    own: Option<Own<'a>>,
+    /// The elements the one asking may see, where some are hidden from them.
+    access: Option<&'a Access>,
     calculated: Vec<Calculated<'a>>,
     sets: HashMap<String, Vec<Tuple>>,
     /// How many calculated members are being evaluated inside one another.
     depth: Cell<u32>,
+    /// How many steps have been taken.
+    steps: Cell<u64>,
+    /// Where the stack stood when the outermost calculated member was begun.
+    began: Cell<usize>,
 }
 
 /// Takes the cells of a cube that are about to be read.
 pub(crate) type Expect<'a> = &'a dyn Fn(&[&[ElementId]]);
+/// Shows every leaf cell of the cube that may hold something, unless there are more than a
+/// number of them, or says that it cannot.
+pub(crate) type Occupied<'a> = &'a dyn Fn(usize, &mut dyn FnMut(&[ElementId])) -> bool;
 
 /// For work whose cells are read one at a time.
 pub(super) fn unexpected(_: &[&[ElementId]]) {}
@@ -94,14 +162,37 @@ pub(super) fn no_cells(_: usize, _: &[ElementId]) -> Evaluated<Scalar> {
     Ok(Scalar::Number(0.0))
 }
 
-/// The elements a set over a one-dimension cube selects, reading every cell as empty.
-pub(super) fn elements(model: &Model, cube: &Cube, set: &Expr) -> Evaluated<Vec<ElementId>> {
-    let evaluator = Evaluator::new(model, usize::MAX, cube, &no_cells);
+/// Where a cube of one dimension alone stands: in no place among the model's cubes.
+const ALONE: usize = usize::MAX;
+
+/// The elements a set over one dimension selects, worked out in a cube of that dimension
+/// alone. Its own cells are empty; those of the model's cubes, which `LookupCube` reads, are
+/// read through `read`.
+pub(super) fn elements(
+    model: &Model,
+    dimension: DimensionId,
+    set: &Expr,
+    read: Read,
+) -> Evaluated<Vec<ElementId>> {
+    let alone = Cube {
+        name: String::new(),
+        dimensions: vec![dimension],
+        views: Vec::new(),
+        rules: Vec::new(),
+        feeders: Vec::new(),
+        validations: Vec::new(),
+        sparse: false,
+    };
+    let read = |cube: usize, at: &[ElementId]| match cube {
+        ALONE => Ok(Scalar::Number(0.0)),
+        _ => read(cube, at),
+    };
+    let evaluator = Evaluator::new(model, ALONE, &alone, &read);
     let top = evaluator
         .dimension(0)
         .elements
         .iter()
-        .position(|e| e.parents.is_empty());
+        .position(|e| e.parents().is_empty());
     let context = vec![Id::Element(top.unwrap_or(0) as ElementId)];
     let element = |tuple: Tuple| match tuple.as_slice() {
         [
@@ -120,35 +211,68 @@ pub(super) fn elements(model: &Model, cube: &Cube, set: &Expr) -> Evaluated<Vec<
 }
 
 impl Query {
-    /// Runs the query against a cube, reading stored and consolidated cells through `read`,
-    /// after saying through `expect` which cells of the cube the axes will ask for.
+    /// Runs the query against a cube for the one asking it, reading stored and consolidated
+    /// cells through `read`, after saying through `expect` which cells of the cube the axes
+    /// will ask for.
     pub(crate) fn evaluate(
         &self,
         model: &Model,
         cube_id: usize,
         read: Read,
         expect: Expect,
+        occupied: Occupied,
+        asker: &Asker,
     ) -> Evaluated<QueryResult> {
         let cube = &model.cubes()[cube_id];
+        let standing = asker.standing;
         let mut evaluator = Evaluator::new(model, cube_id, cube, read);
         evaluator.expect = expect;
+        evaluator.occupied = occupied;
+        evaluator.own = asker.own;
+        evaluator.access = asker.access;
         for member in &self.members {
             let [dimension, .., name] = member.name.as_slice() else {
                 return fail("a calculated member is named [Dimension].[Name]");
             };
+            // A pattern written out in full is checked before any cell is worked out.
+            if let Some(Expr::Text(pattern)) = &member.format {
+                format::write(0.0, pattern).map_err(|error| {
+                    let message = format!(
+                        "the FORMAT_STRING of [{dimension}].[{name}]: {}",
+                        error.message
+                    );
+                    MdxError::new(message)
+                })?;
+            }
             evaluator.calculated.push(Calculated {
                 position: evaluator.position(dimension)?,
                 name,
-                expression: &member.expression,
+                expression: member.expression.clone(),
                 solve_order: member.solve_order,
+                format: member.format.clone(),
+                named: None,
             });
         }
 
         // Every dimension starts at its first top element; the slicer then narrows some.
         let mut context = evaluator.top();
+        // The names in an expression are settled once, just before it is first worked out,
+        // and not again at every cell or tuple it is worked out for.
         for (name, expression) in &self.sets {
-            let set = evaluator.set(expression, &context)?;
+            let set = evaluator.set(&evaluator.settled(expression), &context)?;
             evaluator.sets.insert(key(name), set);
+        }
+        // Those of the calculated members wait until every member and set is known.
+        for index in 0..evaluator.calculated.len() {
+            let settled = evaluator.settled(&evaluator.calculated[index].expression);
+            if fixed(&settled) {
+                let mut named = Vec::new();
+                evaluator.named(&settled, &context, &mut named);
+                evaluator.calculated[index].named = Some(named);
+            }
+            evaluator.calculated[index].expression = settled;
+            let format = evaluator.calculated[index].format.as_ref();
+            evaluator.calculated[index].format = format.map(|format| evaluator.settled(format));
         }
         let mut used = HashSet::new();
         let mut claim = |tuple: &Tuple| match tuple.iter().all(|m| used.insert(m.position)) {
@@ -157,14 +281,40 @@ impl Query {
         };
         let mut slicer = Tuple::new();
         if let Some(expression) = &self.slicer {
-            slicer = match evaluator.evaluate(expression, &context)? {
+            slicer = match evaluator.evaluate(&evaluator.settled(expression), &context)? {
                 Datum::Member(member) => vec![member],
                 Datum::Tuple(tuple) => tuple,
                 _ => return fail("WHERE takes a member or a tuple"),
             };
             claim(&slicer)?;
-            context = with(&context, &slicer);
         }
+        // The members to stand at take the slicer's place for their dimensions. They claim no
+        // dimension: an axis that places one puts its own members in every cell, keeping only
+        // those at the member or beneath it.
+        let mut stood = Vec::new();
+        for &(dimension, name) in standing {
+            let named = Expr::Name(vec![dimension.to_owned(), name.to_owned()]);
+            let Datum::Member(member) = evaluator.evaluate(&evaluator.settled(&named), &context)?
+            else {
+                return fail(format!(
+                    "[{dimension}].[{name}] is not a member to stand at"
+                ));
+            };
+            stood.push(member);
+            match slicer
+                .iter_mut()
+                .find(|other| other.position == member.position)
+            {
+                Some(other) => *other = member,
+                None => slicer.push(member),
+            }
+        }
+        context = with(&context, &slicer);
+        let elements = context.iter().map(|id| match *id {
+            Id::Element(element) => Some(element),
+            Id::Calculated(_) => None,
+        });
+        evaluator.seen_cell(cube, elements)?;
 
         let mut axes: Vec<&Axis> = self.axes.iter().collect();
         axes.sort_by_key(|axis| axis.ordinal);
@@ -175,13 +325,47 @@ impl Query {
         {
             return fail("axes are numbered from COLUMNS without gaps or repeats");
         }
-        let mut sets = Vec::new();
+        let mut laid = Vec::new();
+        let mut placed = HashSet::new();
         for axis in &axes {
-            let set = evaluator.set(&axis.set, &context)?;
-            if let Some(tuple) = set.first() {
-                claim(tuple)?;
+            let axis = evaluator.lay(&evaluator.settled(&axis.set), axis.non_empty, &context)?;
+            let first: Option<Tuple> = match &axis {
+                Laid::Out(set) => set.first().cloned(),
+                Laid::Crossed(sets, _) => Some(sets.iter().map(|set| set[0][0]).collect()),
+            };
+            if let Some(tuple) = first {
+                claim(&tuple)?;
+                placed.extend(tuple.iter().map(|member| member.position));
             }
-            sets.push(set);
+            laid.push(axis);
+        }
+        // A cross join left unwritten is now cut down to its tuples that may hold something,
+        // which takes knowing what the other axes hold.
+        let mut sets = Vec::new();
+        for index in 0..laid.len() {
+            let others = laid.iter().enumerate().filter(|&(other, _)| other != index);
+            let beside: Vec<&Vec<Tuple>> = others
+                .flat_map(|(_, other)| match other {
+                    Laid::Out(set) => std::slice::from_ref(set),
+                    Laid::Crossed(sets, _) => sets.as_slice(),
+                })
+                .collect();
+            sets.push(evaluator.cut(&laid[index], &beside, &context)?);
+        }
+        // An axis that places a member stood at keeps its tuples at that member or beneath it,
+        // as a page's choice narrows a view whose rows are of its dimension; the query's own
+        // calculated members stay.
+        for set in &mut sets {
+            set.retain(|tuple| {
+                tuple.iter().all(|member| {
+                    stood.iter().all(|at| {
+                        at.position != member.position
+                            || matches!(member.id, Id::Calculated(_))
+                            || member.id == at.id
+                            || evaluator.beneath(*member, *at)
+                    })
+                })
+            });
         }
 
         // One cell per combination of a tuple from each axis, the first axis varying fastest.
@@ -189,21 +373,36 @@ impl Query {
         let places = Places::new(&sizes)?;
         let contexts: Vec<Vec<Id>> = (0..places.count)
             .map(|index| {
-                let tuples = sets.iter().zip(places.of(index));
-                tuples.fold(context.clone(), |context, (set, place)| {
-                    with(&context, &set[place])
-                })
+                // One copy of the slicer's cell, with each axis's tuple put into it.
+                let mut cell = context.clone();
+                for (set, place) in sets.iter().zip(places.of(index)) {
+                    for member in &set[place] {
+                        cell[member.position] = member.id;
+                    }
+                }
+                cell
             })
             .collect();
         let totals: Vec<Vec<ElementId>> = contexts
             .iter()
-            .filter_map(|context| evaluator.total_at(context))
+            .flat_map(|context| evaluator.ahead(context))
             .collect();
         expect(&totals.iter().map(Vec::as_slice).collect::<Vec<_>>());
         let cells = contexts
             .iter()
             .map(|context| evaluator.cell(context))
             .collect::<Evaluated<Vec<Datum>>>()?;
+        // Written out as well, where a calculated member that decides a cell has a format.
+        let mut formatted = Vec::new();
+        if evaluator
+            .calculated
+            .iter()
+            .any(|member| member.format.is_some())
+        {
+            for (context, cell) in contexts.iter().zip(&cells) {
+                formatted.push(evaluator.formatted(context, cell)?);
+            }
+        }
 
         // NON EMPTY drops the tuples of an axis whose cells are all empty.
         let mut filled: Vec<Vec<bool>> = sizes.iter().map(|&size| vec![false; size]).collect();
@@ -227,21 +426,38 @@ impl Query {
             _ => None,
         };
         let kept_places = Places::new(&kept.iter().map(Vec::len).collect::<Vec<_>>())?;
-        let kept_cells = (0..kept_places.count).map(|index| {
-            let original = kept.iter().zip(kept_places.of(index)).zip(&places.strides);
-            let original = original.map(|((kept, place), stride)| kept[place] * stride);
-            value(&cells[original.sum::<usize>()])
-        });
+        let originals: Vec<usize> = (0..kept_places.count)
+            .map(|index| {
+                let original = kept.iter().zip(kept_places.of(index)).zip(&places.strides);
+                original
+                    .map(|((kept, place), stride)| kept[place] * stride)
+                    .sum()
+            })
+            .collect();
+        let kept_cells = originals.iter().map(|&original| value(&cells[original]));
+        let kept_formatted = match formatted.is_empty() {
+            true => Vec::new(),
+            false => originals
+                .iter()
+                .map(|&original| formatted[original].take())
+                .collect(),
+        };
         let axes = axes
             .iter()
             .zip(&sets)
             .zip(&kept)
             .map(|((axis, set), kept)| {
+                // A member stands in many tuples of a long axis, and is described once.
+                let mut described: HashMap<Member, MemberResult> = HashMap::new();
                 let tuple = |&index: &usize| {
                     let members = set[index].iter();
-                    members
-                        .map(|&member| evaluator.describe(member, &axis.properties))
-                        .collect()
+                    let describe = |&member: &Member| {
+                        let known = described.entry(member);
+                        known
+                            .or_insert_with(|| evaluator.describe(member, &axis.properties))
+                            .clone()
+                    };
+                    members.map(describe).collect()
                 };
                 AxisResult {
                     tuples: kept.iter().map(tuple).collect(),
@@ -250,9 +466,12 @@ impl Query {
         Ok(QueryResult {
             cube: cube.name.clone(),
             cells: kept_cells.collect(),
+            formatted: kept_formatted,
             axes: axes.collect(),
+            // A member stood at whose dimension an axis places is not where the cells are.
             slicer: slicer
                 .iter()
+                .filter(|member| !placed.contains(&member.position))
                 .map(|&member| evaluator.describe(member, &[]))
                 .collect(),
         })
@@ -293,6 +512,37 @@ impl Places {
     }
 }
 
+/// A cell moved along the tuples of a set: each tuple is put into the one copy of the cell,
+/// in the place of the tuple before it, so that a set of any length costs one copy.
+struct Along {
+    cell: Context,
+    /// What stood in the places the last tuple took.
+    before: Vec<(usize, Id)>,
+}
+
+impl Along {
+    fn new(context: &Context) -> Self {
+        Self {
+            cell: context.clone(),
+            before: Vec::new(),
+        }
+    }
+
+    /// The cell with this tuple in it and the last one out of it again.
+    fn at(&mut self, tuple: &Tuple) -> &Context {
+        // Last put in, first put back: right even of a tuple with two of one dimension.
+        while let Some((position, id)) = self.before.pop() {
+            self.cell[position] = id;
+        }
+        for member in tuple {
+            self.before
+                .push((member.position, self.cell[member.position]));
+            self.cell[member.position] = member.id;
+        }
+        &self.cell
+    }
+}
+
 /// A context with the members of a tuple put in their places.
 fn with(context: &Context, tuple: &Tuple) -> Context {
     let mut context = context.clone();
@@ -312,6 +562,11 @@ fn is_empty(datum: &Datum) -> bool {
 }
 
 /// The single word an argument consists of, in upper case, as flags such as `DESC` are.
+/// An argument given, not left out between commas, which the parser reads as NULL.
+fn given(argument: Option<&Expr>) -> Option<&Expr> {
+    argument.filter(|argument| !matches!(argument, Expr::Call(name, arguments) if name == "NULL" && arguments.is_empty()))
+}
+
 fn flag(argument: Option<&Expr>) -> Option<String> {
     match argument {
         Some(Expr::Name(parts)) if parts.len() == 1 => Some(parts[0].to_uppercase()),
@@ -341,19 +596,118 @@ impl<'a> Evaluator<'a> {
             cube,
             read,
             expect: &unexpected,
+            occupied: &|_, _| false,
+            own: None,
+            access: None,
             calculated: Vec::new(),
             sets: HashMap::new(),
             depth: Cell::new(0),
+            steps: Cell::new(0),
+            began: Cell::new(0),
         }
     }
 
     /// The cell every dimension starts at: its first top element.
     pub(super) fn top(&self) -> Context {
-        let top = |dimension: &Dimension| {
-            let top = dimension.elements.iter().position(|e| e.parents.is_empty());
-            Id::Element(top.unwrap_or(0) as ElementId)
+        let top = |(position, dimension): (usize, &Dimension)| {
+            // A top element is one with no parent the one asking may see.
+            let sees = |element: ElementId| self.sees(position, element);
+            let tops = (0..dimension.elements.len() as ElementId).filter(|&element| {
+                let parents = dimension.elements[element as usize].parents();
+                parents.iter().all(|&parent| !sees(parent))
+            });
+            let mut seen = tops.filter(|&element| sees(element));
+            // Where they may see none, the model's own top, which no cell is read at.
+            let top = seen.next().or_else(|| {
+                let tops = dimension
+                    .elements
+                    .iter()
+                    .position(|e| e.parents().is_empty());
+                tops.map(|top| top as ElementId)
+            });
+            Id::Element(top.unwrap_or(0))
         };
-        self.dimensions().map(top).collect()
+        self.dimensions().enumerate().map(top).collect()
+    }
+
+    /// Whether the one asking may see an element of the dimension at a place in the cube.
+    fn sees(&self, position: usize, element: ElementId) -> bool {
+        let dimension = self.cube.dimensions[position];
+        self.access
+            .is_none_or(|access| access.sees(dimension, element))
+    }
+
+    /// Whether the one asking may see a member: every calculated member, and the elements
+    /// not hidden from them.
+    fn sees_member(&self, member: &Member) -> bool {
+        match member.id {
+            Id::Element(element) => self.sees(member.position, element),
+            Id::Calculated(_) => true,
+        }
+    }
+
+    /// A value as the one asking may see it: a set without the tuples that hold a member
+    /// hidden from them, and such a member, or a tuple that holds one, no member at all.
+    fn seen(&self, datum: Datum) -> Datum {
+        if self.access.is_none() {
+            return datum;
+        }
+        let seen = |member: &Member| self.sees_member(member);
+        match datum {
+            Datum::Set(mut set) => {
+                set.retain(|tuple| tuple.iter().all(seen));
+                Datum::Set(set)
+            }
+            Datum::Member(member) if !seen(&member) => Datum::Null,
+            Datum::Tuple(tuple) if !tuple.iter().all(seen) => Datum::Null,
+            datum => datum,
+        }
+    }
+
+    /// Refuses a cell of a cube at an element hidden from the one asking, where a dimension
+    /// of it has no element they may see for a query to stand at.
+    fn seen_cell(
+        &self,
+        cube: &Cube,
+        at: impl IntoIterator<Item = Option<ElementId>>,
+    ) -> Evaluated<()> {
+        let Some(access) = self.access else {
+            return Ok(());
+        };
+        for (&dimension, element) in cube.dimensions.iter().zip(at) {
+            if element.is_some_and(|element| !access.sees(dimension, element)) {
+                let name = &self.model.dimensions()[dimension as usize].name;
+                return fail(format!("you may see no element of dimension '{name}'"));
+            }
+        }
+        Ok(())
+    }
+
+    /// A set in the order of its hierarchies: each member before what is beneath it, or
+    /// after it if `post`.
+    fn hierarchized(&self, set: Vec<Tuple>, post: bool) -> Vec<Tuple> {
+        let mut orders: HashMap<usize, Vec<usize>> = HashMap::new();
+        let mut place = |member: &Member| match member.id {
+            Id::Element(id) => {
+                let order = orders.entry(member.position);
+                order.or_insert_with(|| self.hierarchy_order(member.position, post))[id as usize]
+            }
+            // Calculated members follow the hierarchy, in the order they were defined.
+            Id::Calculated(index) => usize::MAX - self.calculated.len() + index,
+        };
+        let places: Vec<Vec<usize>> = set
+            .iter()
+            .map(|tuple| tuple.iter().map(&mut place).collect())
+            .collect();
+        let mut order: Vec<usize> = (0..set.len()).collect();
+        order.sort_by(|&a, &b| places[a].cmp(&places[b]));
+        order.into_iter().map(|index| set[index].clone()).collect()
+    }
+
+    /// An expression with its names settled, or as it stands if one of them means nothing:
+    /// that one is then left to fail where it is used, if it ever is.
+    fn settled(&self, expression: &Expr) -> Expr {
+        self.bind(expression).unwrap_or_else(|_| expression.clone())
     }
 
     /// A copy of an expression with every name that can be settled now replaced by what it
@@ -372,6 +726,7 @@ impl<'a> Evaluator<'a> {
                 ([word], _) if ["STET", "CONTINUE"].contains(&&*word.to_uppercase()) => {
                     Expr::Call(word.to_uppercase(), Vec::new())
                 }
+                ([word], _) if FLAGS.contains(&&*word.to_uppercase()) => expression.clone(),
                 (
                     _,
                     Ok(Datum::Member(Member {
@@ -379,6 +734,13 @@ impl<'a> Evaluator<'a> {
                         id: Id::Element(id),
                     })),
                 ) => Expr::Member(position, id),
+                (
+                    _,
+                    Ok(Datum::Member(Member {
+                        position,
+                        id: Id::Calculated(index),
+                    })),
+                ) => Expr::Calculated(position, index),
                 (_, Ok(Datum::Dimension(position))) => Expr::Dimension(position),
                 // A single word that names nothing may be a flag such as DESC.
                 ([_], Err(_)) => expression.clone(),
@@ -398,9 +760,11 @@ impl<'a> Evaluator<'a> {
             Expr::Not(operand) => Expr::Not(one(operand)?),
             Expr::Negate(operand) => Expr::Negate(one(operand)?),
             Expr::Binary(left, operator, right) => Expr::Binary(one(left)?, operator, one(right)?),
-            Expr::Number(_) | Expr::Text(_) | Expr::Member(..) | Expr::Dimension(_) => {
-                expression.clone()
-            }
+            Expr::Number(_)
+            | Expr::Text(_)
+            | Expr::Member(..)
+            | Expr::Calculated(..)
+            | Expr::Dimension(_) => expression.clone(),
         })
     }
 
@@ -419,7 +783,8 @@ impl<'a> Evaluator<'a> {
         let unknown = || MdxError::new(format!("unknown cube '{name}'"));
         let cube_id = self.model.cube_id(name).ok_or_else(unknown)?;
         let cube = &self.model.cubes()[cube_id];
-        let other = Evaluator::new(self.model, cube_id, cube, self.read);
+        let mut other = Evaluator::new(self.model, cube_id, cube, self.read);
+        other.access = self.access;
         let shared = |dimension: u32| self.cube.dimensions.iter().position(|&d| d == dimension);
         let element = |id: Id| match id {
             Id::Element(id) => Ok(id),
@@ -455,6 +820,7 @@ impl<'a> Evaluator<'a> {
             })?;
             at[position] = id;
         }
+        self.seen_cell(cube, at.iter().copied().map(Some))?;
         Ok((cube_id, at))
     }
 
@@ -534,23 +900,40 @@ impl<'a> Evaluator<'a> {
         let calculated = self.calculated.iter().position(|calculated| {
             calculated.position == position && key(calculated.name) == key(name)
         });
-        let element = || self.dimension(position).element_id(name).map(Id::Element);
+        // An element hidden from the one asking is not there for them, as one never made.
+        let element = || {
+            let found = self.dimension(position).element_id(name);
+            found.filter(|&id| self.sees(position, id)).map(Id::Element)
+        };
         match calculated.map(Id::Calculated).or_else(element) {
             Some(id) => Ok(Datum::Member(Member { position, id })),
             // `[Dimension].[Dimension]` is the hierarchy, which is the dimension itself.
             None if rest.len() == 1 && key(name) == key(first) => Ok(Datum::Dimension(position)),
-            None => fail(format!("dimension '{first}' has no member '{name}'")),
+            None => match self.dimension(position).level(name) {
+                Some(level) => Ok(Datum::Level(position, level)),
+                None => fail(format!("dimension '{first}' has no member '{name}'")),
+            },
         }
     }
 
     pub(super) fn evaluate(&self, expression: &Expr, context: &Context) -> Evaluated<Datum> {
-        Ok(match expression {
+        self.steps.set(self.steps.get() + 1);
+        if self.steps.get() > MOST_STEPS {
+            return fail(format!(
+                "more than {MOST_STEPS} steps are needed to work this out"
+            ));
+        }
+        let datum = match expression {
             Expr::Number(number) => Datum::Number(*number),
             Expr::Text(text) => Datum::Text(text.clone()),
             Expr::Name(parts) => self.resolve(parts)?,
             &Expr::Member(position, id) => Datum::Member(Member {
                 position,
                 id: Id::Element(id),
+            }),
+            &Expr::Calculated(position, index) => Datum::Member(Member {
+                position,
+                id: Id::Calculated(index),
             }),
             &Expr::Dimension(position) => Datum::Dimension(position),
             Expr::Set(items) => {
@@ -590,7 +973,10 @@ impl<'a> Evaluator<'a> {
             Expr::Not(operand) => Datum::Bool(!self.truth(operand, context)?),
             Expr::Negate(operand) => Datum::Number(-self.number(operand, context)?),
             Expr::Binary(left, operator, right) => self.binary(left, operator, right, context)?,
-        })
+        };
+        // Whatever names, lists or walks to the elements, those hidden from the one asking
+        // are left out of what it comes to.
+        Ok(self.seen(datum))
     }
 
     fn binary(
@@ -609,11 +995,18 @@ impl<'a> Evaluator<'a> {
             let either = self.truth(left, context)? || self.truth(right, context)?;
             return Ok(Datum::Bool(either));
         }
+        if operator == "XOR" {
+            let one = self.truth(left, context)? != self.truth(right, context)?;
+            return Ok(Datum::Bool(one));
+        }
         let (left, right) = (
             self.evaluate(left, context)?,
             self.evaluate(right, context)?,
         );
         match (operator, &left, &right) {
+            // The same member, tuple, level or dimension, or nothing on both sides: what
+            // the two are, where `=` compares the values of their cells.
+            ("IS", ..) => return Ok(Datum::Bool(left == right)),
             ("*", Datum::Set(left), Datum::Set(right)) => {
                 return cross_join(left, right).map(Datum::Set);
             }
@@ -641,7 +1034,7 @@ impl<'a> Evaluator<'a> {
         }
         let (left, right) = (self.scalar(left, context)?, self.scalar(right, context)?);
         if let ("+", Datum::Text(left), Datum::Text(right)) = (operator, &left, &right) {
-            return Ok(Datum::Text(format!("{left}{right}")));
+            return bounded_text(format!("{left}{right}"));
         }
         let ordering = || compare(&left, &right);
         let equal = || match (&left, &right) {
@@ -682,15 +1075,12 @@ impl<'a> Evaluator<'a> {
             }
         };
         // The value an aggregate takes from a tuple: the given expression there, or its cell.
-        let measure = |tuple: &Tuple| {
-            let context = with(context, tuple);
-            match arguments.get(1) {
-                Some(expression) => {
-                    let value = self.evaluate(expression, &context)?;
-                    self.scalar(value, &context)
-                }
-                None => self.cell(&context),
+        let measure = |context: &Context| match arguments.get(1) {
+            Some(expression) => {
+                let value = self.evaluate(expression, context)?;
+                self.scalar(value, context)
             }
+            None => self.cell(context),
         };
         let all = |argument: Option<&Expr>| match flag(argument).as_deref() {
             None => Ok(false),
@@ -699,26 +1089,53 @@ impl<'a> Evaluator<'a> {
         };
         let whole = |argument: &Expr| Ok(self.number(argument, context)?.max(0.0) as usize);
         match function {
-            "SUM" | "AGGREGATE" | "AVG" | "MIN" | "MAX" => {
+            "SUM" | "AGGREGATE" | "AVG" | "MIN" | "MAX" | "MEDIAN" | "VAR" | "VARIANCE"
+            | "VARP" | "VARIANCEP" | "STDEV" | "STDDEV" | "STDEVP" | "STDDEVP" => {
                 count(1..=2)?;
                 // As everywhere in the engine, a cell holding zero is an empty cell, so the
-                // average, least and greatest are taken over the cells that hold something.
+                // average, the least and greatest, the middle and the spread are taken over
+                // the cells that hold something.
                 let mut values = Vec::new();
                 let set = self.set(&arguments[0], context)?;
                 self.foresee(arguments.get(1), context, &set);
+                let mut along = Along::new(context);
                 for tuple in set {
-                    let value = measure(&tuple)?;
+                    let value = measure(along.at(&tuple))?;
                     if !is_empty(&value) {
                         values.push(to_number(&value)?);
                     }
                 }
                 let total: f64 = values.iter().sum();
+                let count = values.len() as f64;
+                let mean = total / count;
+                // Of a sample the squares are shared among one fewer than there are, which
+                // one value alone cannot be; of a population, among all of them.
+                let spread = |sample: bool| {
+                    let squares: f64 = values.iter().map(|value| (value - mean).powi(2)).sum();
+                    let among = count - f64::from(u8::from(sample));
+                    (among > 0.0).then(|| squares / among)
+                };
+                let number = |value: Option<f64>| value.map_or(Datum::Null, Datum::Number);
                 Ok(match (function, values.is_empty()) {
                     ("SUM" | "AGGREGATE", _) => Datum::Number(total),
                     (_, true) => Datum::Null,
-                    ("AVG", _) => Datum::Number(total / values.len() as f64),
+                    ("AVG", _) => Datum::Number(mean),
                     ("MIN", _) => Datum::Number(values.into_iter().fold(f64::INFINITY, f64::min)),
-                    _ => Datum::Number(values.into_iter().fold(f64::NEG_INFINITY, f64::max)),
+                    ("MAX", _) => {
+                        Datum::Number(values.into_iter().fold(f64::NEG_INFINITY, f64::max))
+                    }
+                    ("MEDIAN", _) => {
+                        values.sort_by(f64::total_cmp);
+                        let middle = values.len() / 2;
+                        Datum::Number(match values.len() % 2 {
+                            0 => (values[middle - 1] + values[middle]) / 2.0,
+                            _ => values[middle],
+                        })
+                    }
+                    ("VAR" | "VARIANCE", _) => number(spread(true)),
+                    ("VARP" | "VARIANCEP", _) => number(spread(false)),
+                    ("STDEV" | "STDDEV", _) => number(spread(true).map(f64::sqrt)),
+                    _ => number(spread(false).map(f64::sqrt)),
                 })
             }
             "COUNT" => {
@@ -747,8 +1164,14 @@ impl<'a> Evaluator<'a> {
                 union(left, right, all(arguments.get(2))?).map(Datum::Set)
             }
             "EXCEPT" | "INTERSECT" => {
-                count(2..=2)?;
-                let left = distinct(self.set(&arguments[0], context)?);
+                count(2..=3)?;
+                // ALL keeps the first set's repeats; else each of its tuples stands once.
+                let left = self.set(&arguments[0], context)?;
+                let left = match flag(arguments.get(2)).as_deref() {
+                    None => distinct(left),
+                    Some("ALL") => left,
+                    Some(other) => return fail(format!("unknown {function} flag {other}")),
+                };
                 let right: HashSet<Tuple> = self.set(&arguments[1], context)?.into_iter().collect();
                 let wanted = function == "INTERSECT";
                 let kept = left
@@ -759,6 +1182,11 @@ impl<'a> Evaluator<'a> {
             "DISTINCT" => {
                 count(1..=1)?;
                 Ok(Datum::Set(distinct(self.set(&arguments[0], context)?)))
+            }
+            // A set's order is kept whatever is asked: Unorder says only that it need not be.
+            "UNORDER" => {
+                count(1..=1)?;
+                Ok(Datum::Set(self.set(&arguments[0], context)?))
             }
             "HEAD" | "TAIL" => {
                 count(1..=2)?;
@@ -791,12 +1219,13 @@ impl<'a> Evaluator<'a> {
                 if arguments.len() == 3 {
                     self.foresee(arguments.get(2), context, &set);
                 }
+                let mut along = Along::new(context);
                 for tuple in set {
                     let value = match arguments.get(2) {
                         Some(expression) => {
-                            let context = with(context, &tuple);
-                            let value = self.evaluate(expression, &context)?;
-                            self.scalar(value, &context)?
+                            let context = along.at(&tuple);
+                            let value = self.evaluate(expression, context)?;
+                            self.scalar(value, context)?
                         }
                         None => Datum::Null,
                     };
@@ -810,11 +1239,56 @@ impl<'a> Evaluator<'a> {
                 let kept = keyed.into_iter().take(whole(&arguments[1])?);
                 Ok(Datum::Set(kept.map(|(_, tuple)| tuple).collect()))
             }
+            "TOPSUM" | "BOTTOMSUM" | "TOPPERCENT" | "BOTTOMPERCENT" => {
+                count(3..=3)?;
+                let set = self.set(&arguments[0], context)?;
+                let wanted = self.number(&arguments[1], context)?;
+                self.foresee(arguments.get(2), context, &set);
+                let mut keyed = Vec::new();
+                let mut along = Along::new(context);
+                for tuple in set {
+                    let context = along.at(&tuple);
+                    let value = self.evaluate(&arguments[2], context)?;
+                    let value = match self.scalar(value, context)? {
+                        Datum::Null => 0.0,
+                        value => to_number(&value)?,
+                    };
+                    keyed.push((value, tuple));
+                }
+                keyed.sort_by(|(left, _), (right, _)| match function.starts_with("TOP") {
+                    true => right.total_cmp(left),
+                    false => left.total_cmp(right),
+                });
+                // From the greatest down, or the least up, as many as it takes for their
+                // values to come to the amount: a sum, or a percentage of the whole.
+                let whole: f64 = keyed.iter().map(|(value, _)| value).sum();
+                let amount = match function.ends_with("PERCENT") {
+                    true => whole * wanted / 100.0,
+                    false => wanted,
+                };
+                // An amount below zero, a share of a set that comes to a loss say, is
+                // reached from above.
+                let there = |reached: f64| match amount >= 0.0 {
+                    true => reached >= amount,
+                    false => reached <= amount,
+                };
+                let mut reached = 0.0;
+                let mut kept = Vec::new();
+                for (value, tuple) in keyed {
+                    if there(reached) {
+                        break;
+                    }
+                    reached += value;
+                    kept.push(tuple);
+                }
+                Ok(Datum::Set(kept))
+            }
             "GENERATE" => {
                 count(2..=3)?;
                 let mut generated = Vec::new();
                 for tuple in self.set(&arguments[0], context)? {
                     generated.extend(self.set(&arguments[1], &with(context, &tuple))?);
+                    bounded(Some(generated.len()))?;
                 }
                 Ok(Datum::Set(match all(arguments.get(2))? {
                     true => generated,
@@ -831,24 +1305,64 @@ impl<'a> Evaluator<'a> {
                 })
             }
             "TM1SUBSETTOSET" => {
-                count(2..=2)?;
+                // A third argument says whether the subset is the model's, "public", or one
+                // the one asking keeps for themself, "private".
+                count(2..=3)?;
                 let dimension = self.evaluate(&arguments[0], context)?;
                 let name = self.evaluate(&arguments[1], context)?;
                 let (Datum::Dimension(position), Datum::Text(name)) = (dimension, name) else {
                     return fail("TM1SUBSETTOSET takes a dimension and a subset name in quotes");
                 };
+                let private = match arguments.get(2).map(|kind| self.evaluate(kind, context)) {
+                    None => false,
+                    Some(kind) => match kind? {
+                        Datum::Text(kind) if kind.eq_ignore_ascii_case("public") => false,
+                        Datum::Text(kind) if kind.eq_ignore_ascii_case("private") => true,
+                        _ => {
+                            return fail(
+                                "TM1SUBSETTOSET's third argument is 'public' or 'private'",
+                            );
+                        }
+                    },
+                };
                 let dimension = self.dimension(position);
-                let subset = dimension.subset(&name).ok_or_else(|| {
-                    let dimension = &dimension.name;
-                    MdxError::new(format!("dimension '{dimension}' has no subset '{name}'"))
-                })?;
-                let member = |&id: &ElementId| {
+                let now: Vec<ElementId> = if private {
+                    let Some(own) = self.own else {
+                        return fail(
+                            "the model's views, subsets and rules cannot take anyone's private subsets",
+                        );
+                    };
+                    let members = own(&dimension.name, &name).ok_or_else(|| {
+                        let dimension = &dimension.name;
+                        MdxError::new(format!(
+                            "you have no subset '{name}' of dimension '{dimension}'"
+                        ))
+                    })?;
+                    // A member the dimension no longer has is left out.
+                    let found = members
+                        .iter()
+                        .filter_map(|member| dimension.element_id(member));
+                    found.collect()
+                } else {
+                    let subset = dimension.subset(&name).ok_or_else(|| {
+                        let dimension = &dimension.name;
+                        MdxError::new(format!("dimension '{dimension}' has no subset '{name}'"))
+                    })?;
+                    // A subset that reads cells is worked out afresh, reading them as this does.
+                    match subset.reading() {
+                        Some(set) => {
+                            elements(self.model, self.cube.dimensions[position], set, self.read)?
+                        }
+                        None => subset.elements.clone(),
+                    }
+                };
+                let member = |id: ElementId| {
                     vec![Member {
                         position,
                         id: Id::Element(id),
                     }]
                 };
-                Ok(Datum::Set(subset.elements.iter().map(member).collect()))
+                Ok(Datum::Set(now.into_iter().map(member).collect()))
             }
             "TM1SUBSETALL" => {
                 count(1..=1)?;
@@ -882,16 +1396,43 @@ impl<'a> Evaluator<'a> {
                 let set = self.set(&arguments[0], context)?;
                 Ok(Datum::Set(set.into_iter().filter(matches).collect()))
             }
-            "TM1SORT" => {
+            "TM1SORT" | "TM1SORTBYINDEX" => {
                 count(1..=2)?;
                 let mut set = self.set(&arguments[0], context)?;
-                let name = |tuple: &Tuple| key(self.name(tuple[0]));
+                // By name, or by the place of each member in its dimension.
+                let place = |tuple: &Tuple| match (function, tuple[0].id) {
+                    ("TM1SORT", _) => (0, key(self.name(tuple[0]))),
+                    (_, Id::Element(id)) => (id as usize, String::new()),
+                    (_, Id::Calculated(index)) => (usize::MAX, index.to_string()),
+                };
                 match flag(arguments.get(1)).as_deref() {
-                    None | Some("ASC") => set.sort_by_key(name),
-                    Some("DESC") => set.sort_by_key(|tuple| std::cmp::Reverse(name(tuple))),
-                    Some(other) => return fail(format!("unknown TM1SORT flag {other}")),
+                    None | Some("ASC") => set.sort_by_key(place),
+                    Some("DESC") => set.sort_by_key(|tuple| std::cmp::Reverse(place(tuple))),
+                    Some(other) => return fail(format!("unknown {function} flag {other}")),
                 }
                 Ok(Datum::Set(set))
+            }
+            "TM1MEMBER" => {
+                count(2..=2)?;
+                let tuple = match self.evaluate(&arguments[0], context)? {
+                    Datum::Member(member) => vec![member],
+                    Datum::Tuple(tuple) => tuple,
+                    _ => return fail("TM1MEMBER takes a tuple and a place in it, from zero"),
+                };
+                let place = whole(&arguments[1])?;
+                Ok(tuple
+                    .get(place)
+                    .map_or(Datum::Null, |&member| Datum::Member(member)))
+            }
+            "TM1TUPLESIZE" => {
+                count(1..=1)?;
+                Ok(Datum::Number(
+                    match self.evaluate(&arguments[0], context)? {
+                        Datum::Member(_) => 1.0,
+                        Datum::Tuple(tuple) => tuple.len() as f64,
+                        _ => 0.0,
+                    },
+                ))
             }
             "ISLEAF" => {
                 count(1..=1)?;
@@ -925,8 +1466,9 @@ impl<'a> Evaluator<'a> {
                 let mut kept = Vec::new();
                 let set = self.set(&arguments[0], context)?;
                 self.foresee(arguments.get(1), context, &set);
+                let mut along = Along::new(context);
                 for tuple in set {
-                    if self.truth(&arguments[1], &with(context, &tuple))? {
+                    if self.truth(&arguments[1], along.at(&tuple))? {
                         kept.push(tuple);
                     }
                 }
@@ -938,19 +1480,46 @@ impl<'a> Evaluator<'a> {
                     Some(argument) => self.set(argument, context)?,
                     None => vec![Tuple::new()],
                 };
-                let mut kept = Vec::new();
-                let set = self.set(&arguments[0], context)?;
-                for other in &across {
-                    self.foresee(None, &with(context, other), &set);
+                // A long cross join is first cut down to what may hold something.
+                let laid = self.lay(&arguments[0], true, context)?;
+                let beside: &[&Vec<Tuple>] = match arguments.len() {
+                    1 => &[],
+                    _ => &[&across],
+                };
+                let set = self.cut(&laid, beside, context)?;
+                self.non_empty(set, &across, context).map(Datum::Set)
+            }
+            "NONEMPTYCROSSJOIN" => {
+                count(2..=usize::MAX)?;
+                let crossed = Expr::Call("CROSSJOIN".to_owned(), arguments.to_vec());
+                let set = self.cut(&self.lay(&crossed, true, context)?, &[], context)?;
+                self.non_empty(set, &[Tuple::new()], context)
+                    .map(Datum::Set)
+            }
+            "ADDCALCULATEDMEMBERS" | "STRIPCALCULATEDMEMBERS" => {
+                count(1..=1)?;
+                let mut set = self.set(&arguments[0], context)?;
+                let calculated = |member: &Member| matches!(member.id, Id::Calculated(_));
+                if function == "STRIPCALCULATEDMEMBERS" {
+                    set.retain(|tuple| !tuple.iter().any(calculated));
+                    return Ok(Datum::Set(set));
                 }
-                for tuple in set {
-                    let context = with(context, &tuple);
-                    let mut cells = across.iter().map(|other| self.cell(&with(&context, other)));
-                    if cells.try_fold(false, |any, cell| Ok(any || !is_empty(&cell?)))? {
-                        kept.push(tuple);
+                // After the set, the calculated members of its dimension that it lacks.
+                let position = match set.first().map(Vec::as_slice) {
+                    Some(&[member]) => member.position,
+                    Some(_) => return fail("ADDCALCULATEDMEMBERS takes a set of one dimension"),
+                    None => return Ok(Datum::Set(set)),
+                };
+                for (index, member) in self.calculated.iter().enumerate() {
+                    let added = vec![Member {
+                        position,
+                        id: Id::Calculated(index),
+                    }];
+                    if member.position == position && !set.contains(&added) {
+                        set.push(added);
                     }
                 }
-                Ok(Datum::Set(kept))
+                Ok(Datum::Set(set))
             }
             "ORDER" => {
                 count(2..=3)?;
@@ -963,70 +1532,20 @@ impl<'a> Evaluator<'a> {
                     Some("POST") => true,
                     Some(other) => return fail(format!("unknown HIERARCHIZE flag {other}")),
                 };
-                let mut set = self.set(&arguments[0], context)?;
-                let mut orders: HashMap<usize, Vec<usize>> = HashMap::new();
-                let mut place = |member: &Member| match member.id {
-                    Id::Element(id) => {
-                        let order = orders.entry(member.position);
-                        order.or_insert_with(|| self.hierarchy_order(member.position, post))
-                            [id as usize]
-                    }
-                    // Calculated members follow the hierarchy, in the order they were defined.
-                    Id::Calculated(index) => usize::MAX - self.calculated.len() + index,
-                };
-                let places: Vec<Vec<usize>> = set
-                    .iter()
-                    .map(|tuple| tuple.iter().map(&mut place).collect())
-                    .collect();
-                let mut order: Vec<usize> = (0..set.len()).collect();
-                order.sort_by(|&a, &b| places[a].cmp(&places[b]));
-                set = order.into_iter().map(|index| set[index].clone()).collect();
-                Ok(Datum::Set(set))
+                let set = self.set(&arguments[0], context)?;
+                Ok(Datum::Set(self.hierarchized(set, post)))
             }
             "DESCENDANTS" => {
                 count(1..=3)?;
-                let member = self.member(&arguments[0], context)?;
-                let distance = match arguments.get(1) {
-                    Some(argument) => Some(self.number(argument, context)? as usize),
-                    None => None,
-                };
-                let which = flag(arguments.get(2)).unwrap_or_else(|| "SELF".to_owned());
-                if !["SELF", "AFTER", "SELF_AND_AFTER", "LEAVES"].contains(&which.as_str()) {
-                    return fail(format!("unknown DESCENDANTS flag {which}"));
-                }
-                // Without a distance, the member and everything below it.
-                let wanted = |depth: usize, leaf: bool| match (which.as_str(), distance) {
-                    ("LEAVES", _) => leaf,
-                    (_, None) => true,
-                    ("AFTER", Some(distance)) => depth > distance,
-                    ("SELF_AND_AFTER", Some(distance)) => depth >= distance,
-                    (_, Some(distance)) => depth == distance,
-                };
-                let (id, _) = self.element(member)?;
-                let dimension = self.dimension(member.position);
-                let mut found = Vec::new();
-                let mut seen = HashSet::new();
-                let mut pending = vec![(id, 0)];
-                // Parents before children, children in their declared order.
-                while let Some((id, depth)) = pending.pop() {
-                    let element = &dimension.elements[id as usize];
-                    if wanted(depth, element.children.is_empty()) && seen.insert(id) {
-                        found.push(vec![Member {
-                            position: member.position,
-                            id: Id::Element(id),
-                        }]);
-                    }
-                    let children = element.children.iter().rev();
-                    pending.extend(children.map(|&(child, _)| (child, depth + 1)));
-                }
-                Ok(Datum::Set(found))
+                self.descendants(arguments, context).map(Datum::Set)
             }
             "ANCESTOR" | "ANCESTORS" => {
                 count(2..=2)?;
                 let mut member = self.member(&arguments[0], context)?;
                 // Up to a level, or up a number of steps.
                 match self.evaluate(&arguments[1], context)? {
-                    Datum::Level(_, level) => {
+                    Datum::Level(position, level) => {
+                        self.of_level(member, position)?;
                         member = self.ancestor_at(member, level)?.ok_or_else(|| {
                             let name = self.name(member);
                             MdxError::new(format!(
@@ -1053,6 +1572,71 @@ impl<'a> Evaluator<'a> {
                 };
                 self.evaluate(chosen, context)
             }
+            "CASE" => {
+                // The value beside the first condition that holds; failing them all, the
+                // value left over at the end, or nothing.
+                let (pairs, otherwise) = arguments.as_chunks::<2>();
+                for [condition, value] in pairs {
+                    if self.truth(condition, context)? {
+                        return self.evaluate(value, context);
+                    }
+                }
+                match otherwise {
+                    [otherwise] => self.evaluate(otherwise, context),
+                    _ => Ok(Datum::Null),
+                }
+            }
+            "NULL" => {
+                count(0..=0)?;
+                Ok(Datum::Null)
+            }
+            "ISANCESTOR" => {
+                count(2..=2)?;
+                let above = self.member(&arguments[0], context)?;
+                let below = self.member(&arguments[1], context)?;
+                Ok(Datum::Bool(
+                    above.position == below.position && self.beneath(below, above),
+                ))
+            }
+            "ISSIBLING" => {
+                count(2..=3)?;
+                self.is_sibling(arguments, context).map(Datum::Bool)
+            }
+            "ISGENERATION" => {
+                count(2..=2)?;
+                self.is_generation(arguments, context).map(Datum::Bool)
+            }
+            "EXTRACT" => {
+                count(2..=usize::MAX)?;
+                let set = self.set(&arguments[0], context)?;
+                let mut positions = Vec::new();
+                for argument in &arguments[1..] {
+                    match self.evaluate(argument, context)? {
+                        Datum::Dimension(position) if !positions.contains(&position) => {
+                            positions.push(position);
+                        }
+                        Datum::Dimension(_) => return fail("EXTRACT takes each dimension once"),
+                        _ => return fail("EXTRACT takes a set and then dimensions"),
+                    }
+                }
+                // What each tuple holds of those dimensions, in the order they are given,
+                // each such tuple once.
+                let mut found = Vec::new();
+                for tuple in set {
+                    let of =
+                        |&position: &usize| tuple.iter().find(|member| member.position == position);
+                    let kept: Option<Tuple> = positions
+                        .iter()
+                        .map(of)
+                        .map(Option::<&Member>::copied)
+                        .collect();
+                    match kept {
+                        Some(kept) => found.push(kept),
+                        None => return fail("EXTRACT takes dimensions of the set"),
+                    }
+                }
+                Ok(Datum::Set(distinct(found)))
+            }
             "ISEMPTY" => {
                 count(1..=1)?;
                 let value = self.evaluate(&arguments[0], context)?;
@@ -1075,10 +1659,12 @@ impl<'a> Evaluator<'a> {
                     return Ok(Datum::Number(0.0));
                 }
                 self.foresee(Some(expression), context, &set);
+                let along = std::cell::RefCell::new(Along::new(context));
                 let value = |tuple: &Tuple| {
-                    let context = with(context, tuple);
-                    let value = self.evaluate(expression, &context)?;
-                    to_number(&self.scalar(value, &context)?)
+                    let mut along = along.borrow_mut();
+                    let context = along.at(tuple);
+                    let value = self.evaluate(expression, context)?;
+                    to_number(&self.scalar(value, context)?)
                 };
                 // One more than the number of tuples with a greater value, so equals share.
                 let own = value(&tuple)?;
@@ -1088,8 +1674,29 @@ impl<'a> Evaluator<'a> {
                 }
                 Ok(Datum::Number(rank))
             }
-            "STRTOMEMBER" | "STRTOTUPLE" | "STRTOSET" => {
+            "MEMBERTOSTR" | "TUPLETOSTR" | "SETTOSTR" => {
                 count(1..=1)?;
+                self.written(function, &arguments[0], context)
+                    .map(Datum::Text)
+            }
+            "ASCENDANTS" => {
+                count(1..=1)?;
+                self.ascendants(&arguments[0], context).map(Datum::Set)
+            }
+            "DRILLUPLEVEL" => {
+                count(1..=2)?;
+                self.drilled_up(arguments, context).map(Datum::Set)
+            }
+            "NAMETOSET" | "STRTOVALUE" => {
+                count(1..=1)?;
+                self.read_from(function, &arguments[0], context)
+            }
+            "STRTOMEMBER" | "STRTOTUPLE" | "STRTOSET" => {
+                count(1..=2)?;
+                // CONSTRAINED, that the text names and works nothing out, is taken as said.
+                if let Some(other) = flag(arguments.get(1)).filter(|word| word != "CONSTRAINED") {
+                    return fail(format!("unknown {function} flag {other}"));
+                }
                 let text = self.text(&arguments[0], context)?;
                 let parsed = super::parser::Parser::new(super::lexer::lex(&text)?).set()?;
                 match (function, self.evaluate(&parsed, context)?) {
@@ -1199,10 +1806,88 @@ impl<'a> Evaluator<'a> {
                 let text = self.text(&arguments[0], context)?;
                 let sought = self.text(&arguments[1], context)?;
                 let with = self.text(&arguments[2], context)?;
-                Ok(Datum::Text(match sought.is_empty() {
+                bounded_text(match sought.is_empty() {
                     true => text,
                     false => text.replace(&sought, &with),
+                })
+            }
+            // Dates are numbers, days from 30 December 1899, as Excel and VBA count them.
+            "NOW" | "DATE" => {
+                count(0..=0)?;
+                let now = dates::now();
+                Ok(Datum::Number(match function {
+                    "NOW" => now,
+                    _ => now.floor(),
                 }))
+            }
+            "DATESERIAL" => {
+                count(3..=3)?;
+                let year = self.count_of(&arguments[0], context)?;
+                let month = self.count_of(&arguments[1], context)?;
+                let day = self.count_of(&arguments[2], context)?;
+                dates::date(year, month, day).map(Datum::Number)
+            }
+            "CDATE" => {
+                count(1..=1)?;
+                Ok(Datum::Number(self.date(&arguments[0], context)?.value()))
+            }
+            "YEAR" | "MONTH" | "DAY" | "HOUR" | "MINUTE" | "SECOND" => {
+                count(1..=1)?;
+                let date = self.date(&arguments[0], context)?;
+                Ok(Datum::Number(match function {
+                    "YEAR" => date.year,
+                    "MONTH" => date.month,
+                    "DAY" => date.day,
+                    "HOUR" => date.seconds / 3_600,
+                    "MINUTE" => date.seconds / 60 % 60,
+                    _ => date.seconds % 60,
+                } as f64))
+            }
+            "WEEKDAY" => {
+                count(1..=2)?;
+                let date = self.date(&arguments[0], context)?;
+                // The day the week begins on: 1 for Sunday, as VBA has it, to 7 for Saturday.
+                let first = match arguments.get(1) {
+                    Some(first) => self.count_of(first, context)?,
+                    None => 1,
+                };
+                if !(1..=7).contains(&first) {
+                    return fail("a week begins on a day from 1, Sunday, to 7, Saturday");
+                }
+                Ok(Datum::Number(date.weekday(first) as f64))
+            }
+            "DATEADD" => {
+                count(3..=3)?;
+                let interval = Interval::named(&self.text(&arguments[0], context)?)?;
+                let number = self.count_of(&arguments[1], context)?;
+                let date = self.date(&arguments[2], context)?;
+                date.add(interval, number).map(Datum::Number)
+            }
+            "DATEDIFF" => {
+                count(3..=3)?;
+                let interval = Interval::named(&self.text(&arguments[0], context)?)?;
+                let from = self.date(&arguments[1], context)?;
+                let to = self.date(&arguments[2], context)?;
+                Ok(Datum::Number(from.until(&to, interval) as f64))
+            }
+            "FORMAT" => {
+                count(1..=2)?;
+                let Some(pattern) = arguments.get(1) else {
+                    return self.text(&arguments[0], context).map(Datum::Text);
+                };
+                let pattern = self.text(pattern, context)?;
+                let value = self.evaluate(&arguments[0], context)?;
+                let number = match self.scalar(value, context)? {
+                    Datum::Null => return Ok(Datum::Text(String::new())),
+                    // A text is a date or a number written out, to be written out again.
+                    Datum::Text(text) if format::writes_dates(&pattern) => dates::parse(&text)?,
+                    Datum::Text(text) => match text.trim().parse::<f64>() {
+                        Ok(number) if number.is_finite() => number,
+                        _ => return fail(format!("'{text}' is not a number")),
+                    },
+                    other => to_number(&other)?,
+                };
+                bounded_text(format::write(number, &pattern)?)
             }
             "COUSIN" => {
                 count(2..=2)?;
@@ -1225,6 +1910,7 @@ impl<'a> Evaluator<'a> {
                     None => 1.0,
                 };
                 let member = self.member_of(arguments.get(2), position, context)?;
+                self.of_level(member, position)?;
                 // The member in the same place under the ancestor that many places back.
                 let mut parallel = None;
                 if let Some(ancestor) = self.ancestor_at(member, level)?
@@ -1238,35 +1924,254 @@ impl<'a> Evaluator<'a> {
                 count(1..=2)?;
                 let (position, level) = self.level(&arguments[0], context)?;
                 let member = self.member_of(arguments.get(1), position, context)?;
-                let (id, element) = self.element(member)?;
-                // The members of the member's own level beneath its ancestor, in the order
-                // of the hierarchy, as far as the member itself.
-                let mut periods = Vec::new();
-                if let Some(ancestor) = self.ancestor_at(member, level)? {
-                    let elements = &self.dimension(position).elements;
-                    let mut waiting = vec![self.element(ancestor)?.0];
-                    while let Some(next) = waiting.pop() {
-                        let other = &elements[next as usize];
-                        if other.level == element.level && !periods.contains(&next) {
-                            periods.push(next);
-                        }
-                        if next == id {
-                            break;
-                        }
-                        if other.level > element.level {
-                            waiting.extend(other.children.iter().rev().map(|&(child, _)| child));
-                        }
+                self.of_level(member, position)?;
+                self.periods_to_date(member, level).map(Datum::Set)
+            }
+            "YTD" | "QTD" | "MTD" | "WTD" => {
+                count(0..=1)?;
+                // To the member given, or to the current member of the cube's time dimension.
+                let member = match arguments.first() {
+                    Some(argument) => self.member(argument, context)?,
+                    None => self.now(function, context)?,
+                };
+                let wanted = match function {
+                    "YTD" => "Year",
+                    "QTD" => "Quarter",
+                    "MTD" => "Month",
+                    _ => "Week",
+                };
+                let dimension = self.dimension(member.position);
+                let Some(level) = dimension.level(wanted) else {
+                    return fail(format!(
+                        "{function} needs a level named '{wanted}' in dimension '{}'",
+                        dimension.name
+                    ));
+                };
+                self.periods_to_date(member, level).map(Datum::Set)
+            }
+            "LASTPERIODS" => {
+                count(1..=2)?;
+                let periods = self.number(&arguments[0], context)?.trunc();
+                let member = match arguments.get(1) {
+                    Some(argument) => self.member(argument, context)?,
+                    None => self.now(function, context)?,
+                };
+                // That many members of the level ending at the member, or for a negative
+                // number beginning at it; fewer where the level ends first.
+                let mut found = Vec::new();
+                let mut next = (periods != 0.0).then_some(member);
+                while let Some(period) = next {
+                    found.push(vec![period]);
+                    next = match found.len() < periods.abs() as usize {
+                        true => self.shift(period, -periods.signum())?,
+                        false => None,
+                    };
+                }
+                if periods > 0.0 {
+                    found.reverse();
+                }
+                Ok(Datum::Set(found))
+            }
+            "OPENINGPERIOD" | "CLOSINGPERIOD" => {
+                count(1..=2)?;
+                let (position, level) = self.level(&arguments[0], context)?;
+                let mut member = self.member_of(arguments.get(1), position, context)?;
+                self.of_level(member, position)?;
+                // Down by first children, or by last, as far as the level.
+                loop {
+                    let (_, element) = self.element(member)?;
+                    let child = match function {
+                        "OPENINGPERIOD" => element.children.first(),
+                        _ => element.children.last(),
+                    };
+                    match (element.level.cmp(&level), child) {
+                        (Ordering::Equal, _) => return Ok(Datum::Member(member)),
+                        (Ordering::Greater, Some(&(child, _))) => member.id = Id::Element(child),
+                        _ => return Ok(Datum::Null),
                     }
                 }
-                let one = |id: ElementId| {
-                    vec![Member {
-                        position,
-                        id: Id::Element(id),
-                    }]
+            }
+            "DRILLDOWNMEMBER" | "TM1DRILLDOWNMEMBER" => {
+                count(2..=3)?;
+                self.drilled_down_member(function, arguments, arguments.get(2), None, context)
+                    .map(Datum::Set)
+            }
+            "DRILLDOWNMEMBERTOP" | "DRILLDOWNMEMBERBOTTOM" => {
+                count(3..=5)?;
+                let rank = |children: Vec<Tuple>| {
+                    let value = given(arguments.get(3));
+                    self.ranked(function, &arguments[2], value, children, context)
                 };
-                Ok(Datum::Set(periods.into_iter().map(one).collect()))
+                self.drilled_down_member(
+                    function,
+                    arguments,
+                    arguments.get(4),
+                    Some(&rank),
+                    context,
+                )
+                .map(Datum::Set)
+            }
+            "DRILLDOWNLEVEL" => {
+                count(1..=2)?;
+                self.drilled_down_level(arguments, given(arguments.get(1)), None, context)
+                    .map(Datum::Set)
+            }
+            "DRILLDOWNLEVELTOP" | "DRILLDOWNLEVELBOTTOM" => {
+                count(2..=4)?;
+                let rank = |children: Vec<Tuple>| {
+                    let value = given(arguments.get(3));
+                    self.ranked(function, &arguments[1], value, children, context)
+                };
+                self.drilled_down_level(arguments, given(arguments.get(2)), Some(&rank), context)
+                    .map(Datum::Set)
+            }
+            "DRILLUPMEMBER" => {
+                count(2..=2)?;
+                let set = self.set(&arguments[0], context)?;
+                let (position, members) = self.chosen(self.set(&arguments[1], context)?);
+                Ok(Datum::Set(self.drill_up(set, position, &members)))
+            }
+            "TOGGLEDRILLSTATE" => {
+                count(2..=2)?;
+                let set = self.set(&arguments[0], context)?;
+                let (position, members) = self.chosen(self.set(&arguments[1], context)?);
+                let of = |tuple: &Tuple| {
+                    let member = tuple
+                        .iter()
+                        .find(|member| Some(member.position) == position);
+                    member.copied()
+                };
+                // A chosen member is open if what follows it stands beneath it: that one is
+                // closed, and any other opened.
+                let mut open = HashSet::new();
+                for pair in set.windows(2) {
+                    if let (Some(member), Some(next)) = (of(&pair[0]), of(&pair[1]))
+                        && members.contains(&member)
+                        && self.beneath(next, member)
+                    {
+                        open.insert(member);
+                    }
+                }
+                let set = self.drill_up(set, position, &open);
+                let shut = |member: Member, _: &Element| {
+                    members.contains(&member) && !open.contains(&member)
+                };
+                self.drill_down(set, position, false, &shut, None)
+                    .map(Datum::Set)
             }
             _ => fail(format!("unknown function {function}")),
+        }
+    }
+
+    /// The tuples of a set whose cell holds something, here or at any of the tuples across.
+    fn non_empty(
+        &self,
+        set: Vec<Tuple>,
+        across: &[Tuple],
+        context: &Context,
+    ) -> Evaluated<Vec<Tuple>> {
+        for other in across {
+            self.foresee(None, &with(context, other), &set);
+        }
+        let mut kept = Vec::new();
+        let mut along = Along::new(context);
+        for tuple in set {
+            let context = along.at(&tuple);
+            // Across nothing, which is the usual case, the cell is the tuple's own.
+            let mut cells = across.iter().map(|other| match other.is_empty() {
+                true => self.cell(context),
+                false => self.cell(&with(context, other)),
+            });
+            if cells.try_fold(false, |any, cell| Ok(any || !is_empty(&cell?)))? {
+                kept.push(tuple);
+            }
+        }
+        Ok(kept)
+    }
+
+    /// A set without the tuples that follow one of some members and stand beneath it, the
+    /// member looked at being the tuple's member of the dimension at `position`.
+    fn drill_up(
+        &self,
+        set: Vec<Tuple>,
+        position: Option<usize>,
+        members: &HashSet<Member>,
+    ) -> Vec<Tuple> {
+        let mut closed: Option<Member> = None;
+        let mut kept = Vec::new();
+        for tuple in set {
+            let member = tuple
+                .iter()
+                .find(|member| Some(member.position) == position)
+                .copied();
+            let beneath = match (closed, member) {
+                (Some(closed), Some(member)) => self.beneath(member, closed),
+                _ => false,
+            };
+            if beneath {
+                continue;
+            }
+            closed = member.filter(|member| members.contains(member));
+            kept.push(tuple);
+        }
+        kept
+    }
+
+    /// Whether a member stands beneath another of its dimension, by any of its parents.
+    fn beneath(&self, member: Member, other: Member) -> bool {
+        let (Id::Element(id), Id::Element(other)) = (member.id, other.id) else {
+            return false;
+        };
+        let elements = &self.dimension(member.position).elements;
+        let mut waiting = elements[id as usize].parents().to_vec();
+        while let Some(next) = waiting.pop() {
+            if next == other {
+                return true;
+            }
+            waiting.extend(elements[next as usize].parents());
+        }
+        false
+    }
+
+    /// The members of a member's own level beneath its ancestor at a level, in the order of
+    /// the hierarchy, as far as the member itself. None if it has no ancestor there.
+    fn periods_to_date(&self, member: Member, level: u32) -> Evaluated<Vec<Tuple>> {
+        let (id, element) = self.element(member)?;
+        let mut periods = Vec::new();
+        if let Some(ancestor) = self.ancestor_at(member, level)? {
+            let elements = &self.dimension(member.position).elements;
+            let mut waiting = vec![self.element(ancestor)?.0];
+            while let Some(next) = waiting.pop() {
+                let other = &elements[next as usize];
+                if other.level == element.level && !periods.contains(&next) {
+                    periods.push(next);
+                }
+                if next == id {
+                    break;
+                }
+                if other.level > element.level {
+                    waiting.extend(other.children.iter().rev().map(|&(child, _)| child));
+                }
+            }
+        }
+        let one = |id: ElementId| {
+            vec![Member {
+                position: member.position,
+                id: Id::Element(id),
+            }]
+        };
+        Ok(periods.into_iter().map(one).collect())
+    }
+
+    /// A level belongs to one dimension and means nothing to a member of another.
+    fn of_level(&self, member: Member, position: usize) -> Evaluated<()> {
+        match member.position == position {
+            true => Ok(()),
+            false => fail(format!(
+                "the level is one of dimension '{}', and the member belongs to '{}'",
+                self.dimension(position).name,
+                self.dimension(member.position).name
+            )),
         }
     }
 
@@ -1298,19 +2203,24 @@ impl<'a> Evaluator<'a> {
     /// those of its level in the dimension's order. Nothing past either end.
     fn shift(&self, member: Member, by: f64) -> Evaluated<Option<Member>> {
         let (id, element) = self.element(member)?;
-        let elements = self.dimension(member.position).elements.iter().enumerate();
-        let level: Vec<usize> = elements
-            .filter(|(_, other)| other.level == element.level)
-            .map(|(id, _)| id)
-            .collect();
-        let place = level.iter().position(|&other| other == id as usize);
-        let place = place.map(|place| place as f64 + by.trunc());
-        let found = place
-            .filter(|&place| place >= 0.0)
-            .and_then(|place| level.get(place as usize));
-        Ok(found.map(|&id| Member {
+        let elements = &self.dimension(member.position).elements;
+        // From the member towards the end asked for, counting the elements of its level:
+        // the next one is found without looking at the rest of the dimension.
+        let mut at = id as usize;
+        let mut left = by.trunc().abs() as usize;
+        while left > 0 {
+            at = match by > 0.0 {
+                true => at + 1,
+                false => at.wrapping_sub(1),
+            };
+            match elements.get(at) {
+                Some(other) => left -= usize::from(other.level == element.level),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(Member {
             position: member.position,
-            id: Id::Element(id as ElementId),
+            id: Id::Element(at as ElementId),
         }))
     }
 
@@ -1322,7 +2232,7 @@ impl<'a> Evaluator<'a> {
             if element.level == level {
                 return Ok(Some(member));
             }
-            if element.level > level || element.parents.is_empty() {
+            if element.level > level || element.parents().is_empty() {
                 return Ok(None);
             }
             member = self.parent(member)?;
@@ -1408,9 +2318,47 @@ impl<'a> Evaluator<'a> {
                 Ok(Datum::Level(member.position, self.element(member)?.1.level))
             }
             ("LEVELS", &Datum::Dimension(position)) => {
-                Ok(Datum::Level(position, distance()?.max(0.0) as u32))
+                let [level] = arguments else {
+                    return fail(".LEVELS takes one level, by number or by name");
+                };
+                // By the name the dimension gives it, or by its number from the leaves up.
+                match self.evaluate(level, context)? {
+                    Datum::Text(name) => match self.dimension(position).level(&name) {
+                        Some(level) => Ok(Datum::Level(position, level)),
+                        None => {
+                            let dimension = &self.dimension(position).name;
+                            fail(format!("dimension '{dimension}' has no level '{name}'"))
+                        }
+                    },
+                    number => {
+                        let number = to_number(&self.scalar(number, context)?)?;
+                        Ok(Datum::Level(position, number.max(0.0) as u32))
+                    }
+                }
+            }
+            ("NAME", &Datum::Level(position, level)) => {
+                let named = self.dimension(position).levels.get(level as usize);
+                Ok(Datum::Text(
+                    named.cloned().unwrap_or_else(|| level.to_string()),
+                ))
             }
             ("LEVELS", _) => fail(".LEVELS applies to a dimension"),
+            // A dimension has one hierarchy here, which is the dimension itself.
+            ("DIMENSION" | "HIERARCHY", _) => match target {
+                Datum::Dimension(position) | Datum::Level(position, _) => {
+                    Ok(Datum::Dimension(position))
+                }
+                Datum::Member(member) => Ok(Datum::Dimension(member.position)),
+                _ => fail(format!(
+                    ".{method} applies to a member, a level or a dimension"
+                )),
+            },
+            ("NAME", &Datum::Dimension(position)) => {
+                Ok(Datum::Text(self.dimension(position).name.clone()))
+            }
+            ("UNIQUENAME", &Datum::Dimension(position)) => {
+                Ok(Datum::Text(format!("[{}]", self.dimension(position).name)))
+            }
             ("ORDINAL", &Datum::Level(_, level)) => Ok(Datum::Number(f64::from(level))),
             ("MEMBERS", &Datum::Level(position, level)) => {
                 let elements = self.dimension(position).elements.iter().enumerate();
@@ -1455,25 +2403,26 @@ impl<'a> Evaluator<'a> {
             }
             ("SIBLINGS", _) => {
                 let member = member()?;
-                let (_, element) = self.element(member)?;
-                let elements = &self.dimension(member.position).elements;
-                // The children of the first parent, or for a top element the other tops.
-                let siblings: Vec<ElementId> = match element.parents.first() {
-                    Some(&parent) => {
-                        let children = elements[parent as usize].children.iter();
-                        children.map(|&(id, _)| id).collect()
-                    }
-                    None => {
-                        let tops = elements.iter().enumerate();
-                        let tops = tops.filter(|(_, element)| element.parents.is_empty());
-                        tops.map(|(id, _)| id as ElementId).collect()
-                    }
-                };
-                let siblings = siblings.into_iter();
+                let siblings = self.siblings(member)?.into_iter();
                 Ok(Datum::Set(
                     siblings.map(|id| vec![one(member.position, id)]).collect(),
                 ))
             }
+            ("FIRSTSIBLING" | "LASTSIBLING", _) => {
+                let member = member()?;
+                let siblings = self.siblings(member)?;
+                // A member is among its own siblings, so there is always one.
+                let found = match method {
+                    "FIRSTSIBLING" => siblings.first(),
+                    _ => siblings.last(),
+                };
+                Ok(found.map_or(Datum::Null, |&id| Datum::Member(one(member.position, id))))
+            }
+            ("DEFAULTMEMBER", &Datum::Dimension(position)) => Ok(Datum::Member(Member {
+                position,
+                id: self.top()[position],
+            })),
+            ("DEFAULTMEMBER", _) => fail(".DEFAULTMEMBER applies to a dimension"),
             ("CURRENTMEMBER", &Datum::Dimension(position)) => Ok(Datum::Member(Member {
                 position,
                 id: context[position],
@@ -1492,7 +2441,8 @@ impl<'a> Evaluator<'a> {
             ("PARENT", _) => Ok(Datum::Member(self.parent(member()?)?)),
             ("FIRSTCHILD", _) => child(true),
             ("LASTCHILD", _) => child(false),
-            ("NAME", _) => Ok(Datum::Text(self.name(member()?).to_owned())),
+            // A member's caption is its name: an alias stands in for it only where asked.
+            ("NAME" | "CAPTION", _) => Ok(Datum::Text(self.name(member()?).to_owned())),
             ("UNIQUENAME", _) => Ok(Datum::Text(self.unique_name(member()?))),
             ("VALUE", _) => self.scalar(target, context),
             ("PROPERTIES", _) => {
@@ -1511,8 +2461,10 @@ impl<'a> Evaluator<'a> {
     /// A built-in property of a member, or failing that its attribute of that name.
     fn property(&self, member: Member, name: &str) -> Evaluated<Datum> {
         let element = self.element(member).ok();
+        // Of the parents and children, those the one asking may see.
+        let seen = |id: &ElementId| self.sees(member.position, *id);
         let first = |ids: &[ElementId]| {
-            let parent = ids.first().map(|&id| Member {
+            let parent = ids.iter().find(|id| seen(id)).map(|&id| Member {
                 position: member.position,
                 id: Id::Element(id),
             });
@@ -1525,9 +2477,14 @@ impl<'a> Evaluator<'a> {
                 Datum::Number(element.map_or(0.0, |(_, element)| f64::from(element.level)))
             }
             ("CHILDREN_CARDINALITY", element) => {
-                Datum::Number(element.map_or(0.0, |(_, element)| element.children.len() as f64))
+                let children = element.map(|(_, element)| element.children.as_slice());
+                let seen = children
+                    .unwrap_or_default()
+                    .iter()
+                    .filter(|(id, _)| seen(id));
+                Datum::Number(seen.count() as f64)
             }
-            ("PARENT_UNIQUE_NAME", Some((_, element))) => first(&element.parents),
+            ("PARENT_UNIQUE_NAME", Some((_, element))) => first(element.parents()),
             (_, Some((id, _))) => match self.dimension(member.position).attribute_value(id, name) {
                 Some(Scalar::Number(number)) => Datum::Number(*number),
                 Some(Scalar::Text(text)) => Datum::Text(text.clone()),
@@ -1537,9 +2494,105 @@ impl<'a> Evaluator<'a> {
         })
     }
 
+    /// A member and its siblings: the children of its first parent, or for a top element the
+    /// tops of the dimension.
+    fn siblings(&self, member: Member) -> Evaluated<Vec<ElementId>> {
+        let (_, element) = self.element(member)?;
+        let elements = &self.dimension(member.position).elements;
+        Ok(match element.parents().first() {
+            Some(&parent) => {
+                let children = elements[parent as usize].children.iter();
+                children.map(|&(id, _)| id).collect()
+            }
+            None => {
+                let tops = elements.iter().enumerate();
+                let tops = tops.filter(|(_, element)| element.parents().is_empty());
+                tops.map(|(id, _)| id as ElementId).collect()
+            }
+        })
+    }
+
+    /// The current member of the cube's dimension of type `time`, for a function that is
+    /// given no member to start from.
+    fn now(&self, function: &str, context: &Context) -> Evaluated<Member> {
+        let time = |&position: &usize| self.dimension(position).kind == DimensionType::Time;
+        match (0..context.len()).find(time) {
+            Some(position) => Ok(Member {
+                position,
+                id: context[position],
+            }),
+            None => fail(format!(
+                "{function} needs a member, or a dimension of type 'time' in the cube"
+            )),
+        }
+    }
+
+    /// A set with the children of some of its tuples put in after them, each child standing
+    /// in its parent's place in the tuple. The member looked at is the tuple's member of the
+    /// dimension at `position`, or without one its first. `drilled` says whether a member is
+    /// to be opened; the children put in are asked too if `recursive`.
+    fn drill_down(
+        &self,
+        set: Vec<Tuple>,
+        position: Option<usize>,
+        recursive: bool,
+        drilled: &dyn Fn(Member, &Element) -> bool,
+        rank: Option<Rank<'_>>,
+    ) -> Evaluated<Vec<Tuple>> {
+        let mut found = Vec::new();
+        let mut waiting: Vec<(Tuple, bool)> = set.into_iter().rev().map(|t| (t, true)).collect();
+        while let Some((tuple, asked)) = waiting.pop() {
+            let place = match position {
+                Some(position) => tuple.iter().position(|member| member.position == position),
+                None => (!tuple.is_empty()).then_some(0),
+            };
+            if asked
+                && let Some(place) = place
+                && let Ok((_, element)) = self.element(tuple[place])
+                && drilled(tuple[place], element)
+            {
+                let mut children: Vec<Tuple> = element
+                    .children
+                    .iter()
+                    .map(|&(child, _)| {
+                        let mut below = tuple.clone();
+                        below[place].id = Id::Element(child);
+                        below
+                    })
+                    .collect();
+                if let Some(rank) = rank {
+                    children = rank(children)?;
+                }
+                for below in children.into_iter().rev() {
+                    waiting.push((below, recursive));
+                }
+            }
+            found.push(tuple);
+            bounded(Some(found.len()))?;
+        }
+        Ok(found)
+    }
+
+    /// The members of the tuples of a set, and the position of their dimension: what a
+    /// drilling function is told to open or to close.
+    fn chosen(&self, set: Vec<Tuple>) -> (Option<usize>, HashSet<Member>) {
+        let members: HashSet<Member> = set.into_iter().flatten().collect();
+        (members.iter().next().map(|member| member.position), members)
+    }
+
+    /// How many steps a member is beneath the top of its dimension, going up by first parents.
+    fn depth(&self, mut member: Member) -> usize {
+        let mut depth = 0;
+        while let Ok(parent) = self.parent(member) {
+            member = parent;
+            depth += 1;
+        }
+        depth
+    }
+
     fn parent(&self, member: Member) -> Evaluated<Member> {
         let (_, element) = self.element(member)?;
-        let parent = element.parents.first().ok_or_else(|| {
+        let parent = element.parents().first().ok_or_else(|| {
             MdxError::new(format!("member '{}' has no parent", self.name(member)))
         })?;
         Ok(Member {
@@ -1548,6 +2601,300 @@ impl<'a> Evaluator<'a> {
         })
     }
 
+    /// `Descendants(member [, distance | level [, flag]])`: the members beneath a member,
+    /// parents before children, as far down as the distance or level and as the flag says.
+    fn descendants(&self, arguments: &[Expr], context: &Context) -> Evaluated<Vec<Tuple>> {
+        let member = self.member(&arguments[0], context)?;
+        // How far down: a number of steps, or as far as a level.
+        let (mut distance, mut level) = (None, None);
+        match arguments
+            .get(1)
+            .map(|argument| self.evaluate(argument, context))
+        {
+            Some(Ok(Datum::Level(position, to))) => {
+                self.of_level(member, position)?;
+                level = Some(to);
+            }
+            Some(steps) => {
+                distance = Some(to_number(&self.scalar(steps?, context)?)? as usize);
+            }
+            None => {}
+        }
+        let which = flag(arguments.get(2)).unwrap_or_else(|| "SELF".to_owned());
+        // Which of the members the flag takes: those before the distance or level,
+        // from the member itself down; those at it; those after it. LEAVES takes the
+        // leaves beneath, wherever they stand.
+        let (before, at, after) = match which.as_str() {
+            "SELF" => (false, true, false),
+            "AFTER" => (false, false, true),
+            "BEFORE" => (true, false, false),
+            "SELF_AND_AFTER" => (false, true, true),
+            "SELF_AND_BEFORE" => (true, true, false),
+            "BEFORE_AND_AFTER" => (true, false, true),
+            "SELF_BEFORE_AFTER" => (true, true, true),
+            "LEAVES" => (false, false, false),
+            _ => return fail(format!("unknown DESCENDANTS flag {which}")),
+        };
+        // Without a distance or a level, the member and everything below it are at
+        // it. Levels count up from the leaves, so what comes after a level has a
+        // lower number.
+        let wanted = |depth: usize, element: &Element| {
+            if which == "LEAVES" {
+                return element.children.is_empty();
+            }
+            let (above, on, below) = match (distance, level) {
+                (Some(distance), _) => (depth < distance, depth == distance, depth > distance),
+                (_, Some(level)) => (
+                    element.level > level,
+                    element.level == level,
+                    element.level < level,
+                ),
+                _ => (false, true, true),
+            };
+            (before && above) || (at && on) || (after && below)
+        };
+        let (id, _) = self.element(member)?;
+        let dimension = self.dimension(member.position);
+        let mut found = Vec::new();
+        let mut seen = HashSet::new();
+        let mut pending = vec![(id, 0)];
+        // Parents before children, children in their declared order.
+        while let Some((id, depth)) = pending.pop() {
+            let element = &dimension.elements[id as usize];
+            if wanted(depth, element) && seen.insert(id) {
+                found.push(vec![Member {
+                    position: member.position,
+                    id: Id::Element(id),
+                }]);
+            }
+            let children = element.children.iter().rev();
+            pending.extend(children.map(|&(child, _)| (child, depth + 1)));
+        }
+        Ok(found)
+    }
+
+    /// `Ascendants(member)`: the member and each member above it, up to the top, by its
+    /// first parent.
+    fn ascendants(&self, argument: &Expr, context: &Context) -> Evaluated<Vec<Tuple>> {
+        let mut member = self.member(argument, context)?;
+        let mut found = vec![vec![member]];
+        while let Some(&parent) = self.element(member)?.1.parents().first() {
+            member = Member {
+                position: member.position,
+                id: Id::Element(parent),
+            };
+            found.push(vec![member]);
+        }
+        Ok(found)
+    }
+
+    /// `DrillUpLevel(set [, level])`: the set without its members below the level, by each
+    /// tuple's first member; without a level, without the members furthest beneath the top
+    /// of their dimension, those DrillDownLevel would open. Members of other dimensions,
+    /// and calculated ones, stay.
+    fn drilled_up(&self, arguments: &[Expr], context: &Context) -> Evaluated<Vec<Tuple>> {
+        let set = self.set(&arguments[0], context)?;
+        let first = |tuple: &Tuple| match tuple.first() {
+            Some(
+                &member @ Member {
+                    id: Id::Element(id),
+                    ..
+                },
+            ) => Some((
+                member,
+                &self.dimension(member.position).elements[id as usize],
+            )),
+            _ => None,
+        };
+        let kept: Vec<Tuple> = match arguments.get(1) {
+            // Levels count up from the leaves: below the level is a lower number.
+            Some(argument) => {
+                let (position, level) = self.level(argument, context)?;
+                let below = |tuple: &Tuple| {
+                    first(tuple).is_some_and(|(member, element)| {
+                        member.position == position && element.level < level
+                    })
+                };
+                set.into_iter().filter(|tuple| !below(tuple)).collect()
+            }
+            None => {
+                let deepest = set
+                    .iter()
+                    .filter_map(first)
+                    .map(|(member, _)| self.depth(member))
+                    .max();
+                let furthest = |tuple: &Tuple| {
+                    first(tuple).is_some_and(|(member, _)| Some(self.depth(member)) == deepest)
+                };
+                set.into_iter().filter(|tuple| !furthest(tuple)).collect()
+            }
+        };
+        Ok(kept)
+    }
+
+    /// `NameToSet(text)`: the set of the one member the text names; `StrToValue(text)`: the
+    /// value of the expression the text holds, as `1 + 2` or a tuple of a cell.
+    fn read_from(&self, function: &str, argument: &Expr, context: &Context) -> Evaluated<Datum> {
+        let text = self.text(argument, context)?;
+        let parsed = super::parser::Parser::new(super::lexer::lex(&text)?).set()?;
+        match (function, self.evaluate(&parsed, context)?) {
+            ("NAMETOSET", Datum::Member(member)) => Ok(Datum::Set(vec![vec![member]])),
+            ("NAMETOSET", _) => fail(format!("NAMETOSET: '{text}' names no member")),
+            (_, value) => self.scalar(value, context),
+        }
+    }
+
+    /// `MemberToStr`, `TupleToStr` and `SetToStr`: what they are given, written as the MDX
+    /// that `StrToMember`, `StrToTuple` and `StrToSet` read back.
+    fn written(&self, function: &str, argument: &Expr, context: &Context) -> Evaluated<String> {
+        let tuple = |tuple: &[Member]| match tuple {
+            [member] => self.unique_name(*member),
+            members => {
+                let names: Vec<_> = members
+                    .iter()
+                    .map(|&member| self.unique_name(member))
+                    .collect();
+                format!("({})", names.join(", "))
+            }
+        };
+        Ok(match function {
+            "MEMBERTOSTR" => self.unique_name(self.member(argument, context)?),
+            "TUPLETOSTR" => match self.evaluate(argument, context)? {
+                Datum::Member(member) => self.unique_name(member),
+                Datum::Tuple(members) => tuple(&members),
+                _ => return fail("TupleToStr takes a tuple"),
+            },
+            _ => {
+                let set = self.set(argument, context)?;
+                let tuples: Vec<_> = set.iter().map(|each| tuple(each)).collect();
+                format!("{{{}}}", tuples.join(", "))
+            }
+        })
+    }
+
+    /// `DrillDownMember(set, members [, RECURSIVE])` and TM1's, told `ALL` for every member:
+    /// the set, each of the members in it followed by its children; given `rank`, as
+    /// `DrillDownMemberTop` and `...Bottom` are, only the children it keeps.
+    fn drilled_down_member(
+        &self,
+        function: &str,
+        arguments: &[Expr],
+        recursive: Option<&Expr>,
+        rank: Option<Rank<'_>>,
+        context: &Context,
+    ) -> Evaluated<Vec<Tuple>> {
+        let recursive = match flag(recursive).as_deref() {
+            None => false,
+            Some("RECURSIVE") => true,
+            Some(other) => return fail(format!("unknown {function} flag {other}")),
+        };
+        let set = self.set(&arguments[0], context)?;
+        // Every member, where TM1's function is told ALL; else those of the second set.
+        let all =
+            function == "TM1DRILLDOWNMEMBER" && flag(arguments.get(1)).as_deref() == Some("ALL");
+        let (position, members) = match all {
+            true => (None, HashSet::new()),
+            false => self.chosen(self.set(&arguments[1], context)?),
+        };
+        let drilled = |member: Member, _: &Element| all || members.contains(&member);
+        self.drill_down(set, position, recursive, &drilled, rank)
+    }
+
+    /// `DrillDownLevel(set [, level])`: the set, each of its members of the level, or without
+    /// one those furthest beneath the top of their dimension, followed by its children; given
+    /// `rank`, as `DrillDownLevelTop` and `...Bottom` are, only the children it keeps.
+    fn drilled_down_level(
+        &self,
+        arguments: &[Expr],
+        level: Option<&Expr>,
+        rank: Option<Rank<'_>>,
+        context: &Context,
+    ) -> Evaluated<Vec<Tuple>> {
+        let set = self.set(&arguments[0], context)?;
+        match level {
+            Some(level) => {
+                let (position, level) = self.level(level, context)?;
+                let at = |_: Member, element: &Element| element.level == level;
+                self.drill_down(set, Some(position), false, &at, rank)
+            }
+            None => {
+                let first = |tuple: &Tuple| tuple.first().copied();
+                let depths = set
+                    .iter()
+                    .filter_map(first)
+                    .map(|member| self.depth(member));
+                let deepest = depths.max().unwrap_or(0);
+                let at = |member: Member, _: &Element| self.depth(member) == deepest;
+                self.drill_down(set, None, false, &at, rank)
+            }
+        }
+    }
+
+    /// The children a `...Top` or `...Bottom` drilling function keeps: the `count` of them with
+    /// the largest values of `value`, or the smallest, in that order; without a value, the first.
+    fn ranked(
+        &self,
+        function: &str,
+        count: &Expr,
+        value: Option<&Expr>,
+        children: Vec<Tuple>,
+        context: &Context,
+    ) -> Evaluated<Vec<Tuple>> {
+        let wanted = self.number(count, context)?.max(0.0) as usize;
+        let mut along = Along::new(context);
+        let mut keyed = Vec::new();
+        for tuple in children {
+            let value = match value {
+                Some(expression) => {
+                    let context = along.at(&tuple);
+                    let value = self.evaluate(expression, context)?;
+                    self.scalar(value, context)?
+                }
+                None => Datum::Null,
+            };
+            keyed.push((value, tuple));
+        }
+        // Without a value the children keep their order and are only cut short.
+        let bottom = function.ends_with("BOTTOM");
+        keyed.sort_by(|(left, _), (right, _)| match bottom {
+            true => compare(left, right),
+            false => compare(right, left),
+        });
+        Ok(keyed
+            .into_iter()
+            .take(wanted)
+            .map(|(_, tuple)| tuple)
+            .collect())
+    }
+
+    /// `IsGeneration(member, n)`: whether the member stands n generations above the leaves,
+    /// the leaves being generation 0, as its level counts.
+    fn is_generation(&self, arguments: &[Expr], context: &Context) -> Evaluated<bool> {
+        let member = self.member(&arguments[0], context)?;
+        let wanted = self.evaluate(&arguments[1], context)?;
+        let wanted = to_number(&self.scalar(wanted, context)?)?;
+        let (_, element) = self.element(member)?;
+        Ok(f64::from(element.level) == wanted)
+    }
+
+    /// `IsSibling(member, member [, INCLUDEMEMBER])`: whether two members have the same
+    /// parent, or are both at the top. A member is its own sibling only where INCLUDEMEMBER
+    /// says so.
+    fn is_sibling(&self, arguments: &[Expr], context: &Context) -> Evaluated<bool> {
+        let one = self.member(&arguments[0], context)?;
+        let other = self.member(&arguments[1], context)?;
+        let itself = match flag(arguments.get(2)).as_deref() {
+            None => false,
+            Some("INCLUDEMEMBER") => true,
+            Some(word) => return fail(format!("unknown ISSIBLING flag {word}")),
+        };
+        if one.position != other.position {
+            return Ok(false);
+        }
+        let (id, _) = self.element(one)?;
+        let (of, _) = self.element(other)?;
+        Ok((itself || id != of) && self.siblings(other)?.contains(&id))
+    }
     /// `Order(set, expression [, ASC | DESC | BASC | BDESC])`. The first two keep each member
     /// under its parent and order siblings by value; the last two order by value alone.
     fn order(&self, arguments: &[Expr], context: &Context) -> Evaluated<Vec<Tuple>> {
@@ -1560,11 +2907,31 @@ impl<'a> Evaluator<'a> {
             Some(other) => return fail(format!("unknown ORDER flag {other}")),
         };
         self.foresee(arguments.get(1), context, &set);
+        let along = std::cell::RefCell::new(Along::new(context));
         let value = |tuple: &Tuple| {
-            let context = with(context, tuple);
-            let value = self.evaluate(&arguments[1], &context)?;
-            self.scalar(value, &context)
+            let mut along = along.borrow_mut();
+            let context = along.at(tuple);
+            let value = self.evaluate(&arguments[1], context)?;
+            self.scalar(value, context)
         };
+        let turned = |ordering: Ordering| match descending {
+            true => ordering.reverse(),
+            false => ordering,
+        };
+        // By value alone the hierarchy has no say: each tuple has one value, and tuples of
+        // one value stand in the order of their members, as they would by the longer way.
+        if !hierarchical {
+            let mut keyed = Vec::with_capacity(set.len());
+            for tuple in set {
+                keyed.push((value(&tuple)?, tuple));
+            }
+            keyed.sort_by(|(left, one), (right, other)| {
+                let members = || one.iter().map(|m| m.id).cmp(other.iter().map(|m| m.id));
+                turned(compare(left, right)).then_with(members)
+            });
+            return Ok(keyed.into_iter().map(|(_, tuple)| tuple).collect());
+        }
+
         // For each member of a tuple, the path from its top ancestor down to it, each step
         // with the value the tuple would have with that ancestor in the member's place.
         let path = |tuple: &Tuple, index: usize| -> Evaluated<Vec<(Datum, Id)>> {
@@ -1587,13 +2954,8 @@ impl<'a> Evaluator<'a> {
             keyed.push((paths, tuple));
         }
         let by_value = |left: &(Datum, Id), right: &(Datum, Id)| {
-            let ordering = compare(&left.0, &right.0);
-            let ordering = match descending {
-                true => ordering.reverse(),
-                false => ordering,
-            };
             // Equal values keep members apart by identity, so a parent's children stay together.
-            ordering.then_with(|| left.1.cmp(&right.1))
+            turned(compare(&left.0, &right.0)).then_with(|| left.1.cmp(&right.1))
         };
         let by_path = |left: &Vec<(Datum, Id)>, right: &Vec<(Datum, Id)>| {
             let steps = left
@@ -1647,7 +3009,7 @@ impl<'a> Evaluator<'a> {
             }
         }
         for (id, element) in elements.iter().enumerate() {
-            if element.parents.is_empty() {
+            if element.parents().is_empty() {
                 walk(elements, id, post, &mut places, &mut next);
             }
         }
@@ -1666,14 +3028,21 @@ impl<'a> Evaluator<'a> {
             Some(expression) => self.named(expression, context, &mut named),
             None => named.push(Tuple::new()),
         }
-        let cells: Vec<Vec<ElementId>> = set
-            .iter()
-            .flat_map(|tuple| {
-                let context = with(context, tuple);
-                let at = |named: &Tuple| self.total_at(&with(&context, named));
-                named.iter().filter_map(at).collect::<Vec<_>>()
-            })
-            .collect();
+        // The cell at each tuple with each named member in it, given member by member so
+        // that one which is no total is turned down without being written out.
+        let mut along = Along::new(context);
+        let mut cells: Vec<Vec<ElementId>> = Vec::new();
+        for tuple in set {
+            let context = along.at(tuple);
+            let at = |named: &Tuple| {
+                let placed = |(position, id): (usize, &Id)| {
+                    let member = named.iter().find(|member| member.position == position);
+                    member.map_or(*id, |member| member.id)
+                };
+                self.total_of(context.iter().enumerate().map(placed))
+            };
+            cells.extend(named.iter().filter_map(at));
+        }
         (self.expect)(&cells.iter().map(Vec::as_slice).collect::<Vec<_>>());
     }
 
@@ -1681,24 +3050,56 @@ impl<'a> Evaluator<'a> {
     /// up: every member an element, and one of them at least a consolidation. Those are the
     /// cells worth saying are about to be read; a leaf is read as quickly unannounced.
     fn total_at(&self, context: &Context) -> Option<Vec<ElementId>> {
-        let consolidated = |(position, id): (usize, &Id)| match id {
+        self.total_of(context.iter().copied())
+    }
+
+    /// The same of a cell given member by member, in the cube's order, so that a cell which
+    /// is no total costs nothing to turn down.
+    fn total_of(&self, ids: impl Iterator<Item = Id> + Clone) -> Option<Vec<ElementId>> {
+        let consolidated = |(position, id): (usize, Id)| match id {
             Id::Element(id) => {
-                let element = &self.dimension(position).elements[*id as usize];
+                let element = &self.dimension(position).elements[id as usize];
                 element.kind == ElementType::Consolidated
             }
             Id::Calculated(_) => false,
         };
-        if !context.iter().enumerate().any(consolidated) {
+        if !ids.clone().enumerate().any(consolidated) {
             return None;
         }
-        let element = |id: &Id| match id {
-            Id::Element(element) => Some(*element),
+        let element = |id: Id| match id {
+            Id::Element(element) => Some(element),
             Id::Calculated(_) => None,
         };
-        context.iter().map(element).collect()
+        ids.map(element).collect()
     }
 
-    /// The members and tuples an expression names outright, through arithmetic and comparisons.
+    /// The totals that reading the cell at a context will ask for: the cell itself, or where
+    /// a calculated member stands there, the cells its expression names outright.
+    fn ahead(&self, context: &Context) -> Vec<Vec<ElementId>> {
+        let Some(calculated) = self.calculated_at(context) else {
+            return self.total_at(context).into_iter().collect();
+        };
+        // The cell at the context with the members of a tuple put in their places.
+        let at = |named: &Tuple| {
+            let placed = |(position, id): (usize, &Id)| {
+                let member = named.iter().find(|member| member.position == position);
+                member.map_or(*id, |member| member.id)
+            };
+            self.total_of(context.iter().enumerate().map(placed))
+        };
+        match &calculated.named {
+            Some(named) => named.iter().filter_map(at).collect(),
+            None => {
+                let mut named = Vec::new();
+                self.named(&calculated.expression, context, &mut named);
+                named.iter().filter_map(at).collect()
+            }
+        }
+    }
+
+    /// The members and tuples an expression names outright, through arithmetic, comparisons
+    /// and the functions that choose between values. A value that is named and then not
+    /// chosen is a cell read for nothing, which costs less than reading totals one by one.
     fn named(&self, expression: &Expr, context: &Context, found: &mut Vec<Tuple>) {
         match expression {
             Expr::Binary(left, _, right) => {
@@ -1706,7 +3107,12 @@ impl<'a> Evaluator<'a> {
                 self.named(right, context, found);
             }
             Expr::Not(inner) | Expr::Negate(inner) => self.named(inner, context, found),
-            Expr::Name(_) | Expr::Member(..) | Expr::Tuple(_) => {
+            Expr::Call(function, arguments) if CHOOSING.contains(&function.as_str()) => {
+                for argument in arguments {
+                    self.named(argument, context, found);
+                }
+            }
+            Expr::Name(_) | Expr::Member(..) | Expr::Calculated(..) | Expr::Tuple(_) => {
                 match self.evaluate(expression, context) {
                     Ok(Datum::Member(member)) => found.push(vec![member]),
                     Ok(Datum::Tuple(tuple)) => found.push(tuple),
@@ -1717,40 +3123,76 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    /// The value of the cell at a context. A calculated member there is evaluated first.
-    fn cell(&self, context: &Context) -> Evaluated<Datum> {
-        // Of several calculated members, the one with the highest solve order is calculated
-        // last, over the results of the others; among equals, the first in the cube's order.
+    /// The calculated member that decides the cell at a context, if one stands there. Of
+    /// several, the one with the highest solve order is calculated last, over the results of
+    /// the others; among equals, the first in the cube's order.
+    fn calculated_at(&self, context: &Context) -> Option<&Calculated<'a>> {
         let calculated = context.iter().filter_map(|id| match id {
             Id::Calculated(index) => Some(&self.calculated[*index]),
             Id::Element(_) => None,
         });
-        let calculated =
-            calculated.reduce(
-                |chosen, other| match other.solve_order > chosen.solve_order {
-                    true => other,
-                    false => chosen,
-                },
-            );
-        let Some(calculated) = calculated else {
-            let at: Vec<ElementId> = context
-                .iter()
-                .map(|id| match id {
-                    Id::Element(id) => *id,
-                    Id::Calculated(_) => unreachable!("checked above"),
-                })
-                .collect();
-            return Ok(match (self.read)(self.cube_id, &at)? {
+        calculated.reduce(
+            |chosen, other| match other.solve_order > chosen.solve_order {
+                true => other,
+                false => chosen,
+            },
+        )
+    }
+
+    /// A cell written out as the calculated member that decides it says, where that member
+    /// has a format and the cell holds a number. A number its pattern cannot write out, such
+    /// as a date past the year 9999, is left as it is.
+    fn formatted(&self, context: &Context, cell: &Datum) -> Evaluated<Option<String>> {
+        let format = self
+            .calculated_at(context)
+            .and_then(|member| member.format.as_ref());
+        let (Some(format), Datum::Number(number)) = (format, cell) else {
+            return Ok(None);
+        };
+        let pattern = self.text(format, context)?;
+        Ok(format::write(*number, &pattern).ok())
+    }
+
+    /// The value of the cell at a context. A calculated member there is evaluated first.
+    fn cell(&self, context: &Context) -> Evaluated<Datum> {
+        let Some(calculated) = self.calculated_at(context) else {
+            let element = |id: &Id| match id {
+                Id::Element(id) => *id,
+                Id::Calculated(_) => unreachable!("checked above"),
+            };
+            // Where the cell is, written where it is cheapest: here, for a cube of few
+            // enough dimensions, since this is done for every cell of every grid.
+            let mut few = [0; 16];
+            let many: Vec<ElementId>;
+            let at = match context.len() <= few.len() {
+                true => {
+                    few.iter_mut()
+                        .zip(context)
+                        .for_each(|(slot, id)| *slot = element(id));
+                    &few[..context.len()]
+                }
+                false => {
+                    many = context.iter().map(element).collect();
+                    &many
+                }
+            };
+            return Ok(match (self.read)(self.cube_id, at)? {
                 Scalar::Number(number) => Datum::Number(number),
                 Scalar::Text(text) => Datum::Text(text),
             });
         };
-        if self.depth.get() == DEEPEST {
+        // How far the stack has moved since the first of them is told by where a local of
+        // this call stands.
+        let here = std::ptr::from_ref(&calculated).addr();
+        if self.depth.get() == 0 {
+            self.began.set(here);
+        }
+        if self.depth.get() == DEEPEST || self.began.get().abs_diff(here) > MOST_STACK {
             let name = calculated.name;
             return fail(format!("calculated member '{name}' refers to itself"));
         }
         self.depth.set(self.depth.get() + 1);
-        let value = self.evaluate(calculated.expression, context);
+        let value = self.evaluate(&calculated.expression, context);
         let value = value.and_then(|value| self.scalar(value, context));
         self.depth.set(self.depth.get() - 1);
         value
@@ -1759,7 +3201,12 @@ impl<'a> Evaluator<'a> {
     /// Reduces a value to a number, text, truth or nothing: a member or tuple gives its cell.
     pub(super) fn scalar(&self, datum: Datum, context: &Context) -> Evaluated<Datum> {
         match datum {
-            Datum::Member(member) => self.cell(&with(context, &vec![member])),
+            Datum::Member(member) => {
+                // The one member put in its place, without a tuple made to hold it.
+                let mut context = context.clone();
+                context[member.position] = member.id;
+                self.cell(&context)
+            }
             Datum::Tuple(tuple) => self.cell(&with(context, &tuple)),
             Datum::Set(_) | Datum::Dimension(_) | Datum::Level(..) => {
                 fail("expected a value, found a set")
@@ -1781,6 +3228,27 @@ impl<'a> Evaluator<'a> {
             Datum::Number(number) => Ok(number.to_string()),
             Datum::Null => Ok(String::new()),
             _ => fail("expected text"),
+        }
+    }
+
+    /// An expression's value as a date: a number of days from 30 December 1899, or a text
+    /// written as yyyy-mm-dd.
+    fn date(&self, expression: &Expr, context: &Context) -> Evaluated<Parts> {
+        let value = self.evaluate(expression, context)?;
+        match self.scalar(value, context)? {
+            Datum::Text(text) => Parts::of(dates::parse(&text)?),
+            other => Parts::of(to_number(&other)?),
+        }
+    }
+
+    /// An expression's value as a whole number of years, months, days or the like, a
+    /// fraction rounded as VBA rounds it, a half to the even number.
+    fn count_of(&self, expression: &Expr, context: &Context) -> Evaluated<i64> {
+        let number = self.number(expression, context)?.round_ties_even();
+        // Further than any date may be from any other, in seconds.
+        match number.abs() <= 1e12 {
+            true => Ok(number as i64),
+            false => fail("a date falls in the years 100 to 9999"),
         }
     }
 
@@ -1890,15 +3358,74 @@ fn union(mut left: Vec<Tuple>, right: Vec<Tuple>, repeats: bool) -> Evaluated<Ve
     })
 }
 
+/// The functions that choose between the values given them, through which the cells an
+/// expression names are looked for.
+const CHOOSING: [&str; 4] = ["IIF", "CASE", "COALESCEEMPTY", "ISEMPTY"];
+
+/// Whether what an expression names outright is the same at every cell: its names are all
+/// plain ones, none worked out from the cell it stands at as `CurrentMember` is.
+fn fixed(expression: &Expr) -> bool {
+    let plain = |item: &Expr| {
+        matches!(
+            item,
+            Expr::Name(_) | Expr::Member(..) | Expr::Calculated(..)
+        )
+    };
+    match expression {
+        Expr::Binary(left, _, right) => fixed(left) && fixed(right),
+        Expr::Not(inner) | Expr::Negate(inner) => fixed(inner),
+        Expr::Call(function, arguments) if CHOOSING.contains(&function.as_str()) => {
+            arguments.iter().all(fixed)
+        }
+        Expr::Tuple(items) => items.iter().all(plain),
+        _ => true,
+    }
+}
+
+/// Text, unless it is longer than text may be.
+fn bounded_text(text: String) -> Evaluated<Datum> {
+    match text.len() <= MOST_TEXT {
+        true => Ok(Datum::Text(text)),
+        false => fail(format!("a text has more than {MOST_TEXT} characters")),
+    }
+}
+
+/// Refuses a set of more tuples than a set may hold, or of more than can be counted.
+fn bounded(tuples: Option<usize>) -> Evaluated<()> {
+    match tuples.is_some_and(|tuples| tuples <= MOST_TUPLES) {
+        true => Ok(()),
+        false => fail(format!("a set has more than {MOST_TUPLES} tuples")),
+    }
+}
+
 /// Whether text matches a pattern in which `*` stands for any run of characters and `?` for
 /// any one.
+/// Each `*` first stands for nothing; when what follows it fails, the last one takes one
+/// more character and the rest is tried again. No earlier `*` need ever be gone back to, so
+/// a pattern of many stars costs no more than its length times the text's.
 fn wildcard(pattern: &[char], text: &[char]) -> bool {
-    match (pattern, text) {
-        ([], []) => true,
-        (['*', rest @ ..], _) => (0..=text.len()).any(|skipped| wildcard(rest, &text[skipped..])),
-        ([p, rest @ ..], [c, text @ ..]) => (*p == '?' || p == c) && wildcard(rest, text),
-        _ => false,
+    let (mut at, mut read) = (0, 0);
+    // The place after the last star, and how much of the text it had taken.
+    let mut star: Option<(usize, usize)> = None;
+    while read < text.len() {
+        match (pattern.get(at), star) {
+            (Some('*'), _) => {
+                star = Some((at + 1, read));
+                at += 1;
+            }
+            (Some(&p), _) if p == '?' || p == text[read] => {
+                at += 1;
+                read += 1;
+            }
+            (_, Some((after, taken))) => {
+                star = Some((after, taken + 1));
+                at = after;
+                read = taken + 1;
+            }
+            _ => return false,
+        }
     }
+    pattern[at..].iter().all(|&p| p == '*')
 }
 
 /// Every tuple of the left set joined with every tuple of the right.
@@ -1912,6 +3439,7 @@ fn cross_join(left: &[Tuple], right: &[Tuple]) -> Evaluated<Vec<Tuple>> {
     {
         return fail("the sets of a cross join must have different dimensions");
     }
+    bounded(left.len().checked_mul(right.len()))?;
     let mut joined = Vec::with_capacity(left.len() * right.len());
     for left in left {
         for right in right {

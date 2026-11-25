@@ -1,5 +1,7 @@
+use std::sync::Arc;
+
 use epiphany_core::Scalar;
-use epiphany_core::model::{Dimension, Model, ModelDef, ModelError};
+use epiphany_core::model::{Dimension, Model, ModelDef, ModelError, Shared};
 use serde_json::{Value as Json, json};
 
 fn compile(def: Json) -> Result<Model, ModelError> {
@@ -12,6 +14,10 @@ fn dimension(elements: Json) -> Json {
 }
 
 fn example() -> Model {
+    Model::compile(&example_definition()).expect("example model is valid")
+}
+
+fn example_definition() -> ModelDef {
     let dimensions = [
         include_str!("fixtures/model/dimensions/account.json"),
         include_str!("fixtures/model/dimensions/entity.json"),
@@ -19,14 +25,14 @@ fn example() -> Model {
         include_str!("fixtures/model/dimensions/version.json"),
     ];
     let cube = include_str!("fixtures/model/cubes/general-ledger.json");
-    let def = ModelDef {
+    ModelDef {
         dimensions: dimensions
             .iter()
             .map(|text| serde_json::from_str(text).expect("dimension parses"))
             .collect(),
         cubes: vec![serde_json::from_str(cube).expect("cube parses")],
-    };
-    Model::compile(&def).expect("example model is valid")
+        ..ModelDef::default()
+    }
 }
 
 fn names(dimension: &Dimension, ids: &[u32]) -> Vec<String> {
@@ -38,7 +44,7 @@ fn names(dimension: &Dimension, ids: &[u32]) -> Vec<String> {
 fn leaves(dimension: &Dimension, element: &str) -> Vec<(String, f64)> {
     let element = dimension.element(element).expect("element exists");
     element
-        .leaves
+        .leaves()
         .iter()
         .map(|&(id, weight)| (dimension.elements[id as usize].name.clone(), weight))
         .collect()
@@ -102,10 +108,10 @@ fn children_and_parents_keep_declaration_order() {
         .collect();
     assert_eq!(names(period, &children), ["Jan", "Feb", "Mar"]);
     assert_eq!(
-        names(period, &period.element("Jan").unwrap().parents),
+        names(period, period.element("Jan").unwrap().parents()),
         ["Q1"]
     );
-    assert!(period.element("H1").unwrap().parents.is_empty());
+    assert!(period.element("H1").unwrap().parents().is_empty());
 }
 
 #[test]
@@ -317,4 +323,71 @@ fn an_alias_may_repeat_its_own_element_name() {
         "elements": [{ "name": "a", "type": "numeric", "attributes": { "Alias": "A" } }]
     }] }));
     assert!(model.is_ok());
+}
+
+#[test]
+fn a_change_compiles_only_the_dimensions_it_changes() {
+    let mut before = example_definition();
+    before.dimensions[0].subsets.insert(
+        "Top".to_owned(),
+        serde_json::from_value(json!({ "elements": ["Revenue"] })).expect("subset parses"),
+    );
+    let compiled = Model::compile(&before).expect("example model is valid");
+    // A copy with a dashboard and an element of Entity's more: the other dimensions as they were.
+    let mut after = before.clone();
+    after.dashboards.push(
+        serde_json::from_value(
+            json!({ "name": "Notes", "tiles": [{ "show": "text", "text": "Hello" }] }),
+        )
+        .expect("dashboard parses"),
+    );
+    after.dimensions[1].elements.push(
+        serde_json::from_value(json!({ "name": "France", "type": "numeric" }))
+            .expect("element parses"),
+    );
+    let changed = Model::compile_change(&after, &before, &compiled).expect("the change is valid");
+
+    let shared = |name: &str| {
+        let elements =
+            |model: &Model| Arc::clone(&model.dimension(name).expect("dimension exists").elements);
+        Arc::ptr_eq(&elements(&compiled), &elements(&changed))
+    };
+    assert!(shared("Account") && shared("Period") && shared("Version"));
+    assert!(!shared("Entity"));
+    let entity = changed.dimension("Entity").expect("dimension exists");
+    assert!(entity.element("France").is_some());
+    // A dimension taken as it was has its subsets worked out with the rest of the model.
+    let account = changed.dimension("Account").expect("dimension exists");
+    let top = account.subset("Top").expect("subset is kept");
+    assert_eq!(names(account, &top.elements), ["Revenue"]);
+    // The copy changed only its own: the definition it was copied from is as it was.
+    assert!(Shared::same(&before.dimensions[0], &after.dimensions[0]));
+    assert!(!Shared::same(&before.dimensions[1], &after.dimensions[1]));
+    assert!(
+        before.dimensions[1]
+            .elements
+            .iter()
+            .all(|element| element.name != "France")
+    );
+    assert!(
+        compiled
+            .dimension("Entity")
+            .expect("dimension exists")
+            .element("France")
+            .is_none()
+    );
+}
+
+#[test]
+fn a_dimension_renamed_is_compiled_again() {
+    let before = example_definition();
+    let compiled = Model::compile(&before).expect("example model is valid");
+    let mut after = before.clone();
+    // The same name to look it up by, ignoring case, but not the same name.
+    after.dimensions[3].name = "VERSION".to_owned();
+    let changed = Model::compile_change(&after, &before, &compiled).expect("the change is valid");
+    assert_eq!(
+        changed.dimension("Version").expect("dimension exists").name,
+        "VERSION"
+    );
 }

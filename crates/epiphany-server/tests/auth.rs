@@ -158,18 +158,30 @@ async fn a_user_may_do_only_what_the_role_allows() {
         for (method, uri, body) in [
             ("GET", "/model", None),
             ("GET", "/dimensions/Period", None),
+            (
+                "POST",
+                "/dimensions/Period/elements",
+                Some(json!({ "roots": true })),
+            ),
             ("POST", "/cells/read", Some(read.clone())),
             ("POST", "/cells/explain", Some(read.clone())),
+            (
+                "POST",
+                "/cells/history",
+                Some(json!({ "cube": "General Ledger", "at": at })),
+            ),
             ("POST", "/mdx", Some(query.clone())),
+            ("GET", "/sandboxes", None),
         ] {
             let (status, _, _) = send(&app, method, uri, Some(token), body).await;
             assert_eq!(status, StatusCode::OK, "{method} {uri}");
         }
     }
-    // Writing and transactions need the write role.
+    // Writing, transactions and sandboxes need the write role.
     for (method, uri, body) in [
         ("POST", "/cells/write", Some(write.clone())),
         ("POST", "/transactions", None),
+        ("POST", "/sandboxes", Some(json!({ "name": "Plan" }))),
     ] {
         let (status, _, body_) = send(&app, method, uri, Some(&reader), body.clone()).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
@@ -191,6 +203,785 @@ async fn a_user_may_do_only_what_the_role_allows() {
     // Anyone may sign out.
     let (status, _, _) = send(&app, "DELETE", "/sessions", Some(&reader), None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn a_sandbox_is_its_owners_own_and_published_only_where_they_may_write() {
+    let (_home, app) = secured("sandboxes", None);
+    let admin = token(&app).await;
+    let user = |cubes: Value| json!({ "password": PASSWORD, "role": "write", "cubes": cubes });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(user(json!({}))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    let lin = signed["token"].as_str().unwrap().to_owned();
+
+    // Lin makes a sandbox and writes into it, and the stored value stays as it was.
+    let named = |name: &str| Some(json!({ "name": name }));
+    let (status, _, sandbox) = send(&app, "POST", "/sandboxes", Some(&lin), named(" Plan ")).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        (&sandbox["name"], &sandbox["pending"]),
+        (&json!("Plan"), &json!(0))
+    );
+    let id = sandbox["transaction"].as_u64().unwrap();
+    let at = json!(["Rent", "UK", "Jan", "Actual"]);
+    let read = |transaction: Option<u64>| json!({ "cells": [{ "cube": "General Ledger", "at": at }], "transaction": transaction });
+    let (_, _, before) = send(&app, "POST", "/cells/read", Some(&lin), Some(read(None))).await;
+    let write = json!({ "transaction": id, "cells": [{ "cube": "General Ledger", "at": at, "value": 4321 }] });
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&lin), Some(write)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let value = async |transaction| {
+        let (_, _, cells) = send(
+            &app,
+            "POST",
+            "/cells/read",
+            Some(&lin),
+            Some(read(transaction)),
+        )
+        .await;
+        cells["cells"][0]["value"].clone()
+    };
+    assert_eq!(value(Some(id)).await, json!(4321.0));
+    assert_eq!(value(None).await, before["cells"][0]["value"]);
+
+    // It is Lin's alone; another of its name is refused; it takes no locks, and it is no
+    // open transaction an administrator would end.
+    let (_, _, theirs) = send(&app, "GET", "/sandboxes", Some(&lin), None).await;
+    assert_eq!(
+        theirs,
+        json!([{ "name": "Plan", "transaction": id, "pending": 1 }])
+    );
+    let (_, _, others) = send(&app, "GET", "/sandboxes", Some(&admin), None).await;
+    assert_eq!(others, json!([]));
+    let (status, _, refused) = send(&app, "POST", "/sandboxes", Some(&lin), named("plan")).await;
+    assert_eq!(
+        (status, &refused["code"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("sandbox_refused"))
+    );
+    let lock = json!({ "cube": "General Ledger", "mode": "exclusive" });
+    let locks = format!("/transactions/{id}/locks");
+    let (status, _, _) = send(&app, "POST", &locks, Some(&lin), Some(lock)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (_, _, open) = send(&app, "GET", "/admin/transactions", Some(&admin), None).await;
+    assert_eq!(open, json!([]));
+
+    // Once Lin may only read the cube, its values are not published there.
+    let read_only = user(json!({ "General Ledger": "read" }));
+    send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(read_only),
+    )
+    .await;
+    let commit = format!("/transactions/{id}/commit");
+    let (status, _, _) = send(&app, "POST", &commit, Some(&lin), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(user(json!({}))),
+    )
+    .await;
+    let (status, _, _) = send(&app, "POST", &commit, Some(&lin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(value(None).await, json!(4321.0));
+    let (_, _, theirs) = send(&app, "GET", "/sandboxes", Some(&lin), None).await;
+    assert_eq!(theirs[0]["pending"], 0);
+
+    let (status, _, _) = send(&app, "DELETE", "/sandboxes/PLAN", Some(&lin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(&app, "DELETE", "/sandboxes/Plan", Some(&lin), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn an_administrator_views_as_another_user_reading_only_and_on_record() {
+    let (_home, app) = secured("view-as", None);
+    let admin = token(&app).await;
+    let user = |role: &str| json!({ "password": PASSWORD, "role": role });
+    send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(user("write")),
+    )
+    .await;
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    let lin = signed["token"].as_str().unwrap().to_owned();
+    let draft = json!({ "name": "Draft" });
+    send(&app, "POST", "/sandboxes", Some(&lin), Some(draft)).await;
+
+    let asked = json!({ "user": "LIN" });
+    let (status, _, view) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(asked)).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(
+        (&view["role"], &view["viewer"]),
+        (&json!("read"), &json!(NAME))
+    );
+    let viewing = view["token"].as_str().unwrap().to_owned();
+
+    // It reads as Lin does, and writes nothing, sees none of Lin's sandboxes, and no
+    // administration; made an administrator meanwhile, Lin is still only read as.
+    let at = json!(["Rent", "UK", "Jan", "Actual"]);
+    let read = json!({ "cells": [{ "cube": "General Ledger", "at": at }] });
+    let write = json!({ "cells": [{ "cube": "General Ledger", "at": at, "value": 1 }] });
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/read",
+        Some(&viewing),
+        Some(read.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, refused) = send(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(&viewing),
+        Some(write.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        refused["message"]
+            .as_str()
+            .unwrap()
+            .contains("a view as lin only reads")
+    );
+    let (_, _, sandboxes) = send(&app, "GET", "/sandboxes", Some(&viewing), None).await;
+    assert_eq!(sandboxes, json!([]));
+    let (status, _, _) = send(&app, "GET", "/admin/users", Some(&viewing), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    send(
+        &app,
+        "PUT",
+        "/admin/users/lin",
+        Some(&admin),
+        Some(user("admin")),
+    )
+    .await;
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&viewing), Some(write)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // It is on record; nobody unknown is viewed as.
+    let (_, _, audit) = send(&app, "GET", "/admin/audit", Some(&admin), None).await;
+    let recorded = (&audit[0]["user"], &audit[0]["action"], &audit[0]["subject"]);
+    assert_eq!(recorded, (&json!(NAME), &json!("view as"), &json!("lin")));
+    let nobody = json!({ "user": "nobody" });
+    let (status, _, body) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(nobody)).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::NOT_FOUND, &json!("unknown_user"))
+    );
+
+    // Signed out of, the view is over, and the administrator's own session goes on.
+    let (status, _, _) = send(&app, "DELETE", "/sessions", Some(&viewing), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/read",
+        Some(&viewing),
+        Some(read.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(&app, "POST", "/cells/read", Some(&admin), Some(read)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_users_views_are_their_own_and_go_with_them() {
+    let (home, app) = secured("private-views", None);
+    let admin = token(&app).await;
+    let reader = json!({ "password": PASSWORD, "role": "read" });
+    send(&app, "PUT", "/admin/users/lin", Some(&admin), Some(reader)).await;
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    let lin = signed["token"].as_str().unwrap().to_owned();
+    let views = "/cubes/General%20Ledger/private-views";
+    let mdx = "SELECT {[Period].[Jan]} ON COLUMNS FROM [General Ledger]";
+
+    // A reader keeps a view, which nobody else sees.
+    let view = json!({ "mdx": mdx, "format": { "decimals": 1 }, "chart": { "kind": "lines" } });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        &format!("{views}/Mine"),
+        Some(&lin),
+        Some(view.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, theirs) = send(
+        &app,
+        "GET",
+        "/cubes/generalledger/private-views",
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!((status, theirs), (StatusCode::OK, json!({ "Mine": view })));
+    let (_, _, admins) = send(&app, "GET", views, Some(&admin), None).await;
+    assert_eq!(admins, json!({}));
+
+    // Saved under the same name, case and spaces aside, it takes the old one's place.
+    let plain = json!({ "mdx": mdx });
+    send(
+        &app,
+        "PUT",
+        &format!("{views}/%20mine"),
+        Some(&lin),
+        Some(plain.clone()),
+    )
+    .await;
+    let (_, _, theirs) = send(&app, "GET", views, Some(&lin), None).await;
+    assert_eq!(theirs, json!({ "mine": plain }));
+
+    // A query that fails, or that selects from another cube, and a name too long, will not do.
+    let (_, _, model) = send(&app, "GET", "/model", Some(&admin), None).await;
+    let second = json!({ "based_on": model["version"], "cube": { "name": "Second", "dimensions": ["Period"] } });
+    send(&app, "PUT", "/cubes/Second", Some(&admin), Some(second)).await;
+    let elsewhere = json!({ "mdx": "SELECT {[Period].[Jan]} ON COLUMNS FROM [Second]" });
+    let refusals = [
+        (format!("{views}/Bad"), json!({ "mdx": "SELECT nonsense" })),
+        (format!("{views}/Elsewhere"), elsewhere),
+        (format!("{views}/{}", "x".repeat(121)), plain.clone()),
+    ];
+    for (path, body) in refusals {
+        let (status, _, _) = send(&app, "PUT", &path, Some(&lin), Some(body)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{path}");
+    }
+
+    // A view as Lin sees none of them, and keeps or takes away nothing of Lin's.
+    let asked = json!({ "user": "lin" });
+    let (_, _, viewing) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(asked)).await;
+    let viewing = viewing["token"].as_str().unwrap().to_owned();
+    let (_, _, seen) = send(&app, "GET", views, Some(&viewing), None).await;
+    assert_eq!(seen, json!({}));
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        &format!("{views}/Theirs"),
+        Some(&viewing),
+        Some(plain.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = send(
+        &app,
+        "DELETE",
+        &format!("{views}/mine"),
+        Some(&viewing),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // They are kept on disk, beside the users, and go with their user.
+    let kept = || -> Value {
+        serde_json::from_str(&fs::read_to_string(home.0.join("views.json")).unwrap()).unwrap()
+    };
+    assert_eq!(kept()["lin"]["General Ledger"]["mine"], plain);
+    send(
+        &app,
+        "PUT",
+        &format!("{views}/Spare"),
+        Some(&lin),
+        Some(plain.clone()),
+    )
+    .await;
+    let (status, _, _) = send(&app, "DELETE", &format!("{views}/MINE"), Some(&lin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, gone) = send(&app, "DELETE", &format!("{views}/mine"), Some(&lin), None).await;
+    assert_eq!(
+        (status, &gone["code"]),
+        (StatusCode::NOT_FOUND, &json!("unknown_view"))
+    );
+    assert_eq!(kept()["lin"]["General Ledger"], json!({ "Spare": plain }));
+    send(&app, "DELETE", "/admin/users/lin", Some(&admin), None).await;
+    assert_eq!(kept(), json!({}));
+}
+
+#[tokio::test]
+async fn a_users_subsets_are_their_own_lists_of_members() {
+    let (home, app) = secured("private-subsets", None);
+    let admin = token(&app).await;
+    let reader = json!({ "password": PASSWORD, "role": "read" });
+    send(&app, "PUT", "/admin/users/lin", Some(&admin), Some(reader)).await;
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    let lin = signed["token"].as_str().unwrap().to_owned();
+    let subsets = "/dimensions/Period/private-subsets";
+
+    // A reader keeps a list of members, named or by alias and kept by name, which nobody
+    // else sees.
+    let spring = json!({ "elements": ["mar", "Apr", "M05", "Jun"] });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        &format!("{subsets}/Spring"),
+        Some(&lin),
+        Some(spring),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, theirs) = send(
+        &app,
+        "GET",
+        "/dimensions/period/private-subsets",
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, theirs),
+        (
+            StatusCode::OK,
+            json!({ "Spring": ["Mar", "Apr", "May", "Jun"] })
+        )
+    );
+    let (_, _, admins) = send(&app, "GET", subsets, Some(&admin), None).await;
+    assert_eq!(admins, json!({}));
+
+    // A member the dimension has not, none at all, and a dimension there is not, will not do.
+    let refusals = [
+        (
+            format!("{subsets}/Odd"),
+            json!({ "elements": ["Mar", "Nowhere"] }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            format!("{subsets}/None"),
+            json!({ "elements": [] }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/dimensions/Nowhere/private-subsets/Any".to_owned(),
+            json!({ "elements": ["Mar"] }),
+            StatusCode::NOT_FOUND,
+        ),
+    ];
+    for (path, body, expected) in refusals {
+        let (status, _, _) = send(&app, "PUT", &path, Some(&lin), Some(body)).await;
+        assert_eq!(status, expected, "{path}");
+    }
+
+    // A member since taken out of the dimension is left out of the list.
+    let (_, _, model) = send(&app, "GET", "/model", Some(&admin), None).await;
+    let mut period = model["model"]["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|dimension| dimension["name"] == "Period")
+        .unwrap()
+        .clone();
+    let elements = period["elements"].as_array_mut().unwrap();
+    elements.retain(|element| element["name"] != "Jun");
+    for element in elements.iter_mut() {
+        if let Some(children) = element.get_mut("children").and_then(Value::as_array_mut) {
+            children.retain(|child| child["name"] != "Jun");
+        }
+    }
+    let changed = json!({ "based_on": model["version"], "dimension": period });
+    let (status, _, answer) = send(
+        &app,
+        "PUT",
+        "/dimensions/Period",
+        Some(&admin),
+        Some(changed),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let (_, _, theirs) = send(&app, "GET", subsets, Some(&lin), None).await;
+    assert_eq!(theirs, json!({ "Spring": ["Mar", "Apr", "May"] }));
+
+    // Lin's queries, and Lin's own views, may take them with TM1SubsetToSet's "private".
+    let mdx =
+        "SELECT TM1SubsetToSet([Period], 'spring', 'private') ON COLUMNS FROM [General Ledger]";
+    let query = json!({ "mdx": mdx });
+    let columns = |answer: &Value| -> Vec<String> {
+        let tuples = answer["axes"][0]["tuples"].as_array().unwrap();
+        let names = tuples
+            .iter()
+            .map(|tuple| tuple[0]["name"].as_str().unwrap());
+        names.map(str::to_owned).collect()
+    };
+    let (status, _, answer) = send(&app, "POST", "/mdx", Some(&lin), Some(query.clone())).await;
+    assert_eq!(
+        (status, columns(&answer)),
+        (
+            StatusCode::OK,
+            vec!["Mar".to_owned(), "Apr".to_owned(), "May".to_owned()]
+        )
+    );
+    let view = "/cubes/General%20Ledger/private-views/Spring";
+    let (status, _, _) = send(&app, "PUT", view, Some(&lin), Some(query.clone())).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    // Nobody else's queries find them.
+    let (status, _, refused) = send(&app, "POST", "/mdx", Some(&admin), Some(query.clone())).await;
+    assert_eq!(
+        (status, &refused["message"]),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!("you have no subset 'spring' of dimension 'Period'")
+        )
+    );
+
+    // A view as Lin sees none of them, and keeps or takes away nothing of Lin's.
+    let asked = json!({ "user": "lin" });
+    let (_, _, viewing) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(asked)).await;
+    let viewing = viewing["token"].as_str().unwrap().to_owned();
+    let (_, _, seen) = send(&app, "GET", subsets, Some(&viewing), None).await;
+    assert_eq!(seen, json!({}));
+    let (status, _, _) = send(&app, "POST", "/mdx", Some(&viewing), Some(query)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let summer = json!({ "elements": ["Jul"] });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        &format!("{subsets}/Summer"),
+        Some(&viewing),
+        Some(summer),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // They are kept on disk, beside the users, and go with their user.
+    let kept = || -> Value {
+        serde_json::from_str(&fs::read_to_string(home.0.join("subsets.json")).unwrap()).unwrap()
+    };
+    assert_eq!(
+        kept()["lin"]["Period"]["Spring"],
+        json!(["Mar", "Apr", "May", "Jun"])
+    );
+    let (status, _, _) = send(
+        &app,
+        "DELETE",
+        &format!("{subsets}/SPRING"),
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, gone) = send(
+        &app,
+        "DELETE",
+        &format!("{subsets}/Spring"),
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!(
+        (status, &gone["code"]),
+        (StatusCode::NOT_FOUND, &json!("unknown_subset"))
+    );
+    let autumn = json!({ "elements": ["Sep"] });
+    send(
+        &app,
+        "PUT",
+        &format!("{subsets}/Autumn"),
+        Some(&lin),
+        Some(autumn),
+    )
+    .await;
+    send(&app, "DELETE", "/admin/users/lin", Some(&admin), None).await;
+    assert_eq!(kept(), json!({}));
+}
+
+#[tokio::test]
+async fn a_cells_history_says_who_changed_it_and_from_what_to_what() {
+    let (_home, app) = secured("history", None);
+    let token = token(&app).await;
+    let at = json!(["Rent", "UK", "Jan", "Actual"]);
+    let cell = json!({ "cube": "General Ledger", "at": at });
+    let write =
+        |value: f64| json!({ "cells": [{ "cube": "General Ledger", "at": at, "value": value }] });
+    // Written at once, then in a transaction: both signed with the user who asked.
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(&token),
+        Some(write(10.0)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, begun) = send(&app, "POST", "/transactions", Some(&token), None).await;
+    let id = begun["transaction"].as_u64().unwrap();
+    let mut pending = write(12.5);
+    pending["transaction"] = json!(id);
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&token), Some(pending)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let commit = format!("/transactions/{id}/commit");
+    let (status, _, _) = send(&app, "POST", &commit, Some(&token), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _, body) = send(&app, "POST", "/cells/history", Some(&token), Some(cell)).await;
+    assert_eq!(status, StatusCode::OK);
+    let changes: Vec<(Value, Value, Value)> = body["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|change| {
+            (
+                change["author"].clone(),
+                change["before"].clone(),
+                change["after"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            (json!(NAME), json!(10.0), json!(12.5)),
+            (json!(NAME), json!(0.0), json!(10.0))
+        ]
+    );
+    // A cell that is not there is refused, as the other cell routes refuse it.
+    let missing = json!({ "cube": "General Ledger", "at": ["Nothing", "UK", "Jan", "Actual"] });
+    let (status, _, _) = send(&app, "POST", "/cells/history", Some(&token), Some(missing)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // An administrator sees the changes across cubes, by cube, by user in any case, and by time.
+    let listed = |uri: &str| {
+        let uri = uri.to_owned();
+        let (app, token) = (app.clone(), token.clone());
+        async move {
+            let (status, _, body) = send(&app, "GET", &uri, Some(&token), None).await;
+            (status, body["changes"].as_array().map_or(0, Vec::len))
+        }
+    };
+    assert_eq!(listed("/admin/changes").await, (StatusCode::OK, 2));
+    assert_eq!(
+        listed("/admin/changes?cube=general%20ledger&user=ADA").await,
+        (StatusCode::OK, 2)
+    );
+    assert_eq!(
+        listed("/admin/changes?user=someone").await,
+        (StatusCode::OK, 0)
+    );
+    assert_eq!(
+        listed("/admin/changes?since=99999999999").await,
+        (StatusCode::OK, 0)
+    );
+    assert_eq!(listed("/admin/changes?most=1").await, (StatusCode::OK, 1));
+    let (status, _) = listed("/admin/changes?cube=Nowhere").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+/// Reads a list back a part at a time, as the GUI does: each part until the time of the
+/// oldest given, passing over as many of that time as were given. `asked` gives the address
+/// of a part from where it goes on, `items` the part from its answer.
+async fn by_parts(
+    asked: impl Fn(Option<(u64, usize)>) -> String,
+    read: impl AsyncFn(String) -> Vec<Value>,
+    size: usize,
+) -> Vec<Value> {
+    let mut all: Vec<Value> = Vec::new();
+    // Parts that never came to an end would be the same part asked for again and again.
+    for _ in 0..100 {
+        let from = all.last().map(|oldest| {
+            let time = oldest["time"].as_u64().unwrap();
+            let given = all.iter().filter(|each| each["time"] == time).count();
+            (time, given)
+        });
+        let part = read(asked(from)).await;
+        let last = part.len() < size;
+        all.extend(part);
+        if last {
+            return all;
+        }
+    }
+    panic!("the parts came to no end: {} read", all.len());
+}
+
+#[tokio::test]
+async fn changes_and_the_audit_are_read_back_a_part_at_a_time_however_many_share_a_second() {
+    let (_home, app) = secured("by-parts", None);
+    let token = token(&app).await;
+    // Six cells written in one commit, of one second, and one cell written three times more.
+    let cell =
+        |month: &str| json!({ "cube": "General Ledger", "at": ["Rent", "UK", month, "Budget"] });
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"];
+    let cells: Vec<Value> = months
+        .iter()
+        .map(|month| {
+            let mut written = cell(month);
+            written["value"] = json!(1);
+            written
+        })
+        .collect();
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(&token),
+        Some(json!({ "cells": cells })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    for value in [2, 3, 4] {
+        let mut written = cell("Jan");
+        written["value"] = json!(value);
+        let body = json!({ "cells": [written] });
+        let (status, _, _) = send(&app, "POST", "/cells/write", Some(&token), Some(body)).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+    let get = |uri: String, list: &'static str| {
+        let (app, token) = (app.clone(), token.clone());
+        async move {
+            let (status, _, body) = send(&app, "GET", &uri, Some(&token), None).await;
+            assert_eq!(status, StatusCode::OK, "{uri}");
+            match list {
+                "" => body.as_array().unwrap().clone(),
+                list => body[list].as_array().unwrap().clone(),
+            }
+        }
+    };
+    let whole = get("/admin/changes?most=1000".to_owned(), "changes").await;
+    assert_eq!(whole.len(), 9);
+    let part = |from: Option<(u64, usize)>| match from {
+        None => "/admin/changes?most=2".to_owned(),
+        Some((until, skip)) => format!("/admin/changes?most=2&until={until}&skip={skip}"),
+    };
+    let read = async |uri: String| get(uri, "changes").await;
+    assert_eq!(by_parts(part, read, 2).await, whole);
+
+    // A cell's own history the same way.
+    let history = |from: Option<(u64, usize)>| {
+        let mut asked = cell("Jan");
+        asked["most"] = json!(1);
+        if let Some((until, skip)) = from {
+            (asked["until"], asked["skip"]) = (json!(until), json!(skip));
+        }
+        asked.to_string()
+    };
+    let posted = async |body: String| {
+        let body: Value = serde_json::from_str(&body).unwrap();
+        let (status, _, answer) =
+            send(&app, "POST", "/cells/history", Some(&token), Some(body)).await;
+        assert_eq!(status, StatusCode::OK);
+        answer["changes"].as_array().unwrap().clone()
+    };
+    let afters: Vec<Value> = by_parts(history, posted, 1)
+        .await
+        .iter()
+        .map(|change| change["after"].clone())
+        .collect();
+    assert_eq!(afters, [json!(4.0), json!(3.0), json!(2.0), json!(1.0)]);
+
+    // And the audit: five keys made, each on record, read back two at a time.
+    for name in ["One", "Two", "Three", "Four", "Five"] {
+        let made = json!({ "name": name, "cells": "read" });
+        let (status, _, _) = send(&app, "POST", "/keys", Some(&token), Some(made)).await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+    let whole = get("/admin/audit?most=1000".to_owned(), "").await;
+    assert_eq!(whole.len(), 5);
+    let part = |from: Option<(u64, usize)>| match from {
+        None => "/admin/audit?most=2".to_owned(),
+        Some((until, skip)) => format!("/admin/audit?most=2&until={until}&skip={skip}"),
+    };
+    let read = async |uri: String| get(uri, "").await;
+    let audit = by_parts(part, read, 2).await;
+    assert_eq!(audit, whole);
+    let subjects: Vec<&str> = audit
+        .iter()
+        .map(|entry| {
+            entry["subject"]
+                .as_str()
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(subjects, ["Five", "Four", "Three", "Two", "One"]);
+}
+
+#[tokio::test]
+async fn comments_are_signed_and_only_their_authors_or_an_admin_take_them_away() {
+    let home = Home::new("comments");
+    for (name, role) in [
+        ("Reader", Role::Read),
+        ("Writer", Role::Write),
+        ("Other", Role::Write),
+        ("Admin", Role::Admin),
+    ] {
+        set_user(&home.0, name, PASSWORD, &self::role(role)).unwrap();
+    }
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let mut tokens = Vec::new();
+    for name in ["reader", "writer", "other", "admin"] {
+        let (_, body) = sign_in(&app, name, PASSWORD).await;
+        tokens.push(body["token"].as_str().unwrap().to_owned());
+    }
+    let [reader, writer, other, admin] = tokens.try_into().unwrap();
+    let comments = "/cubes/General%20Ledger/comments";
+    let note = |text: &str| json!({ "at": ["rent", "UK", "Jan", "Actual"], "text": text });
+
+    // A reader may read comments but not write one; a writer's is signed with their name,
+    // and its cell is kept by the elements' own names.
+    let (status, _, _) = send(&app, "POST", comments, Some(&reader), Some(note("No"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, kept) = send(
+        &app,
+        "POST",
+        comments,
+        Some(&writer),
+        Some(note("  Rent rose with the new lease. ")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(kept["author"], "Writer");
+    assert_eq!(kept["text"], "Rent rose with the new lease.");
+    assert_eq!(kept["at"], json!(["Rent", "UK", "Jan", "Actual"]));
+    let (status, _, listed) = send(&app, "GET", comments, Some(&reader), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["comments"], json!([kept]));
+
+    // Nothing to say, or a cell that is not there, is refused.
+    let (status, _, body) = send(&app, "POST", comments, Some(&writer), Some(note("  "))).await;
+    assert_eq!(
+        (status, body["code"].clone()),
+        (StatusCode::UNPROCESSABLE_ENTITY, json!("invalid_comment"))
+    );
+    let nowhere = json!({ "at": ["Rent", "Mars", "Jan", "Actual"], "text": "Hello" });
+    let (status, _, _) = send(&app, "POST", comments, Some(&writer), Some(nowhere)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // Only its author, or an administrator, takes a comment away.
+    let id = kept["id"].as_u64().unwrap();
+    let one = format!("{comments}/{id}");
+    let (status, _, _) = send(&app, "DELETE", &one, Some(&other), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _, _) = send(&app, "DELETE", &one, Some(&writer), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, second) = send(&app, "POST", comments, Some(&other), Some(note("Agreed."))).await;
+    let two = format!("{comments}/{}", second["id"]);
+    let (status, _, _) = send(&app, "DELETE", &two, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, listed) = send(&app, "GET", comments, Some(&reader), None).await;
+    assert_eq!(listed["comments"], json!([]));
+    let (status, _, _) = send(&app, "DELETE", &two, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // A cube named "comments" is still the model's to change: no writer may put one.
+    let cube = json!({ "based_on": 1, "cube": { "name": "comments", "dimensions": ["Period"] } });
+    let (status, _, _) = send(&app, "PUT", "/cubes/comments", Some(&writer), Some(cube)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -253,11 +1044,13 @@ async fn signing_out_ends_the_session() {
 
 #[tokio::test]
 async fn a_session_left_unused_ends_and_a_used_one_lives_on() {
-    // The times leave room for the other tests, which keep the processor busy with passwords.
-    let (_home, app) = secured("idle", Some(Duration::from_secs(2)));
+    // The times leave room for the other tests, which keep the processor busy with passwords:
+    // a session lasts five seconds unused, and the one in use is used every half second,
+    // which a busy machine has been seen to stretch past two.
+    let (_home, app) = secured("idle", Some(Duration::from_secs(5)));
     let (idle, busy) = (token(&app).await, token(&app).await);
-    for _ in 0..6 {
-        tokio::time::sleep(Duration::from_millis(400)).await;
+    for _ in 0..12 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let (status, _, _) = send(&app, "GET", "/model", Some(&busy), None).await;
         assert_eq!(status, StatusCode::OK);
     }
@@ -460,10 +1253,12 @@ async fn transaction_ids_cannot_be_guessed_from_one_another() {
 #[test]
 fn the_contract_says_which_routes_need_a_session() {
     let contract = serde_json::to_value(openapi()).unwrap();
+    let scheme = &contract["components"]["securitySchemes"]["session"];
     assert_eq!(
-        contract["components"]["securitySchemes"]["session"],
-        json!({ "type": "http", "scheme": "bearer" })
+        (&scheme["type"], &scheme["scheme"]),
+        (&json!("http"), &json!("bearer"))
     );
+    assert!(scheme["description"].as_str().unwrap().contains("API key"));
     assert_eq!(contract["security"], json!([{ "session": [] }]));
     for (path, methods) in contract["paths"].as_object().unwrap() {
         for (method, operation) in methods.as_object().unwrap() {
@@ -477,7 +1272,7 @@ fn the_contract_says_which_routes_need_a_session() {
             } else {
                 assert_eq!(
                     operation["responses"]["401"]["description"],
-                    "Not signed in, or the session has ended",
+                    "Not signed in, the session has ended, or the API key is not in force",
                     "{method} {path}"
                 );
             }
@@ -527,4 +1322,840 @@ fn a_server_without_users_refuses_to_listen_beyond_this_machine() {
     assert!(!output.status.success());
     let message = String::from_utf8_lossy(&output.stderr);
     assert!(message.contains("this directory has no users"), "{message}");
+}
+
+#[tokio::test]
+async fn signing_in_has_room_for_a_name_and_a_password_and_no_more() {
+    let (_home, app) = secured("large", None);
+    let (status, body) = sign_in(&app, NAME, &"x".repeat(100_000)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(body["code"], "invalid_request");
+    assert_eq!(sign_in(&app, NAME, PASSWORD).await.0, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn a_crowd_signing_in_at_once_is_checked_a_few_at_a_time() {
+    let home = Home::new("crowd");
+    set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();
+    let mut auth = Auth::load(&home.0)
+        .unwrap()
+        .expect("the directory has a user");
+    auth.set_waiting(6);
+    let app = app_with(home.open(), Some(auth));
+
+    // Each under a name of its own, so that no name is paused for its wrong passwords.
+    let crowd: Vec<_> = (0..16)
+        .map(|one| {
+            let app = app.clone();
+            tokio::spawn(async move { sign_in(&app, &format!("nobody{one}"), "wrong").await })
+        })
+        .collect();
+    let (mut refused, mut busy) = (0, 0);
+    for one in crowd {
+        let (status, body) = one.await.unwrap();
+        match status {
+            StatusCode::UNAUTHORIZED => refused += 1,
+            StatusCode::TOO_MANY_REQUESTS => {
+                assert_eq!(body["code"], "busy");
+                busy += 1;
+            }
+            other => panic!("unexpected {other}"),
+        }
+    }
+    // Six had a place in the queue; the rest were told to come back.
+    assert_eq!((refused, busy), (6, 10));
+    // And when the crowd has gone, the door is open again.
+    assert_eq!(sign_in(&app, NAME, PASSWORD).await.0, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn an_admin_manages_users_while_the_server_runs() {
+    let (home, app) = secured("admin-users", None);
+    let admin = token(&app).await;
+
+    // A new user, with a role on one cube; it can sign in at once, and is kept on disk.
+    let reader = json!({ "password": "reader-only-5e1d", "role": "read", "cubes": { "General Ledger": "write" } });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        "/admin/users/Grace",
+        Some(&admin),
+        Some(reader),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = sign_in(&app, "grace", "reader-only-5e1d").await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        fs::read_to_string(home.path("users.json"))
+            .unwrap()
+            .contains("Grace")
+    );
+    let (_, _, list) = send(&app, "GET", "/admin/users", Some(&admin), None).await;
+    assert_eq!(list["signing_in"], true);
+    let grace = list["users"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|user| user["name"] == "Grace")
+        .unwrap();
+    assert_eq!(
+        (grace["role"].clone(), grace["sessions"].clone()),
+        (json!("read"), json!(1))
+    );
+    assert_eq!(grace["cubes"]["General Ledger"], "write");
+
+    // A reader may not manage users, and the admin routes are refused to her.
+    let (_, grace_token) = sign_in(&app, "grace", "reader-only-5e1d").await;
+    let grace_token = grace_token["token"].as_str().unwrap().to_owned();
+    let (status, _, _) = send(&app, "GET", "/admin/users", Some(&grace_token), None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Raised to admin, her open session holds the new role at once; the password is kept.
+    let raised = json!({ "role": "admin" });
+    let (status, _, _) = send(
+        &app,
+        "PUT",
+        "/admin/users/grace",
+        Some(&admin),
+        Some(raised),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(&app, "GET", "/admin/status", Some(&grace_token), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = sign_in(&app, "Grace", "reader-only-5e1d").await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Her sessions can be ended, and she can be removed.
+    let (_, _, ended) = send(
+        &app,
+        "DELETE",
+        "/admin/users/grace/sessions",
+        Some(&admin),
+        None,
+    )
+    .await;
+    // One session from each of her three sign-ins.
+    assert_eq!(ended["ended"], 3);
+    let (status, _, _) = send(&app, "GET", "/model", Some(&grace_token), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(&app, "DELETE", "/admin/users/grace", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _) = sign_in(&app, "grace", "reader-only-5e1d").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(&app, "DELETE", "/admin/users/grace", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn the_last_administrator_stays_and_a_new_user_needs_a_password() {
+    let (_home, app) = secured("admin-last", None);
+    let admin = token(&app).await;
+    for (method, uri, body) in [
+        (
+            "PUT",
+            format!("/admin/users/{NAME}"),
+            Some(json!({ "role": "write" })),
+        ),
+        ("DELETE", format!("/admin/users/{NAME}"), None),
+        (
+            "PUT",
+            "/admin/users/newcomer".to_owned(),
+            Some(json!({ "role": "read" })),
+        ),
+        (
+            "PUT",
+            "/admin/users/newcomer".to_owned(),
+            Some(json!({ "role": "read", "password": "" })),
+        ),
+    ] {
+        let (status, _, refusal) = send(&app, method, &uri, Some(&admin), body).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{method} {uri}: {refusal}"
+        );
+        assert_eq!(refusal["code"], "invalid_user");
+    }
+    let (status, _, _) = send(&app, "GET", "/model", Some(&admin), None).await;
+    assert_eq!(status, StatusCode::OK, "still an administrator");
+}
+
+#[tokio::test]
+async fn the_status_counts_cells_sessions_and_transactions() {
+    let (_home, app) = secured("admin-status", None);
+    let admin = token(&app).await;
+    let write = json!({ "cells": [{ "cube": "General Ledger", "at": ["Rent", "US", "Jan", "Actual"], "value": 5 }] });
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&admin), Some(write)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, begun) = send(&app, "POST", "/transactions", Some(&admin), None).await;
+    let (_, _, status) = send(&app, "GET", "/admin/status", Some(&admin), None).await;
+    assert_eq!(
+        status["cubes"][0],
+        json!({ "name": "General Ledger", "cells": 1 })
+    );
+    assert_eq!(
+        (status["sessions"].clone(), status["transactions"].clone()),
+        (json!(1), json!(1))
+    );
+    assert!(status["log_bytes"].as_u64().unwrap() > 0);
+    assert!(status["model_bytes"].as_u64().unwrap() > 0);
+    assert_eq!(status["earlier_models_bytes"], 0);
+    let (_, _, open) = send(&app, "GET", "/admin/transactions", Some(&admin), None).await;
+    assert_eq!(open[0]["transaction"], begun["transaction"]);
+    assert_eq!(open[0]["pending"], 0);
+}
+
+#[tokio::test]
+async fn a_server_without_users_lists_none_and_adds_none() {
+    let home = Home::new("admin-open");
+    let app = app(home.open());
+    let (_, _, list) = send(&app, "GET", "/admin/users", None, None).await;
+    assert_eq!(list, json!({ "signing_in": false, "users": [] }));
+    let user = json!({ "password": "x-1", "role": "admin" });
+    let (status, _, refusal) = send(&app, "PUT", "/admin/users/first", None, Some(user)).await;
+    assert_eq!(
+        (status, refusal["code"].clone()),
+        (StatusCode::CONFLICT, json!("no_users"))
+    );
+    // Nor keys, which are a user's.
+    let (status, _, refusal) = send(&app, "GET", "/keys", None, None).await;
+    assert_eq!(
+        (status, refusal["code"].clone()),
+        (StatusCode::CONFLICT, json!("no_users"))
+    );
+    // Nor has anybody views of their own: every view is everybody's, kept with its cube.
+    let views = "/cubes/General%20Ledger/private-views";
+    let (status, _, refusal) = send(&app, "GET", views, None, None).await;
+    assert_eq!(
+        (status, refusal["code"].clone()),
+        (StatusCode::NOT_FOUND, json!("no_users"))
+    );
+}
+
+#[tokio::test]
+async fn a_users_roles_on_elements_hide_them_and_keep_them_from_being_changed() {
+    let (_home, app) = secured("element-roles", None);
+    let admin = token(&app).await;
+    let lin_path = "/admin/users/lin";
+    // The UK hidden from Lin, and operating expenses, salaries and rent beneath them, read only.
+    let elements =
+        json!({ "Entity": { "UK": "none" }, "Account": { "Operating Expenses": "read" } });
+    // An element or a dimension the model has not, and a role an element does not take, are
+    // refused.
+    for (refused, expected) in [
+        (
+            json!({ "Entity": { "Wales": "none" } }),
+            "Entity has no element 'Wales'",
+        ),
+        (
+            json!({ "Nowhere": { "UK": "none" } }),
+            "there is no dimension 'Nowhere'",
+        ),
+        (
+            json!({ "Entity": { "UK": "admin" } }),
+            "element 'UK' takes the role none, read or write",
+        ),
+    ] {
+        let user = json!({ "password": PASSWORD, "role": "write", "elements": refused });
+        let (status, _, body) = send(&app, "PUT", lin_path, Some(&admin), Some(user)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(body["message"], expected);
+    }
+    let user = json!({ "password": PASSWORD, "role": "write", "elements": elements });
+    let (status, _, _) = send(&app, "PUT", lin_path, Some(&admin), Some(user)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, listed) = send(&app, "GET", "/admin/users", Some(&admin), None).await;
+    let named = |list: &Value, name: &str| {
+        let found = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|each| each["name"] == name);
+        found.unwrap().clone()
+    };
+    assert_eq!(named(&listed["users"], "lin")["elements"], elements);
+    let (_, signed) = sign_in(&app, "lin", PASSWORD).await;
+    assert_eq!(signed["elements"], elements);
+    let lin = signed["token"].as_str().unwrap().to_owned();
+
+    // Values in both countries, written by the administrator.
+    let at = |account: &str, entity: &str| json!([account, entity, "Jan", "Actual"]);
+    let cell = |account: &str, entity: &str| json!({ "cube": "General Ledger", "at": at(account, entity) });
+    let value = |account: &str, entity: &str, value: f64| json!({ "cube": "General Ledger", "at": at(account, entity), "value": value });
+    let written = json!({ "cells": [
+        value("Product Revenue", "US", 100.0),
+        value("Product Revenue", "UK", 50.0),
+        value("Rent", "US", 10.0)
+    ] });
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&admin), Some(written)).await;
+    assert!(status.is_success());
+
+    // The UK is not there for Lin: not in the dimension, the outline or the model.
+    let names = |dimension: &Value| -> Vec<String> {
+        let elements = dimension["elements"].as_array().unwrap().iter();
+        elements
+            .map(|element| element["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (_, _, entity) = send(&app, "GET", "/dimensions/Entity", Some(&lin), None).await;
+    assert_eq!(names(&entity), ["Total Entity", "US"]);
+    assert_eq!(
+        entity["elements"][0]["children"],
+        json!([{ "name": "US", "weight": 1.0 }])
+    );
+    let (_, _, outline) = send(&app, "GET", "/model/outline", Some(&lin), None).await;
+    assert_eq!(named(&outline["dimensions"], "Entity")["element_count"], 2);
+    let (_, _, definition) = send(
+        &app,
+        "GET",
+        "/dimensions/Entity/definition",
+        Some(&lin),
+        None,
+    )
+    .await;
+    assert_eq!(names(&definition), ["Total Entity", "US"]);
+    let (_, _, model) = send(&app, "GET", "/model", Some(&lin), None).await;
+    assert_eq!(
+        names(&named(&model["model"]["dimensions"], "Entity")),
+        ["Total Entity", "US"]
+    );
+    // Nor in part of the dimension, however it is asked for.
+    let asked = json!({
+        "names": ["UK", "US"], "ancestors": true, "children_of": ["Total Entity"],
+        "descendants_of": ["Total Entity"], "roots": true, "find": "u"
+    });
+    let path = "/dimensions/Entity/elements";
+    let (_, _, part) = send(&app, "POST", path, Some(&lin), Some(asked)).await;
+    assert_eq!(names(&part), ["US", "Total Entity"]);
+    assert_eq!(part["size"], 2);
+    assert_eq!(part["found"], json!(["US"]));
+    assert_eq!(
+        part["elements"][1]["children"],
+        json!([{ "name": "US", "weight": 1.0 }])
+    );
+    // No role on an element binds the administrator.
+    let (_, _, entity) = send(&app, "GET", "/dimensions/Entity", Some(&admin), None).await;
+    assert_eq!(names(&entity), ["Total Entity", "US", "UK"]);
+    let (_, _, definition) = send(
+        &app,
+        "GET",
+        "/dimensions/Entity/definition",
+        Some(&admin),
+        None,
+    )
+    .await;
+    assert_eq!(names(&definition), ["Total Entity", "US", "UK"]);
+
+    // Its cells are refused as cells of an element there is not, but totals still count them.
+    let read = json!({ "cells": [
+        cell("Product Revenue", "UK"),
+        cell("Product Revenue", "Wales"),
+        cell("Product Revenue", "Total Entity")
+    ] });
+    let (_, _, cells) = send(&app, "POST", "/cells/read", Some(&lin), Some(read)).await;
+    assert_eq!(
+        cells["cells"][0]["error"]["message"],
+        "unknown element 'UK' in dimension 'Entity'"
+    );
+    assert_eq!(
+        cells["cells"][1]["error"]["code"],
+        cells["cells"][0]["error"]["code"]
+    );
+    assert_eq!(cells["cells"][2]["value"], 150.0);
+    let mdx = json!({ "mdx": "SELECT [Entity].Members ON COLUMNS FROM [General Ledger] WHERE ([Account].[Product Revenue], [Period].[Jan], [Version].[Actual])" });
+    let (status, _, answer) = send(&app, "POST", "/mdx", Some(&lin), Some(mdx)).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let columns: Vec<&str> = answer["axes"][0]["tuples"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tuple| tuple[0]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        (columns, answer["cells"].clone()),
+        (vec!["Total Entity", "US"], json!([150.0, 100.0]))
+    );
+
+    // What Lin may only read is not Lin's to change, written, spread or explained.
+    let rent =
+        json!({ "cells": [value("Product Revenue", "US", 120.0), value("Rent", "US", 11.0)] });
+    let (status, _, refused) = send(&app, "POST", "/cells/write", Some(&lin), Some(rent)).await;
+    assert_eq!(
+        (status, refused["index"].clone()),
+        (StatusCode::FORBIDDEN, json!(1))
+    );
+    assert_eq!(
+        refused["message"],
+        "you may only read element 'Rent' of dimension 'Account'"
+    );
+    let spread = |account: &str| json!({ "spread": { "cube": "General Ledger", "at": at(account, "US"), "value": 300.0, "method": "equal" } });
+    let (status, _, refused) = send(
+        &app,
+        "POST",
+        "/cells/spread",
+        Some(&lin),
+        Some(spread("Operating Expenses")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        refused["message"],
+        "you may only read element 'Salaries' of dimension 'Account', beneath the cell"
+    );
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/spread",
+        Some(&lin),
+        Some(spread("Revenue")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let explain = json!({ "cells": [cell("Rent", "US"), cell("Product Revenue", "US")] });
+    let (_, _, explained) = send(&app, "POST", "/cells/explain", Some(&lin), Some(explain)).await;
+    assert_eq!(explained["cells"][0]["cell"]["writable"], false);
+    assert_eq!(explained["cells"][1]["cell"]["writable"], true);
+
+    // The stored cells listed are those Lin may see.
+    let (_, _, stored) = send(
+        &app,
+        "GET",
+        "/cubes/General%20Ledger/cells",
+        Some(&lin),
+        None,
+    )
+    .await;
+    let listed = stored["cells"].as_array().unwrap();
+    assert!(listed.iter().all(|cell| cell["at"][1] != "UK"), "{stored}");
+    assert_eq!(stored["total"].as_u64().unwrap() as usize, listed.len());
+
+    // A view as Lin sees what Lin sees.
+    let asked = json!({ "user": "lin" });
+    let (_, _, viewing) = send(&app, "POST", "/admin/view-as", Some(&admin), Some(asked)).await;
+    let viewing = viewing["token"].as_str().unwrap().to_owned();
+    let (_, _, entity) = send(&app, "GET", "/dimensions/Entity", Some(&viewing), None).await;
+    assert_eq!(names(&entity), ["Total Entity", "US"]);
+}
+
+/// Asks for an API key with a session, and gives the status and the answer.
+async fn make_key(app: &Router, token: &str, asked: Value) -> (StatusCode, Value) {
+    let (status, _, body) = send(app, "POST", "/keys", Some(token), Some(asked)).await;
+    (status, body)
+}
+
+/// The key of an answer that made one.
+fn key_of(made: &Value) -> String {
+    made["key"].as_str().expect("a key was made").to_owned()
+}
+
+/// What the audit records of keys, the newest first, as who did what to which.
+async fn audited(app: &Router, admin: &str) -> Vec<String> {
+    let (_, _, audit) = send(app, "GET", "/admin/audit", Some(admin), None).await;
+    let entries = audit.as_array().expect("the audit").iter();
+    let keys = entries.filter(|entry| entry["action"].as_str().unwrap().ends_with("key"));
+    let said = |entry: &Value| {
+        let part = |name: &str| entry[name].as_str().unwrap().to_owned();
+        format!("{} {}: {}", part("user"), part("action"), part("subject"))
+    };
+    keys.map(said).collect()
+}
+
+#[tokio::test]
+async fn an_api_key_does_what_it_was_given_and_no_more() {
+    let (home, app) = secured("keys", None);
+    let admin = token(&app).await;
+    let at = json!(["Rent", "UK", "Jan", "Actual"]);
+    let read = json!({ "cells": [{ "cube": "General Ledger", "at": at }] });
+    let write = json!({ "cells": [{ "cube": "General Ledger", "at": at, "value": 7 }] });
+
+    // A key that writes cells and does nothing else, given once and kept only as a hash.
+    let asked = json!({ "name": "Nightly load", "cells": "write" });
+    let (status, made) = make_key(&app, &admin, asked).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let loader = key_of(&made);
+    assert!(loader.starts_with("epk_") && loader.len() == 68, "{loader}");
+    assert_eq!(made["id"], loader[4..16]);
+    assert_eq!(
+        [
+            &made["name"],
+            &made["cells"],
+            &made["model"],
+            &made["admin"]
+        ],
+        [
+            &json!("Nightly load"),
+            &json!("write"),
+            &json!("none"),
+            &json!("none")
+        ]
+    );
+    let stored = fs::read_to_string(home.path("users.json")).unwrap();
+    assert!(stored.contains("Nightly load") && !stored.contains(&loader[16..]));
+
+    // It writes and reads cells as its user, and reaches nothing else.
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&loader), Some(write)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, _, cells) = send(
+        &app,
+        "POST",
+        "/cells/read",
+        Some(&loader),
+        Some(read.clone()),
+    )
+    .await;
+    assert_eq!(cells["cells"][0]["value"], 7.0);
+    let cell = json!({ "cube": "General Ledger", "at": at });
+    let (_, _, history) = send(&app, "POST", "/cells/history", Some(&loader), Some(cell)).await;
+    assert_eq!(history["changes"][0]["author"], NAME);
+    for (method, uri, refusal) in [
+        ("GET", "/model", "this key may not read the model"),
+        (
+            "GET",
+            "/admin/status",
+            "this key may not see the server's administration",
+        ),
+        (
+            "GET",
+            "/keys",
+            "keys are made and revoked by their user signed in, not with a key",
+        ),
+        (
+            "DELETE",
+            "/sessions",
+            "an API key has no session to end; it stops working when revoked",
+        ),
+    ] {
+        let (status, _, body) = send(&app, method, uri, Some(&loader), None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(body["message"], refusal, "{method} {uri}");
+    }
+
+    // One that reads the model and the administration changes neither, nor reads cells.
+    let asked = json!({ "name": "Watch", "model": "read", "admin": "read" });
+    let watcher = key_of(&make_key(&app, &admin, asked).await.1);
+    let (status, _, model) = send(&app, "GET", "/model", Some(&watcher), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _, _) = send(&app, "GET", "/admin/status", Some(&watcher), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let update = json!({ "based_on": model["version"], "model": model["model"] });
+    let ending = "/admin/users/ada/sessions";
+    for (method, uri, body, refusal) in [
+        (
+            "PUT",
+            "/model",
+            Some(update.clone()),
+            "this key may not change the model",
+        ),
+        (
+            "DELETE",
+            ending,
+            None,
+            "this key may not administer the server",
+        ),
+        (
+            "POST",
+            "/cells/read",
+            Some(read.clone()),
+            "this key may not read cells",
+        ),
+    ] {
+        let (status, _, answer) = send(&app, method, uri, Some(&watcher), body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}");
+        assert_eq!(answer["message"], refusal, "{method} {uri}");
+    }
+
+    // Everything an administrator may do, a key of theirs may be given.
+    let everything =
+        json!({ "name": "Deploy", "cells": "write", "model": "write", "admin": "write" });
+    let (_, made) = make_key(&app, &admin, everything).await;
+    let deploy = key_of(&made);
+    let (status, _, _) = send(&app, "PUT", "/model", Some(&deploy), Some(update)).await;
+    assert!(status.is_success());
+
+    // The keys are listed newest first, never as themselves.
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    assert_eq!(list["allowed"], true);
+    assert_eq!(
+        list["most"],
+        json!({ "cells": "write", "model": "write", "admin": "write" })
+    );
+    let keys = list["keys"].as_array().unwrap().iter();
+    let names: Vec<&str> = keys.map(|key| key["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Deploy", "Watch", "Nightly load"]);
+    assert!(!list.to_string().contains(&loader[16..]));
+
+    // A name is not given twice, and a key needs a name and something to do.
+    for (asked, refusal) in [
+        (
+            json!({ "name": "nightly LOAD", "cells": "read" }),
+            "there is a key called nightly LOAD already",
+        ),
+        (
+            json!({ "name": " ", "cells": "read" }),
+            "a key needs a name",
+        ),
+        (
+            json!({ "name": "Idle" }),
+            "a key needs to be able to do something",
+        ),
+        (
+            json!({ "name": "Kept", "cells": "read", "model": "write", "cubes": ["General Ledger"] }),
+            "a key kept to particular cubes may not change the model or administer the server, \
+             which reach every cube",
+        ),
+        (
+            json!({ "name": "Elsewhere", "cells": "read", "cubes": ["Plan"] }),
+            "there is no cube 'Plan'",
+        ),
+    ] {
+        let (status, body) = make_key(&app, &admin, asked).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{refusal}");
+        assert_eq!(body["message"], refusal);
+    }
+
+    // One revoked stops at once, and is not there to revoke again.
+    let id = made["id"].as_str().unwrap();
+    let revoke = format!("/keys/{id}");
+    let (status, _, _) = send(&app, "DELETE", &revoke, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, body) = send(&app, "GET", "/model", Some(&deploy), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("this API key is not in force")
+    );
+    let (status, _, body) = send(&app, "DELETE", &revoke, Some(&admin), None).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::NOT_FOUND, &json!("unknown_key"))
+    );
+    // Each key made, and the one revoked, is on record; those refused are not.
+    let said = audited(&app, &admin).await;
+    assert_eq!(
+        said,
+        [
+            format!("ada revoke key: Deploy (epk_{id})"),
+            format!("ada make key: Deploy (epk_{id})"),
+            format!("ada make key: Watch (epk_{})", &watcher[4..16]),
+            format!("ada make key: Nightly load (epk_{})", &loader[4..16]),
+        ]
+    );
+
+    // The others outlast the server: started again, it takes them as it did, and knows when
+    // each was last used, saved with the revoking.
+    let (_, _, before) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    let used = before["keys"][1]["used"]
+        .as_u64()
+        .expect("the loader was used");
+    assert!(used >= before["keys"][1]["created"].as_u64().unwrap());
+    drop(app);
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let admin = token(&app).await;
+    let (_, _, after) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    assert_eq!(after["keys"][1]["name"], "Nightly load");
+    assert_eq!(after["keys"][1]["used"], used);
+    let (status, _, _) = send(&app, "POST", "/cells/read", Some(&loader), Some(read)).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn when_a_key_was_last_used_is_noted_at_once_and_saved_apart() {
+    let home = Home::new("key-uses");
+    set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();
+    let mut auth = Auth::load(&home.0).unwrap().expect("a user");
+    auth.set_saving_uses(Duration::ZERO);
+    let app = app_with(home.open(), Some(auth));
+    let admin = token(&app).await;
+    let (_, made) = make_key(&app, &admin, json!({ "name": "Report", "cells": "read" })).await;
+    assert_eq!(made["used"], Value::Null);
+    let key = key_of(&made);
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&key), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    let used = list["keys"][0]["used"].as_u64().expect("noted at once");
+    assert!(used >= made["created"].as_u64().unwrap());
+    // Saved apart from the request that used it, a moment later.
+    let saved = || {
+        fs::read_to_string(home.path("users.json"))
+            .unwrap()
+            .contains("\"used\"")
+    };
+    for _ in 0..100 {
+        if saved() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(saved(), "the key's use was not saved");
+    drop(app);
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let admin = token(&app).await;
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&admin), None).await;
+    assert_eq!(list["keys"][0]["used"], used);
+}
+
+#[tokio::test]
+async fn a_user_makes_keys_once_let_and_each_does_no_more_than_they_may() {
+    let home = Home::new("users-keys");
+    let plan = json!({ "name": "Plan", "dimensions": ["Entity", "Period"] });
+    fs::write(home.path("model/cubes/plan.json"), plan.to_string()).unwrap();
+    set_user(&home.0, NAME, PASSWORD, &role(Role::Admin)).unwrap();
+    let app = app_with(home.open(), Auth::load(&home.0).unwrap());
+    let admin = token(&app).await;
+    let put = |user: Value| {
+        let (app, admin) = (app.clone(), admin.clone());
+        async move {
+            send(&app, "PUT", "/admin/users/grace", Some(&admin), Some(user))
+                .await
+                .0
+        }
+    };
+    // Grace reads everything and writes the plan.
+    let grace =
+        json!({ "password": "grace-only-3b7a", "role": "read", "cubes": { "Plan": "write" } });
+    assert_eq!(put(grace).await, StatusCode::NO_CONTENT);
+    let (_, signed) = sign_in(&app, "grace", "grace-only-3b7a").await;
+    let session = signed["token"].as_str().unwrap().to_owned();
+
+    // Until an administrator lets her, she makes none.
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&session), None).await;
+    assert_eq!(list["allowed"], false);
+    let asked = json!({ "name": "Plan load", "cells": "write", "cubes": ["plan"] });
+    let (status, body) = make_key(&app, &session, asked.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(
+        body["message"],
+        "an administrator has not let you make API keys"
+    );
+    let let_her = json!({ "role": "read", "cubes": { "Plan": "write" }, "makes_keys": true });
+    assert_eq!(put(let_her).await, StatusCode::NO_CONTENT);
+    let (_, _, list) = send(&app, "GET", "/keys", Some(&session), None).await;
+    assert_eq!(list["allowed"], true);
+    assert_eq!(
+        list["most"],
+        json!({ "cells": "write", "model": "read", "admin": "none" })
+    );
+
+    // A key of hers does no more than she may.
+    let beyond = json!({ "name": "Too much", "cells": "write", "model": "write" });
+    let (status, body) = make_key(&app, &session, beyond).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        body["message"],
+        "a key does no more than its user may, who may not change the model"
+    );
+    // One kept to the plan, named as the model names it, reaches the plan's cells alone.
+    let (status, made) = make_key(&app, &session, asked).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(made["cubes"], json!(["Plan"]));
+    let key = key_of(&made);
+    let planned = json!({ "cells": [{ "cube": "Plan", "at": ["UK", "Jan"], "value": 3 }] });
+    let (status, _, _) = send(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(&key),
+        Some(planned.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let ledger =
+        json!({ "cells": [{ "cube": "General Ledger", "at": ["Rent", "UK", "Jan", "Actual"] }] });
+    let (_, _, cells) = send(&app, "POST", "/cells/read", Some(&key), Some(ledger)).await;
+    assert_eq!(cells["cells"][0]["error"]["code"], "forbidden");
+    // Nor may a view as her make one in her name.
+    let (_, _, view) = send(
+        &app,
+        "POST",
+        "/admin/view-as",
+        Some(&admin),
+        Some(json!({ "user": "grace" })),
+    )
+    .await;
+    let viewing = view["token"].as_str().unwrap().to_owned();
+    let (status, _) = make_key(&app, &viewing, json!({ "name": "Mine", "cells": "read" })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // What she may do, the key may: no longer let write the plan, it writes it no more. A
+    // change that says nothing of keys leaves her let make them, and her key in place.
+    assert_eq!(put(json!({ "role": "read" })).await, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(&app, "POST", "/cells/write", Some(&key), Some(planned)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let hers = || {
+        let (app, admin) = (app.clone(), admin.clone());
+        async move {
+            let (_, _, list) = send(&app, "GET", "/admin/users", Some(&admin), None).await;
+            let mut users = list["users"].as_array().unwrap().iter();
+            users.find(|user| user["name"] == "grace").unwrap().clone()
+        }
+    };
+    let her = hers().await;
+    assert_eq!(her["makes_keys"], true);
+    assert_eq!(her["keys"][0]["name"], "Plan load");
+
+    // An administrator revokes a key of hers; and her leave taken away, the rest go with it.
+    let id = made["id"].as_str().unwrap();
+    let revoke = format!("/admin/users/Grace/keys/{id}");
+    let (status, _, _) = send(&app, "DELETE", &revoke, Some(&admin), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, _) = send(&app, "GET", "/model", Some(&key), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let reads = key_of(
+        &make_key(&app, &session, json!({ "name": "Reads", "cells": "read" }))
+            .await
+            .1,
+    );
+    assert_eq!(
+        put(json!({ "role": "read", "makes_keys": false })).await,
+        StatusCode::NO_CONTENT
+    );
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&reads), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(hers().await["keys"], json!([]));
+    // Let again, she has none back.
+    assert_eq!(
+        put(json!({ "role": "read", "makes_keys": true })).await,
+        StatusCode::NO_CONTENT
+    );
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&reads), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // Her keys made, and revoked by the administrator, one by one and with her leave, are
+    // on record, each naming whose it was.
+    let (plan, read) = (made["id"].as_str().unwrap(), &reads[4..16]);
+    assert_eq!(
+        audited(&app, &admin).await,
+        [
+            format!("ada revoke key: Reads (epk_{read}) of grace"),
+            format!("grace make key: Reads (epk_{read})"),
+            format!("ada revoke key: Plan load (epk_{plan}) of grace"),
+            format!("grace make key: Plan load (epk_{plan})"),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_api_key_stops_when_it_expires() {
+    let (_home, app) = secured("expiring-keys", None);
+    let admin = token(&app).await;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let past = json!({ "name": "Past", "cells": "read", "expires": now - 1 });
+    let (status, body) = make_key(&app, &admin, past).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["message"], "a key cannot expire before it is made");
+    let soon = json!({ "name": "Soon", "cells": "read", "expires": now + 3 });
+    let (_, made) = make_key(&app, &admin, soon).await;
+    assert_eq!(made["expires"], now + 3);
+    let key = key_of(&made);
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&key), None).await;
+    assert_eq!(status, StatusCode::OK);
+    tokio::time::sleep(Duration::from_millis(3100)).await;
+    let (status, _, _) = send(&app, "GET", "/sandboxes", Some(&key), None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

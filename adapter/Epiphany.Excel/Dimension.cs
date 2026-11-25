@@ -1,93 +1,216 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
+using System.IO;
 using System.Linq;
 
 namespace Epiphany.Excel
 {
-    /// <summary>One element of a dimension, as <c>GET /dimensions/{name}</c> describes it.</summary>
+    /// <summary>One element of a dimension, as <c>GET /dimensions/{name}</c> describes it.
+    /// What it has none of is one for all: a million leaves each with an empty map of
+    /// attributes, list of children and list of weights of its own held some 100 MB.</summary>
     public sealed class Element
     {
+        private static readonly Dictionary<string, object> NoValues = new Dictionary<string, object>();
+
         public string Name;
         public double Level;
-        public string[] Parents;
-        public string[] Children;
+        public string[] Parents = Array.Empty<string>();
+        public string[] Children = Array.Empty<string>();
         /// <summary>The weight of each child, in the order of <see cref="Children"/>.</summary>
-        public double[] Weights;
+        public double[] Weights = Array.Empty<double>();
         /// <summary>"numeric", "string" or "consolidated".</summary>
         public string Type;
         /// <summary>The values the element has, by attribute key.</summary>
-        public Dictionary<string, object> Attributes;
+        public Dictionary<string, object> Attributes = NoValues;
     }
 
     /// <summary>A copy of a dimension, and the answers the dimension functions read from it.
     /// Every answer is text, a number, or <see cref="Connection.KeyError"/>.</summary>
     public sealed class Dimension
     {
-        private readonly List<Element> elements = new List<Element>();
+        private readonly List<Element> elements;
+        // The elements' names, in order: what DIMNM and SUBNM count through, made once, where
+        // made at every question a dimension of a million elements took 30 ms a formula.
+        private readonly string[] names;
+        private readonly double levels;
         // Positions by the key of every name and alias.
-        private readonly Dictionary<string, int> positions = new Dictionary<string, int>();
+        private readonly Dictionary<string, int> positions;
         // "string", "numeric" or "alias", by attribute key.
-        private readonly Dictionary<string, string> attributes = new Dictionary<string, string>();
-        private readonly Dictionary<string, string[]> subsets = new Dictionary<string, string[]>();
+        private readonly Dictionary<string, string> attributes;
+        // Each subset's members, by the subset's key.
+        private readonly Dictionary<string, string[]> subsets;
+        // Each subset's members as a set, made the first time a member is looked for in it.
+        private readonly Dictionary<string, Lazy<HashSet<string>>> held = new Dictionary<string, Lazy<HashSet<string>>>();
 
         /// <summary>Names are compared as the server compares them: ignoring case and spaces.</summary>
-        public static string Key(string name)
+        internal static string Key(string name)
         {
             return new string((name ?? "").Where(c => !char.IsWhiteSpace(c)).ToArray()).ToLowerInvariant();
         }
 
-        public Dimension(object json)
+        /// <summary>A dimension as <c>GET /dimensions/{name}</c> answers, made as it is read.
+        /// Text that is not JSON throws <see cref="FormatException"/>.</summary>
+        internal static Dimension Read(TextReader text)
         {
-            foreach (var attribute in Fields(json, "attributes"))
-                attributes[Key(attribute.Key)] = (string)attribute.Value;
-            foreach (var subset in Fields(json, "subsets"))
-                subsets[Key(subset.Key)] = Names(subset.Value);
-            foreach (var item in Json.Items(Json.Field(json, "elements")))
+            var json = new JsonReader(text);
+            var elements = new List<Element>();
+            var attributes = new Dictionary<string, string>();
+            var subsets = new Dictionary<string, string[]>();
+            json.Object();
+            while (json.Field(out var field))
             {
-                var children = Json.Items(Json.Field(item, "children"));
-                elements.Add(new Element
+                switch (field)
                 {
-                    Name = (string)Json.Field(item, "name"),
-                    Level = Convert.ToDouble(Json.Field(item, "level")),
-                    Parents = Names(Json.Field(item, "parents")),
-                    Children = children.Select(child => (string)Json.Field(child, "name")).ToArray(),
-                    Weights = children.Select(child => Convert.ToDouble(Json.Field(child, "weight"))).ToArray(),
-                    Type = (string)Json.Field(item, "type"),
-                    Attributes = Fields(item, "attributes")
-                        .ToDictionary(value => Key(value.Key), value => Json.Scalar(value.Value)),
-                });
+                    case "elements":
+                        json.Array();
+                        while (json.Item())
+                            elements.Add(ReadElement(json));
+                        break;
+                    case "attributes":
+                        json.Object();
+                        while (json.Field(out var attribute))
+                            attributes[Key(attribute)] = json.Text();
+                        break;
+                    case "subsets":
+                        json.Object();
+                        while (json.Field(out var subset))
+                            subsets[Key(subset)] = ReadNames(json);
+                        break;
+                    default:
+                        json.Skip();
+                        break;
+                }
             }
+            json.End();
+            return new Dimension(elements, attributes, subsets);
+        }
+
+        private static Element ReadElement(JsonReader json)
+        {
+            var element = new Element();
+            json.Object();
+            while (json.Field(out var field))
+            {
+                switch (field)
+                {
+                    case "name":
+                        element.Name = json.Text();
+                        break;
+                    case "type":
+                        element.Type = TypeOf(json.Text());
+                        break;
+                    case "level":
+                        element.Level = json.Number();
+                        break;
+                    case "parents":
+                        element.Parents = ReadNames(json);
+                        break;
+                    case "children":
+                        ReadChildren(json, element);
+                        break;
+                    case "attributes":
+                        var values = new Dictionary<string, object>();
+                        json.Object();
+                        while (json.Field(out var attribute))
+                            values[Key(attribute)] = Json.Scalar(json.Value());
+                        if (values.Count > 0)
+                            element.Attributes = values;
+                        break;
+                    default:
+                        json.Skip();
+                        break;
+                }
+            }
+            return element;
+        }
+
+        private static void ReadChildren(JsonReader json, Element element)
+        {
+            var children = new List<string>();
+            var weights = new List<double>();
+            json.Array();
+            while (json.Item())
+            {
+                string name = null;
+                var weight = 0.0;
+                json.Object();
+                while (json.Field(out var field))
+                {
+                    if (field == "name")
+                        name = json.Text();
+                    else if (field == "weight")
+                        weight = json.Number();
+                    else
+                        json.Skip();
+                }
+                children.Add(name);
+                weights.Add(weight);
+            }
+            if (children.Count == 0)
+                return;
+            element.Children = children.ToArray();
+            element.Weights = weights.ToArray();
+        }
+
+        private static string[] ReadNames(JsonReader json)
+        {
+            var items = new List<string>();
+            json.Array();
+            while (json.Item())
+                items.Add(json.Text());
+            return items.Count == 0 ? Array.Empty<string>() : items.ToArray();
+        }
+
+        private Dimension(List<Element> elements, Dictionary<string, string> attributes, Dictionary<string, string[]> subsets)
+        {
+            this.elements = elements;
+            this.attributes = attributes;
+            this.subsets = subsets;
+            foreach (var subset in subsets)
+            {
+                var members = subset.Value;
+                held[subset.Key] = new Lazy<HashSet<string>>(() => new HashSet<string>(members));
+            }
+            levels = elements.Count == 0 ? 0.0 : elements.Max(element => element.Level) + 1;
+            // Made as large as they will be at once: grown a name at a time, both were made again
+            // larger and larger, and a million names took the add-in's memory 40 to 55 MB higher.
+            names = new string[elements.Count];
+            positions = new Dictionary<string, int>(elements.Count);
             // Names first, so that a name always wins over another element's alias.
             for (var position = 0; position < elements.Count; position++)
-                positions[Key(elements[position].Name)] = position;
+            {
+                names[position] = elements[position].Name;
+                positions[Key(names[position])] = position;
+            }
             for (var position = 0; position < elements.Count; position++)
                 foreach (var value in elements[position].Attributes)
                     if (attributes[value.Key] == "alias" && !positions.ContainsKey(Key((string)value.Value)))
                         positions[Key((string)value.Value)] = position;
         }
 
-        private static Dictionary<string, object> Fields(object json, string name)
+        /// <summary>The type, one string for every element of it.</summary>
+        private static string TypeOf(string type)
         {
-            return Json.Field(json, name) as Dictionary<string, object> ?? new Dictionary<string, object>();
-        }
-
-        private static string[] Names(object json)
-        {
-            return Json.Items(json).Cast<string>().ToArray();
+            switch (type)
+            {
+                case "numeric": return "numeric";
+                case "string": return "string";
+                case "consolidated": return "consolidated";
+                default: return type;
+            }
         }
 
         /// <summary>DNLEV: how many levels the dimension has, the leaves' included.</summary>
         public object Levels()
         {
-            return elements.Count == 0 ? 0.0 : elements.Max(element => element.Level) + 1;
+            return levels;
         }
 
         /// <summary>DNEXT: the element after this one in the dimension, or empty text.</summary>
         public object Next(string element)
         {
             return positions.TryGetValue(Key(element), out var position)
-                ? At(elements.Select(other => other.Name).ToArray(), position + 2.0)
+                ? At(names, position + 2.0)
                 : Connection.KeyError;
         }
 
@@ -150,7 +273,7 @@ namespace Epiphany.Excel
         /// <summary>DIMNM.</summary>
         public object Name(double index, string alias)
         {
-            return Shown(At(elements.Select(element => element.Name).ToArray(), index), alias);
+            return Shown(At(names, index), alias);
         }
 
         /// <summary>DIMIX: zero when there is no such element.</summary>
@@ -207,7 +330,7 @@ namespace Epiphany.Excel
         public object AttributeText(string element, string attribute)
         {
             var value = Attribute(element, attribute);
-            return value is double number ? number.ToString("R", CultureInfo.InvariantCulture) : value;
+            return value is double number ? Numbers.Text(number) : value;
         }
 
         /// <summary>ATTRN.</summary>
@@ -221,22 +344,25 @@ namespace Epiphany.Excel
         /// holds it. An empty subset name means every element.</summary>
         public object SubsetName(string subset, object indexOrElement, string alias)
         {
-            var members = elements.Select(element => element.Name).ToArray();
-            if (Key(subset) != "" && !subsets.TryGetValue(Key(subset), out members))
+            var members = names;
+            var whole = Key(subset) == "";
+            if (!whole && !subsets.TryGetValue(Key(subset), out members))
                 return Connection.KeyError;
             if (indexOrElement is double index)
                 return Shown(At(members, index), alias);
             var name = positions.TryGetValue(Key(indexOrElement as string), out var position)
                 ? elements[position].Name
                 : "";
-            return Shown(members.Contains(name) ? name : "", alias);
+            // Every element is a member of the whole dimension; a subset's, of the set made of it.
+            var member = name != "" && (whole || held[Key(subset)].Value.Contains(name));
+            return Shown(member ? name : "", alias);
         }
 
         /// <summary>The elements SUBNM chooses among, each with what it is shown as: its name,
         /// or its alias when an alias attribute is named.</summary>
         public object Members(string subset, string alias)
         {
-            var members = elements.Select(element => element.Name).ToArray();
+            var members = names;
             if (Key(subset) != "" && !subsets.TryGetValue(Key(subset), out members))
                 return Connection.KeyError;
             if (Key(alias) != "" && (!attributes.TryGetValue(Key(alias), out var kind) || kind != "alias"))

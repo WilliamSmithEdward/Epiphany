@@ -5,9 +5,12 @@ mod error;
 mod snapshot;
 
 pub use definition::{
-    AttributeType, ChildDef, CubeDef, DimensionDef, DimensionType, ElementDef, ElementType,
-    ModelDef, SubsetDef, ViewDef,
+    AttributeType, ChartKind, ChildDef, Comparison, CubeDef, DASHBOARD_COLUMNS, DashboardDef,
+    DashboardLayout, DimensionDef, DimensionType, ElementDef, ElementType, Geometry, HighlightRule,
+    Highlights, MembersDef, ModelDef, NumberFormat, PicklistDef, Scale, Shared, SubsetDef, TileDef,
+    TilePlace, TileShow, Tone, ValidationDef, ViewChart, ViewDef,
 };
 pub use error::ModelError;
-pub(crate) use snapshot::key;
-pub use snapshot::{Attribute, Cube, Dimension, DimensionId, Element, ElementId, Model};
+pub use snapshot::{
+    Attribute, Cube, Dimension, DimensionId, Element, ElementId, Model, Picklist, Validation, key,
+};

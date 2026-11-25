@@ -61,6 +61,12 @@ namespace Epiphany.Excel
             return Ask(nameof(DIMSIZ), dimension, found => found.Size());
         }
 
+        [ExcelFunction(Category = Category, Description = "The name signed in to an environment")]
+        public static object TM1USER(object environment)
+        {
+            return AddIn.UserOf(Text(environment)) ?? (object)Connection.KeyError;
+        }
+
         [ExcelFunction(Category = Category, Description = "The number of levels in a dimension")]
         public static object DNLEV(object dimension)
         {
@@ -179,8 +185,7 @@ namespace Epiphany.Excel
             var connection = AddIn.For(ref name);
             var at = elements.Select(Text).ToArray();
             var arguments = new[] { value, cube }.Concat(elements).ToArray();
-            if (value == null && connection != null)
-                Writeback.Reads(connection, name, at);
+
             return Run(function, arguments, connection,
                 () => value == null ? connection.Read(name, at) : connection.Write(name, at, value));
         }
@@ -242,7 +247,7 @@ namespace Epiphany.Excel
             switch (argument)
             {
                 case string text: return text;
-                case double number: return number.ToString("R", CultureInfo.InvariantCulture);
+                case double number: return Numbers.Text(number);
                 case bool flag: return flag ? "TRUE" : "FALSE";
                 default: return "";
             }

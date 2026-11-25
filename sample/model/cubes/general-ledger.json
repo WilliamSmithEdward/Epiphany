@@ -1,0 +1,29 @@
+{
+  "name": "General Ledger",
+  "dimensions": [
+    "Account",
+    "Entity",
+    "Period",
+    "Version"
+  ],
+  "rules": [
+    "[Account].[Net Margin %] = IIF([Account].[Revenue] = 0, 0, [Account].[Net Income] / [Account].[Revenue])"
+  ],
+  "views": {
+    "Quarterly income by entity": {
+      "mdx": "SELECT TM1SubsetToSet([Period], 'Quarters') ON COLUMNS, {[Entity].Members} * {[Account].[Net Income], [Account].[Revenue], [Account].[Operating Expenses]} ON ROWS FROM [General Ledger] WHERE ([Version].[Actual])"
+    },
+    "Margin by month": {
+      "mdx": "WITH MEMBER [Account].[Margin %] AS IIF([Account].[Revenue] = 0, 0, [Account].[Net Income] / [Account].[Revenue]), FORMAT_STRING = '0.0%' SELECT NON EMPTY TM1SubsetToSet([Period], 'Months') ON COLUMNS, {[Account].[Revenue], [Account].[Net Income], [Account].[Margin %]} ON ROWS FROM [General Ledger] WHERE ([Entity].[Total Entity], [Version].[Actual])",
+      "chart": {
+        "kind": "bars",
+        "second_axis": [
+          "Margin %"
+        ]
+      }
+    },
+    "Year to date": {
+      "mdx": "WITH MEMBER [Version].[Actual YTD] AS Sum(Ytd(), [Version].[Actual]) SELECT [Period].Levels('Month').Members ON COLUMNS, {[Account].[Revenue], [Account].[Operating Expenses], [Account].[Net Income]} ON ROWS FROM [General Ledger] WHERE ([Entity].[Total Entity], [Version].[Actual YTD])"
+    }
+  }
+}

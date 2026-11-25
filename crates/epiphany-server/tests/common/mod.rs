@@ -19,8 +19,27 @@ impl Home {
         Self(home)
     }
 
+    /// Opens the directory. Another test starting a server process at this moment holds a
+    /// copy of every open file of this one, a lock just let go among them, until the
+    /// server's own program takes its place: so a directory whose database was just dropped
+    /// may stay locked for an instant, and is tried again for up to a second.
     pub fn open(&self) -> Database {
-        open(&self.0).unwrap()
+        for _ in 0..50 {
+            match open(&self.0) {
+                Err(error)
+                    if error
+                        .to_string()
+                        .ends_with("is already in use by another server") =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                opened => return opened.unwrap(),
+            }
+        }
+        panic!(
+            "{} stayed locked after its database was dropped",
+            self.0.display()
+        );
     }
 
     pub fn path(&self, relative: &str) -> PathBuf {

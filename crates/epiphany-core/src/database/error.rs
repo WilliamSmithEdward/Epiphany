@@ -34,6 +34,10 @@ pub enum Error {
     NotFound(String),
     /// The caller may not do this; the text says what.
     Forbidden(String),
+    /// A comment cannot be kept as it is; the text says why.
+    Comment(String),
+    /// A sandbox cannot be made, used or published as asked; the text says why.
+    Sandbox(String),
 }
 
 impl Error {
@@ -50,6 +54,8 @@ impl Error {
             Self::Rule(_) => "rule_failed",
             Self::NotFound(_) => "not_found",
             Self::Forbidden(_) => "forbidden",
+            Self::Comment(_) => "invalid_comment",
+            Self::Sandbox(_) => "sandbox_refused",
         }
     }
 }
@@ -68,7 +74,10 @@ impl fmt::Display for Error {
             Self::Storage(reason) => write!(f, "the change could not be stored: {reason}"),
             Self::Mdx(error) => error.fmt(f),
             Self::Rule(reason) => reason.fmt(f),
-            Self::NotFound(what) | Self::Forbidden(what) => what.fmt(f),
+            Self::NotFound(what)
+            | Self::Forbidden(what)
+            | Self::Comment(what)
+            | Self::Sandbox(what) => what.fmt(f),
         }
     }
 }

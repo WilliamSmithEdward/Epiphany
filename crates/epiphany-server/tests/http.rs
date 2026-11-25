@@ -1,9 +1,12 @@
+mod common;
+
 use std::path::Path;
 
 use axum::Router;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
-use epiphany_core::database::Database;
+use epiphany_core::database::{Database, Journal, NamedCells, NamedWrites};
+use epiphany_core::model::ModelDef;
 use epiphany_server::{app, load_model, openapi};
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -68,6 +71,51 @@ async fn written_cells_are_read_back_with_consolidations() {
     assert_eq!(body, json!({ "cells": expected }));
 }
 
+/// A number sent in JSON is stored as the number its digits name, to the last bit, and sent
+/// back so: each of these was once read as its neighbour.
+#[tokio::test]
+async fn numbers_are_stored_as_their_digits_name_them() {
+    let app = example();
+    let numbers = [
+        1892571.4285714286,
+        -13745285.714285715,
+        1.0715660391465826e-75,
+        -1.81996730402717e-179,
+        -1.603964615428183e143,
+        -9.643915712060552e-234,
+    ];
+    let leaves = [
+        ["Product Revenue", "US", "Jan", "Actual"],
+        ["Service Revenue", "UK", "Feb", "Actual"],
+        ["Salaries", "US", "Mar", "Budget"],
+        ["Rent", "UK", "Apr", "Actual"],
+        ["Rent", "US", "May", "Budget"],
+        ["Salaries", "UK", "Jun", "Actual"],
+    ];
+    let writes: Vec<Value> = leaves
+        .iter()
+        .zip(numbers)
+        .map(|(&at, n)| write(at, json!(n)))
+        .collect();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(json!({ "cells": writes })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let reads: Vec<Value> = leaves.iter().map(|&at| cell(at)).collect();
+    let (_, body) = call(&app, "POST", "/cells/read", Some(json!({ "cells": reads }))).await;
+    let read: Vec<u64> = body["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cell| cell["value"].as_f64().unwrap().to_bits())
+        .collect();
+    assert_eq!(read, numbers.map(f64::to_bits));
+}
+
 #[tokio::test]
 async fn a_bad_cell_in_a_read_reports_its_own_error() {
     let app = example();
@@ -116,6 +164,58 @@ async fn a_bad_cell_in_a_write_rejects_the_whole_batch() {
 }
 
 #[tokio::test]
+async fn a_check_refuses_a_value_or_marks_it_as_breaking_the_check() {
+    let app = example();
+    let (_, mut cube) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
+    cube["validations"] = json!([
+        { "cells": "N: [Account].[Rent]", "valid": "[Account].[Rent] >= 0", "message": "Rent is never negative.", "refuse": true },
+        { "cells": "[Account].[Rent]", "valid": "[Account].[Rent] < 1000", "message": "Rent of 1,000 or more is unusual." },
+    ]);
+    let update = json!({ "based_on": 1, "cube": cube });
+    let (status, _) = call(&app, "PUT", "/cubes/General%20Ledger", Some(update)).await;
+    assert!(status.is_success(), "{status}");
+
+    let rent = ["Rent", "US", "Jan", "Actual"];
+    let writing = |value: i32| Some(json!({ "cells": [write(rent, json!(value))] }));
+    let (status, body) = call(&app, "POST", "/cells/write", writing(-5)).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let refused =
+        json!({ "code": "invalid_value", "message": "Rent is never negative.", "index": 0 });
+    assert_eq!(body, refused);
+    let (status, _) = call(&app, "POST", "/cells/write", writing(1500)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let explain = json!({ "cells": [cell(rent)] });
+    let (_, body) = call(&app, "POST", "/cells/explain", Some(explain)).await;
+    let unusual = json!([{ "message": "Rent of 1,000 or more is unusual.", "refuses": false }]);
+    assert_eq!(body["cells"][0]["cell"]["invalid"], unusual);
+}
+
+#[tokio::test]
+async fn a_cells_detail_is_written_with_its_value_and_explained() {
+    let app = example();
+    let rent = ["Rent", "US", "Jan", "Actual"];
+    let lines = json!([{ "label": "Office", "value": 30.0 }, { "label": "Store", "value": 12.5 }]);
+    let detail = json!({ "cube": "General Ledger", "at": rent, "lines": lines });
+    let (status, _) = call(&app, "POST", "/cells/detail", Some(detail)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let explain = json!({ "cells": [cell(rent)] });
+    let (_, body) = call(&app, "POST", "/cells/explain", Some(explain)).await;
+    let explained = &body["cells"][0]["cell"];
+    assert_eq!(
+        (&explained["value"], &explained["detail"]),
+        (&json!(42.5), &lines)
+    );
+
+    // Lines that are not a detail a cell can have are refused, saying why.
+    let bad = json!({ "cube": "General Ledger", "at": rent, "lines": [{ "label": "\u{7}", "value": 1 }] });
+    let (status, body) = call(&app, "POST", "/cells/detail", Some(bad)).await;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::UNPROCESSABLE_ENTITY, &json!("invalid_detail"))
+    );
+}
+
+#[tokio::test]
 async fn the_model_is_served_as_defined() {
     let (status, body) = call(&example(), "GET", "/model", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -133,6 +233,45 @@ async fn the_model_is_served_as_defined() {
         body["model"]["cubes"],
         json!([{ "name": "General Ledger", "dimensions": ["Account", "Entity", "Period", "Version"] }])
     );
+}
+
+#[tokio::test]
+async fn the_outline_gives_the_model_but_its_dimensions_elements() {
+    let app = example();
+    let (_, whole) = call(&app, "GET", "/model", None).await;
+    let (status, outline) = call(&app, "GET", "/model/outline", None).await;
+    assert_eq!(status, StatusCode::OK);
+    // Each dimension by its name, type, size and subsets' names; the cubes and dashboards whole.
+    let sized: Vec<Value> = whole["model"]["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|dimension| {
+            let kind = dimension.get("type").cloned().unwrap_or(json!("standard"));
+            let count = dimension["elements"].as_array().unwrap().len();
+            let subsets: Vec<&String> = dimension
+                .get("subsets")
+                .and_then(Value::as_object)
+                .map(|subsets| subsets.keys().collect())
+                .unwrap_or_default();
+            json!({ "name": dimension["name"], "type": kind, "element_count": count, "subsets": subsets, "changed_in": 1 })
+        })
+        .collect();
+    assert_eq!(outline["dimensions"], json!(sized));
+    assert_eq!(outline["cubes"], whole["model"]["cubes"]);
+    assert_eq!(outline["dashboards"], json!([]));
+    assert_eq!(outline["version"], whole["version"]);
+
+    // One dimension's definition, by its name in any case, as the model has it.
+    let (status, period) = call(&app, "GET", "/dimensions/period/definition", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let dimensions = whole["model"]["dimensions"].as_array().unwrap();
+    let named = dimensions
+        .iter()
+        .find(|dimension| dimension["name"] == "Period");
+    assert_eq!(Some(&period), named);
+    let (status, _) = call(&app, "GET", "/dimensions/Colour/definition", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -155,10 +294,10 @@ async fn a_dimension_is_served_with_its_hierarchy() {
                 { "name": "Jan", "weight": 1.0 },
                 { "name": "Feb", "weight": 1.0 },
                 { "name": "Mar", "weight": 1.0 }
-            ],
-            "attributes": {}
+            ]
         })
     );
+    // What an element has none of is left out: here, a leaf's children.
     assert_eq!(
         body["elements"][4],
         json!({
@@ -166,10 +305,120 @@ async fn a_dimension_is_served_with_its_hierarchy() {
             "type": "numeric",
             "level": 0,
             "parents": ["Q1"],
-            "children": [],
             "attributes": { "Code": "M02", "Days": 28.0 }
         })
     );
+    assert_eq!(body["elements"][0]["parents"], Value::Null);
+}
+
+#[tokio::test]
+async fn part_of_a_dimension_is_served_as_asked() {
+    let app = example();
+    let part = |asked: Value| {
+        let app = app.clone();
+        async move {
+            let (status, body) =
+                call(&app, "POST", "/dimensions/period/elements", Some(asked)).await;
+            assert_eq!(status, StatusCode::OK);
+            body
+        }
+    };
+    let names = |body: &Value| -> Vec<String> {
+        let elements = body["elements"].as_array().unwrap().iter();
+        elements
+            .map(|element| element["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // The top, with what the dimension is and how large; a consolidation with its leaves, and
+    // its children counted, not listed, as it is not opened.
+    let top = part(json!({ "roots": true })).await;
+    assert_eq!(top["name"], "Period");
+    assert_eq!(top["size"], 9);
+    assert_eq!(top["roots"], json!(["H1"]));
+    assert_eq!(
+        top["attributes"],
+        json!({ "Code": "alias", "Days": "numeric" })
+    );
+    assert_eq!(
+        top["elements"][0],
+        json!({
+            "name": "H1",
+            "type": "consolidated",
+            "level": 2,
+            "leaves": 6,
+            "child_count": 2
+        })
+    );
+
+    // Children, after the element they are of, listed; beneath, however deep, each listing
+    // its own; named, with the way down to each listed; and found by a part of their names,
+    // whatever its case, the first so many.
+    let children = part(json!({ "children_of": ["Q1"] })).await;
+    assert_eq!(names(&children), ["Q1", "Jan", "Feb", "Mar"]);
+    assert_eq!(
+        children["elements"][0]["children"][0],
+        json!({ "name": "Jan", "weight": 1.0 })
+    );
+    let beneath = part(json!({ "descendants_of": ["H1"] })).await;
+    assert_eq!(names(&beneath).len(), 9);
+    assert_eq!(
+        beneath["elements"][0]["children"].as_array().unwrap().len(),
+        2
+    );
+    let named = part(json!({ "names": ["Q2"], "ancestors": true })).await;
+    assert_eq!(named["elements"][0]["child_count"], 3);
+    assert_eq!(
+        named["elements"][1]["children"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        names(&part(json!({ "names": ["Feb", "Nowhere"], "ancestors": true })).await),
+        ["Feb", "Q1", "H1"]
+    );
+    let found = part(json!({ "find": "MA" })).await;
+    assert_eq!(found["found"], json!(["Mar", "May"]));
+    assert_eq!(names(&found), ["Mar", "May"]);
+    let first = part(json!({ "find": "j", "most": 1, "ancestors": true })).await;
+    assert_eq!(first["found"], json!(["Jan"]));
+    assert_eq!(names(&first), ["Jan", "Q1", "H1"]);
+    // A leaf is as a whole dimension gives it, without a count of leaves.
+    assert_eq!(first["elements"][0]["leaves"], Value::Null);
+    // Nothing asked, nothing sent but what the dimension is.
+    let nothing = part(json!({})).await;
+    assert_eq!(nothing["elements"], json!([]));
+    assert_eq!(nothing["roots"], Value::Null);
+
+    let (status, body) = call(&app, "POST", "/dimensions/Colour/elements", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "unknown_dimension");
+}
+
+#[tokio::test]
+async fn a_subset_that_reads_cells_is_listed_as_they_stand() {
+    let app = example();
+    let (_, model) = call(&app, "GET", "/model", None).await;
+    let mut entity = model["model"]["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|dimension| dimension["name"] == "Entity")
+        .unwrap()
+        .clone();
+    entity["subsets"] = json!({ "Leader": { "mdx": "TopCount([Entity].[Total Entity].Children, 1, LookupCube('General Ledger', [Account].[Rent], [Version].[Actual]))" } });
+    let put = json!({ "based_on": model["version"], "dimension": entity });
+    let (status, _) = call(&app, "PUT", "/dimensions/Entity", Some(put)).await;
+    assert_eq!(status, StatusCode::OK);
+    let rent = |entity: &str, month: &str, value: f64| json!({ "cube": "General Ledger", "at": ["Rent", entity, month, "Actual"], "value": value });
+    let write = json!({ "cells": [rent("US", "Jan", 100.0), rent("UK", "Jan", 200.0)] });
+    call(&app, "POST", "/cells/write", Some(write)).await;
+    let (_, entity) = call(&app, "GET", "/dimensions/Entity", None).await;
+    assert_eq!(entity["subsets"]["Leader"], json!(["UK"]));
+    assert_eq!(entity["subsets_reading_cells"], json!(["Leader"]));
+    let more = json!({ "cells": [rent("US", "Feb", 500.0)] });
+    call(&app, "POST", "/cells/write", Some(more)).await;
+    let (_, entity) = call(&app, "GET", "/dimensions/Entity", None).await;
+    assert_eq!(entity["subsets"]["Leader"], json!(["US"]));
 }
 
 #[tokio::test]
@@ -208,6 +457,52 @@ async fn a_transaction_keeps_its_writes_to_itself_until_it_commits() {
     let (status, body) = call(&app, "POST", &format!("/transactions/{id}/commit"), None).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], "unknown_transaction");
+}
+
+#[tokio::test]
+async fn a_transaction_goes_back_to_a_point_it_came_to() {
+    let app = example();
+    let at = ["Rent", "US", "Jan", "Actual"];
+    let (_, body) = call(&app, "POST", "/transactions", None).await;
+    let id = body["transaction"].clone();
+    let point = || async {
+        let (status, body) = call(&app, "GET", &format!("/transactions/{id}/point"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        body["point"].clone()
+    };
+    assert_eq!(point().await, json!(0));
+    let write = |value: f64| json!({ "transaction": id, "cells": [write(at, json!(value))] });
+    call(&app, "POST", "/cells/write", Some(write(25.0))).await;
+    let kept = point().await;
+    assert_eq!(kept, json!(1));
+    call(&app, "POST", "/cells/write", Some(write(40.0))).await;
+
+    let undo = |to: Value| json!({ "to": to });
+    let (status, _) = call(
+        &app,
+        "POST",
+        &format!("/transactions/{id}/undo"),
+        Some(undo(kept)),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let read = json!({ "transaction": id, "cells": [cell(at)] });
+    let (_, body) = call(&app, "POST", "/cells/read", Some(read)).await;
+    assert_eq!(body, json!({ "cells": [{ "value": 25.0 }] }));
+
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/transactions/{id}/undo"),
+        Some(undo(json!(9))),
+    )
+    .await;
+    assert_eq!(
+        (status, body["code"].clone()),
+        (StatusCode::NOT_FOUND, json!("not_found"))
+    );
+    let (status, _) = call(&app, "GET", "/transactions/77/point", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -342,6 +637,32 @@ async fn an_mdx_query_is_answered_with_axes_and_cells() {
         body,
         json!({ "code": "invalid_mdx", "message": "dimension 'Entity' has no member 'Mars'" })
     );
+
+    // The same query stood at other members: February in place of January, where nothing is
+    // stored, totals nothing; and the US keeps only the axis's own US, not the total above it.
+    let context = json!([{ "dimension": "Period", "member": "Feb" }, { "dimension": "Entity", "member": "US" }]);
+    let (status, body) = call(
+        &app,
+        "POST",
+        "/mdx",
+        Some(json!({ "mdx": mdx, "context": context })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["cells"], json!([0.0]));
+    assert_eq!(body["axes"][0]["tuples"][0][0]["name"], "US");
+    let slicer: Vec<&str> = body["slicer"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["unique_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(slicer, ["[Period].[Feb]", "[Version].[Actual]"]);
+    let unknown = json!({ "mdx": mdx, "context": [{ "dimension": "Period", "member": "Smarch" }] });
+    assert_eq!(
+        call(&app, "POST", "/mdx", Some(unknown)).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
 }
 
 #[tokio::test]
@@ -374,6 +695,12 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["cells"], json!([0.0, 25.0]));
+    // The outline names the subsets, in name order.
+    let (_, outline) = call(&app, "GET", "/model/outline", None).await;
+    assert_eq!(
+        outline["dimensions"][2]["subsets"],
+        json!(["Months", "Winter"])
+    );
 
     let (_, body) = call(&app, "GET", "/dimensions/Period", None).await;
     assert_eq!(
@@ -392,6 +719,58 @@ async fn subsets_and_views_are_saved_with_the_model_and_served() {
         body,
         json!({ "code": "not_found", "message": "cube 'General Ledger' has no view 'Nope'" })
     );
+
+    // A view keeps the sizes of its grid, how it shows its numbers, and the chart it was
+    // saved from; a unit or a kind of chart not known is refused.
+    let (_, mut cube) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
+    let shown = json!({
+        "geometry": { "row_height": 40, "widths": { "col:[Period].[Jan]": 120 } },
+        "format": { "decimals": 1, "scale": "thousands", "parentheses": true, "dash_zeros": true },
+        "highlights": {
+            "bars": true,
+            "shades": true,
+            "rules": [
+                { "test": "at_least", "value": 100.0, "tone": "good" },
+                { "test": "below", "value": 0.0, "tone": "bad" }
+            ]
+        },
+        "chart": {
+            "kind": "shares", "by_columns": true, "labels": true,
+            "lines": ["Rent"], "second_axis": ["Margin %"]
+        }
+    });
+    let mut view = shown.clone();
+    view["mdx"] = cube["views"]["Winter rent"]["mdx"].clone();
+    cube["views"]["Winter rent"] = view;
+    let put = json!({ "based_on": 2, "cube": cube.clone() });
+    assert_eq!(
+        call(&app, "PUT", "/cubes/General%20Ledger", Some(put))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let (_, served) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
+    assert_eq!(served["views"]["Winter rent"]["format"], shown["format"]);
+    assert_eq!(
+        served["views"]["Winter rent"]["geometry"],
+        shown["geometry"]
+    );
+    assert_eq!(
+        served["views"]["Winter rent"]["highlights"],
+        shown["highlights"]
+    );
+    assert_eq!(served["views"]["Winter rent"]["chart"], shown["chart"]);
+    for (part, odd) in [("format", "scale"), ("chart", "kind")] {
+        let mut broken = cube.clone();
+        broken["views"]["Winter rent"][part][odd] = json!("dozens");
+        let put = json!({ "based_on": 3, "cube": broken });
+        assert_eq!(
+            call(&app, "PUT", "/cubes/General%20Ledger", Some(put))
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
 }
 
 #[tokio::test]
@@ -436,6 +815,12 @@ async fn rules_and_feeders_are_part_of_the_model() {
     assert_eq!(
         body,
         json!({ "unfed": [{ "cube": "General Ledger", "at": ["Rent", "UK", "Jan", "Budget"] }] })
+    );
+    // Going on from a place the check never stopped at is refused.
+    let nowhere = "/cubes/General%20Ledger/feeders/check?after=nowhere";
+    assert_eq!(
+        call(&app, "GET", nowhere, None).await.0,
+        StatusCode::NOT_FOUND
     );
 
     let calculated = json!({ "cells": [write(["Rent", "US", "Jan", "Budget"], json!(1))] });
@@ -503,6 +888,46 @@ async fn a_malformed_body_uses_the_common_error_shape() {
 
 /// The committed contract must equal the document generated from the routes. Regenerate it
 /// with `cargo run -p epiphany-server -- openapi > openapi.json`.
+#[tokio::test]
+async fn an_earlier_model_is_compared_and_restored_where_it_is_kept() {
+    let home = common::Home::new("restored");
+    let app = app(home.open());
+    // A rule added to the ledger keeps the model before it, as version 1.
+    let (_, before) = call(&app, "GET", "/model", None).await;
+    let mut ledger = before["model"]["cubes"][0].clone();
+    ledger["rules"] = json!(["[Account].[Rent] = 1"]);
+    let put = json!({ "based_on": 1, "cube": ledger });
+    let (status, _) = call(&app, "PUT", "/cubes/General%20Ledger", Some(put)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, changes) = call(&app, "GET", "/admin/models/1/changes", None).await;
+    let none = json!({ "brought_back": [], "taken_away": [], "put_back": [] });
+    let ledger_back =
+        json!({ "brought_back": [], "taken_away": [], "put_back": ["General Ledger"] });
+    let expected =
+        json!({ "version": 1, "dimensions": none, "cubes": ledger_back, "dashboards": none });
+    assert_eq!((status, changes), (StatusCode::OK, expected));
+
+    let restore = Some(json!({ "based_on": 2 }));
+    let (status, update) = call(&app, "POST", "/admin/models/1/restore", restore.clone()).await;
+    assert_eq!(
+        (status, update["version"].clone()),
+        (StatusCode::OK, json!(3))
+    );
+    let (_, after) = call(&app, "GET", "/model", None).await;
+    assert_eq!(after["model"], before["model"]);
+    // The model it replaced is kept among the earlier ones, so that this too can be undone.
+    assert!(home.path("data/models/2/model.json").exists());
+
+    // A model not kept is not found, and one decided from a version gone by is refused.
+    let (status, _) = call(&app, "GET", "/admin/models/9/changes", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&app, "POST", "/admin/models/9/restore", restore.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = call(&app, "POST", "/admin/models/1/restore", restore).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
 #[tokio::test]
 async fn the_committed_contract_matches_the_routes() {
     let committed = std::fs::read_to_string(Path::new(ROOT).join("../../openapi.json")).unwrap();
@@ -647,4 +1072,282 @@ async fn every_response_says_which_model_version_answered() {
     let (status, _) = call(&app, "PUT", "/dimensions/Extra", Some(extra)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(version("/dimensions/Period").await, "2");
+}
+
+#[tokio::test]
+async fn the_stored_cells_of_a_cube_are_listed_and_can_be_written_back() {
+    let app = example();
+    let cells = json!({ "cells": [
+        write(["Rent", "UK", "Feb", "Actual"], json!(3)),
+        write(["Salaries", "US", "Jan", "Budget"], json!(2.5)),
+        write(["Product Revenue", "US", "Jan", "Actual"], json!(100)),
+        write(["Rent", "US", "Jan", "Actual"], json!(0)),
+    ] });
+    call(&app, "POST", "/cells/write", Some(cells)).await;
+
+    // Leaf cells that hold a value, in the order of their elements in each dimension:
+    // accounts as the dimension lists them, then entities, periods and versions.
+    let (status, listed) = call(&app, "GET", "/cubes/general%20ledger/cells", None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["total"], 3);
+    assert_eq!(
+        listed["cells"],
+        json!([
+            write(["Product Revenue", "US", "Jan", "Actual"], json!(100.0)),
+            write(["Salaries", "US", "Jan", "Budget"], json!(2.5)),
+            write(["Rent", "UK", "Feb", "Actual"], json!(3.0)),
+        ])
+    );
+    // A page at a time.
+    let (_, page) = call(
+        &app,
+        "GET",
+        "/cubes/General%20Ledger/cells?offset=1&limit=1",
+        None,
+    )
+    .await;
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["cells"], json!([listed["cells"][1]]));
+    let (_, page) = call(&app, "GET", "/cubes/General%20Ledger/cells?offset=3", None).await;
+    assert_eq!(page, json!({ "total": 3, "cells": [] }));
+
+    // What comes out goes into another server as it is, and then the two hold the same.
+    let other = example();
+    let body = json!({ "cells": listed["cells"] });
+    let (status, _) = call(&other, "POST", "/cells/write", Some(body)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (_, copied) = call(&other, "GET", "/cubes/General%20Ledger/cells", None).await;
+    assert_eq!(copied, listed);
+
+    let (status, body) = call(&app, "GET", "/cubes/Nowhere/cells", None).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "unknown_cube");
+}
+
+#[tokio::test]
+async fn a_dimension_says_its_type_and_the_names_of_its_levels() {
+    let app = example();
+    let (_, plain) = call(&app, "GET", "/dimensions/Period", None).await;
+    assert_eq!(plain["type"], "standard");
+    assert_eq!(plain["levels"], json!([]));
+
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    let dimensions = served["model"]["dimensions"].as_array().unwrap();
+    let mut period = dimensions
+        .iter()
+        .find(|dimension| dimension["name"] == "Period")
+        .unwrap()
+        .clone();
+    period["type"] = json!("time");
+    period["levels"] = json!(["Month", "Quarter", "Half"]);
+    let put = json!({ "based_on": 1, "dimension": period });
+    let (status, _) = call(&app, "PUT", "/dimensions/Period", Some(put)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, timed) = call(&app, "GET", "/dimensions/Period", None).await;
+    assert_eq!(timed["type"], "time");
+    assert_eq!(timed["levels"], json!(["Month", "Quarter", "Half"]));
+    // And a query may use them at once.
+    let mdx = json!({ "mdx": "SELECT Qtd([Period].[May]) ON COLUMNS FROM [General Ledger]" });
+    let (status, answer) = call(&app, "POST", "/mdx", Some(mdx)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(answer["axes"][0]["tuples"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_large_write_is_taken_in_one_request() {
+    let app = example();
+    // Sixty thousand cells, some five megabytes of JSON.
+    let cells: Vec<Value> = (0..60_000)
+        .map(|index| write(["Rent", "US", "Jan", "Actual"], json!(index)))
+        .collect();
+    let body = json!({ "cells": cells });
+    assert!(body.to_string().len() > 4 * 1024 * 1024);
+    let (status, _) = call(&app, "POST", "/cells/write", Some(body)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let read = json!({ "cells": [cell(["Rent", "US", "Jan", "Actual"])] });
+    let (_, body) = call(&app, "POST", "/cells/read", Some(read)).await;
+    assert_eq!(body, json!({ "cells": [{ "value": 59_999.0 }] }));
+}
+
+#[tokio::test]
+async fn a_request_that_only_asks_is_given_less_room_than_one_that_writes() {
+    let app = example();
+    // Five megabytes of cells to read: more than asking is given, less than writing is.
+    let cells: Vec<Value> = (0..70_000)
+        .map(|_| cell(["Rent", "US", "Jan", "Actual"]))
+        .collect();
+    let body = json!({ "cells": cells });
+    assert!(body.to_string().len() > 4 * 1024 * 1024);
+    let (status, refusal) = call(&app, "POST", "/cells/read", Some(body)).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(refusal["code"], "invalid_request");
+    // A tenth of them is an ordinary request.
+    let cells: Vec<Value> = (0..7_000)
+        .map(|_| cell(["Rent", "US", "Jan", "Actual"]))
+        .collect();
+    let (status, _) = call(&app, "POST", "/cells/read", Some(json!({ "cells": cells }))).await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+/// A journal full after every commit, whose snapshot says when it has begun and then waits
+/// to be let finish.
+#[derive(Debug)]
+struct Held {
+    begun: std::sync::mpsc::Sender<()>,
+    finish: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+impl Journal for Held {
+    fn commit(&mut self, _: &NamedWrites<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        true
+    }
+
+    fn snapshot(&mut self, _: u64, _: &NamedCells<'_>) -> std::io::Result<()> {
+        self.begun.send(()).unwrap();
+        self.finish.lock().unwrap().recv().unwrap();
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_snapshot_is_written_while_reads_go_on_and_writes_wait() {
+    let (begun, begins) = std::sync::mpsc::channel();
+    let (finish, finishes) = std::sync::mpsc::channel();
+    let model = Path::new(ROOT).join("../epiphany-core/tests/fixtures/model");
+    let mut database = Database::new(load_model(&model).unwrap()).unwrap();
+    let finish_held = std::sync::Mutex::new(finishes);
+    database.set_journal(Box::new(Held {
+        begun,
+        finish: finish_held,
+    }));
+    let app = app(database);
+    let rent = ["Rent", "US", "Jan", "Actual"];
+
+    // The write that fills the log is answered without waiting for the snapshot.
+    let filling = json!({ "cells": [write(rent, json!(25))] });
+    let (status, _) = call(&app, "POST", "/cells/write", Some(filling)).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let timeout = std::time::Duration::from_secs(10);
+    begins.recv_timeout(timeout).expect("the snapshot begins");
+
+    // While it is written, reads are answered, and a write waits.
+    let reads = json!({ "cells": [cell(rent)] });
+    let (status, body) = call(&app, "POST", "/cells/read", Some(reads.clone())).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::OK, json!({ "cells": [{ "value": 25.0 }] }))
+    );
+    let next = json!({ "cells": [write(rent, json!(30))] });
+    let waiting = tokio::spawn({
+        let app = app.clone();
+        async move { call(&app, "POST", "/cells/write", Some(next)).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(!waiting.is_finished(), "a write waits for the snapshot");
+    // Nor does a read wait behind that write.
+    let read = call(&app, "POST", "/cells/read", Some(reads.clone()));
+    let (status, body) = tokio::time::timeout(timeout, read)
+        .await
+        .expect("a read is not held up by a waiting write");
+    assert_eq!(
+        (status, body),
+        (StatusCode::OK, json!({ "cells": [{ "value": 25.0 }] }))
+    );
+
+    // Once it is written, the write goes ahead, and fills the log again.
+    finish.send(()).unwrap();
+    assert_eq!(waiting.await.unwrap().0, StatusCode::NO_CONTENT);
+    begins
+        .recv_timeout(timeout)
+        .expect("the next snapshot begins");
+    finish.send(()).unwrap();
+    let (_, body) = call(&app, "POST", "/cells/read", Some(reads)).await;
+    assert_eq!(body, json!({ "cells": [{ "value": 30.0 }] }));
+}
+
+#[tokio::test]
+async fn a_dashboard_of_saved_views_is_kept_with_the_model() {
+    let app = example();
+    let (_, mut cube) = call(&app, "GET", "/cubes/General%20Ledger", None).await;
+    cube["views"] = json!({ "By entity": { "mdx": "SELECT {[Entity].Members} ON COLUMNS FROM [General Ledger]" } });
+    call(
+        &app,
+        "PUT",
+        "/cubes/General%20Ledger",
+        Some(json!({ "based_on": 1, "cube": cube })),
+    )
+    .await;
+
+    let dashboard = json!({
+        "name": "Finance",
+        "filters": ["Version", "Period"],
+        "layout": "free",
+        "tiles": [
+            { "cube": "General Ledger", "view": "By entity", "show": "figure" },
+            { "title": "Entities", "cube": "general ledger", "view": "by entity", "width": 2, "show": "shares" },
+            {
+                "cube": "General Ledger", "view": "By entity", "show": "donut",
+                "place": { "x": 6.5, "y": 2.0, "w": 5.5, "h": 8.0 }, "by_columns": true, "labels": true
+            },
+            { "show": "text", "text": "# Notes\n- Budget is in thousands", "place": { "x": 0.0, "y": 0.0, "w": 12.0, "h": 2.0 } },
+            {
+                "cube": "General Ledger", "view": "By entity", "show": "stacked", "by_columns": true,
+                "lines": ["North"], "second_axis": ["Total"]
+            }
+        ]
+    });
+    let put = json!({ "based_on": 2, "dashboard": dashboard });
+    let (status, body) = call(&app, "PUT", "/dashboards/Finance", Some(put)).await;
+    assert_eq!(
+        (status, body["version"].clone()),
+        (StatusCode::OK, json!(3))
+    );
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    let served = &served["model"]["dashboards"][0];
+    assert_eq!(served["tiles"][1]["width"], 2);
+    assert_eq!(served["tiles"][1]["show"], "shares");
+    assert_eq!(served["tiles"][0]["show"], "figure");
+    assert_eq!(served["filters"], json!(["Version", "Period"]));
+    // Laid out freely, a tile keeps its place and how it is shown, as given.
+    assert_eq!(served["layout"], "free");
+    assert_eq!(served["tiles"][2], dashboard["tiles"][2]);
+    assert_eq!(served["tiles"][3], dashboard["tiles"][3]);
+    // A chart keeps the series it draws as lines, over the rest or against a scale at its right.
+    assert_eq!(served["tiles"][4], dashboard["tiles"][4]);
+
+    // A tile must show a view the cube has, one or two columns wide, or else text, and stand
+    // on the page; and a filter must be a dimension of the model.
+    let tile = json!({ "cube": "General Ledger", "view": "By entity" });
+    let placed = |place: Value| json!({ "name": "Broken", "tiles": [{ "cube": "General Ledger", "view": "By entity", "place": place }] });
+    for broken in [
+        json!({ "name": "Broken", "tiles": [{ "cube": "General Ledger", "view": "Nowhere" }] }),
+        json!({ "name": "Broken", "tiles": [{ "cube": "Nowhere", "view": "By entity" }] }),
+        json!({ "name": "Broken", "tiles": [{ "cube": "General Ledger", "view": "By entity", "width": 3 }] }),
+        json!({ "name": "Broken", "tiles": [{ "view": "By entity" }] }),
+        json!({ "name": "Broken", "tiles": [{ "show": "text", "text": "  " }] }),
+        placed(json!({ "x": 8, "y": 0, "w": 6, "h": 4 })),
+        placed(json!({ "x": -1, "y": 0, "w": 6, "h": 4 })),
+        placed(json!({ "x": 0, "y": 0, "w": 0, "h": 4 })),
+        json!({ "name": "Broken", "layout": "sideways", "tiles": [tile] }),
+        json!({ "name": "Broken", "filters": ["Nowhere"], "tiles": [tile] }),
+    ] {
+        let put = json!({ "based_on": 3, "dashboard": broken });
+        let (status, body) = call(&app, "PUT", "/dashboards/Broken", Some(put)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+
+    let (status, _) = call(&app, "DELETE", "/dashboards/finance?based_on=3", None).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, served) = call(&app, "GET", "/model", None).await;
+    assert!(served["model"].get("dashboards").is_none());
+    let (status, _) = call(&app, "DELETE", "/dashboards/finance?based_on=4", None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }

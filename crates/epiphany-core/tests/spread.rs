@@ -59,6 +59,18 @@ fn spread(at: [&str; 3], value: f64, method: SpreadMethod) -> Spread {
         at: at.map(str::to_owned).to_vec(),
         value,
         method,
+        holds: Vec::new(),
+    }
+}
+
+/// A spread that leaves the cells given as they are.
+fn holding(spread: Spread, holds: &[[&str; 3]]) -> Spread {
+    Spread {
+        holds: holds
+            .iter()
+            .map(|at| at.map(str::to_owned).to_vec())
+            .collect(),
+        ..spread
     }
 }
 
@@ -79,7 +91,11 @@ fn proportional_keeps_the_proportions_of_what_is_there() {
     let mut database = database(json!([]));
     set(&mut database, LEAVES[0], 10.0);
     set(&mut database, LEAVES[2], 30.0);
-    let written = database.spread(None, &spread(QUARTER, 100.0, SpreadMethod::Proportional));
+    let written = database.spread(
+        None,
+        &spread(QUARTER, 100.0, SpreadMethod::Proportional),
+        None,
+    );
     // Only the two leaves that held something are written; the empty ones stay empty.
     assert_eq!(written, Ok(2));
     assert_eq!(LEAVES.map(|at| get(&database, at)), [25.0, 0.0, 75.0, 0.0]);
@@ -91,7 +107,11 @@ fn proportional_keeps_the_proportions_of_what_is_there() {
 fn proportional_over_nothing_spreads_equally() {
     let mut database = database(json!([]));
     assert_eq!(
-        database.spread(None, &spread(QUARTER, 100.0, SpreadMethod::Proportional)),
+        database.spread(
+            None,
+            &spread(QUARTER, 100.0, SpreadMethod::Proportional),
+            None
+        ),
         Ok(4)
     );
     assert_eq!(LEAVES.map(|at| get(&database, at)), [25.0; 4]);
@@ -102,7 +122,7 @@ fn equal_gives_every_leaf_the_same_share() {
     let mut database = database(json!([]));
     set(&mut database, LEAVES[0], 10.0);
     assert_eq!(
-        database.spread(None, &spread(QUARTER, 60.0, SpreadMethod::Equal)),
+        database.spread(None, &spread(QUARTER, 60.0, SpreadMethod::Equal), None),
         Ok(4)
     );
     assert_eq!(LEAVES.map(|at| get(&database, at)), [15.0; 4]);
@@ -112,7 +132,8 @@ fn equal_gives_every_leaf_the_same_share() {
     assert_eq!(
         database.spread(
             None,
-            &spread(["North", "Q1", "Units"], 8.0, SpreadMethod::Equal)
+            &spread(["North", "Q1", "Units"], 8.0, SpreadMethod::Equal),
+            None
         ),
         Ok(2)
     );
@@ -123,7 +144,7 @@ fn equal_gives_every_leaf_the_same_share() {
 fn repeat_gives_every_leaf_the_value_itself() {
     let mut database = database(json!([]));
     assert_eq!(
-        database.spread(None, &spread(QUARTER, 7.0, SpreadMethod::Repeat)),
+        database.spread(None, &spread(QUARTER, 7.0, SpreadMethod::Repeat), None),
         Ok(4)
     );
     assert_eq!(LEAVES.map(|at| get(&database, at)), [7.0; 4]);
@@ -138,7 +159,11 @@ fn weights_are_respected() {
     // Profit is revenue less cost, 40 now. Doubling it doubles both.
     let profit = ["North", "Jan", "Profit"];
     assert_eq!(
-        database.spread(None, &spread(profit, 80.0, SpreadMethod::Proportional)),
+        database.spread(
+            None,
+            &spread(profit, 80.0, SpreadMethod::Proportional),
+            None
+        ),
         Ok(2)
     );
     assert_eq!(get(&database, ["North", "Jan", "Revenue"]), 200.0);
@@ -147,7 +172,7 @@ fn weights_are_respected() {
 
     // One part revenue less one part cost comes to nothing whatever the share, so no equal
     // share can add up to a value.
-    let outcome = database.spread(None, &spread(profit, 80.0, SpreadMethod::Equal));
+    let outcome = database.spread(None, &spread(profit, 80.0, SpreadMethod::Equal), None);
     assert!(
         matches!(
             outcome,
@@ -162,6 +187,61 @@ fn weights_are_respected() {
 }
 
 #[test]
+fn cells_held_keep_their_values_and_the_rest_take_the_difference() {
+    let filled = || {
+        let mut database = database(json!([]));
+        for (leaf, value) in LEAVES.iter().zip([10.0, 20.0, 30.0, 40.0]) {
+            set(&mut database, *leaf, value);
+        }
+        database
+    };
+    let values = |database: &Database| LEAVES.map(|leaf| get(database, leaf));
+
+    // In proportion: North in January keeps its 10, and the other three share 190 as they
+    // shared 90.
+    let mut database = filled();
+    let proportional = spread(QUARTER, 200.0, SpreadMethod::Proportional);
+    database
+        .spread(None, &holding(proportional, &[LEAVES[0]]), None)
+        .unwrap();
+    let [kept, rest @ ..] = values(&database);
+    assert_eq!(kept, 10.0);
+    let expected = [20.0, 30.0, 40.0].map(|value| value * 190.0 / 90.0);
+    for (got, want) in rest.iter().zip(expected) {
+        assert!((got - want).abs() < 1e-9, "{got} against {want}");
+    }
+    assert!((get(&database, QUARTER) - 200.0).abs() < 1e-9);
+
+    // Equally, with all of the North held through its quarter: the South shares what is left.
+    let mut database = filled();
+    let equal = spread(QUARTER, 100.0, SpreadMethod::Equal);
+    database
+        .spread(None, &holding(equal, &[["North", "Q1", "Units"]]), None)
+        .unwrap();
+    assert_eq!(values(&database), [10.0, 20.0, 35.0, 35.0]);
+
+    // Repeated, every leaf but the one held takes the value itself.
+    let mut database = filled();
+    let repeat = spread(QUARTER, 5.0, SpreadMethod::Repeat);
+    database
+        .spread(None, &holding(repeat, &[LEAVES[3]]), None)
+        .unwrap();
+    assert_eq!(values(&database), [5.0, 5.0, 5.0, 40.0]);
+
+    // With every leaf held, nothing can take a share.
+    let mut database = filled();
+    let everything = holding(spread(QUARTER, 1.0, SpreadMethod::Equal), &[QUARTER]);
+    assert!(matches!(
+        database.spread(None, &everything, None),
+        Err(Error::Write {
+            error: CellError::Spread(_),
+            ..
+        })
+    ));
+    assert_eq!(values(&database), [10.0, 20.0, 30.0, 40.0]);
+}
+
+#[test]
 fn a_spread_is_part_of_its_transaction() {
     let mut database = database(json!([]));
     let transaction = database.begin();
@@ -169,6 +249,7 @@ fn a_spread_is_part_of_its_transaction() {
         .spread(
             Some(transaction),
             &spread(QUARTER, 100.0, SpreadMethod::Equal),
+            None,
         )
         .unwrap();
     assert_eq!(
@@ -178,15 +259,23 @@ fn a_spread_is_part_of_its_transaction() {
     assert_eq!(get(&database, QUARTER), 0.0);
 
     // A second spread in the same transaction works from the first one's pending values.
+    let after_first = database.savepoint(transaction).unwrap();
     database
         .spread(
             Some(transaction),
             &spread(QUARTER, 40.0, SpreadMethod::Proportional),
+            None,
         )
         .unwrap();
     assert_eq!(
         database.read(Some(transaction), &cell(LEAVES[0])),
         Ok(Scalar::Number(10.0))
+    );
+    // Going back past the second spread takes back every leaf it wrote, at once.
+    database.undo_to(transaction, after_first).unwrap();
+    assert_eq!(
+        database.read(Some(transaction), &cell(QUARTER)),
+        Ok(Scalar::Number(100.0))
     );
     database.rollback(transaction).unwrap();
     assert_eq!(get(&database, QUARTER), 0.0);
@@ -199,7 +288,11 @@ fn a_spread_is_part_of_its_transaction() {
         value: Scalar::Number(1.0),
     };
     database.write(Some(first), &[write]).unwrap();
-    let blocked = database.spread(Some(second), &spread(QUARTER, 100.0, SpreadMethod::Equal));
+    let blocked = database.spread(
+        Some(second),
+        &spread(QUARTER, 100.0, SpreadMethod::Equal),
+        None,
+    );
     assert!(matches!(blocked, Err(Error::Locked(_))), "{blocked:?}");
     assert_eq!(
         database.read(Some(second), &cell(LEAVES[0])),
@@ -216,7 +309,7 @@ fn cells_that_rules_calculate_are_left_alone() {
     ]);
     let mut database = database(rules);
     assert_eq!(
-        database.spread(None, &spread(QUARTER, 30.0, SpreadMethod::Equal)),
+        database.spread(None, &spread(QUARTER, 30.0, SpreadMethod::Equal), None),
         Ok(2)
     );
     assert_eq!(
@@ -225,7 +318,7 @@ fn cells_that_rules_calculate_are_left_alone() {
     );
     let decided = spread(["World", "Feb", "Units"], 1.0, SpreadMethod::Equal);
     assert_eq!(
-        database.spread(None, &decided),
+        database.spread(None, &decided, None),
         refused(CellError::Calculated)
     );
 }
@@ -234,25 +327,28 @@ fn cells_that_rules_calculate_are_left_alone() {
 fn a_leaf_is_simply_written_and_bad_targets_are_refused() {
     let mut database = database(json!([]));
     assert_eq!(
-        database.spread(None, &spread(LEAVES[0], 9.0, SpreadMethod::Repeat)),
+        database.spread(None, &spread(LEAVES[0], 9.0, SpreadMethod::Repeat), None),
         Ok(1)
     );
     assert_eq!(get(&database, LEAVES[0]), 9.0);
 
     let note = spread(["World", "Q1", "Note"], 1.0, SpreadMethod::Equal);
-    assert_eq!(database.spread(None, &note), refused(CellError::WrongType));
+    assert_eq!(
+        database.spread(None, &note, None),
+        refused(CellError::WrongType)
+    );
     let infinite = spread(QUARTER, f64::INFINITY, SpreadMethod::Equal);
     assert_eq!(
-        database.spread(None, &infinite),
+        database.spread(None, &infinite, None),
         refused(CellError::NotFinite)
     );
     let unknown = spread(["Mars", "Q1", "Units"], 1.0, SpreadMethod::Equal);
     assert!(matches!(
-        database.spread(None, &unknown),
+        database.spread(None, &unknown, None),
         Err(Error::Cell(CellError::UnknownElement { .. }))
     ));
     assert!(matches!(
-        database.spread(Some(99), &spread(QUARTER, 1.0, SpreadMethod::Equal)),
+        database.spread(Some(99), &spread(QUARTER, 1.0, SpreadMethod::Equal), None),
         Err(Error::UnknownTransaction(99))
     ));
 }
@@ -271,9 +367,10 @@ fn a_spread_too_wide_is_refused_unless_it_only_scales_what_is_there() {
         at: vec!["all".to_owned(); 4],
         value,
         method,
+        holds: Vec::new(),
     };
     // A hundred million leaves are too many to write one by one.
-    let outcome = database.spread(None, &grand(1.0, SpreadMethod::Equal));
+    let outcome = database.spread(None, &grand(1.0, SpreadMethod::Equal), None);
     assert!(
         matches!(
             outcome,
@@ -292,7 +389,7 @@ fn a_spread_too_wide_is_refused_unless_it_only_scales_what_is_there() {
     };
     database.write(None, &[write]).unwrap();
     assert_eq!(
-        database.spread(None, &grand(10.0, SpreadMethod::Proportional)),
+        database.spread(None, &grand(10.0, SpreadMethod::Proportional), None),
         Ok(1)
     );
     let total = CellRef {

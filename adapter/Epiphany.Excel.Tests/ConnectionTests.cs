@@ -38,6 +38,22 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task ManyReadsTravelAFewThousandAtATime()
+        {
+            // As many as a large workbook asks for in one calculation.
+            var months = new[] { "Jan", "Feb", "Mar", "Apr", "May", "Jun" };
+            var reads = Enumerable.Range(0, 12000)
+                .Select(index => connection.Read(Ledger, At("Rent", "UK", months[index % 6], "Budget")));
+            var values = await Task.WhenAll(reads.ToArray());
+            Assert.Equal(12000, values.Length);
+            // Every one is answered with a number, and the same cell with the same one.
+            Assert.All(values, value => Assert.IsType<double>(value));
+            Assert.All(Enumerable.Range(6, 11994), index => Assert.Equal(values[index % 6], values[index]));
+            // At five thousand a request, no fewer than three.
+            Assert.True(connection.Requests >= 3, connection.Requests + " requests");
+        }
+
+        [Fact]
         public async Task AReadSeesAWriteOfTheSameCalculation()
         {
             // Asked for in the order a worksheet might calculate them: the read first.
@@ -191,6 +207,41 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public async Task DimensionFunctionsTakeWhateverAWorksheetHandsThem()
+        {
+            object Period(Func<Dimension, object> question) => connection.Ask("Period", question).Result;
+            await connection.Ask("Period", period => period.Size());
+
+            // A position that is no position is past the end: empty text, as beyond the last.
+            foreach (var index in new[] { double.NaN, double.NegativeInfinity, double.PositiveInfinity, -1, 0.99, 1e300 })
+            {
+                Assert.Equal("", Period(period => period.Name(index, "")));
+                Assert.Equal("", Period(period => period.Parent("Jan", index)));
+                Assert.Equal("", Period(period => period.Child("Q1", index)));
+                Assert.Equal("", Period(period => period.SubsetName("", index, "")));
+            }
+            // A fraction is the position it has passed.
+            Assert.Equal("H1", Period(period => period.Name(1.9, "")));
+            // A name that is none, empty, or not text at all is no element.
+            foreach (var name in new[] { null, "", "   ", "nobody", "Jan,Feb", "\0" })
+            {
+                Assert.Equal(0.0, Period(period => period.Index(name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.Level(name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.Next(name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.IsChild(name, "Q1")));
+                Assert.Equal(Connection.KeyError, Period(period => period.IsAncestor("H1", name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.Weight(name, name)));
+                Assert.Equal(Connection.KeyError, Period(period => period.Attribute(name, "Code")));
+                Assert.Equal(Connection.KeyError, Period(period => period.Attribute("Jan", name)));
+                Assert.Equal("", Period(period => period.SubsetName("", name, "")));
+            }
+            Assert.Equal("", Period(period => period.SubsetName("", true, "")));
+            Assert.Equal(Connection.KeyError, Period(period => period.SubsetName("nobody", 1.0, "")));
+            Assert.Equal(Connection.KeyError, Period(period => period.Members("", "nobody")));
+            Assert.Equal(Connection.KeyError, Period(period => period.SubsetSize(null)));
+        }
+
+        [Fact]
         public async Task DimensionFunctionsAnswerFromTheHierarchy()
         {
             object Period(Func<Dimension, object> question) => connection.Ask("Period", question).Result;
@@ -315,6 +366,29 @@ namespace Epiphany.Excel.Tests
         }
 
         [Fact]
+        public void NoFormulaPutTogetherAtRandomIsMoreThanTheReaderCanTake()
+        {
+            // Pieces of formulas, strung together any way: read as a call or not, never an error.
+            var pieces = new[]
+            {
+                "=", "DBRW", "SUBNM", "(", ")", ",", "\"", "'", "{", "}", " ", "A1", "$B$2", "\"a,b\"",
+                "'My sheet'!", "1", "+", "*", "IF(", "\"\"", "''", "é", "\n", "((", "))", "=DBRW(", ".", "_",
+            };
+            var random = new Random(7);
+            for (var attempt = 0; attempt < 50000; attempt++)
+            {
+                var formula = string.Concat(Enumerable.Range(0, random.Next(12)).Select(_ => pieces[random.Next(pieces.Length)]));
+                var call = Formula.Call(formula);
+                if (call == null)
+                    continue;
+                // What is read as a call has a function, and written out again reads the same.
+                Assert.NotEqual("", call[0]);
+                Assert.Equal(call, Formula.Call(Formula.With(call, 0, call[0])));
+                Assert.NotNull(Formula.With(call, call.Length + 2, Formula.Quote(formula)));
+            }
+        }
+
+        [Fact]
         public void AFormulaIsReadAsOneCallOrNotAtAll()
         {
             Assert.Equal(new[] { "SUBNM", "\"Period\"", "\"\"", "1" }, Formula.Call("=SUBNM(\"Period\",\"\",1)"));
@@ -327,6 +401,12 @@ namespace Epiphany.Excel.Tests
             Assert.Null(Formula.Call("=A1+DBRW(\"a\",\"b\")"));
             Assert.Null(Formula.Call("12"));
             Assert.Null(Formula.Call("=DBRW(\"a\""));
+
+            // So do those in the name of a sheet, which stands in single quotes, an apostrophe
+            // in it doubled; and an apostrophe in text is no such quote.
+            Assert.Equal(
+                new[] { "DBRW", "'Q1, plan (old'!A1", "'It''s, here'!B2", "\"it's, text\"" },
+                Formula.Call("=DBRW('Q1, plan (old'!A1,'It''s, here'!B2,\"it's, text\")"));
 
             var call = Formula.Call("=SUBNM(\"Period\",\"Months\",1,\"Code\")");
             Assert.Equal("=SUBNM(\"Period\",\"Months\",\"Mar\",\"Code\")", Formula.With(call, 3, Formula.Quote("Mar")));
@@ -345,6 +425,61 @@ namespace Epiphany.Excel.Tests
                 Assert.Same(Connection.Unavailable, await nowhere.Ask("Period", period => period.Size()));
                 Assert.False(await nowhere.SignIn(Home.User, Home.Password));
             }
+        }
+
+        [Fact]
+        public async Task SigningInAsksAgainWhenTheServerIsBusy()
+        {
+            // A stand-in for the server: busy the first time it is asked, then willing.
+            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            listener.Start();
+            var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            var asked = 0;
+            var serving = Task.Run(async () =>
+            {
+                while (asked < 2)
+                {
+                    using (var client = await listener.AcceptTcpClientAsync())
+                    {
+                        var stream = client.GetStream();
+                        var buffer = new byte[8192];
+                        var request = "";
+                        // The head, and then as much body as it says there is.
+                        while (!Whole(request))
+                            request += System.Text.Encoding.ASCII.GetString(buffer, 0, await stream.ReadAsync(buffer, 0, buffer.Length));
+                        asked++;
+                        var body = asked == 1
+                            ? "{\"code\":\"busy\",\"message\":\"too many sign-ins are waiting\"}"
+                            : "{\"token\":\"abc\",\"idle_seconds\":60,\"role\":\"admin\",\"cubes\":{}}";
+                        var status = asked == 1 ? "429 Too Many Requests" : "201 Created";
+                        var reply = "HTTP/1.1 " + status + "\r\nContent-Type: application/json\r\nContent-Length: "
+                            + body.Length + "\r\nConnection: close\r\n\r\n" + body;
+                        var bytes = System.Text.Encoding.ASCII.GetBytes(reply);
+                        await stream.WriteAsync(bytes, 0, bytes.Length);
+                    }
+                }
+            });
+            using (var busy = new Connection("http://127.0.0.1:" + port))
+            {
+                Assert.True(await busy.SignIn(Home.User, Home.Password));
+                Assert.True(busy.SignedIn);
+            }
+            await serving;
+            listener.Stop();
+            Assert.Equal(2, asked);
+        }
+
+        /// <summary>Whether the text of a request holds its head and all of its body.</summary>
+        private static bool Whole(string request)
+        {
+            var head = request.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+            if (head < 0)
+                return false;
+            var length = request.Substring(0, head).Split('\n')
+                .Where(line => line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                .Select(line => int.Parse(line.Substring(15).Trim()))
+                .FirstOrDefault();
+            return request.Length >= head + 4 + length;
         }
 
         [Fact]
@@ -447,6 +582,51 @@ namespace Epiphany.Excel.Tests
                 await connection.SignOut();
                 Assert.Same(Connection.Unavailable, await connection.Read("General Ledger", at));
                 Assert.Equal(4, asked);
+            }
+        }
+    }
+
+    /// <summary>Changes to the model, on a server of their own.</summary>
+    public sealed class ModelChangeTests : IClassFixture<Home>
+    {
+        private readonly Home home;
+
+        public ModelChangeTests(Home home)
+        {
+            this.home = home;
+        }
+
+        [Fact]
+        public async Task ADimensionIsFetchedAgainOnlyOnceItHasChanged()
+        {
+            var at = new[] { "Rent", "UK", "Mar", "Actual" };
+            using (var connection = new Connection(home.Address))
+            using (var http = new System.Net.Http.HttpClient())
+            {
+                var changes = 0;
+                connection.ModelChanged += () => changes++;
+                // A read first, so that the connection knows the model's version as it asks.
+                Assert.Equal(0.0, await connection.Read("General Ledger", at));
+                Assert.Equal(9.0, await connection.Ask("Period", period => period.Size()));
+                Assert.Equal(3.0, await connection.Ask("Entity", entity => entity.Size()));
+
+                // Someone gives Entity an element more; Period stays as it was.
+                var entity = "{\"based_on\":1,\"dimension\":{\"name\":\"Entity\",\"elements\":["
+                    + "{\"name\":\"Total Entity\",\"type\":\"consolidated\",\"children\":[{\"name\":\"US\"},{\"name\":\"UK\"}]},"
+                    + "{\"name\":\"US\",\"type\":\"numeric\"},{\"name\":\"UK\",\"type\":\"numeric\"},{\"name\":\"FR\",\"type\":\"numeric\"}]}}";
+                var put = new System.Net.Http.StringContent(entity, System.Text.Encoding.UTF8, "application/json");
+                Assert.True((await http.PutAsync(home.Address + "/dimensions/Entity", put)).IsSuccessStatusCode);
+
+                // The next answer comes from the new model, and the change is noticed at once.
+                Assert.Equal(0.0, await connection.Read("General Ledger", at));
+                Assert.Equal(1, changes);
+                // Period is answered from the copy held, asking the server nothing; Entity is
+                // fetched again, with FR.
+                var sent = connection.Requests;
+                Assert.Equal(9.0, await connection.Ask("Period", period => period.Size()));
+                Assert.Equal(sent, connection.Requests);
+                Assert.Equal(4.0, await connection.Ask("Entity", found => found.Size()));
+                Assert.Equal(sent + 1, connection.Requests);
             }
         }
     }

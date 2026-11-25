@@ -63,8 +63,19 @@ pub(super) fn lex(source: &str) -> Result<Vec<(Token, usize)>, MdxError> {
             at += 1;
             continue;
         }
-        if c == '-' && characters.get(at + 1) == Some(&'-') {
+        // Comments: to the end of the line after `--` or `//`, and between `/*` and `*/`.
+        if matches!(
+            (c, characters.get(at + 1)),
+            ('-', Some('-')) | ('/', Some('/'))
+        ) {
             at += characters[at..].iter().take_while(|&&c| c != '\n').count();
+            continue;
+        }
+        if c == '/' && characters.get(at + 1) == Some(&'*') {
+            let closed = characters[at + 2..]
+                .windows(2)
+                .position(|pair| pair == ['*', '/']);
+            at += 4 + closed.ok_or_else(|| error("unclosed comment", start))?;
             continue;
         }
         let token = if c == '[' {
@@ -76,11 +87,22 @@ pub(super) fn lex(source: &str) -> Result<Vec<(Token, usize)>, MdxError> {
             at = end;
             Token::Text(text)
         } else if c.is_ascii_digit() {
-            let (digits, end) = run(at, |c| c.is_ascii_digit() || c == '.');
+            let (_, mut end) = run(at, |c| c.is_ascii_digit() || c == '.');
+            // An exponent, as in 1.5E3 or 2e-7.
+            let signed = matches!(characters.get(end + 1), Some('+' | '-'));
+            let exponent = end + 1 + usize::from(signed);
+            if matches!(characters.get(end), Some('e' | 'E'))
+                && characters.get(exponent).is_some_and(char::is_ascii_digit)
+            {
+                end = run(exponent, |c| c.is_ascii_digit()).1;
+            }
+            let digits: String = characters[at..end].iter().collect();
             at = end;
             let number = digits
-                .parse()
-                .map_err(|_| error("malformed number", start))?;
+                .parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| error("malformed number", start))?;
             Token::Number(number)
         } else if c.is_alphabetic() || c == '_' {
             let (word, end) = run(at, |c| c.is_alphanumeric() || c == '_');

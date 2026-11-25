@@ -90,6 +90,22 @@ namespace Epiphany.Excel
             }
         }
 
+        /// <summary>The name signed in to an environment, or to the default one if none is
+        /// named; empty where the server asks for no sign-in. Null if there is no such
+        /// environment.</summary>
+        internal static string UserOf(string environment)
+        {
+            lock (Gate)
+            {
+                var place = fallback;
+                if (Dimension.Key(environment) != "")
+                    Places.TryGetValue(Dimension.Key(environment), out place);
+                // The name is remembered from one day to the next; it is someone's only
+                // while there is a session.
+                return place == null ? null : place.Connection.SignedIn ? place.User : "";
+            }
+        }
+
         /// <summary>Adds an environment, or replaces the one of the same name.</summary>
         private static Place Add(string name, string address, string user, Connection connection = null)
         {
@@ -101,9 +117,9 @@ namespace Epiphany.Excel
                 asking = true;
                 ExcelAsyncUtil.QueueAsMacro(() => Connect(place));
             };
-            // A changed model changes what the dimension functions answer, so every formula
-            // asks again.
-            place.Connection.ModelChanged += () => ExcelAsyncUtil.QueueAsMacro(Refresh);
+            // A changed model may change what any formula answers, so every formula asks again:
+            // from the dimensions the connection still holds, those the change left as they were.
+            place.Connection.ModelChanged += () => ExcelAsyncUtil.QueueAsMacro(() => AskAgain(forget: false));
             // Left unused, a transaction is rolled back by the server. What was entered in
             // it is gone, and the sheet goes back to showing what is stored.
             place.Connection.TransactionLost += () => ExcelAsyncUtil.QueueAsMacro(() =>
@@ -123,26 +139,66 @@ namespace Epiphany.Excel
         [ExcelCommand(MenuName = Menu, MenuText = "Refresh", ShortCut = "^R")]
         public static void Refresh()
         {
-            Refreshes++;
+            // Asking for a refresh is asking to be connected, so the sign-in window may open.
             foreach (var place in Places.Values)
-            {
                 place.Declined = false;
-                place.Connection.Refresh();
-            }
+            AskAgain();
+        }
+
+        /// <summary>Has every formula ask its server again: about dimensions fetched afresh, or,
+        /// without <paramref name="forget"/>, from those each connection holds.</summary>
+        private static void AskAgain(bool forget = true)
+        {
+            Refreshes++;
+            if (forget)
+                foreach (var place in Places.Values)
+                    place.Connection.Refresh();
             // Every formula is calculated again, whether or not Excel holds it to be out of date.
             ((Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application).CalculateFull();
         }
 
         /// <summary>What the status bar says when there is nothing else to say: that changes
         /// are being held in a transaction, or nothing, which gives the bar back to Excel.</summary>
-        internal static object Standing => fallback.Connection.InTransaction
+        internal static object Standing => InTransaction
             ? "Epiphany: in a transaction. What you enter is yours alone until Commit; Roll back discards it."
             : (object)false;
 
+        /// <summary>Whether what is entered is being held in a transaction.</summary>
+        internal static bool InTransaction => fallback != null && fallback.Connection.InTransaction;
+
+        // How long a request may take before Excel is told that it is being waited for.
+        private static readonly TimeSpan Moment = TimeSpan.FromMilliseconds(150);
+
+        /// <summary>The answer to a request a command waits for, Excel waiting with it. One that
+        /// takes more than a moment has the status bar say what is being done, and the pointer
+        /// show Excel busy, until it comes: a dimension of a million elements takes seconds to
+        /// read the first time, and a server out of reach as long as it takes to give up.</summary>
+        internal static T Awaiting<T>(string what, Func<Task<T>> request)
+        {
+            var answer = Task.Run(request);
+            if (answer.Wait(Moment))
+                return answer.Result;
+            var excel = (Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application;
+            excel.StatusBar = "Epiphany: " + what + "...";
+            excel.Cursor = Microsoft.Office.Interop.Excel.XlMousePointer.xlWait;
+            try
+            {
+                return answer.Result;
+            }
+            finally
+            {
+                excel.Cursor = Microsoft.Office.Interop.Excel.XlMousePointer.xlDefault;
+                excel.StatusBar = Standing;
+            }
+        }
+
+        /// <summary>Says something in the status bar, or what stands when there is nothing to
+        /// say, and has the ribbon show which transaction buttons now apply.</summary>
         private static void Say(string message)
         {
             var excel = (Microsoft.Office.Interop.Excel.Application)ExcelDnaUtil.Application;
             excel.StatusBar = message ?? Standing;
+            Ribbon.Changed();
         }
 
         [ExcelCommand(MenuName = Menu, MenuText = "Begin transaction")]
@@ -151,7 +207,7 @@ namespace Epiphany.Excel
             var connection = fallback.Connection;
             if (connection.InTransaction)
                 MessageBox.Show("There is a transaction already. Commit it or roll it back first.", Menu);
-            else if (!Task.Run(() => connection.Begin()).Result)
+            else if (!Awaiting("beginning a transaction", connection.Begin))
                 MessageBox.Show("The server would not begin a transaction.", Menu);
             Say(null);
         }
@@ -176,7 +232,7 @@ namespace Epiphany.Excel
                 MessageBox.Show("There is no transaction. Begin one first.", Menu);
                 return;
             }
-            var problem = Task.Run(() => connection.End(commit)).Result;
+            var problem = Awaiting(commit ? "committing" : "rolling back", () => connection.End(commit));
             if (problem != null)
                 MessageBox.Show("The transaction was not " + (commit ? "committed" : "rolled back") + ": " + problem, Menu);
             Say(null);
@@ -186,7 +242,18 @@ namespace Epiphany.Excel
         [ExcelCommand(MenuName = Menu, MenuText = "Connect...")]
         public static void Connect()
         {
-            Connect(fallback);
+            if (Settled("connect"))
+                Connect(fallback);
+        }
+
+        /// <summary>Whether no transaction is open. One that is would be left behind, neither
+        /// committed nor rolled back, by anything that changes or ends the connection; so the
+        /// user is told to end it first.</summary>
+        private static bool Settled(string what)
+        {
+            if (InTransaction)
+                MessageBox.Show("Commit the transaction or roll it back before you " + what + ".", Menu);
+            return !InTransaction;
         }
 
         /// <summary>Asks where an environment's server is and who is signing in, until the
@@ -214,6 +281,7 @@ namespace Epiphany.Excel
                 asking = false;
             }
             Save();
+            Say(null);
             Refresh();
         }
 
@@ -231,7 +299,7 @@ namespace Epiphany.Excel
             {
                 return "'" + address + "' is not an address. It should look like " + DefaultAddress + ".";
             }
-            if (!Task.Run(() => connection.SignIn(user, password)).Result)
+            if (!Awaiting("signing in to " + address, () => connection.SignIn(user, password)))
             {
                 connection.Dispose();
                 return "The server at " + address + " could not be reached, or the name or password is wrong.";
@@ -243,11 +311,21 @@ namespace Epiphany.Excel
         [ExcelCommand(MenuName = Menu, MenuText = "Disconnect")]
         public static void Disconnect()
         {
+            if (!Settled("disconnect"))
+                return;
             foreach (var place in Places.Values.ToArray())
             {
-                Task.Run(() => place.Connection.SignOut()).Wait();
+                Awaiting("signing out of " + place.Connection.Address, async () =>
+                {
+                    await place.Connection.SignOut().ConfigureAwait(false);
+                    return true;
+                });
+                // Someone who has just disconnected does not want to be asked to sign in.
                 place.Declined = true;
             }
+            Say(null);
+            // Every formula asks again and is refused, so the sheet shows that it is cut off.
+            AskAgain();
         }
 
         /// <summary>Remembers each environment's server and who signs in. Never a password.</summary>

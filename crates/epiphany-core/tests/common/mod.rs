@@ -49,6 +49,7 @@ pub fn random_model(rng: &mut Rng, dimensions: usize, shape: &Shape) -> ModelDef
         name,
         children,
         attributes: Default::default(),
+        picklist: None,
     };
     let child = |id: usize, weight: f64| ChildDef {
         name: format!("e{id}"),
@@ -74,17 +75,22 @@ pub fn random_model(rng: &mut Rng, dimensions: usize, shape: &Shape) -> ModelDef
             elements,
             attributes: Default::default(),
             subsets: Default::default(),
+            levels: Default::default(),
         }
     };
 
     ModelDef {
-        dimensions: (0..dimensions).map(&mut dimension).collect(),
+        dimensions: (0..dimensions)
+            .map(|index| dimension(index).into())
+            .collect(),
         cubes: vec![CubeDef {
             name: "C".to_owned(),
             dimensions: (0..dimensions).map(|index| format!("d{index}")).collect(),
             views: Default::default(),
             rules: Vec::new(),
             feeders: Vec::new(),
+            validations: Vec::new(),
         }],
+        ..ModelDef::default()
     }
 }

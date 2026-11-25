@@ -72,21 +72,41 @@ fn main() {
                 at: vec![name, "all".to_owned(), "e0".to_owned()],
             })
             .collect();
-        for together in [false, true] {
-            // A write empties what was kept, so each way starts with nothing worked out.
-            database.write(None, &writes[..1]).unwrap();
-            let start = Instant::now();
-            let read = match together {
-                true => database.read_many(None, &cells),
-                false => cells.iter().map(|cell| database.read(None, cell)).collect(),
-            };
-            let took = start.elapsed().as_secs_f64() * 1000.0;
-            assert!(read.iter().all(Result::is_ok));
-            let what = match together {
-                true => "113 such totals, read together",
-                false => "113 such totals, one at a time",
-            };
-            println!("{label:<16} {what:<34} {took:>9.1} ms");
+        // Every consolidation of the first two dimensions by every other, at the calculated
+        // element and at the total of the last: 338 totals, nested and overlapping.
+        let consolidations: Vec<String> = (SHAPE.leaves..SHAPE.leaves + SHAPE.groups)
+            .map(|id| format!("e{id}"))
+            .chain(["all".to_owned()])
+            .collect();
+        let mut grid = Vec::new();
+        for first in &consolidations {
+            for second in &consolidations {
+                for last in ["e0", "all"] {
+                    grid.push(CellRef {
+                        cube: "C".to_owned(),
+                        at: vec![first.clone(), second.clone(), last.to_owned()],
+                    });
+                }
+            }
+        }
+        for (what, cells) in [("113 such totals", &cells), ("a grid of 338 totals", &grid)] {
+            for together in [false, true] {
+                // A write empties what was kept, so each way starts with nothing worked out.
+                database.write(None, &writes[..1]).unwrap();
+                let start = Instant::now();
+                let read = match together {
+                    true => database.read_many(None, cells),
+                    false => cells.iter().map(|cell| database.read(None, cell)).collect(),
+                };
+                let took = start.elapsed().as_secs_f64() * 1000.0;
+                assert!(read.iter().all(Result::is_ok));
+                let how = match together {
+                    true => "read together",
+                    false => "one at a time",
+                };
+                let what = format!("{what}, {how}");
+                println!("{label:<16} {what:<34} {took:>9.1} ms");
+            }
         }
     }
 }

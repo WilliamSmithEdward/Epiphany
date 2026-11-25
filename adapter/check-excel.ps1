@@ -5,32 +5,19 @@
 #   dotnet build adapter/Epiphany.Excel -c Release
 # The add-in must be looking for the server at its default address (it is, unless Connect has
 # been used to name another), and port 8080 must be free.
-$ErrorActionPreference = 'Stop'
-$repo = Split-Path $PSScriptRoot
-$port = 8080
-$address = "http://127.0.0.1:$port"
-$directory = Join-Path ([IO.Path]::GetTempPath()) "epiphany-excel-check-$PID"
-$xll = "$repo\adapter\Epiphany.Excel\bin\Release\net472\publish\Epiphany64-packed.xll"
-
-if (Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue) { throw "port $port is in use; stop the server that has it first" }
-New-Item -ItemType Directory $directory | Out-Null
-Copy-Item -Recurse "$repo\crates\epiphany-core\tests\fixtures\model" "$directory\model"
+. "$PSScriptRoot\check-common.ps1"
+New-Home
 Set-Content -Encoding ascii "$directory\model\dimensions\line.json" '{"name":"Line","type":"standard","elements":[{"name":"Comment","type":"string"},{"name":"Amount","type":"numeric","attributes":{"Short":"Amt"}}],"attributes":{"Short":"alias"},"subsets":{"Texts":{"elements":["Comment"]},"Backwards":{"elements":["Amount","Comment"]}}}'
 Set-Content -Encoding ascii "$directory\model\cubes\notes.json" '{"name":"Notes","dimensions":["Entity","Line"]}'
 
-$server = $null; $excel = $null; $excelPid = [uint32]0
 try {
-    $server = Start-Process -PassThru -WindowStyle Hidden "$repo\target\debug\epiphany-server.exe" -ArgumentList 'serve', "`"$directory`"", "127.0.0.1:$port"
-    Start-Sleep -Seconds 2
-    if ($server.HasExited) { throw 'the server did not start' }
-
-
-    $excel = New-Object -ComObject Excel.Application
-    # Remember which process this instance is, so that only it is ever stopped.
-    Add-Type -Namespace Native -Name Window -MemberDefinition '[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);'
-    [void][Native.Window]::GetWindowThreadProcessId([IntPtr]$excel.Hwnd, [ref]$excelPid)
-    $excel.DisplayAlerts = $false
-    "registered: $($excel.RegisterXLL($xll))"
+    Start-Server
+    Start-Excel
+    # The ribbon tab arrives as a COM add-in that Excel-DNA registers under the add-in's own
+    # name; the tab is offered if that one is connected.
+    $ribbon = @($excel.COMAddIns | Where-Object { $_.Description -eq 'Epiphany' -and $_.ProgId -like 'Dna_*' -and $_.Connect })
+    if ($ribbon.Count -ne 1) { throw 'the ribbon did not load' }
+    'ribbon: True'
     $book = $excel.Workbooks.Add()
     $sheet = $book.Worksheets.Item(1)
     $sheet.Columns.Item(1).ColumnWidth = 40
@@ -82,6 +69,9 @@ try {
         @('=SUBNM("Line","Texts","Amount")', ''),
         @('=SUBNM("Line","",1)', 'Comment'),
         @('=SUBNM("Line","Nope",1)', '*KEY_ERR'),
+        # Nobody is signed in to this server, so the name is empty.
+        @('=TM1USER("local")', ''),
+        @('=TM1USER("nowhere")', '*KEY_ERR'),
         @('=DNLEV("Period")', '3'),
         @('=DNEXT("Period","H1")', 'Q1'),
         @('=DNEXT("Period","Jun")', ''),
@@ -210,18 +200,56 @@ try {
     $ok = $before -eq '9' -and [string]$size.Text -eq '10' -and [string]$added.Text -eq '0'
     if (-not $ok) { $failed++ }
     "{0}  Model change: months counted <{1}> then <{2}>, the new month reads <{3}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $before, $size.Text, $added.Text
+
+    # A value typed over a read goes to the cell that formula reads, wherever the formula
+    # stands by then. Two reads on a sheet of their own, one with its month in another cell;
+    # a row is inserted above them, which moves them without their being calculated again;
+    # then the first is typed over.
+    $moved = $book.Worksheets.Add()
+    $moved.Cells.Item(1, 1).Value2 = 'Feb'
+    $moved.Cells.Item(2, 1).Formula = "=DBRW($gl,`"Rent`",`"US`",A1,`"Budget`")"
+    $moved.Cells.Item(3, 1).Formula = "=DBRW($gl,`"Salaries`",`"US`",`"Feb`",`"Budget`")"
+    for ($tries = 0; $tries -lt 15 -and ([string]$moved.Cells.Item(2, 1).Text -ne '0' -or [string]$moved.Cells.Item(3, 1).Text -ne '0'); $tries++) { Start-Sleep -Seconds 1 }
+    $moved.Rows.Item(1).Insert() | Out-Null
+    $rent = $moved.Cells.Item(3, 1)
+    $rent.Select() | Out-Null
+    $rent.Value2 = [double]11
+    for ($tries = 0; $tries -lt 15 -and [string]$rent.Text -ne '11'; $tries++) { Start-Sleep -Seconds 1 }
+    $held = {
+        param($account)
+        $ask = @{ cells = @(@{ cube = 'General Ledger'; at = @($account, 'US', 'Feb', 'Budget') }) } | ConvertTo-Json -Depth 4
+        [string][double](Invoke-RestMethod -Method Post -Uri "$address/cells/read" -ContentType 'application/json' -Body $ask).cells[0].value
+    }
+    $got = "{0} / rent {1} / salaries {2} / {3}" -f $rent.Text, (& $held 'Rent'), (& $held 'Salaries'), $rent.Formula
+    $ok = $got -eq "11 / rent 11 / salaries 0 / =DBRW($gl,`"Rent`",`"US`",A2,`"Budget`")"
+    if (-not $ok) { $failed++ }
+    "{0}  Typed: over a formula that a new row had moved -> <{1}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $got
+
+    # The month may stand on another sheet, whose name Excel then writes in single quotes
+    # where it has a space or a sign in it. A comma and a bracket in that name are the
+    # name's and not the formula's.
+    $named = $book.Worksheets.Add()
+    $named.Name = 'Q1, plan (old'
+    $named.Cells.Item(1, 1).Value2 = 'Mar'
+    $far = $moved.Cells.Item(6, 1)
+    $far.Formula = "=DBRW($gl,`"Salaries`",`"US`",'Q1, plan (old'!A1,`"Budget`")"
+    for ($tries = 0; $tries -lt 15 -and [string]$far.Text -ne '0'; $tries++) { Start-Sleep -Seconds 1 }
+    $moved.Activate() | Out-Null
+    $far.Select() | Out-Null
+    $far.Value2 = [double]13
+    for ($tries = 0; $tries -lt 15 -and [string]$far.Text -ne '13'; $tries++) { Start-Sleep -Seconds 1 }
+    $ask = @{ cells = @(@{ cube = 'General Ledger'; at = @('Salaries', 'US', 'Mar', 'Budget') }) } | ConvertTo-Json -Depth 4
+    $stored = [string][double](Invoke-RestMethod -Method Post -Uri "$address/cells/read" -ContentType 'application/json' -Body $ask).cells[0].value
+    $got = "{0} / stored {1} / {2}" -f $far.Text, $stored, $far.Formula
+    $ok = $got -eq "13 / stored 13 / =DBRW($gl,`"Salaries`",`"US`",'Q1, plan (old'!A1,`"Budget`")"
+    if (-not $ok) { $failed++ }
+    "{0}  Typed: over a formula that reads from a sheet with a comma in its name -> <{1}>" -f $(if ($ok) { 'ok  ' } else { 'FAIL' }), $got
     "$failed failed"
     $script:failures = $failed
     $book.Close($false)
 }
 finally {
-    if ($excel) { try { $excel.Quit() } catch {} ; [void][Runtime.InteropServices.Marshal]::ReleaseComObject($excel) }
-    Start-Sleep -Seconds 2
-    if ($excelPid) { Get-Process -Id $excelPid -ErrorAction SilentlyContinue | Where-Object Name -eq 'EXCEL' | Stop-Process -Force -ErrorAction SilentlyContinue }
-    if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }
-
-    Start-Sleep -Seconds 1
-    Remove-Item -Recurse -Force $directory -ErrorAction SilentlyContinue
+    Stop-All
 }
 
 exit $failures

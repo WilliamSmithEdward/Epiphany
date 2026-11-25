@@ -7,14 +7,14 @@
 //! and fed ones if it is.
 
 use std::borrow::Cow;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::Scalar;
-use crate::cells::{Cells, Coordinate, Leaves, Writes, advance, weight};
-use crate::mdx::{MdxError, Outcome, evaluate_rule, feeder_targets, matches};
+use crate::cells::{At, Cells, Coordinate, Leaves, Writes, advance, weight};
+use crate::mdx::{MdxError, Outcome, Rule, evaluate_rule, feeder_targets, holds, matches};
 use crate::model::{Cube, Element, ElementId, ElementType, Model};
 
 /// The fed leaf cells of each cube, for the cubes that are fed.
@@ -24,13 +24,22 @@ pub(crate) type Fed = Vec<Option<FxHashSet<Coordinate>>>;
 const MOST_VISITED: usize = 10_000_000;
 /// The most cells the feeders of a model may feed.
 const MOST_FED: usize = 10_000_000;
-/// How deeply cells may depend on one another through rules.
-const DEEPEST: usize = 256;
+/// How much of a thread's stack a chain of cells that depend on one another through rules
+/// may take at a time, in bytes. Each cell in the chain is worked out inside the one that
+/// needs it, so a chain uses stack in proportion to its length and to how much its rules
+/// nest, and a thread that runs out of stack ends the whole process. Threads are given a
+/// megabyte or two; this leaves room for the deepest rule to be worked out at the end. A
+/// longer chain is followed in stages, each no deeper than this.
+const MOST_STACK: usize = 512 * 1024;
 
 /// The most consolidated cells kept for one cube; past it they are forgotten and kept afresh.
 const MOST_KEPT: usize = 1_000_000;
 
 type Read<T> = Result<T, MdxError>;
+
+/// Where the feeder check stopped: the place of the rule it was in, and the last cell it
+/// found.
+pub(crate) type Stopped = (usize, Vec<ElementId>);
 
 /// Consolidated cells worked out from the committed cells of each cube. They hold only until
 /// a cell or the model changes, when whoever owns them starts again with none.
@@ -66,11 +75,18 @@ pub(crate) struct Reader<'a> {
     fed: Cow<'a, Fed>,
     /// Consolidated cells others have worked out; none when reading a transaction's own
     /// writes, which only it can see.
-    totals: Option<&'a Totals>,
+    shared: Option<&'a Totals>,
+    /// Where there are none to share, those worked out for this reader alone: a
+    /// transaction's totals hold for as long as its writes stay as they are, the reader's.
+    own: Totals,
     /// Cells of cubes with rules that have been worked out already.
     known: RefCell<FxHashMap<(usize, Coordinate), Scalar>>,
     /// The cells being worked out, each because the one before it needs it.
     working: RefCell<Vec<(usize, Coordinate)>>,
+    /// Where the stack stood when the first of them was begun.
+    began: Cell<usize>,
+    /// The cell at which a chain was left off for having gone too deep.
+    left_off: RefCell<Option<(usize, Coordinate)>>,
 }
 
 impl<'a> Reader<'a> {
@@ -86,20 +102,38 @@ impl<'a> Reader<'a> {
             cells,
             pending,
             fed,
-            totals,
+            shared: totals,
+            own: Totals::default(),
             known: RefCell::default(),
             working: RefCell::default(),
+            began: Cell::default(),
+            left_off: RefCell::default(),
         }
     }
 
+    /// The totals kept: those everyone shares, or this reader's own.
+    fn totals(&self) -> &Totals {
+        self.shared.unwrap_or(&self.own)
+    }
+
+    /// The writes of the transaction being read in, to one cube.
+    fn pending_to(&self, cube: usize) -> Option<&'a Writes> {
+        self.pending.map(|pending| &pending[cube])
+    }
+
     pub(crate) fn read(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {
-        let ruled = !self.model.cubes()[cube].rules.is_empty();
+        let (text, consolidated) = self.kind(cube, at);
         // A leaf is quicker to look up where it is stored than among the totals.
-        let totals = self.totals.filter(|_| self.kind(cube, at).1);
+        let totals = consolidated.then_some(self.totals());
         if let Some(kept) = totals.and_then(|totals| totals.get(cube, at)) {
             return Ok(kept);
         }
-        let value = match ruled {
+        // Only what rules may decide is worked out, and remembered for the reads that follow:
+        // a leaf no rule covers is what is stored. A consolidation is always worked out, for
+        // rules may reach beneath it, and so that one that depends on itself is found.
+        let rules = &self.model.cubes()[cube].rules;
+        let decided = consolidated || rules.iter().any(|rule| rule.covers(at, text, false));
+        let value = match !rules.is_empty() && decided {
             true => self.work_out(cube, at)?,
             false => self.stored(cube, at),
         };
@@ -109,15 +143,41 @@ impl<'a> Reader<'a> {
         Ok(value)
     }
 
+    /// Shows every leaf cell of a cube that may hold something: the stored cells, those
+    /// written in the transaction being read in, and in a cube with rules the fed ones.
+    /// False, and nothing shown, for a cube with rules and no feeders, where any cell may
+    /// hold something and there is no telling which; and where there are more than `most`
+    /// of them, which the one who asks has said is too many to be worth looking through.
+    pub(crate) fn occupied(
+        &self,
+        cube: usize,
+        most: usize,
+        show: &mut dyn FnMut(&[ElementId]),
+    ) -> bool {
+        let fed = self.fed[cube].as_ref();
+        if fed.is_none() && !self.model.cubes()[cube].rules.is_empty() {
+            return false;
+        }
+        let stored = &self.cells[cube];
+        let written = self.pending.map(|pending| &pending[cube]);
+        let count = stored.stored_at().count() + written.map_or(0, |w| w.len());
+        if count + fed.map_or(0, |fed| fed.len()) > most {
+            return false;
+        }
+        stored.stored_at().for_each(|at| show(&at));
+        written.into_iter().flatten().for_each(|(at, _)| show(at));
+        fed.into_iter().flatten().for_each(|at| show(at));
+        true
+    }
+
     /// Says which cells of a cube are about to be read. Where adding up the totals among them
     /// one by one would pass over the stored cells more than once, they are all added up in a
     /// single pass and kept, and the reads that follow find them there.
     pub(crate) fn expect(&self, cube: usize, cells: &[&[ElementId]]) {
         let definition = &self.model.cubes()[cube];
-        let Some(totals) = self.totals else {
-            return;
-        };
+        let totals = self.totals();
         let stored = &self.cells[cube];
+        let pending = self.pending_to(cube);
         let mut wanted: Vec<&[ElementId]> = Vec::new();
         let mut seen = FxHashSet::default();
         let mut work = 0usize;
@@ -144,38 +204,64 @@ impl<'a> Reader<'a> {
             }
         };
         if work > stored.stored() {
-            keep(&wanted, stored.sum_many(self.model, definition, &wanted));
+            keep(
+                &wanted,
+                stored.sum_many(self.model, definition, &wanted, pending),
+            );
         }
 
-        // In a fed cube such a total counts each stored cell as it is, or as its rule makes
-        // it, and each fed cell that a rule covers. Read by itself, every total passes over
-        // all of them; here each is worked out once and shared out among the totals.
-        let (Some(fed), true) = (&self.fed[cube], reached.len() > 1) else {
+        // Such a total counts the leaves beneath it, each as its rule makes it or as it is:
+        // in a fed cube the stored and the fed ones, in one that is not every one. Read by
+        // itself, every total passes over all of them; here each is worked out once and
+        // shared out among the totals.
+        if reached.len() < 2 {
             return;
-        };
+        }
         let leaf_rules = || definition.rules.iter().filter(|rule| rule.decides_leaves());
         let ruled = |leaf: &[ElementId]| leaf_rules().any(|rule| matches(&rule.area, leaf));
-        let mut leaves: Vec<(&[ElementId], f64)> = Vec::new();
-        for (leaf, held) in stored.numbers_with(None) {
-            let value = match ruled(leaf) {
-                true => self.number(cube, leaf),
-                false => Ok(held),
-            };
-            // A rule that fails is left to fail where its cell is read.
-            let Ok(value) = value else {
-                return;
-            };
-            leaves.push((leaf, value));
-        }
-        for leaf in fed {
-            if stored.number_with(leaf, None) == 0.0 && ruled(leaf) {
-                let Ok(value) = self.number(cube, leaf) else {
+        // A leaf a rule covers is what the rule makes it; any other is what it holds, looked
+        // up where that is not known yet. A rule is only asked about a leaf beneath one of
+        // the totals, and one that fails is left to fail where its cell is read: nothing is
+        // kept then.
+        let value = |leaf: &[ElementId], held: Option<f64>| match ruled(leaf) {
+            true => self.number(cube, leaf).ok(),
+            false => Some(held.unwrap_or_else(|| stored.number_with(leaf, pending))),
+        };
+        let sums = match &self.fed[cube] {
+            Some(fed) => {
+                // The stored cells with what they hold, then the fed cells that hold nothing.
+                let leaves = |visit: &mut dyn FnMut(&[ElementId], Option<f64>)| {
+                    stored.each_number(pending, |leaf, held| visit(leaf, Some(held)));
+                    for leaf in fed {
+                        if stored.number_with(leaf, pending) == 0.0 {
+                            visit(leaf, Some(0.0));
+                        }
+                    }
+                };
+                Cells::share(self.model, definition, &reached, leaves, value)
+            }
+            None => {
+                let Some(beneath) = self.beneath(definition, &reached) else {
                     return;
                 };
-                leaves.push((leaf, value));
+                // Every combination of the leaves beneath the totals.
+                let leaves = |visit: &mut dyn FnMut(&[ElementId], Option<f64>)| {
+                    let lists: Vec<Leaves> = beneath.iter().map(Vec::as_slice).collect();
+                    if lists.iter().any(|list| list.is_empty()) {
+                        return;
+                    }
+                    let mut positions = vec![0; lists.len()];
+                    let mut leaf: Vec<ElementId> = lists.iter().map(|l| l[0].0).collect();
+                    loop {
+                        visit(&leaf, None);
+                        if !advance(&lists, &mut positions, &mut leaf) {
+                            break;
+                        }
+                    }
+                };
+                Cells::share(self.model, definition, &reached, leaves, value)
             }
-        }
-        let sums = Cells::share(self.model, definition, &reached, leaves.into_iter());
+        };
         keep(&reached, sums);
     }
 
@@ -206,10 +292,7 @@ impl<'a> Reader<'a> {
         if definition.rules.is_empty() {
             return Some(true);
         }
-        let leaves: Vec<Leaves> = self
-            .elements(definition, at)
-            .map(|e| e.leaves.as_slice())
-            .collect();
+        let leaves: Vec<Leaves> = self.elements(definition, at).map(|e| e.leaves()).collect();
         let covered = definition
             .rules
             .iter()
@@ -223,35 +306,80 @@ impl<'a> Reader<'a> {
         if let Some(known) = self.known.borrow().get(&key) {
             return Ok(known.clone());
         }
-        let circular = {
-            let working = self.working.borrow();
-            working.len() >= DEEPEST || working.contains(&key)
-        };
-        if circular {
-            let (name, at) = (&self.model.cubes()[cube].name, self.names(cube, at));
-            return Err(MdxError::new(format!(
-                "cell ({at}) of cube '{name}' depends on itself"
-            )));
+        // How far the stack has moved since the chain began is told by where a local of
+        // this call stands.
+        let here = std::ptr::from_ref(&key).addr();
+        if !self.working.borrow().is_empty() {
+            return self.follow(key, here);
+        }
+        // The cell that begins a chain. A chain too long to follow at once is left off part
+        // of the way down; the cell it was left at is then worked out first, as the
+        // beginning of a chain of its own, and what waited for it is tried again and now
+        // finds it known. Every stage adds to what is known, so the stages come to an end.
+        self.began.set(here);
+        let mut waiting = FxHashSet::from_iter([key.clone()]);
+        let mut wanted = vec![key];
+        loop {
+            let next = wanted.last().expect("the first is taken off last").clone();
+            let value = self.follow(next, here);
+            match self.left_off.take() {
+                // A cell cannot be waiting for a cell that waits for it.
+                Some(deeper) if !waiting.insert(deeper.clone()) => {
+                    return Err(self.circular(&deeper));
+                }
+                Some(deeper) => wanted.push(deeper),
+                None => {
+                    let value = value?;
+                    wanted.pop();
+                    if wanted.is_empty() {
+                        return Ok(value);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Works out a cell that is not known yet, as one more of a chain of them.
+    fn follow(&self, key: (usize, Coordinate), here: usize) -> Read<Scalar> {
+        if self.working.borrow().contains(&key) {
+            return Err(self.circular(&key));
+        }
+        if self.began.get().abs_diff(here) > MOST_STACK {
+            let message = "the chain of cells is too long to follow at once";
+            *self.left_off.borrow_mut() = Some(key);
+            return Err(MdxError::new(message.to_owned()));
         }
         self.working.borrow_mut().push(key.clone());
-        let value = self.decide(cube, at);
+        let value = self.decide(key.0, &key.1);
         self.working.borrow_mut().pop();
         let value = value?;
         self.known.borrow_mut().insert(key, value.clone());
         Ok(value)
     }
 
+    fn circular(&self, (cube, at): &(usize, Coordinate)) -> MdxError {
+        let (name, at) = (&self.model.cubes()[*cube].name, self.names(*cube, at));
+        MdxError::new(format!("cell ({at}) of cube '{name}' depends on itself"))
+    }
+
     /// The leaf cells that a rule gives a value but that are neither stored nor fed, and so
-    /// are missing from the consolidations of a fed cube. At most `limit` are returned.
-    pub(crate) fn unfed(&self, cube: usize, limit: usize) -> Read<Vec<Vec<ElementId>>> {
+    /// are missing from the consolidations of a fed cube: at most `limit`, going on from just
+    /// after the cell of the rule `after` names, where it names one. With `limit` found, it
+    /// says where it stopped, the rule and the last cell, to go on from for more.
+    pub(crate) fn unfed(
+        &self,
+        cube: usize,
+        limit: usize,
+        after: Option<&Stopped>,
+    ) -> Read<(Vec<Vec<ElementId>>, Option<Stopped>)> {
         let definition = &self.model.cubes()[cube];
         let Some(fed) = &self.fed[cube] else {
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         };
         let last = definition.dimensions.len() - 1;
         let mut found = Vec::new();
         for (index, rule) in definition.rules.iter().enumerate() {
-            if !rule.decides_leaves() {
+            if !rule.decides_leaves() || after.is_some_and(|(from, _)| index < *from) {
                 continue;
             }
             // Every leaf cell of the rule's area: the element it names in a dimension, or
@@ -273,6 +401,23 @@ impl<'a> Reader<'a> {
                 continue;
             };
             let mut at: Vec<ElementId> = leaves.iter().map(|l| l[0].0).collect();
+            // Going on in the rule it stopped in, the check begins just after the cell it
+            // stopped at; a cell the area no longer holds begins the rule again.
+            if let Some((_, stopped)) = after.filter(|(from, _)| *from == index) {
+                let places: Option<Vec<usize>> = (stopped.len() == leaves.len())
+                    .then(|| {
+                        let place =
+                            |(l, id): (&Leaves, &ElementId)| l.iter().position(|(e, _)| e == id);
+                        leaves.iter().zip(stopped).map(place).collect()
+                    })
+                    .flatten();
+                if let Some(places) = places {
+                    (positions, at) = (places, stopped.clone());
+                    if !advance(&leaves, &mut positions, &mut at) {
+                        continue;
+                    }
+                }
+            }
             let earlier = &definition.rules[..index];
             loop {
                 let shadowed = earlier
@@ -283,7 +428,7 @@ impl<'a> Reader<'a> {
                 if !shadowed && !counted && self.number(cube, &at)? != 0.0 {
                     found.push(at.clone());
                     if found.len() == limit {
-                        return Ok(found);
+                        return Ok((found, Some((index, at))));
                     }
                 }
                 if !advance(&leaves, &mut positions, &mut at) {
@@ -291,7 +436,7 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        Ok(found)
+        Ok((found, None))
     }
 
     fn decide(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {
@@ -334,6 +479,13 @@ impl<'a> Reader<'a> {
         Ok(None)
     }
 
+    /// Whether a check of a cube holds at a cell it covers, the cell's value and any other it
+    /// reads as this reader sees them.
+    pub(crate) fn holds(&self, cube: usize, check: &Rule, at: &[ElementId]) -> Read<bool> {
+        let read = |cube: usize, at: &[ElementId]| self.read(cube, at);
+        holds(self.model, cube, check, at, &read)
+    }
+
     /// Whether a leaf cell is fed, in a cube that is fed at all.
     pub(crate) fn is_fed(&self, cube: usize, at: &[ElementId]) -> Option<bool> {
         self.fed[cube].as_ref().map(|fed| fed.contains(at))
@@ -354,14 +506,14 @@ impl<'a> Reader<'a> {
             }
             // Feeders fire from stored cells and from cells that are themselves fed.
             let stored = self.cells[id].numbers_with(self.pending.map(|pending| &pending[id]));
-            let fed = self.fed[id].iter().flatten().map(|at| &**at);
-            let sources: FxHashSet<&[ElementId]> = stored.map(|(at, _)| at).chain(fed).collect();
+            let fed = self.fed[id].iter().flatten().map(|at| At::kept(at));
+            let sources: FxHashSet<At> = stored.map(|(at, _)| at).chain(fed).collect();
             for source in sources {
                 for (number, feeder) in source_cube.feeders.iter().enumerate() {
-                    if !within(self.model, source_cube, &feeder.source, source) {
+                    if !within(self.model, source_cube, &feeder.source, &source) {
                         continue;
                     }
-                    for (target_id, target) in feeder_targets(self.model, id, feeder, source)? {
+                    for (target_id, target) in feeder_targets(self.model, id, feeder, &source)? {
                         let target: Vec<Option<ElementId>> = target.into_iter().map(Some).collect();
                         if target_id == cube
                             && within(self.model, &self.model.cubes()[cube], &target, at)
@@ -381,10 +533,7 @@ impl<'a> Reader<'a> {
     /// Adds up a consolidated cell that no rule has decided.
     fn consolidate(&self, cube: usize, at: &[ElementId]) -> Read<Scalar> {
         let definition = &self.model.cubes()[cube];
-        let leaves: Vec<Leaves> = self
-            .elements(definition, at)
-            .map(|e| e.leaves.as_slice())
-            .collect();
+        let leaves: Vec<Leaves> = self.elements(definition, at).map(|e| e.leaves()).collect();
         let leaf_rules = || definition.rules.iter().filter(|rule| rule.decides_leaves());
         if !self.reached(definition, &leaves) {
             return Ok(self.stored(cube, at));
@@ -396,14 +545,23 @@ impl<'a> Reader<'a> {
         if let Some(fed) = &self.fed[cube] {
             // A stored cell counts as it is unless a rule covers it; a fed cell counts if a
             // rule covers it. A cell that is both is counted once, as stored.
-            for (leaf, stored) in self.cells[cube].numbers_with(pending) {
-                if let Some(weight) = weight(&leaves, leaf) {
-                    total += weight
-                        * match ruled(leaf) {
-                            true => self.number(cube, leaf)?,
-                            false => stored,
-                        };
+            // Taken as a pass of its own, which goes quicker than one cell asked for after
+            // another; once a rule fails, the rest are passed over.
+            let mut failed = None;
+            self.cells[cube].each_number(pending, |leaf, stored| {
+                let Some(weight) = weight(&leaves, leaf).filter(|_| failed.is_none()) else {
+                    return;
+                };
+                match ruled(leaf) {
+                    true => match self.number(cube, leaf) {
+                        Ok(number) => total += weight * number,
+                        Err(error) => failed = Some(error),
+                    },
+                    false => total += weight * stored,
                 }
+            });
+            if let Some(error) = failed {
+                return Err(error);
             }
             for leaf in fed {
                 let stored = self.cells[cube].number_with(leaf, pending) != 0.0;
@@ -412,16 +570,50 @@ impl<'a> Reader<'a> {
                 }
             }
         } else if let Some(mut positions) = self.start(&leaves)? {
+            // A leaf no rule covers is what it holds, looked up without being kept.
             let mut leaf: Vec<ElementId> = leaves.iter().map(|l| l[0].0).collect();
             loop {
                 let weights = positions.iter().zip(&leaves).map(|(&p, l)| l[p].1);
-                total += weights.product::<f64>() * self.number(cube, &leaf)?;
+                let number = match ruled(&leaf) {
+                    true => self.number(cube, &leaf)?,
+                    false => self.cells[cube].number_with(&leaf, pending),
+                };
+                total += weights.product::<f64>() * number;
                 if !advance(&leaves, &mut positions, &mut leaf) {
                     break;
                 }
             }
         }
         Ok(Scalar::Number(total))
+    }
+
+    /// The leaves beneath any of some consolidated cells, in each dimension, for one walk over
+    /// every combination of them to add the cells up together. Nothing where that walk would
+    /// visit more leaves than adding them up one by one, or more than one consolidation may.
+    fn beneath(&self, cube: &Cube, cells: &[&[ElementId]]) -> Option<Vec<Vec<(ElementId, f64)>>> {
+        let mut one_by_one = 0usize;
+        for &at in cells {
+            let mut leaves = self.elements(cube, at).map(|e| e.leaves().len());
+            let visits = leaves.try_fold(1usize, usize::checked_mul);
+            one_by_one = one_by_one.saturating_add(visits.unwrap_or(usize::MAX));
+        }
+        let mut beneath = Vec::with_capacity(cube.dimensions.len());
+        for position in 0..cube.dimensions.len() {
+            let dimension = self.dimension(cube, position);
+            let elements: FxHashSet<ElementId> = cells.iter().map(|at| at[position]).collect();
+            let mut leaves: Vec<(ElementId, f64)> = elements
+                .into_iter()
+                .flat_map(|element| dimension[element as usize].leaves())
+                .map(|&(leaf, _)| (leaf, 1.0))
+                .collect();
+            leaves.sort_unstable_by_key(|&(leaf, _)| leaf);
+            leaves.dedup_by_key(|&mut (leaf, _)| leaf);
+            beneath.push(leaves);
+        }
+        let visits = beneath
+            .iter()
+            .try_fold(1usize, |n, l| n.checked_mul(l.len()))?;
+        (visits <= one_by_one.min(MOST_VISITED)).then_some(beneath)
     }
 
     /// Where a walk over every combination of leaves starts, or nothing if there are none.
@@ -484,7 +676,7 @@ fn within(model: &Model, cube: &Cube, area: &[Option<ElementId>], at: &[ElementI
     let fits = |(position, (wanted, &element)): (usize, (&Option<ElementId>, &ElementId))| {
         let dimension = &model.dimensions()[cube.dimensions[position] as usize];
         wanted.is_none_or(|wanted| {
-            let beneath = &dimension.elements[wanted as usize].leaves;
+            let beneath = dimension.elements[wanted as usize].leaves();
             wanted == element || beneath.iter().any(|&(leaf, _)| leaf == element)
         })
     };
@@ -503,12 +695,12 @@ pub(crate) fn feed(model: &Model, cells: &[Cells], pending: Option<&[Writes]>) -
     for (id, cube) in cubes.iter().enumerate() {
         if !cube.feeders.is_empty() {
             let stored = cells[id].numbers_with(pending.map(|pending| &pending[id]));
-            active.extend(stored.map(|(at, _)| (id, Coordinate::from(at))));
+            active.extend(stored.map(|(at, _)| (id, Coordinate::from(&*at))));
         }
     }
     let leaves = |cube: &Cube, position: usize, element: ElementId| -> Leaves {
         let dimension = &model.dimensions()[cube.dimensions[position] as usize];
-        &dimension.elements[element as usize].leaves
+        dimension.elements[element as usize].leaves()
     };
     let mut count = 0;
     while let Some((id, at)) = active.pop() {

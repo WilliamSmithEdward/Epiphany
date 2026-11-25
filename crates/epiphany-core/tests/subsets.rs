@@ -1,5 +1,6 @@
 use epiphany_core::Scalar;
 use epiphany_core::database::{CellWrite, Database, Error};
+use epiphany_core::mdx::Asker;
 use epiphany_core::model::{Model, ModelDef, ModelError};
 use serde_json::{Value as Json, json};
 
@@ -107,6 +108,10 @@ fn a_bad_subset_makes_the_model_invalid() {
             "invalid MDX in subset 'A' of dimension 'Period': dimension 'Period' has no subset 'B'",
         ),
         (
+            json!({ "S": { "mdx": "TM1SubsetToSet([Period], 'Mine', 'private')" } }),
+            "invalid MDX in subset 'S' of dimension 'Period': the model's views, subsets and rules cannot take anyone's private subsets",
+        ),
+        (
             json!({ "S": { "elements": [] }, "s ": { "elements": [] } }),
             "duplicate subset 's ' in dimension 'Period'",
         ),
@@ -130,6 +135,10 @@ fn a_bad_view_makes_the_model_invalid() {
         (
             json!({ "V": { "mdx": "SELECT FROM" } }),
             "invalid MDX in view 'V' of cube 'Sales': expected a cube name at character 11",
+        ),
+        (
+            json!({ "V": { "mdx": "SELECT TM1SubsetToSet([Period], 'Mine', 'private') ON COLUMNS FROM [Sales]" } }),
+            "invalid MDX in view 'V' of cube 'Sales': the model's views, subsets and rules cannot take anyone's private subsets",
         ),
     ];
     for (views, expected) in cases {
@@ -157,7 +166,9 @@ fn database() -> Database {
 #[test]
 fn a_view_runs_its_query_and_may_use_subsets() {
     let mut database = database();
-    let result = database.view(None, "sales", "by region").unwrap();
+    let result = database
+        .view(None, "sales", "by region", &Asker::ANYONE)
+        .unwrap();
     let cells: Vec<Option<Scalar>> = [5.0, 5.0, 0.0, 7.0, 0.0, 7.0]
         .map(|n| Some(Scalar::Number(n)))
         .to_vec();
@@ -173,11 +184,11 @@ fn a_view_runs_its_query_and_may_use_subsets() {
     };
     database.write(Some(transaction), &[write]).unwrap();
     let pending = database
-        .view(Some(transaction), "Sales", "By region")
+        .view(Some(transaction), "Sales", "By region", &Asker::ANYONE)
         .unwrap();
     assert_eq!(pending.cells[0], Some(Scalar::Number(6.0)));
 
-    let missing = database.view(None, "Sales", "Nope");
+    let missing = database.view(None, "Sales", "Nope", &Asker::ANYONE);
     assert_eq!(
         missing,
         Err(Error::NotFound(
@@ -204,11 +215,152 @@ fn changing_only_subsets_and_views_keeps_every_cell() {
             .is_none()
     );
     assert!(matches!(
-        database.view(None, "Sales", "By region"),
+        database.view(None, "Sales", "By region", &Asker::ANYONE),
         Err(Error::NotFound(_))
     ));
-    let query = "SELECT TM1SubsetToSet([Period], 'Second half') ON COLUMNS FROM [Sales]";
+    // Whether a subset is public or private may be said, and makes no difference here.
+    let query =
+        "SELECT TM1SubsetToSet([Period].[Period], 'Second half', 'public') ON COLUMNS FROM [Sales]";
     assert_eq!(database.query(None, query).unwrap().axes[0].tuples.len(), 2);
+}
+
+/// The model with subsets on `Region` as well as on `Period`.
+fn with_regions(subsets: Json, views: Json) -> Json {
+    let mut definition = definition(json!({}), views);
+    definition["dimensions"][1]["subsets"] = subsets;
+    definition
+}
+
+#[test]
+fn a_subset_that_reads_cells_selects_what_they_say_when_it_is_used() {
+    let subsets = json!({
+        // The region that sold the most over the year, read from the cube.
+        "Leader": { "mdx": "TopCount([Region].[World].Children, 1, LookupCube('Sales', [Period].[Year]))" },
+        // Built on it, this one reads cells as well.
+        "Others": { "mdx": "Except([Region].[World].Children, TM1SubsetToSet([Region], 'Leader'))" },
+        "Both": { "mdx": "[Region].[World].Children" }
+    });
+    let views = json!({ "Leading": { "mdx": "SELECT TM1SubsetToSet([Region], 'Leader') ON COLUMNS FROM [Sales]" } });
+    let mut database = Database::new(parse(with_regions(subsets, views))).unwrap();
+    let region = database.model().dimension("Region").unwrap();
+    let reading = |name: &str| region.subset(name).unwrap().reads_cells();
+    assert_eq!(
+        (reading("Leader"), reading("Others"), reading("Both")),
+        (true, true, false)
+    );
+
+    let ask = |database: &Database, transaction, subset: &str| -> Vec<String> {
+        let query = format!("SELECT TM1SubsetToSet([Region], '{subset}') ON COLUMNS FROM [Sales]");
+        let result = database.query(transaction, &query).unwrap();
+        result.axes[0]
+            .tuples
+            .iter()
+            .map(|tuple| tuple[0].name.clone())
+            .collect()
+    };
+    let write = |at: [&str; 2], value: f64| CellWrite {
+        cube: "Sales".to_owned(),
+        at: at.map(str::to_owned).to_vec(),
+        value: Scalar::Number(value),
+    };
+    database
+        .write(
+            None,
+            &[write(["Jan", "North"], 5.0), write(["Feb", "South"], 7.0)],
+        )
+        .unwrap();
+    assert_eq!(ask(&database, None, "Leader"), ["South"]);
+    assert_eq!(ask(&database, None, "Others"), ["North"]);
+    let view = database
+        .view(None, "Sales", "Leading", &Asker::ANYONE)
+        .unwrap();
+    assert_eq!(view.axes[0].tuples[0][0].name, "South");
+    let named = |database: &Database| -> Vec<String> {
+        let region = database.model().dimension("Region").unwrap();
+        let elements = database.subset_elements("region", "LEADER").unwrap();
+        elements
+            .iter()
+            .map(|&id| region.elements[id as usize].name.clone())
+            .collect()
+    };
+    assert_eq!(named(&database), ["South"]);
+
+    // As the cells change, so does what it selects; within a transaction, as it sees them.
+    database
+        .write(None, &[write(["Apr", "North"], 10.0)])
+        .unwrap();
+    assert_eq!(ask(&database, None, "Leader"), ["North"]);
+    assert_eq!(named(&database), ["North"]);
+    let transaction = database.begin();
+    database
+        .write(Some(transaction), &[write(["May", "South"], 20.0)])
+        .unwrap();
+    assert_eq!(ask(&database, Some(transaction), "Leader"), ["South"]);
+    assert_eq!(ask(&database, None, "Leader"), ["North"]);
+}
+
+#[test]
+fn a_query_may_use_a_subset_its_asker_keeps_for_themself() {
+    let database = database();
+    // What the one asking keeps: Spring of Period, by name or alias, with a member the
+    // dimension no longer has.
+    let own = |dimension: &str, subset: &str| -> Option<Vec<String>> {
+        let theirs = dimension == "Period" && subset.eq_ignore_ascii_case("spring");
+        theirs.then(|| ["M05", "Smarch", "Apr"].map(str::to_owned).to_vec())
+    };
+    let columns = |subset: &str, third: &str| -> Result<Vec<String>, Error> {
+        let query =
+            format!("SELECT TM1SubsetToSet([Period], '{subset}'{third}) ON COLUMNS FROM [Sales]");
+        let result = database.query_as(
+            None,
+            &query,
+            &Asker {
+                own: Some(&own),
+                ..Asker::ANYONE
+            },
+        )?;
+        Ok(result.axes[0]
+            .tuples
+            .iter()
+            .map(|tuple| tuple[0].name.clone())
+            .collect())
+    };
+    // "private" takes the asker's own, in its order, without what the dimension has not.
+    assert_eq!(columns("Spring", ", 'private'").unwrap(), ["May", "Apr"]);
+    assert_eq!(columns("SPRING", ", 'Private'").unwrap(), ["May", "Apr"]);
+    // Otherwise the model's subset, which is another thing of the same name or none.
+    assert_eq!(columns("First half", ", 'public'").unwrap(), ["Jan", "Feb"]);
+    assert_eq!(
+        columns("Spring", "").unwrap_err().to_string(),
+        "dimension 'Period' has no subset 'Spring'"
+    );
+    assert_eq!(
+        columns("Autumn", ", 'private'").unwrap_err().to_string(),
+        "you have no subset 'Autumn' of dimension 'Period'"
+    );
+    assert_eq!(
+        columns("Spring", ", 'privte'").unwrap_err().to_string(),
+        "TM1SUBSETTOSET's third argument is 'public' or 'private'"
+    );
+    // Asked by nobody in particular, a query finds nobody's.
+    let query = "SELECT TM1SubsetToSet([Period], 'Spring', 'private') ON COLUMNS FROM [Sales]";
+    assert_eq!(
+        database.query(None, query).unwrap_err().to_string(),
+        "you have no subset 'Spring' of dimension 'Period'"
+    );
+}
+
+#[test]
+fn a_picklist_cannot_offer_a_subset_that_reads_cells() {
+    let leader = json!({ "Leader": { "mdx": "TopCount([Region].[World].Children, 1, LookupCube('Sales', [Period].[Year]))" } });
+    let mut definition = with_regions(leader, json!({}));
+    let owner = json!({ "name": "Owner", "type": "string", "picklist": { "dimension": "Region", "subset": "Leader" } });
+    let note = json!({ "name": "Note", "elements": [owner] });
+    definition["dimensions"].as_array_mut().unwrap().push(note);
+    assert_eq!(
+        Model::compile(&parse(definition)).unwrap_err().to_string(),
+        "the picklist of element 'Owner' in dimension 'Note' offers subset 'Leader', which reads cells, so that what it offers would change with them"
+    );
 }
 
 #[test]

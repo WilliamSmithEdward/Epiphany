@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CellWrite, Database, Error, TransactionId};
 use crate::Scalar;
+use crate::access::Access;
 use crate::cells::{CellError, Leaves, advance, weight};
 use crate::model::{Cube, ElementId, ElementType};
 
@@ -19,6 +20,11 @@ pub struct Spread {
     pub at: Vec<String>,
     pub value: f64,
     pub method: SpreadMethod,
+    /// Cells the spread leaves as they are, each by one element name or alias for each
+    /// dimension: a leaf, or a consolidated cell whose leaves are all held. The value given is
+    /// shared among the other leaves, less what the held ones add to it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub holds: Vec<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,15 +42,19 @@ pub enum SpreadMethod {
 
 impl Database {
     /// Shares a value out among the leaves of a cell, as one batch of writes: all of them or
-    /// none. Leaves that a rule calculates are left alone. Returns how many cells were
-    /// written. A leaf cell is simply written.
+    /// none. Leaves that a rule calculates, and those held, are left alone. Returns how many
+    /// cells were written. A leaf cell is simply written. For one whom `access` binds, the
+    /// cell and its holds are refused as missing where an element of them is hidden from
+    /// them, and the spread as forbidden unless they may write every leaf beneath the cell.
     pub fn spread(
         &mut self,
         transaction: Option<TransactionId>,
         spread: &Spread,
+        access: Option<&Access>,
     ) -> Result<usize, Error> {
         self.expire();
         let (id, at) = self.locate(&spread.cube, &spread.at)?;
+        self.permitted(access, id, &at, spread.at.iter().map(String::as_str))?;
         let cube = &self.model.cubes()[id];
         let elements = || {
             let pairs = cube.dimensions.iter().zip(&at);
@@ -60,6 +70,24 @@ impl Database {
         if !spread.value.is_finite() {
             return Err(refuse(CellError::NotFinite));
         }
+        // A spread changes the leaves beneath the cell, which must all be the spreader's to
+        // write; what is hidden from them is not named.
+        if let Some((dimension, leaf)) =
+            access.and_then(|access| access.unwritable_beneath(&self.model, cube, &at))
+        {
+            let seen = access.is_some_and(|access| access.sees(dimension, leaf));
+            let dimension = &self.model.dimensions()[dimension as usize];
+            let reason = match seen {
+                true => format!(
+                    "you may only read element '{}' of dimension '{}', beneath the cell",
+                    dimension.elements[leaf as usize].name, dimension.name
+                ),
+                false => {
+                    "the cell adds up cells hidden from you, which a spread would change".to_owned()
+                }
+            };
+            return Err(refuse(CellError::Forbidden(reason)));
+        }
         let consolidated = elements().any(|e| e.kind == ElementType::Consolidated);
         if cube
             .rules
@@ -73,25 +101,53 @@ impl Database {
             Some(transaction) => Some(&self.transaction(transaction)?.writes[id]),
             None => None,
         };
-        let leaves: Vec<Leaves> = elements().map(|e| e.leaves.as_slice()).collect();
+        let leaves_of = |at: &[ElementId]| -> Vec<Leaves> {
+            let pairs = cube.dimensions.iter().zip(at);
+            let element = |(&d, &e): (&u32, &ElementId)| {
+                &self.model.dimensions()[d as usize].elements[e as usize]
+            };
+            pairs.map(|pair| element(pair).leaves()).collect()
+        };
+        let leaves = leaves_of(&at);
+        // A leaf is held where it lies beneath a cell held, in every dimension.
+        let holds: Vec<Vec<Leaves>> = spread
+            .holds
+            .iter()
+            .map(|hold| {
+                let (_, held) = self.locate(&spread.cube, hold)?;
+                self.permitted(access, id, &held, hold.iter().map(String::as_str))?;
+                Ok(leaves_of(&held))
+            })
+            .collect::<Result<_, Error>>()?;
+        let held = |leaf: &[ElementId]| holds.iter().any(|hold| weight(hold, leaf).is_some());
         let writable = |leaf: &[ElementId]| cube.rule_for_leaf(leaf, false).is_none();
-        // The leaves that hold a value now, each with its weight in the cell.
-        let held: Vec<(Vec<ElementId>, f64, f64)> = self.cells[id]
+        // The leaves that hold a value now, each with its weight in the cell: those held, whose
+        // part of the cell stays, and the others.
+        let (kept, filled): (Vec<_>, Vec<_>) = self.cells[id]
             .numbers_with(pending)
             .filter(|(leaf, _)| writable(leaf))
-            .filter_map(|(leaf, value)| Some((leaf.to_vec(), weight(&leaves, leaf)?, value)))
-            .collect();
-        let total: f64 = held.iter().map(|(_, weight, value)| weight * value).sum();
+            .filter_map(|(leaf, value)| Some((leaf.to_vec(), weight(&leaves, &leaf)?, value)))
+            .partition(|(leaf, _, _)| held(leaf));
+        let part = |cells: &[(Vec<ElementId>, f64, f64)]| -> f64 {
+            cells.iter().map(|(_, weight, value)| weight * value).sum()
+        };
+        let (total, rest) = (part(&filled), spread.value - part(&kept));
 
         let values: Vec<(Vec<ElementId>, f64)> = match spread.method {
             SpreadMethod::Proportional if total != 0.0 => {
-                let scale = spread.value / total;
-                held.into_iter()
+                let scale = rest / total;
+                filled
+                    .into_iter()
                     .map(|(leaf, _, value)| (leaf, value * scale))
                     .collect()
             }
             method => {
-                let every = every_leaf(cube, &leaves, &writable)?;
+                let free = |leaf: &[ElementId]| writable(leaf) && !held(leaf);
+                let every = every_leaf(cube, &leaves, &free)?;
+                if every.is_empty() && !holds.is_empty() {
+                    let reason = "every leaf beneath the cell is held, so none can take a share";
+                    return Err(refuse(CellError::Spread(reason.to_owned())));
+                }
                 let weights: f64 = every.iter().map(|(_, weight)| weight).sum();
                 let each = match method {
                     SpreadMethod::Repeat => spread.value,
@@ -99,7 +155,7 @@ impl Database {
                         let reason = "the weights of the cell's leaves cancel out, so no equal share adds up to the value";
                         return Err(refuse(CellError::Spread(reason.to_owned())));
                     }
-                    _ => spread.value / weights,
+                    _ => rest / weights,
                 };
                 every.into_iter().map(|(leaf, _)| (leaf, each)).collect()
             }

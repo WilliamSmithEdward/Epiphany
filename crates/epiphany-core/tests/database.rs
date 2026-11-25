@@ -1,5 +1,6 @@
 mod common;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::Duration;
@@ -7,8 +8,11 @@ use std::time::Duration;
 use common::{Rng, Shape, random_model};
 use epiphany_core::Scalar;
 use epiphany_core::cells::CellError;
-use epiphany_core::database::{CellRef, CellWrite, Database, Error, LockMode, ModelUpdate};
-use epiphany_core::model::ModelDef;
+use epiphany_core::database::{
+    CellRef, CellWrite, Changes, Database, Error, Invalid, Journal, KeptSandbox, Line, LockMode,
+    ModelUpdate, NamedCells, NamedWrites, Spread, SpreadMethod,
+};
+use epiphany_core::model::{MembersDef, ModelDef, ModelError, PicklistDef, SubsetDef};
 use serde_json::json;
 
 /// A cube `Sales` over `Product` (All = A + B) and `Measure` (Units, Note as text), and a cube
@@ -36,6 +40,34 @@ fn definition() -> ModelDef {
 
 fn database() -> Database {
     Database::new(definition()).unwrap()
+}
+
+#[test]
+fn a_dimension_keeps_the_version_it_last_changed_in() {
+    let mut database = database();
+    let versions = |database: &Database| [0, 1].map(|id| database.dimension_version(id));
+    assert_eq!(versions(&database), [1, 1]);
+    // A rule of a cube changes no dimension.
+    let mut model = definition();
+    model.cubes[0].rules = vec!["[Measure].[Units] = 1".to_owned()];
+    database.update_model(1, model.clone()).unwrap();
+    assert_eq!(versions(&database), [1, 1]);
+    // An element more changes its own dimension alone.
+    model.dimensions[1]
+        .elements
+        .push(serde_json::from_value(json!({ "name": "Price", "type": "numeric" })).unwrap());
+    database.update_model(2, model.clone()).unwrap();
+    assert_eq!(versions(&database), [1, 3]);
+    // One offering another dimension's members changes with every model, as that one may.
+    let members = MembersDef {
+        dimension: "Product".to_owned(),
+        subset: None,
+    };
+    model.dimensions[1].elements[1].picklist = Some(PicklistDef::Members(members));
+    database.update_model(3, model.clone()).unwrap();
+    model.cubes[0].rules.clear();
+    database.update_model(4, model).unwrap();
+    assert_eq!(versions(&database), [1, 5]);
 }
 
 fn cell(cube: &str, at: [&str; 2]) -> CellRef {
@@ -142,6 +174,61 @@ fn cells_read_together_equal_cells_read_one_by_one() {
         assert_eq!(together.read_many(None, &cells), expected, "seed {seed}");
         // Asked again, they come from what was kept.
         assert_eq!(together.read_many(None, &cells), expected, "seed {seed}");
+
+        // Inside a transaction whose writes replace stored cells, clear some and add others,
+        // the cells are what committing those writes would make them, read together or not.
+        let pending: Vec<CellWrite> = writes
+            .iter()
+            .take(20)
+            .enumerate()
+            .map(|(index, write)| CellWrite {
+                value: Scalar::Number(match index % 3 {
+                    0 => 0.0,
+                    1 => 7.0,
+                    _ => -3.5,
+                }),
+                ..write.clone()
+            })
+            .chain((0..20).map(|_| {
+                CellWrite {
+                    cube: "C".to_owned(),
+                    at: (0..3)
+                        .map(|_| format!("e{}", rng.below(SHAPE.leaves)))
+                        .collect(),
+                    value: Scalar::Number(rng.below(100) as f64),
+                }
+            }))
+            .collect();
+        let within = together.begin();
+        together.write(Some(within), &pending).unwrap();
+        let one_by_one_within = one_by_one.begin();
+        one_by_one.write(Some(one_by_one_within), &pending).unwrap();
+        let expected: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(Some(one_by_one_within), cell))
+            .collect();
+        assert_eq!(
+            together.read_many(Some(within), &cells),
+            expected,
+            "seed {seed}"
+        );
+        assert_eq!(
+            together.read_many(Some(within), &cells),
+            expected,
+            "seed {seed}"
+        );
+        // What was worked out inside the transaction does not leak out of it.
+        let outside: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(None, cell))
+            .collect();
+        assert_eq!(together.read_many(None, &cells), outside, "seed {seed}");
+        one_by_one.commit(one_by_one_within).unwrap();
+        let committed: Vec<_> = cells
+            .iter()
+            .map(|cell| one_by_one.read(None, cell))
+            .collect();
+        assert_eq!(expected, committed, "seed {seed}");
     }
 }
 
@@ -179,6 +266,49 @@ fn rollback_discards_pending_writes() {
         .unwrap();
     database.rollback(transaction).unwrap();
     assert_eq!(units(&database, None, "A"), 10.0);
+}
+
+#[test]
+fn a_transaction_goes_back_to_a_point_it_came_to() {
+    let mut database = database();
+    database
+        .write(None, &[set("Sales", ["A", "Units"], 10.0)])
+        .unwrap();
+    let transaction = database.begin();
+    let start = database.savepoint(transaction).unwrap();
+    assert_eq!(start, 0);
+    let both = [
+        set("Sales", ["A", "Units"], 4.0),
+        set("Sales", ["B", "Units"], 1.0),
+    ];
+    database.write(Some(transaction), &both).unwrap();
+    let middle = database.savepoint(transaction).unwrap();
+    assert_eq!(middle, 2);
+    database
+        .write(Some(transaction), &[set("Sales", ["A", "Units"], 7.0)])
+        .unwrap();
+    assert_eq!(units(&database, Some(transaction), "All"), 8.0);
+
+    // Back to the middle, A is pending at 4 again and B still at 1.
+    database.undo_to(transaction, middle).unwrap();
+    assert_eq!(units(&database, Some(transaction), "A"), 4.0);
+    assert_eq!(units(&database, Some(transaction), "All"), 5.0);
+    // Back to the start, nothing is pending and the stored value shows through.
+    database.undo_to(transaction, start).unwrap();
+    assert_eq!(units(&database, Some(transaction), "All"), 10.0);
+    assert_eq!(database.savepoint(transaction), Ok(0));
+
+    // A point not come to is refused, and the transaction stays open with nothing to commit.
+    assert!(matches!(
+        database.undo_to(transaction, 5),
+        Err(Error::NotFound(_))
+    ));
+    database.commit(transaction).unwrap();
+    assert_eq!(units(&database, None, "A"), 10.0);
+    assert_eq!(
+        database.savepoint(transaction),
+        Err(Error::UnknownTransaction(transaction))
+    );
 }
 
 #[test]
@@ -661,4 +791,630 @@ fn an_open_transaction_survives_a_model_update_that_adds_a_cube() {
         database.read(None, &cell("Plan", ["All", "Units"])),
         Ok(Scalar::Number(3.0))
     );
+}
+
+/// A journal that counts what it is asked to do, and is full after a given number of commits.
+#[derive(Debug, Default)]
+struct Counted {
+    full_after: usize,
+    commits: AtomicUsize,
+    snapshots: Arc<AtomicUsize>,
+}
+
+impl Journal for Counted {
+    fn commit(&mut self, _: &NamedWrites<'_>) -> std::io::Result<()> {
+        self.commits.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        self.commits.load(Ordering::SeqCst) >= self.full_after
+    }
+
+    fn snapshot(&mut self, _: u64, cells: &NamedCells<'_>) -> std::io::Result<()> {
+        // The cells are written out as a snapshot would write them.
+        drop(serde_json::to_string(cells).unwrap());
+        self.snapshots.fetch_add(1, Ordering::SeqCst);
+        self.commits.store(0, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_snapshot_is_taken_in_the_commit_or_left_for_later() {
+    let taken = |snapshots: &Arc<AtomicUsize>| snapshots.load(Ordering::SeqCst);
+    for deferred in [false, true] {
+        let snapshots = Arc::new(AtomicUsize::new(0));
+        let mut database = database();
+        database.set_journal(Box::new(Counted {
+            full_after: 2,
+            snapshots: Arc::clone(&snapshots),
+            ..Counted::default()
+        }));
+        if deferred {
+            database.defer_snapshots();
+        }
+        database
+            .write(None, &[set("Sales", ["A", "Units"], 1.0)])
+            .unwrap();
+        assert!(!database.snapshot_if_wanted(), "not yet full");
+        database
+            .write(None, &[set("Sales", ["B", "Units"], 2.0)])
+            .unwrap();
+        match deferred {
+            // Taken inside the commit that filled the log.
+            false => {
+                assert_eq!(taken(&snapshots), 1);
+                assert!(!database.snapshot_if_wanted());
+            }
+            // Left until asked for, and taken once.
+            true => {
+                assert_eq!(taken(&snapshots), 0);
+                assert!(database.snapshot_if_wanted());
+                assert_eq!(taken(&snapshots), 1);
+                assert!(!database.snapshot_if_wanted());
+            }
+        }
+        assert_eq!(units(&database, None, "All"), 3.0);
+    }
+}
+
+#[test]
+fn every_cell_is_written_out_as_a_cell_write_is() {
+    let mut database = database();
+    let note = CellWrite {
+        value: Scalar::Text("a \"quoted\"\nline".to_owned()),
+        ..set("Sales", ["A", "Note"], 0.0)
+    };
+    let writes = [
+        set("Sales", ["A", "Units"], 1.5),
+        set("Sales", ["B", "Units"], -2.0),
+        note,
+    ];
+    database.write(None, &writes).unwrap();
+    let written = serde_json::to_string(&database.named_cells()).unwrap();
+    assert_eq!(written, serde_json::to_string(&database.cells()).unwrap());
+    assert_eq!(database.cells().len(), 3);
+}
+
+/// A journal that keeps each commit as it would be written out.
+#[derive(Debug, Default)]
+struct Written(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl Journal for Written {
+    fn commit(&mut self, writes: &NamedWrites<'_>) -> std::io::Result<()> {
+        self.0.lock().unwrap().push(serde_json::to_string(writes)?);
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        false
+    }
+
+    fn snapshot(&mut self, _: u64, _: &NamedCells<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A journal that keeps what each commit changed, as the history of cells would write it.
+#[derive(Debug, Default)]
+struct Changed(Arc<std::sync::Mutex<Vec<serde_json::Value>>>);
+
+impl Journal for Changed {
+    fn commit(&mut self, _: &NamedWrites<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        false
+    }
+
+    fn snapshot(&mut self, _: u64, _: &NamedCells<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn changes(&mut self, changes: &Changes<'_>) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(serde_json::to_value(changes).unwrap());
+    }
+}
+
+#[test]
+fn a_text_cell_with_a_picklist_takes_only_what_it_offers() {
+    let note = |value: &str| CellWrite {
+        value: Scalar::Text(value.to_owned()),
+        ..set("Sales", ["A", "Note"], 0.0)
+    };
+    let mut database = database();
+    // Written before the picklist, a text stays when one is given.
+    database.write(None, &[note("Odd")]).unwrap();
+    let mut definition = definition();
+    let offered = ["Low", "High"].map(str::to_owned).to_vec();
+    definition.dimensions[1].elements[1].picklist = Some(PicklistDef::Values(offered));
+    database.update_model(1, definition.clone()).unwrap();
+    let read = |database: &Database| database.read(None, &cell("Sales", ["A", "Note"]));
+    assert_eq!(read(&database), Ok(Scalar::Text("Odd".to_owned())));
+
+    // A value offered is taken; another is refused, saying what is offered; emptying is allowed.
+    database.write(None, &[note("High")]).unwrap();
+    let refused = database.write(None, &[note("Medium")]).unwrap_err();
+    assert!(
+        matches!(&refused, Error::Write { index: 0, error: CellError::NotOffered { offered } } if offered == &["Low", "High"]),
+        "{refused:?}"
+    );
+    assert!(refused.to_string().contains("Low, High"), "{refused}");
+    assert_eq!(read(&database), Ok(Scalar::Text("High".to_owned())));
+    database.write(None, &[note("")]).unwrap();
+
+    // A picklist may offer a dimension's elements, or a subset's.
+    let members = |subset: Option<&str>| {
+        PicklistDef::Members(MembersDef {
+            dimension: "product".to_owned(),
+            subset: subset.map(str::to_owned),
+        })
+    };
+    definition.dimensions[1].elements[1].picklist = Some(members(None));
+    database.update_model(2, definition.clone()).unwrap();
+    database.write(None, &[note("B")]).unwrap();
+    let last = SubsetDef::Elements(vec!["B".to_owned()]);
+    definition.dimensions[0]
+        .subsets
+        .insert("Last".to_owned(), last);
+    definition.dimensions[1].elements[1].picklist = Some(members(Some("last")));
+    database.update_model(3, definition.clone()).unwrap();
+    let refused = database.write(None, &[note("A")]).unwrap_err();
+    assert!(
+        matches!(&refused, Error::Write { error: CellError::NotOffered { offered }, .. } if offered == &["B"]),
+        "{refused:?}"
+    );
+
+    // A source that is not there is refused, and only a string element takes a picklist.
+    definition.dimensions[1].elements[1].picklist = Some(members(Some("Nowhere")));
+    assert!(matches!(
+        Database::new(definition.clone()),
+        Err(ModelError::Unknown { .. })
+    ));
+    definition.dimensions[1].elements[1].picklist = None;
+    definition.dimensions[1].elements[0].picklist = Some(members(None));
+    assert!(matches!(
+        Database::new(definition),
+        Err(ModelError::Picklist { .. })
+    ));
+}
+
+#[test]
+fn a_commit_records_who_changed_each_cell_from_what_to_what() {
+    let changed = Changed::default();
+    let lines = Arc::clone(&changed.0);
+    let mut database = database();
+    database.set_journal(Box::new(changed));
+    // Unsigned, and at once.
+    database
+        .write(None, &[set("Sales", ["A", "Units"], 5.0)])
+        .unwrap();
+    // Begun signed, the transaction keeps the name; writing nothing where nothing was changes nothing.
+    database.sign(Some("ada"));
+    let transaction = database.begin();
+    database.sign(None);
+    let writes = [
+        set("Sales", ["A", "Units"], 7.0),
+        set("Sales", ["B", "Units"], 0.0),
+    ];
+    database.write(Some(transaction), &writes).unwrap();
+    database.commit(transaction).unwrap();
+    // A value written again as it was is no change at all.
+    database
+        .write(None, &[set("Sales", ["A", "Units"], 7.0)])
+        .unwrap();
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["author"], serde_json::Value::Null);
+    let cell = |before: f64, after: f64| json!([{ "cube": "Sales", "at": ["A", "Units"], "before": before, "after": after }]);
+    assert_eq!(lines[0]["cells"], cell(0.0, 5.0));
+    assert_eq!(lines[1]["author"], "ada");
+    assert_eq!(lines[1]["cells"], cell(5.0, 7.0));
+    assert!(lines[1]["time"].as_u64().unwrap() > 1_700_000_000);
+}
+
+#[test]
+fn a_commit_is_recorded_as_the_cell_writes_it_holds() {
+    let written = Written::default();
+    let lines = Arc::clone(&written.0);
+    let mut database = database();
+    database.set_journal(Box::new(written));
+    let note = CellWrite {
+        value: Scalar::Text("a \"quoted\"\nline".to_owned()),
+        ..set("Sales", ["A", "Note"], 0.0)
+    };
+    let mut writes = vec![
+        set("Sales", ["A", "Units"], 1.5),
+        set("Sales", ["B", "Units"], 0.0),
+        note,
+    ];
+    database.write(None, &writes).unwrap();
+    let lines = lines.lock().unwrap();
+    assert_eq!(lines.len(), 1);
+    let mut recorded: Vec<CellWrite> = serde_json::from_str(&lines[0]).unwrap();
+    recorded.sort_by(|a, b| a.at.cmp(&b.at));
+    writes.sort_by(|a, b| a.at.cmp(&b.at));
+    assert_eq!(recorded, writes);
+}
+
+#[test]
+fn a_sandbox_keeps_its_values_to_itself_until_they_are_published() {
+    let mut database = database();
+    let sandbox = database.create_sandbox("ada", " Plan ").unwrap();
+    assert_eq!((sandbox.name.as_str(), sandbox.pending), ("Plan", 0));
+    let id = sandbox.transaction;
+    // Another of the same name, in any case, is refused; another user may have one.
+    assert!(matches!(
+        database.create_sandbox("Ada", "plan"),
+        Err(Error::Sandbox(_))
+    ));
+    database.create_sandbox("lin", "Plan").unwrap();
+
+    database
+        .write(Some(id), &[set("Sales", ["A", "Units"], 5.0)])
+        .unwrap();
+    assert_eq!(units(&database, Some(id), "A"), 5.0);
+    assert_eq!(units(&database, None, "A"), 0.0);
+    let theirs = database.sandboxes("ADA");
+    assert_eq!((theirs.len(), theirs[0].pending), (1, 1));
+
+    // It holds no locks and waits on nobody, and is no open transaction: another writes
+    // the same cell and locks the cube while it holds its value.
+    assert!(database.open_transactions().is_empty());
+    assert!(matches!(
+        database.lock(id, Some("Sales"), LockMode::Exclusive),
+        Err(Error::Sandbox(_))
+    ));
+    let other = database.begin();
+    database
+        .write(Some(other), &[set("Sales", ["A", "Units"], 7.0)])
+        .unwrap();
+    database
+        .lock(other, Some("Sales"), LockMode::Exclusive)
+        .unwrap();
+    // Published while the cube is locked, it is refused, and keeps its value.
+    assert!(matches!(database.commit(id), Err(Error::Locked(_))));
+    database.commit(other).unwrap();
+    assert_eq!(units(&database, None, "A"), 7.0);
+    assert_eq!(units(&database, Some(id), "A"), 5.0);
+
+    // Published, its values are stored, and it stays, empty; rolled back, it is emptied.
+    database.commit(id).unwrap();
+    assert_eq!(units(&database, None, "A"), 5.0);
+    assert_eq!(database.sandboxes("ada")[0].pending, 0);
+    database
+        .write(Some(id), &[set("Sales", ["B", "Units"], 3.0)])
+        .unwrap();
+    database.rollback(id).unwrap();
+    assert_eq!(units(&database, Some(id), "B"), 0.0);
+    assert_eq!(database.sandboxes("ada")[0].transaction, id);
+
+    // However long it waits, it is kept; a plain transaction is not.
+    database.set_transaction_timeout(Duration::ZERO);
+    let idle = database.begin();
+    thread::sleep(Duration::from_millis(5));
+    database
+        .write(Some(id), &[set("Sales", ["B", "Units"], 4.0)])
+        .unwrap();
+    assert!(matches!(
+        database.rollback(idle),
+        Err(Error::UnknownTransaction(_))
+    ));
+    assert_eq!(units(&database, Some(id), "B"), 4.0);
+
+    database.delete_sandbox("ada", "PLAN").unwrap();
+    assert!(database.sandboxes("ada").is_empty());
+    let gone = database.read(Some(id), &cell("Sales", ["B", "Units"]));
+    assert!(matches!(gone, Err(Error::UnknownTransaction(_))));
+    assert!(matches!(
+        database.delete_sandbox("ada", "Plan"),
+        Err(Error::NotFound(_))
+    ));
+}
+
+#[test]
+fn a_sandbox_is_published_whole_or_not_at_all() {
+    let mut database = database();
+    let id = database.create_sandbox("ada", "Plan").unwrap().transaction;
+    let note = CellWrite {
+        value: Scalar::Text("High".to_owned()),
+        ..set("Sales", ["A", "Note"], 0.0)
+    };
+    let writes = [set("Sales", ["B", "Units"], 2.0), note];
+    database.write(Some(id), &writes).unwrap();
+    // Since it was written, the model has come to offer only "Low" there.
+    let mut definition = definition();
+    let offered = PicklistDef::Values(vec!["Low".to_owned()]);
+    definition.dimensions[1].elements[1].picklist = Some(offered);
+    database.update_model(1, definition).unwrap();
+    let refused = database.commit(id).unwrap_err();
+    let names_the_cell = |message: &str| message.contains("cell (A, Note) of cube 'Sales'");
+    assert!(
+        matches!(&refused, Error::Sandbox(message) if names_the_cell(message) && message.contains("Low")),
+        "{refused}"
+    );
+    assert_eq!(units(&database, None, "B"), 0.0);
+    assert_eq!(database.sandboxes("ada")[0].pending, 2);
+}
+
+/// A journal that keeps each sandbox as it would be written out, by its transaction.
+#[derive(Debug, Default)]
+struct Sandboxes(Arc<std::sync::Mutex<std::collections::BTreeMap<u64, Option<serde_json::Value>>>>);
+
+impl Journal for Sandboxes {
+    fn commit(&mut self, _: &NamedWrites<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn model(&mut self, _: u64, _: &ModelDef) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn is_full(&self) -> bool {
+        false
+    }
+
+    fn snapshot(&mut self, _: u64, _: &NamedCells<'_>) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn sandbox(&mut self, id: u64, sandbox: Option<&KeptSandbox<'_>>) -> std::io::Result<()> {
+        let kept = sandbox.map(|sandbox| serde_json::to_value(sandbox).unwrap());
+        self.0.lock().unwrap().insert(id, kept);
+        Ok(())
+    }
+}
+
+#[test]
+fn a_sandbox_is_kept_by_the_journal_and_carried_into_a_new_model() {
+    let journal = Sandboxes::default();
+    let kept = Arc::clone(&journal.0);
+    let mut database = database();
+    database.set_journal(Box::new(journal));
+    let id = database.create_sandbox("ada", "Plan").unwrap().transaction;
+    let writes = [
+        set("Sales", ["A", "Units"], 5.0),
+        set("Sales", ["B", "Units"], 6.0),
+    ];
+    database.write(Some(id), &writes).unwrap();
+    let saved = || kept.lock().unwrap()[&id].clone().unwrap();
+    assert_eq!(
+        (&saved()["name"], &saved()["owner"]),
+        (&json!("Plan"), &json!("ada"))
+    );
+    assert_eq!(saved()["cells"].as_array().unwrap().len(), 2);
+
+    // In a model where B is gone and C comes before A, the value at A goes where A is now;
+    // the one at B has no place.
+    let mut definition = definition();
+    let product = &mut definition.dimensions[0];
+    product.elements.retain(|element| element.name != "B");
+    product.elements[0]
+        .children
+        .retain(|child| child.name != "B");
+    let c = serde_json::from_value(json!({ "name": "C", "type": "numeric" })).unwrap();
+    product.elements.insert(1, c);
+    database.update_model(1, definition.clone()).unwrap();
+    assert_eq!(units(&database, Some(id), "A"), 5.0);
+    assert_eq!(units(&database, Some(id), "C"), 0.0);
+    assert_eq!(database.sandboxes("ada")[0].pending, 1);
+    assert_eq!(saved()["cells"].as_array().unwrap().len(), 1);
+
+    // Taken in as the journal kept it, it is the same sandbox, under the same transaction.
+    let cells: Vec<CellWrite> = serde_json::from_value(saved()["cells"].clone()).unwrap();
+    let mut restored = Database::new(definition).unwrap();
+    assert_eq!(restored.restore_sandbox(id, "ada", "Plan", &cells, &[]), 0);
+    assert_eq!(units(&restored, Some(id), "A"), 5.0);
+    assert_eq!(restored.sandboxes("ada")[0].transaction, id);
+
+    database.delete_sandbox("ada", "Plan").unwrap();
+    assert_eq!(kept.lock().unwrap()[&id], None);
+}
+
+/// A check of the cube `Sales`, as the model writes one.
+fn check(
+    cells: &str,
+    valid: &str,
+    message: &str,
+    refuse: bool,
+) -> epiphany_core::model::ValidationDef {
+    let check = json!({ "cells": cells, "valid": valid, "message": message, "refuse": refuse });
+    serde_json::from_value(check).unwrap()
+}
+
+#[test]
+fn a_check_refuses_a_value_it_does_not_hold_for_or_warns_of_it() {
+    let mut checked = definition();
+    checked.cubes[0].validations = vec![
+        check(
+            "N: [Measure].[Units]",
+            "[Measure].[Units] >= 0",
+            "Units are never negative.",
+            true,
+        ),
+        check(
+            "[Measure].[Units]",
+            "[Measure].[Units] <= 100",
+            "Over 100 units is unusual.",
+            false,
+        ),
+    ];
+    let mut database = Database::new(checked).unwrap();
+
+    // Refused, a value takes its batch with it, and the error names the check.
+    let writes = [
+        set("Sales", ["A", "Units"], 5.0),
+        set("Sales", ["B", "Units"], -1.0),
+    ];
+    let refused = database.write(None, &writes).unwrap_err();
+    let negative = |message: &String| message == "Units are never negative.";
+    assert!(
+        matches!(&refused, Error::Write { index: 1, error: CellError::Invalid(message) } if negative(message)),
+        "{refused:?}"
+    );
+    assert_eq!(refused.code(), "invalid_value");
+    assert_eq!(units(&database, None, "A"), 0.0);
+    // In a transaction, the batch refused is taken back, and what came before it stays.
+    let id = database.begin();
+    database
+        .write(Some(id), &[set("Sales", ["A", "Units"], 5.0)])
+        .unwrap();
+    let again = database.write(Some(id), &[set("Sales", ["A", "Units"], -5.0)]);
+    assert!(again.is_err());
+    assert_eq!(units(&database, Some(id), "A"), 5.0);
+    assert_eq!(database.savepoint(id).unwrap(), 1);
+    database.commit(id).unwrap();
+    // A spread is checked as the writes it makes are.
+    let spread = Spread {
+        cube: "Sales".to_owned(),
+        at: vec!["All".to_owned(), "Units".to_owned()],
+        value: -10.0,
+        method: SpreadMethod::Equal,
+        holds: Vec::new(),
+    };
+    assert!(matches!(
+        database.spread(None, &spread, None),
+        Err(Error::Write {
+            error: CellError::Invalid(_),
+            ..
+        })
+    ));
+
+    // A value that only breaks a warning is kept, and explained as breaking it, as is a
+    // total it makes break it too.
+    database
+        .write(None, &[set("Sales", ["B", "Units"], 150.0)])
+        .unwrap();
+    let invalid = |product: &str| {
+        let explained = database.explain(None, &cell("Sales", [product, "Units"]), false, None);
+        explained.unwrap().invalid
+    };
+    let unusual = Invalid {
+        message: "Over 100 units is unusual.".to_owned(),
+        refuses: false,
+    };
+    assert_eq!(invalid("B"), [unusual]);
+    assert_eq!(invalid("All"), invalid("B"));
+    assert!(invalid("A").is_empty());
+
+    // A check that names what is not there is refused with the model, which says which.
+    let mut broken = definition();
+    broken.cubes[0].validations = vec![check("[Nowhere]", "1", "", false)];
+    assert!(matches!(
+        Database::new(broken),
+        Err(ModelError::Mdx { within, .. }) if within == "validation 1 of cube 'Sales'"
+    ));
+}
+
+/// Lines of supporting detail, each a label and an amount.
+fn lines(each: &[(&str, f64)]) -> Vec<Line> {
+    let line = |&(label, value): &(&str, f64)| Line {
+        label: label.to_owned(),
+        value,
+    };
+    each.iter().map(line).collect()
+}
+
+#[test]
+fn a_detail_is_written_with_its_value_and_goes_when_the_value_is_written_plainly() {
+    let mut database = database();
+    let units_of = |product: &str| cell("Sales", [product, "Units"]);
+    let a = units_of("A");
+    let id = database.begin();
+    // Written in a transaction, the detail and the lines' sum wait there alone.
+    let detail = lines(&[(" Shop ", 3.0), ("Web", 4.5)]);
+    database.write_detail(Some(id), &a, detail, None).unwrap();
+    assert_eq!(units(&database, Some(id), "A"), 7.5);
+    let kept = lines(&[("Shop", 3.0), ("Web", 4.5)]);
+    assert_eq!(database.detail(Some(id), &a).unwrap(), kept);
+    assert!(database.detail(None, &a).unwrap().is_empty());
+    // A value written plainly takes it away; taken back, the detail comes back with it.
+    let point = database.savepoint(id).unwrap();
+    database
+        .write(Some(id), &[set("Sales", ["A", "Units"], 2.0)])
+        .unwrap();
+    assert!(database.detail(Some(id), &a).unwrap().is_empty());
+    database.undo_to(id, point).unwrap();
+    assert_eq!(database.detail(Some(id), &a).unwrap(), kept);
+    database.commit(id).unwrap();
+    assert_eq!(
+        database.explain(None, &a, false, None).unwrap().detail,
+        kept
+    );
+
+    // No lines take it away and leave the value as it is.
+    database.write_detail(None, &a, Vec::new(), None).unwrap();
+    assert!(database.detail(None, &a).unwrap().is_empty());
+    assert_eq!(units(&database, None, "A"), 7.5);
+    // A detail is a leaf number's: a total's or a text cell's is refused, as are lines that
+    // are not numbers.
+    let one = || lines(&[("x", 1.0)]);
+    assert!(
+        database
+            .write_detail(None, &units_of("All"), one(), None)
+            .is_err()
+    );
+    let note = cell("Sales", ["A", "Note"]);
+    assert!(database.write_detail(None, &note, one(), None).is_err());
+    let infinite = database.write_detail(None, &a, lines(&[("x", f64::INFINITY)]), None);
+    assert!(
+        matches!(&infinite, Err(Error::Cell(CellError::Detail(_)))),
+        "{infinite:?}"
+    );
+    assert_eq!(infinite.unwrap_err().code(), "invalid_detail");
+}
+
+#[test]
+fn a_detail_goes_where_its_cell_goes_and_is_published_with_a_sandbox() {
+    let mut database = database();
+    let units_of = |product: &str| cell("Sales", [product, "Units"]);
+    let both = lines(&[("x", 1.0), ("y", 2.0)]);
+    database
+        .write_detail(None, &units_of("A"), both.clone(), None)
+        .unwrap();
+    let five = lines(&[("z", 5.0)]);
+    database
+        .write_detail(None, &units_of("B"), five, None)
+        .unwrap();
+
+    // In a model where B is gone and C comes before A, A's detail is where A is now.
+    let mut definition = definition();
+    let product = &mut definition.dimensions[0];
+    product.elements.retain(|element| element.name != "B");
+    product.elements[0]
+        .children
+        .retain(|child| child.name != "B");
+    let c = serde_json::from_value(json!({ "name": "C", "type": "numeric" })).unwrap();
+    product.elements.insert(1, c);
+    database.update_model(1, definition).unwrap();
+    assert_eq!(database.detail(None, &units_of("A")).unwrap(), both);
+    assert!(database.detail(None, &units_of("C")).unwrap().is_empty());
+
+    // Written in a sandbox, a detail waits there, and is published with its value.
+    let id = database.create_sandbox("ada", "Plan").unwrap().transaction;
+    let four = lines(&[("w", 4.0)]);
+    database
+        .write_detail(Some(id), &units_of("C"), four.clone(), None)
+        .unwrap();
+    assert!(database.detail(None, &units_of("C")).unwrap().is_empty());
+    database.commit(id).unwrap();
+    assert_eq!(database.detail(None, &units_of("C")).unwrap(), four);
+    assert_eq!(units(&database, None, "C"), 4.0);
 }

@@ -46,6 +46,8 @@ corrected and the adapter with it.
 | `DBS`/`DBSW` to a string cell, `DBSS` to a numeric cell | `*KEY_ERR`; nothing is written | Refused, unverified |
 | A write by a user who may only read, or to a cube the user may not write | `*KEY_ERR`; that write is not made, and the others of the calculation are | Unverified |
 | A read of a cube the user may not read | `*KEY_ERR` | Unverified |
+| An element hidden from the user by a role on it | Not there: a read or write at it gives `*KEY_ERR` as an unknown element does, and the dimension functions answer from the dimension as the server gives it to the user, without it. A total above it still counts it | TM1's element security; unverified |
+| A write to an element the user may only read | `*KEY_ERR`; that write is not made, and the others of the calculation are | Unverified |
 | `DBS` with a value that is not a number | `#VALUE!`, from Excel | Unverified |
 | The cube is locked by another transaction | `#N/A`; **Refresh** to try again | No equivalent |
 | No connection, or the session has ended | `#N/A`, and the sign-in window opens once | Unverified |
@@ -77,6 +79,7 @@ corrected and the adapter with it.
 | `ELISANC` | dimension, element, other | Whether the element is above the other, at any distance | Same |
 | `ELWEIGHT` | dimension, parent, child | The child's weight in the parent; `0` if it is not a child of it | Same, unverified |
 | `SUBSIZ` | dimension, subset | The number of elements in the subset | Same |
+| `TM1USER` | environment | The name signed in to the environment, or to the default one if none is named; empty text where the server asks for no sign-in | Same, unverified |
 
 In these an unknown element gives `*KEY_ERR`.
 
@@ -92,7 +95,7 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 
 | Case | Adapter | PAfE |
 | --- | --- | --- |
-| A double click on a cell whose formula is one `SUBNM` call, or **Choose element** in the Epiphany menu | A window lists the elements of the formula's subset, shown by the alias if the formula names one. Typing narrows the list. The element chosen is written into the formula by name | PAfE opens its set editor; unverified |
+| A double click on a cell whose formula is one `SUBNM` call, or **Choose element** in the Epiphany menu | A window lists the elements of the formula's subset, shown by the alias if the formula names one. Typing narrows the list, and the window says how many it shows; Up, Down, Page Up and Page Down move the choice. A subset of a million elements is listed and narrowed at once. The element chosen is written into the formula by name | PAfE opens its set editor; unverified |
 | The dimension, subset or alias given as a reference or a formula | Worked out by Excel first | Unverified |
 | A cell whose formula is anything else, or whose subset cannot be listed | The double click edits the cell, as in any worksheet | Unverified |
 
@@ -101,8 +104,12 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 | Case | Adapter | PAfE |
 | --- | --- | --- |
 | A value typed or pasted over a cell whose formula is one `DBRW` or `DBR` call | The value is written to the cube cell the formula reads, and the formula is put back, showing the new value | Same, unverified |
+| A formula whose arguments are cells, on this sheet or another, whatever the other sheet is called | The value goes to the cube cell those cells name at that moment. A sheet's name in single quotes is read whole, its commas and brackets with it | Unverified |
 | A number over a consolidated or calculated cell | Nothing is written, the formula is put back, and the status bar says so | Unverified |
-| `P`, `S` or `R` and a number over a consolidated cell, `P1200` say | The number is spread over the leaves beneath: `P` in proportion to what they hold, `S` in equal shares, `R` the number itself to each | TM1's spreading shortcuts, of which these are three; unverified |
+| `P`, `S` or `LS`, `R` or `LR` and a number over a consolidated cell, `P1200` say | The number is spread over the leaves beneath: `P` in proportion to what they hold, `S` or `LS` in equal shares, `R` or `LR` the number itself to each | TM1's spreading shortcuts, of which these are some; unverified |
+| `+` or `~` between `P` or `S` and the number, `P+100` say | The cell's value is read, and it comes to that with the number added, or taken away, spread as `P` or `S` spreads | TM1's relative spreads; unverified |
+| `P%` and a number over a consolidated cell, `P%10` say | The cell's value is read, and it comes to that changed by the number as a percentage, a tenth more for `P%10`, spread in proportion | TM1's percent change; unverified |
+| `C` alone over a consolidated cell | The leaves beneath are cleared | TM1's clearing shortcut; unverified |
 | The same over a leaf | The number is written | Unverified |
 | The same over a string cell | It is text, and written as typed | Unverified |
 | A number over a string cell | Written as text | Unverified |
@@ -129,7 +136,7 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 | A formula recalculates when one of its arguments changes | Yes; Excel does this | Same |
 | Refreshing data without changing any argument | **Refresh** in the Epiphany menu, or Ctrl+Shift+R, asks the server again for every formula in every open workbook | PAfE refreshes from its ribbon; unverified |
 | F9 | Recalculates only what Excel holds to be out of date, so it does not fetch new data | Unverified |
-| Reads in one calculation | Collected and sent as one `/cells/read` request | Same for `DBRW` |
+| Reads in one calculation | Collected and sent together: as one `/cells/read` request, or where there are more than 5,000 of them as one request for every 5,000 | Same for `DBRW`; the size of PAfE's requests unverified |
 | Writes in one calculation | Collected and sent as one `/cells/write` request, before the reads of the same calculation. The writes that can be made are made together or not at all; a write the server refuses gets `*KEY_ERR` and does not stop the others | Unverified |
 | A `DBS` formula | Writes each time it is calculated, which includes every **Refresh** and every value typed over a read | Same for calculation; the rest unverified |
 | A formula whose value is being fetched | Shows the value it had last, so a refresh does not blank the sheet | Unverified |
@@ -145,11 +152,14 @@ use beside the listed ones, and cost nothing to answer from the copy of the dime
 | A server with users | The first refused request opens the Connect window for that environment. The session's token is kept in memory only |
 | A session that has ended | The next request is refused, and the window opens again |
 | The window closed without signing in | It is not opened again unasked until **Refresh** or **Connect** |
+| A server too busy checking passwords to take another | It says so and when to come back; the adapter asks again after a second, up to ten times, before it reports that signing in failed |
 | **Disconnect** | Signs out of every environment and forgets the tokens |
 
 ## Not replicated
 
 - `DBS` to a consolidated cell as a spread. A value is spread by typing it with its letter
   over a `DBRW`, not by a worksheet function.
-- TM1's other spreading shortcuts: directions, relative and percentage changes, holds.
+- TM1's spreading shortcuts that run along a range of cells, `R>`, `GR>` and `SL>` among
+  them, which the GUI's grid takes, and holds. The add-in takes the codes typed over one
+  cell, `P%` for a percentage change among them, no more.
 - `VIEW`, `TM1RPTROW` and the other functions of PAfE's reports.

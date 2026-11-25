@@ -11,6 +11,10 @@ Every run of the repository's CI on GitHub keeps an `epiphany-windows` artifact 
 add-in (`Epiphany64-packed.xll` for 64-bit Excel) and `epiphany-server.exe`, so neither has to
 be built to be tried. They are not signed.
 
+To have Excel load it at every start, for your user only and without administrator rights,
+close Excel and run `powershell -ExecutionPolicy Bypass -File adapter\install.ps1`; the same
+with `-Remove` takes it out again.
+
 ## Build
 
 Needs the .NET SDK. From the repository root:
@@ -25,7 +29,7 @@ installed beside Excel, and no administrator rights.
 
 ## Use
 
-1. Start a server, for example the lab: `lab\start.cmd`.
+1. Start a server, for example the sample with `start.cmd`, which starts the GUI beside it.
 2. In Excel, open the `.xll` file (File, Open), and allow the add-in for the session.
 3. Enter a formula:
 
@@ -36,7 +40,8 @@ installed beside Excel, and no administrator rights.
 A cube or dimension can name its environment, as PAfE workbooks do: `"production:Sales"` is
 the cube Sales on the server called production, and a plain `"Sales"` is looked for in the
 default environment. To begin with there is one environment, `local`, at
-`http://127.0.0.1:8080`. The **Epiphany** menu, on Excel's Add-ins tab, has:
+`http://127.0.0.1:8080`. The **Epiphany** tab of the ribbon has a button for each of these;
+they are also in an Epiphany menu on the Add-ins tab:
 
 - **Connect...** to add an environment or change one (its name, its server, who signs in),
   and to sign in. The environment connected becomes the default.
@@ -52,8 +57,11 @@ its subset; type to narrow the list, and the one you choose is written into the 
 Typing a value over a `DBRW` or `DBR` cell writes it to the cube and keeps the formula. If
 the server refuses the value, because the cell is a consolidation, say, the status bar says so.
 Once a value is written, every formula asks the server again, so totals over it follow.
-Over a consolidation, type a letter before the number to spread it over the leaves beneath:
-`P1200` in proportion to what they hold, `S1200` in equal shares, `R100` to give each 100.
+Over a consolidation, type a code before the number to spread it over the leaves beneath, as
+in the GUI's grid: `P1200` in proportion to what they hold, `S1200` (or `LS1200`) in equal
+shares, `R100` (or `LR100`) to give each 100. `P+100` or `S~100` adds 100 to what the cell
+holds, or takes it away, and spreads that; `P%10` makes it a tenth more, in proportion, and
+`P%-10` a tenth less; `C` alone clears the leaves.
 
 While a value is on its way a cell shows the value it had last, or `#GETTING_DATA` the first
 time. It shows `#N/A` when the server cannot be reached or wants a sign-in, and `*KEY_ERR`
@@ -86,6 +94,13 @@ Connect window, narrows the list that chooses a `SUBNM`'s element and chooses on
 check then disconnects. It removes the settings file that signing in saves, so run it only
 before you have connected to anything yourself.
 
+`adapter\check-excel-ribbon.ps1` presses the buttons of the Epiphany tab: Begin, Roll back,
+Commit and Refresh, watching the status bar and a cell for what each does. Unlike the other
+two it shows its Excel for a quarter of a minute; leave the window alone while it runs.
+
+The three share `adapter\check-common.ps1`, which starts the server and the Excel each of
+them uses and takes both away again.
+
 ## Layout
 
 | File | Purpose |
@@ -93,9 +108,11 @@ before you have connected to anything yourself.
 | `Epiphany.Excel/Functions.cs` | The worksheet functions. |
 | `Epiphany.Excel/Connection.cs` | The server: batched cell reads and writes, dimensions, sign-in. |
 | `Epiphany.Excel/Dimension.cs` | A copy of a dimension and the answers read from it. |
-| `Epiphany.Excel/AddIn.cs` | The environments, the menu commands and the Connect window. |
+| `Epiphany.Excel/AddIn.cs` | The environments, the commands and the Connect window. |
+| `Epiphany.Excel/Ribbon.cs` | The Epiphany tab of the ribbon. |
 | `Epiphany.Excel/Writeback.cs` | Writing a value typed over a read formula. |
 | `Epiphany.Excel/Picker.cs` | Choosing the element of a `SUBNM` formula. |
 | `Epiphany.Excel/Formula.cs` | Reading a formula as a function call and its arguments. |
 | `Epiphany.Excel/Json.cs` | JSON reading and writing. |
+| `Epiphany.Excel/Numbers.cs` | Numbers read from text and written as text exactly, which the .NET Framework's own parsing and `"R"` format are not. |
 | `Epiphany.Excel.Tests/` | The tests. |

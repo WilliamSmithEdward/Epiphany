@@ -57,6 +57,32 @@ pub enum ModelError {
     NoDimensions {
         cube: String,
     },
+    /// A dimension has no elements, so that no cell of a cube could stand anywhere in it.
+    NoElements {
+        dimension: String,
+    },
+    /// A hierarchy has more levels than one may have.
+    TooDeep {
+        dimension: String,
+        element: String,
+        most: usize,
+    },
+    /// A dashboard tile cannot be shown as it is: `problem` says why, as "is placed off the page".
+    Tile {
+        dashboard: String,
+        problem: &'static str,
+    },
+    /// An element that is not a string element has a picklist.
+    Picklist {
+        dimension: String,
+        element: String,
+    },
+    /// A picklist offers a subset that reads cells, whose elements change with them.
+    PicklistReadsCells {
+        dimension: String,
+        element: String,
+        subset: String,
+    },
 }
 
 impl fmt::Display for ModelError {
@@ -95,6 +121,30 @@ impl fmt::Display for ModelError {
             ),
             Self::Mdx { within, error } => write!(f, "invalid MDX in {within}: {error}"),
             Self::NoDimensions { cube } => write!(f, "cube '{cube}' has no dimensions"),
+            Self::NoElements { dimension } => write!(f, "dimension '{dimension}' has no elements"),
+            Self::TooDeep {
+                dimension,
+                element,
+                most,
+            } => write!(
+                f,
+                "the hierarchy of dimension '{dimension}' is more than {most} levels deep at element '{element}'"
+            ),
+            Self::Tile { dashboard, problem } => {
+                write!(f, "a tile of dashboard '{dashboard}' {problem}")
+            }
+            Self::Picklist { dimension, element } => write!(
+                f,
+                "element '{element}' in dimension '{dimension}' has a picklist; only a string element takes one"
+            ),
+            Self::PicklistReadsCells {
+                dimension,
+                element,
+                subset,
+            } => write!(
+                f,
+                "the picklist of element '{element}' in dimension '{dimension}' offers subset '{subset}', which reads cells, so that what it offers would change with them"
+            ),
         }
     }
 }

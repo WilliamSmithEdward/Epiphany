@@ -39,7 +39,11 @@ practice that means:
   interned to integer ids per dimension, parent and child arrays, levels, alias lookup, and
   for every consolidated element its flattened list of `(leaf, weight)` pairs.
 - Validation rejects: duplicate names, aliases that collide with names or each other, unknown
-  children, cycles, consolidations with no children, cubes naming unknown dimensions.
+  children, cycles, consolidations with no children, cubes naming unknown dimensions,
+  dimensions with no elements (a cube over one would have no cell to stand at, and a query
+  of it failed in the evaluator), and hierarchies more than 100 levels deep (working one
+  out goes as deep as it does, and one of fifty thousand levels ran the thread out of
+  stack). Both were found by a test of odd and extreme definitions.
 - A cube is an ordered list of dimensions and nothing else. There are no measures: a cell is
   exactly one element per dimension, which is also how DBRW-style formulas address it.
 - Element types are `numeric`, `string` and `consolidated`.
@@ -71,10 +75,14 @@ practice that means:
   members outright.
 - In a cube with rules the one pass takes the totals that are sums of stored cells and
   nothing else: those no rule covers and no leaf rule reaches beneath.
-- In a fed cube the totals a leaf rule reaches are added up together too: each stored or
-  fed leaf is worked out once and shared out among the totals it counts towards.
-- Not done: the one pass for such totals in a cube that is not fed, where each total
-  visits every leaf beneath it. What is kept is not adjusted by a write but dropped, so a workload that alternates writes
+- The totals a leaf rule reaches are added up together too, each leaf worked out once and
+  shared out among the totals it counts towards: in a fed cube every stored or fed leaf,
+  and in one that is not every combination of the leaves beneath them, where that is no
+  more than the totals would visit one by one.
+- Without feeders such a total visits every leaf beneath it. A leaf no rule covers is
+  looked up as it is stored; only those a rule works out are kept for the reads that
+  follow, so that a total over a million leaves does not keep a million cells.
+- What is kept is not adjusted by a write but dropped, so a workload that alternates writes
   and reads of totals gains only from the one pass.
 
 ### 2.3 Transactions and locks
@@ -101,6 +109,9 @@ practice that means:
   the version it was based on. A stale base version is rejected.
 - The new definition is validated and compiled off to the side, then swapped in under the
   exclusive server lock. Readers see the old snapshot or the new one, never a mixture.
+- A dimension the update leaves as it was is not copied or compiled again: its definition is
+  shared by the old model and the new, and so are its compiled elements. Saving a dashboard
+  of a model of a million elements compiles none of them (done).
 - Stored cells are re-keyed to the new element ids, matching cubes, dimensions and elements
   by name. Cells whose element was removed or turned from leaf to consolidated, or whose
   cube changed its dimensions, are dropped, and the response reports how many. A rename is
@@ -118,19 +129,67 @@ practice that means:
   append-only log of committed transactions, replayed on start. The log is written before a
   commit is acknowledged. A snapshot truncates the log.
 - Done. The server is given one directory: `model/` holds the current model with its
-  version in `model.json`; `data/` holds `snapshot.json`, `log.jsonl` and every earlier
-  model under `models/<version>/`.
+  version in `model.json`; `data/` holds `snapshot.json`, `log.jsonl`, `comments.jsonl`,
+  `history.jsonl`, each sandbox under `sandboxes/<transaction>.json` and every earlier model
+  under `models/<version>/`. A save writes only the files that changed; each file it leaves
+  unchanged, and unchanged on disk since the server wrote or read it, is hard-linked into the
+  new model rather than written again, so the model kept and the new one share it, and
+  `models/bytes.json` counts what each model kept holds alone. A link refused (a file system
+  without them, or a file at Windows' 1,023) is a file written.
+- A sandbox is written whole to its own file each time it changes, beside its place and then
+  renamed into it, before the change is acknowledged. It names its cells, so it is placed
+  afresh in whatever the model is when the server starts. A file that cannot be read stops
+  the server from opening the directory, as a damaged commit does: it is someone's work.
+- Supporting detail is recorded with the commit that writes it, in the same line of the
+  log, so that a value and its lines are stored together or not at all. A commit without
+  any is the list of cells a commit always was; one with some is `{"cells", "details"}`,
+  each detail its cell's lines, or none where a plain write took them away. The snapshot
+  keeps the details of the cells that have them beside the cells.
+- The history of cells, `history.jsonl`, keeps one line for each commit that changed a
+  value: when, who began its transaction, and each cell's value before and after. A
+  snapshot does not replace it. It is written after the commit is safe in the log, without
+  waiting on the disk again, and read through for one cell at a time, apart from the
+  database, so that reading a long history holds up no one. It is read from its end, a
+  block at a time, until what is asked for is found, so that its newest are found without
+  reading the rest. It is read back a part at a time, the newest first: each part asked until the time of the oldest change given, passing
+  over (`skip`) as many of that time as were given. A commit of many cells gives them all one
+  time, so a time alone could not say where a part left off; and a change made meanwhile is
+  newer than any asked for. The audit is read back the same way.
 - The engine reaches disk only through the `Journal` trait; the server crate implements it
   with files. A commit is appended to the log and flushed to disk before it is applied in
   memory; if that fails the commit is refused and the transaction stays open.
 - Cells are recorded by cube and element name, so a snapshot or log loads into whatever
   model is current, dropping cells that no longer fit. That makes hand-edited model files
   and interrupted model updates safe.
+- **Decision (numbers in JSON):** every crate reads JSON with serde_json's `float_roundtrip`,
+  so that a number is read back as the one its digits were written from. Without it about
+  one number in six that serde_json wrote came back a bit off (`1892571.4285714286` as
+  `1892571.4285714289`): a cell could hold another number after a restart than before it,
+  read from the snapshot or the log, and a number in a request could be stored as its
+  neighbour.
 - A snapshot replaces the log at every start, after every model update, and once the log
-  passes 64 MiB.
+  passes 64 MiB. The last is taken by the server after the request whose commit filled
+  the log, in a task of its own holding the database for reading only: readers carry on
+  while it is written, and only writers wait. Taken inside the commit, it held the database
+  for writing and nobody could read for the seconds a snapshot of millions of cells takes.
+  A writer first takes a turn, which the snapshot holds while it is written, so that it
+  waits there rather than in the lock's queue, where it would hold up every reader behind
+  it. The engine by itself still takes the snapshot in the commit, unless asked to leave it
+  (`defer_snapshots`).
 - A model update writes the new model beside the old one, moves the old one into the
   history, and moves the new one into place; opening the directory finishes or discards an
   update that was interrupted.
+- A file's contents are safe once it is flushed, but that it stands under its name is for
+  its folder to record, and on Unix the folder is flushed too: after the snapshot is moved
+  into place and before the log is emptied, when the log is first made, and after a model
+  is moved into place. Without it a loss of power could leave the old snapshot beside the
+  emptied log. This is by reasoning, not by test: nothing here cuts the power.
+- The last line of the log may be a commit that was being written when the server died:
+  it is left out, with a warning. Any other line that cannot be read is damage to a
+  commit that was acknowledged, and the directory is then not opened: going on would drop
+  every commit after it, and the snapshot taken at the start would erase them for good.
+  Lines carry no checksum, so damage to the last line cannot be told from a write cut
+  short, and damage that still reads as a commit cannot be told at all.
 - Cost to keep in view: every commit waits for the disk, so many small commits are slower
   than one batch.
 
@@ -150,8 +209,16 @@ practice that means:
   carry across from the cell being calculated; the members given move the rest.
 - Names in a rule are checked and resolved when the model is compiled, so a mistake makes
   the model invalid and evaluation does no lookups by name.
-- Evaluation is on read, remembered for the length of one request, and a cell that depends
-  on itself is reported instead of looping.
+- Evaluation is on read. What rules decide, and the consolidations, are remembered for the
+  length of one request; a leaf no rule covers is looked up as it is stored. A cell that
+  depends on itself is reported instead of looping.
+- A cell is worked out inside the cell that needs it, so a chain of cells that depend on
+  one another uses a thread's stack in proportion to its length, and a thread that runs
+  out of stack ends the process. A chain that has taken 512 KB is left off where it
+  stands; the cell it was left at is worked out first, as the beginning of a chain of its
+  own, and what waited for it is tried again and finds it known. So a balance carried
+  forward through any number of periods is followed, in stages, and a circle too long
+  to see within one stage is still found, because a cell is left off twice.
 - A cell that a rule decides cannot be written.
 - Feeders are a second list of statements, `source => target, ...`, for example
   `[Account].[Units] => [Account].[Revenue]`. Wherever a stored cell lies in the source
@@ -163,11 +230,16 @@ practice that means:
   can reach, which is always right and can be slow; past ten million cells it refuses and
   asks for feeders.
 - `GET /cubes/{cube}/feeders/check` lists calculated leaf cells that hold a value but are
-  not fed, which is how missing feeders are found.
+  not fed, which is how missing feeders are found. It stops at the first hundred it finds,
+  saying where in `next`; given back as `after`, it goes on from just after that cell, in
+  the rule it was in, so that every cell is found a part at a time without looking at the
+  first part again. **Decision:** `next` is the rule's place and the cell's elements by
+  number, so a change to the model between parts may make it name nothing: it is then
+  refused, and the check begun again.
 - `POST /cells/explain` says how each cell comes by its value: its kind, what is stored,
   whether it can be written, the rule that decides it, whether it is fed, and on request the
-  feeders that feed it with the cell each fed it from. The lab uses it to colour cells and
-  for its right-click inspector.
+  feeders that feed it with the cell each fed it from. The GUI uses it to mark the cells that
+  can be written, and to explain a cell from its menu.
 - Once any feeder feeds a cube, every leaf rule of that cube needs feeders: its
   consolidations then count stored and fed cells only.
 - Not done: feeders whose target depends on cell values.
@@ -181,31 +253,77 @@ practice that means:
   - `SELECT ... ON COLUMNS [, ... ON ROWS [, ...]] FROM [cube] [WHERE tuple]`, with
     `NON EMPTY` and `[DIMENSION] PROPERTIES` on an axis. Any number of axes, named
     (`COLUMNS`, `ROWS`, `PAGES`, `CHAPTERS`, `SECTIONS`) or numbered (`ON 0`, `ON AXIS(1)`).
+    `CELL PROPERTIES` at the end, as Excel writes it, each cell's value given whatever is
+    asked; comments after `--` or `//` to the end of the line, and between `/*` and `*/`.
   - Sets: braces, `.Members`, `.AllMembers`, `.Children`, `.Siblings`, ranges
     (`first : last`), `CrossJoin` and `*`, `Union` and `+`, `Except`, `Intersect`,
-    `Distinct`, `Head`, `Tail`, `Subset`, `.Item`, `TopCount`, `BottomCount`, `Generate`,
+    `Distinct`, `Unorder`, `Head`, `Tail`, `Subset`, `.Item`, `TopCount`, `BottomCount`, `Generate`,
     `Filter`, `Order` (`ASC`, `DESC`, `BASC`, `BDESC`), `Descendants` (distance and
-    `SELF`, `AFTER`, `SELF_AND_AFTER`, `LEAVES`), `Ancestors`, `Hierarchize` (and
+    `SELF`, `AFTER`, `BEFORE`, `SELF_AND_AFTER`, `SELF_AND_BEFORE`, `BEFORE_AND_AFTER`,
+    `SELF_BEFORE_AFTER`, `LEAVES`), `Ancestors`, `Ascendants`, `Hierarchize` (and
     `POST`), `NonEmpty`, and `TM1SubsetAll`, `TM1FilterByLevel`, `TM1FilterByPattern`,
     `TM1Sort`.
+  - `Extract(set, dimension, ...)` for what the tuples of a set hold of some dimensions,
+    and `[Dimension].DefaultMember`, the first top element.
+  - `TM1SubsetToSet(dimension, name [, "public" | "private"])`,
+    `TM1SortByIndex(set [, ASC | DESC])`, `TM1Member(tuple, place)` and
+    `TM1TupleSize(tuple)`, written from memory of TM1 and not checked against it; and
+    `.Dimension` and `.Hierarchy` of a member, a level or a dimension, with `.Name` and
+    `.UniqueName` of a dimension.
+  - `NonEmptyCrossJoin(set, set, ...)`, and `AddCalculatedMembers` and
+    `StripCalculatedMembers` for the calculated members of a set's dimension.
+  - Drilling: `DrilldownMember(set, members [, RECURSIVE])`, `TM1DrilldownMember` (which
+    also takes `ALL` for the members), `DrilldownLevel(set [, level])`,
+    `DrillDownLevelTop` and `DrillDownLevelBottom(set, count [, level [, value]])` and
+    `DrillDownMemberTop` and `DrillDownMemberBottom(set, members, count [, value [,
+    RECURSIVE]])`, which open the same members to the children with the largest values or
+    the smallest, as many as `count`; an argument left out between commas is NULL, as in
+    `DrillDownLevelTop(set, 5, , value)`;
+    `DrillupMember(set, members)` and `ToggleDrillState(set, members)`, which closes a
+    member that is followed by something beneath it and opens any other.
   - Members: `[Dimension].[Member]` by name or alias, `.Parent`, `.FirstChild`,
-    `.LastChild`, `.CurrentMember`, `Ancestor`, `.PrevMember`, `.NextMember`, `.Lag(n)`,
-    `.Lead(n)`, and `StrToMember`, `StrToTuple`, `StrToSet` for a member, tuple or set
-    given as text.
-  - Levels: `[Dimension].Levels(n)` and `member.Level`, with `.Members` and `.Ordinal`;
-    `Ancestor(member, level)`, `Cousin(member, ancestor)`,
-    `ParallelPeriod(level [, back [, member]])` and `PeriodsToDate(level [, member])`.
-  - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `NOT`, `IIF`,
-    `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`, `Aggregate`, `Avg`, `Min`, `Max`,
-    `Count` and `.Count`, tuples as cell references, `.Name`, `.UniqueName`, `.Value`,
-    and `.Properties("name")` for an attribute or for `MEMBER_NAME`,
-    `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`, `CHILDREN_CARDINALITY`.
-  - `Rank(tuple, set [, expression])`.
+    `.LastChild`, `.FirstSibling`, `.LastSibling`, `.CurrentMember`, `Ancestor`,
+    `.PrevMember`, `.NextMember`, `.Lag(n)`, `.Lead(n)`, and `StrToMember`, `StrToTuple`,
+    `StrToSet` for a member, tuple or set given as text, with `MemberToStr`, `TupleToStr`
+    and `SetToStr` writing one as such text; `NameToSet` for the set of a member named as
+    text, and `StrToValue` for the value of an expression given as text. `DrillUpLevel(set
+    [, level])` leaves out the set's members below the level, or without one those furthest
+    beneath the top of their dimension, the ones `DrillDownLevel` would open.
+  - Levels: `[Dimension].Levels(n)`, `[Dimension].Levels('name')`, `[Dimension].[name]`
+    and `member.Level`, with `.Members`, `.Ordinal` and `.Name`; `Ancestor(member, level)`,
+    `Descendants(member, level [, flag])`, `Cousin(member, ancestor)`,
+    `ParallelPeriod(level [, back [, member]])`, `PeriodsToDate(level [, member])`,
+    `LastPeriods(n [, member])`, `OpeningPeriod(level [, member])`,
+    `ClosingPeriod(level [, member])`, and `Ytd`, `Qtd`, `Mtd` and `Wtd`, each with or
+    without a member.
+  - Values: arithmetic, text joined with `+`, comparisons, `AND` / `OR` / `XOR` / `NOT`,
+    `IS` (the same member, tuple or level, or `NULL`), `IIF`, `CASE` in both its forms
+    (`CASE WHEN condition THEN ...` and `CASE value WHEN other THEN ...`, with or without
+    `ELSE`), `NULL`, `IsAncestor`, `IsSibling` (and `INCLUDEMEMBER`), `IsGeneration` (the leaves being generation 0), `IsEmpty`, `IsLeaf`, `CoalesceEmpty`, `Sum`,
+    `Aggregate`, `Avg`, `Min`, `Max`, `Count` and `.Count`, tuples as cell references,
+    `.Name` (and `.Caption`), `.UniqueName`, `.Value`, and `.Properties("name")` for an attribute or for
+    `MEMBER_NAME`, `MEMBER_UNIQUE_NAME`, `LEVEL_NUMBER`, `PARENT_UNIQUE_NAME`,
+    `CHILDREN_CARDINALITY`.
+  - `Rank(tuple, set [, expression])`, and `TopSum`, `BottomSum`, `TopPercent` and
+    `BottomPercent` beside `TopCount` and `BottomCount`.
+  - `Median`, `Var`, `VarP`, `Stdev` and `StdevP` beside `Sum`, `Avg`, `Min` and `Max`.
   - Numbers: `Abs`, `Round`, `Int`, `Fix`, `Sqr`, `Exp`, `Log`, `Log10`, `Sgn`, `Mod`,
     `Power`. Text: `Len`, `Left`, `Right`, `Mid`, `UCase`, `LCase`, `Trim`, `InStr`,
     `Replace`, `Val`, `Str`, `CStr`.
+  - Dates, as Excel and VBA count them: days from 30 December 1899, with the time of day as
+    the fraction of a day, so that a date may be kept in any numeric cell. `Now()`,
+    `Date()`, `DateSerial(year, month, day)`, `CDate(text)`, `Year`, `Month`, `Day`,
+    `Hour`, `Minute`, `Second`, `Weekday(date [, first day])`,
+    `DateAdd(interval, number, date)` and `DateDiff(interval, date, date)`, with VBA's
+    intervals: `yyyy`, `q`, `m`, `y`, `d`, `w`, `ww`, `h`, `n` and `s`.
+  - `Format(value [, pattern])` writes a number or a date out as VBA's patterns say: for a
+    date `yyyy`, `mmm`, `dd`, `hh:nn`, `AM/PM` and the rest; for a number `0`, `#`, `.`,
+    `,`, `%` and a power of ten with `E+` or `E-`, in up to three sections for positive,
+    negative and zero values. VBA's formats by name that read the same in every country
+    stand for patterns: `General Number`, `Fixed`, `Standard`, `Percent`, `Scientific`,
+    `Yes/No`, `True/False` and `On/Off`.
   - `WITH MEMBER` (calculated members, which may refer to one another, with
-    `SOLVE_ORDER`) and `WITH SET`.
+    `SOLVE_ORDER` and `FORMAT_STRING`) and `WITH SET`.
   - Numeric and text cells.
   - A query may run inside a transaction and then sees its pending writes.
 - **Decisions:**
@@ -219,20 +337,95 @@ practice that means:
     `Min` and `Max` are taken over the cells that hold something.
   - Where a cell has several calculated members and no `SOLVE_ORDER` separates them, the
     one in the cube's earlier dimension is applied last.
+  - The calculated member applied last at a cell decides how it is written out: by its
+    `FORMAT_STRING`, a pattern as `Format` takes one, worked out at the cell. The answer
+    then has `formatted` beside `cells`, the text of each cell such a member decides, and
+    null for the others; a query with no format has none, and its answer is as before. A
+    pattern written out in full is checked before any cell is worked out, and one that
+    could write nothing out is refused; a number a pattern cannot write out, such as a date
+    past the year 9999, is left as it is. The GUI's grids and tiles show what is written
+    out in place of the view's number format.
   - A range runs over elements in the order they are declared in the dimension.
   - `.PrevMember`, `.NextMember`, `.Lag` and `.Lead` move among the elements of the
     member's level, in the order they are declared. Past either end there is no member,
     and a tuple with no member in one of its places has no cell.
   - A level is known by its number, counted up from the leaves as everywhere here, so
-    `[Period].Levels(0)` is the months of a calendar and not its top. Levels have no names.
+    `[Period].Levels(0)` is the months of a calendar and not its top. A dimension may name
+    its levels, from the leaves up, in `levels`; a name that is also an element's means
+    the element, since the top of a calendar is as likely as not called Year.
+  - `Ytd`, `Qtd`, `Mtd` and `Wtd` run within the levels named Year, Quarter, Month and
+    Week. Without a member they end at the current member of the cube's dimension of type
+    `time`.
+  - What follows holds as well for `NonEmptyCrossJoin(...)` and for `NonEmpty` of a cross
+    join, with or without a second set; for a long set that is no cross join, which is one
+    of a single set; and for either inside `Hierarchize`, which only puts in order and is
+    applied to what is left. Two long `NON EMPTY` axes, each of a dimension of thousands of
+    elements, then give the few rows and columns that hold something, where every
+    combination of them would be more cells than a query may return.
+  - `NON EMPTY` over a cross join of sets of elements does not write the cross join out
+    where it is long (over 10,000 tuples, and over a quarter of the number of cells there
+    are to look through). It looks at each cell that may hold something and notes the
+    tuples it counts towards, so a cross join far past the limit on sets gives its few
+    rows. The cells that may hold something are the stored ones, those written in the
+    transaction, and in a cube with rules the fed ones: as with a consolidation in a fed
+    cube, a cell a rule gives a value that nothing feeds is left out. A cube with rules
+    and no feeders, and a query with a calculated member on an axis or in the slicer,
+    have their cross joins written out as before.
+  - A set holds at most 1,000,000 tuples while a query is worked out, as a query returns
+    at most 1,000,000 cells. A cross join that would hold more is refused before any of
+    it is built, so that one short query cannot ask for more memory than there is.
+  - A query takes at most 100,000,000 steps, a step being one part of an expression
+    worked out, and so does a rule at one cell; a text worked out holds at most 1,000,000
+    characters. Calculated members that each use the one before twice double the work
+    and the text at every member, and thirty of them would otherwise never finish. The
+    limit is reached after about three seconds of one processor (release build, measured
+    2026-11-21).
+  - A word that is a flag, such as `DESC`, `ALL` or `SELF`, is the flag wherever it stands
+    alone, even in a cube with a dimension of that name. The dimension is then written in
+    full, as `[Desc].[Desc]`.
+  - Calculated members refer to one another at most 32 deep, and take at most 512 KB of
+    the thread's stack in doing so; past either, the member is reported as referring to
+    itself. The second was found by a test that asks expressions put together at random:
+    a member that reads its own cell through a nest of functions ran a build without
+    optimisation out of stack before it was 32 deep.
+  - Expressions sit at most 32 deep inside one another, in a query, a rule, a feeder or a
+    subset alike. Reading and working out an expression go as deep as it does, and the
+    limit is what keeps a body of nothing but brackets from running a thread out of stack.
+  - Drilling puts a member's children after it, each in its parent's place in the tuple,
+    and opens a member wherever it stands, whether or not its children already follow.
+    `DrilldownLevel` without a level opens the members furthest beneath the top of their
+    dimension, which in a ragged hierarchy are not all of one level number.
+    `DrillupMember` leaves out what follows a member and stands beneath it.
+  - `LastPeriods` gives fewer members where the level ends first. `OpeningPeriod` and
+    `ClosingPeriod` need their level, go down by first or by last children, and give no
+    member if that way passes the level by.
   - `Cousin` and `ParallelPeriod` take the same child at each step down, so in a ragged
     hierarchy there may be no such member; then, as past the end of a level, there is none.
+  - `TopSum` and `TopPercent` take tuples from the greatest down until their values reach
+    the sum, or the share of the set's whole; the tuple that reaches it is the last taken.
+  - `Var` and `Stdev` are of a sample and are null for one value alone; `VarP` and
+    `StdevP` are of a population. Like `Avg`, all of them pass over empty cells.
   - `Rank` with an expression is one more than the number of tuples with a greater
     value, so equal values share a rank; a tuple that is not in the set ranks zero.
   - `Round` rounds halves away from zero. A root or logarithm that does not exist is null.
-- Not done: functions outside the lists above (for example `Ytd`, `Qtd` and `Mtd`, which
-  need to know which level is the years, and the date functions), named levels, and
-  formatting.
+  - `Now()` and `Date()` are the server's clock in UTC, to the second, since a server has
+    no time zone of its own to go by. A rule that uses them gives what they were when its
+    cell was worked out, and a total kept since stays as it was until the data or the model
+    changes.
+  - Dates fall in the years 100 to 9999, as in VBA. A text taken as a date is written
+    yyyy-mm-dd, alone or with hh:mm or hh:mm:ss after a space or a T: the one way of writing
+    a date that reads the same everywhere. Years are written in full, and the names of
+    months and days are English.
+  - `DateDiff` counts as VBA does: the year, quarter, month, day, hour, minute or second
+    boundaries passed, the Sundays passed for `ww`, and whole weeks of days for `w`. A
+    month or a year on from the 31st is the last day of a shorter month. A number of
+    intervals that is not whole is rounded as VBA rounds it, a half to the even number.
+  - A number pattern puts its text before or after its digits, not among them, and writes
+    at most 20 decimals; an empty cell is zero to it, as everywhere, and `NULL` is written
+    as nothing.
+- Not done: functions outside the lists above, and VBA's formats by name for dates, times
+  and money, such as `Short Date` and `Currency`, which follow the reader's country: a
+  server has none of its own to go by.
 
 ### 2.8 Spreading
 
@@ -255,18 +448,62 @@ practice that means:
   updated exactly as dimensions and cubes are.
 - A dimension has named subsets: either a list of elements, or an MDX set over the
   dimension. A cube has named views: each an MDX query against that cube.
-- A subset is worked out once, when the model is compiled, and a mistake in one makes the
-  model invalid. **Decision:** an MDX subset is evaluated over its dimension alone, so it
-  can use the hierarchy, levels, names and other subsets, but not cell values. Subsets are
-  worked out in name order, and one may refer to those before it.
+- A subset is worked out when the model is compiled, and a mistake in one makes the model
+  invalid. An MDX subset is evaluated over its dimension alone, so it can use the
+  hierarchy, levels, names and other subsets; subsets are worked out in name order, and one
+  may refer to those before it. **Decision:** a subset may read cells, of any cube, through
+  `LookupCube`, as in `TopCount([Customer].Members, 10, LookupCube("Sales", [Measure].[Revenue]))`.
+  Worked out at compile time with every cell empty, it is found to read them, and is then
+  worked out again whenever it is used, as the cells then stand: in a query, as the query
+  reads them, a transaction's pending values included; by `GET /dimensions/{name}`, as they
+  are stored, the route naming it in `subsets_reading_cells`. One built on it reads cells
+  too. A picklist, worked out once, cannot offer one.
 - A view is checked when the model is compiled, by running it against an empty cube.
-- `TM1SubsetToSet([Dimension], "name")` uses a subset in any query.
+- A view keeps how it is shown beside its query: the sizes of its grid, its number format,
+  its highlights, and, where it was saved from its chart, that chart (`chart`: its kind, the
+  way its series run, its values on the marks, and the series drawn as lines over the rest
+  or against a scale at the right). **Decision:** a view with a chart opens as it, one
+  without as its grid; the chart's kinds are a type of their own, `ChartKind`, so that a
+  view cannot be saved as a key figure or a tile of text.
+- `TM1SubsetToSet([Dimension], "name")` uses a subset in any query, and with "private"
+  one the user asking keeps for themself.
 - `GET /dimensions/{name}` lists each subset's elements; `GET /cubes/{cube}/views/{view}`
   runs a view.
 - A model update that changes only subsets and views leaves the stored cells untouched.
 - A subset is saved by putting its dimension, and a view by putting its cube; neither has
   a route of its own.
-- Not done: subsets that depend on cell values, and private (per-user) subsets and views.
+- Each user may also keep views and subsets of their own, which nobody else sees, at
+  `/cubes/{cube}/private-views` and `/dimensions/{dimension}/private-subsets`. **Decision:**
+  they are the user's, not the model's, so they are kept with the users, in `views.json` and
+  `subsets.json`, outside the model's versions; a model update leaves them as they are. A
+  view whose cube or members are gone fails when it is run, as a query would; a subset
+  leaves out the members its dimension no longer has. Keeping a view takes reading its cube,
+  and its query is run as it is kept. A user's own subset is a list of members, for the GUI's
+  set editor to choose from, and for their queries and their own views to take with
+  `TM1SubsetToSet`'s "private". **Decision:** only the one asking finds them, so the model's
+  views, subsets and rules, which everyone shares and nobody asks, are refused one, and a
+  view as the user finds none. A user's views, and their subsets, take at most 4 MiB each,
+  so that a reader cannot fill the disk. A view as the user sees none of them and changes
+  none.
+- A dashboard is kept with the model, as its views are, at `/dashboards/{name}`: tiles each
+  showing a view of a cube, or a few lines of text. A tile's `place` is where it stands, in
+  columns of the twelve across a page and rows of a fixed height. **Decision:** the server
+  keeps the places as given and checks only that each is on the page; laying the tiles out,
+  on the grid (`layout` absent) clear of one another and risen into what is free, or freely
+  (`layout: "free"`) wherever put, is the GUI's. A tile without a place takes the next free
+  one, one or two of two columns wide as its older `width` says.
+- A chart's tile names, in `lines`, the series it draws as lines over its bars or areas
+  against the same scale, such as a budget beside the actuals, and in `second_axis` those it
+  draws as lines against a scale of their own at its right, such as a margin beside the sums
+  it is worked out from.
+  **Decision:** a series is named as the chart labels it, its members' names joined, not by
+  its place in an answer that changes as the model does; a name no longer among the series
+  is passed over. The scale at the right takes as many steps as the one at the left, each on
+  a gridline, and writes them in percent where the series' cells are written so.
+- A query's `context` stands it at other members: each in its dimension's place in the
+  slicer, and on an axis that places the dimension, only the tuples at the member or beneath
+  it, so that a dashboard's filter, or a member picked in one tile, narrows a tile whose rows
+  are of the dimension as it does one whose WHERE is.
 
 ## 3. API
 
@@ -274,9 +511,18 @@ practice that means:
   committed to the repository, and a test fails when the committed copy differs. The code
   and the contract cannot drift.
 - Resource groups:
-  - `/model`: read (done) and versioned update
+  - `/model`: read (done) and versioned update; `/model/outline`, the model without its
+    dimensions' elements, each dimension by its name, type and size, for what lists cubes,
+    views and dashboards. A dimension of half a million elements makes the whole model
+    some 19 MB; the outline stays a few hundred bytes (done)
   - `/dimensions/{name}`: one dimension with each element's level, parents, children and
-    attributes (done)
+    attributes, those it has none of left out (done). Most elements of a large dimension
+    are leaves, and their empty lists were half of what was sent: half a million elements
+    went from 44 MB to 24 MB
+  - `/dimensions/{name}/definition`: one dimension as it is edited and put back, which the
+    model's editor fetches rather than the whole model; the outline names each dimension's
+    subsets, and the model version it last changed in, so that a copy of it is fetched again
+    only once it changes (done)
   - `/cells/read`, `/cells/write`, `/cells/spread`: batched. Each cell names its cube, so
     one batch can span cubes, as one worksheet calculation can. A read reports errors per
     cell; a write is all or nothing and reports the first bad cell (read and write done)
@@ -285,9 +531,41 @@ practice that means:
     `/dimensions/{name}`
   - `/transactions`, `/transactions/{id}/commit`, `/rollback`, `/locks`
   - `/sessions`: sign in and out
+- `GET /cubes/{cube}/cells` lists the cells a cube stores, in the order of their elements
+  in each dimension and a page at a time. A page is a list of writes, so what comes out of
+  one server goes into another through `/cells/write` as it is. It lists committed cells
+  only, not a transaction's pending ones.
 - Any data call may carry a transaction id; without one it is its own transaction.
 - One error shape everywhere: a stable code, a message, and the offending coordinate when
-  there is one. The adapter maps codes to worksheet results.
+  there is one: the cell of a batch at fault (`index`), or where in an MDX query the problem
+  was found (`position`, in characters from zero). The adapter maps codes to worksheet
+  results.
+- Checking a password is slow and takes some 19 MiB on purpose, and anybody may ask for
+  it. Four are checked at once and 64 sign-ins in all may be waiting or being checked;
+  one more is answered 429 with the code `busy` and `Retry-After: 1`. A crowd of
+  sign-ins can then take neither the machine's memory nor all of its threads. The add-in
+  asks again after a second, up to ten times, before it reports that signing in failed.
+- A request body that writes cells or changes the model holds at most 64 MiB, room for a
+  model of large dimensions or some hundreds of thousands of cells in one write; a larger
+  one is refused with 413 before it is read. A request that only asks for something holds
+  at most 4 MiB: bodies wait in memory, and those who may only read are not given the room
+  that writing needs. A request to sign in, the one request anybody may send, holds at
+  most 16 KiB. The add-in reads five thousand cells to a request, however many a
+  workbook asks for in one calculation.
+- Each request is handled on a thread of the pool kept for work that takes time, not on
+  one of the few that take requests in, so that as many slow queries as the machine has
+  processors do not make a quick request wait for one of them to finish. Writes still
+  wait for the queries already reading, and queries for a write. A request is handed
+  over only once it has been let in and its body has arrived whole: handed over sooner,
+  it kept a thread for as long as its sender took, and six hundred requests to sign in
+  that never finished arriving held every thread there was. Reading the body first costs
+  nothing that shows in the timing below. The hand-over costs a
+  small request about 25 µs: one cell read over a kept connection took 54 µs and takes
+  78 µs (2026-11-21).
+- A request whose handling fails in a way nobody foresaw is answered 500 with the code
+  `internal`, and the server goes on serving the others. If it was a write that failed
+  part of the way through, what is in memory is in no known state: the server then stops,
+  to be started again from what is on disk, where only whole commits are.
 - **Decision (authentication):** users with salted password hashes in a server-side file;
   sign-in returns a bearer token for the session. Per-cube permissions are left out of the
   first version.
@@ -297,7 +575,7 @@ practice that means:
     reading the password from standard input so that it is in no command line.
   - `POST /sessions` with a name and password gives a random token; every other route
     needs it as `Authorization: Bearer <token>` and answers 401 without a live one.
-    `DELETE /sessions` signs out. The contract and the lab's test page need no session.
+    `DELETE /sessions` signs out. The contract needs no session.
   - A session ends when unused for thirty minutes. Sessions are in memory, so they also
     end when the server stops.
   - A directory with no users asks for no sign-in, and then the server refuses to listen
@@ -323,10 +601,70 @@ practice that means:
     not, as a view may; only what the user asks for directly is checked. The model and
     its dimensions are open to anyone who may read any cube, and changed only by a user
     whose role everywhere is `admin`.
-- Not done: permissions by cell or by element, TLS (put the server behind a proxy that
-  provides it before using it across a network), and tying a transaction to the session
-  that began it. Transaction ids are fifty-three random bits, so the last adds little. Anyone who knows a name can keep its user out by giving wrong passwords;
-  the pause is short so that this is a nuisance and no more.
+  - A user may also have a role on elements, `none`, `read` or `write`, set beside the
+    cubes' (`"elements": { "Region": { "Europe": "none" } }`). **Decisions** (the owner's,
+    2026-11-22, with TM1's element security as the model):
+    - A role holds beneath its element too, unless a nearer element has its own; an element
+      beneath several such takes the highest of theirs; one with none above it is bound by
+      none, and its cube's role holds. A cell is open to what the lowest of its elements
+      allows. An administrator is bound by none.
+    - `none` hides the element: it is not in `GET /dimensions/{name}` or the model, as an
+      element, a child or a parent, in subsets, picklists or private subsets, nor in the
+      outline's counts. A query does not find it by name, as one never made, and leaves it
+      out of every set; a walk to it comes to no member. A cell at it is refused as a cell
+      of an element there is not, by the name it was asked for by, so that what is hidden
+      cannot be told from what is not there; its history, comments and feeder findings are
+      not the user's to see.
+    - Totals still add up every leaf, those hidden from the user included, so a total is the
+      same number for everyone who may see it, and the totals kept for all stay right.
+    - The texts of the model, its rules, feeders, views and the MDX of subsets, are shown as
+      written: they say how its numbers come about. A view that names an element hidden
+      from a user fails for them, as a query naming an element there is not; views meant
+      for users who see different elements name sets, such as `.Members` or subsets.
+    - A write to a cell at an element the user may only read is refused as forbidden, 403
+      as for a cube, with the write's place in its batch; a spread is refused unless every
+      leaf beneath the cell may be written, and does not name what is hidden.
+    - The permits are worked out from the roles once for each version of the model and kept
+      with the user's grants; a query, a read or a write takes them where it resolves names.
+  - API keys, for programs to reach the server in a user's name (the owner's request,
+    2026-11-23). A user makes them with `POST /keys`, lists them with `GET /keys` and
+    revokes them with `DELETE /keys/{id}`; an administrator always may, anyone else once an
+    administrator lets them (`"makes_keys": true` on the user, off for a new one), and a
+    user no longer let loses theirs. A key is sent as a session's token is, starts `epk_`,
+    and lasts until it is revoked or expires at the time it was given.
+    - A key is given how far it reaches into each of three parts of the server, `none`,
+      `read` or `write`: cells (reading them, queries, views, history and comments;
+      writing and spreading them, transactions, locks, sandboxes and comments), the model
+      (its dimensions, cubes and dashboards) and administration (everything under
+      `/admin`). Every route falls in one part, as reading or as writing it; a test lists
+      them all, so that a route added without its place fails. A key may be kept to
+      particular cubes, whose cells alone it reads and writes; one kept so may not change
+      the model or administer the server, which reach every cube.
+    - A key does no more than its user may: what they may not do is refused at its making,
+      and at each request it is held to what they may do then, their roles on cubes and
+      elements as they stand. A key makes and revokes no keys and has no session to end,
+      and a view as another user makes none in their name.
+    - Only a BLAKE2b hash of each key is kept, with its user in `users.json`. A key is 32
+      random bytes, so a hash quick to work out is as safe as a slow one, and one is worked
+      out at every request. The key itself is in the answer that made it and nowhere else;
+      the twelve characters after `epk_` name it in lists and to revoke it.
+    - **Decision:** a key holds what it was given at its making, never "all its user may":
+      a user raised later does not raise their keys with them.
+    - The audit records each key made, before it is made and refusing it if it cannot, as
+      a view as another user is; and each key revoked, by whom, whether by its user, by an
+      administrator, or with the leave to make keys taken away. A revoking is recorded
+      after it is made, and is made whether or not it can be recorded: a key is never kept
+      working for want of a line in the audit.
+    - When each key was last used is noted in memory at each use and listed with the keys.
+      It is saved with every change to the users, and otherwise at most every ten minutes
+      while keys are used, on a thread of its own, the way a snapshot is: saved at every
+      use, it would be a write for every read. The uses of the last minutes before the
+      server stops may be missed, the server having no orderly stop to save them at.
+- Not done: permissions by cell, TLS (put the server behind a proxy that provides it before
+  using it across a network), and tying a transaction to the session that began it.
+  Transaction ids are fifty-three random bits, so the last adds little.
+  Anyone who knows a name can keep its user out by giving wrong passwords; the pause is
+  short so that this is a nuisance and no more.
 
 ## 4. PAfE adapter
 
@@ -347,7 +685,11 @@ practice that means:
   - Reads and writes asked for within twenty milliseconds of each other go as one request
     each, the writes first. A write the server refuses gets `*KEY_ERR` and is left out; the
     rest are sent again together.
-  - Dimension functions answer from a copy of the dimension fetched once per connection.
+  - Dimension functions answer from a copy of the dimension fetched once per connection, and
+    made ready once to answer them all: made again for each question, a dimension of a
+    million elements took seconds a formula. The copy is made as the answer is read, by a
+    JSON reader of the add-in's own: the framework's serializer took 9 s and 2 GB to read a
+    dimension of a million elements, before the copy was made from what it read.
   - Connect, Disconnect and Refresh commands; a sign-in window that opens when the server
     refuses a request; the address and user name remembered, never the password.
   - Tests that run the connection against a real server, without Excel.
@@ -355,23 +697,30 @@ practice that means:
   - The table is recalled, not observed: no PAfE installation was at hand. Its unverified
     rows still need checking against a real PAfE workbook.
   - Every response of the server carries the model's version in a header. When an answer
-    comes from another version than the one before it, the add-in forgets its copies of
-    the dimensions and has every formula ask again. A change is therefore noticed at the
+    comes from another version than the one before it, the add-in asks the outline which
+    dimensions have changed since its copies were fetched, forgets those alone, and has every
+    formula ask again: saving a dashboard changes the model but no dimension, and a dimension
+    of a million elements is some 90 MB to fetch. A change is therefore noticed at the
     add-in's next request, whatever it is for, and not before. A dimension function
     answered from a copy already held makes no request, so a workbook of nothing but those
     notices only at Refresh.
   - `adapter/check-excel.ps1` enters a formula for each row of the table in a real Excel
     and all of them pass, as does Refresh. `adapter/check-excel-windows.ps1` drives the
     Connect window, a refused and an accepted sign-in, the window that chooses a `SUBNM`'s
-    element, and Disconnect. Neither runs in CI,
-    which has no Excel.
+    element, and Disconnect. Neither runs in CI, which has no Excel.
   - A value typed over a `DBRW` or `DBR` cell is written to the cube and the formula put
-    back. The add-in notes where each read formula reads from as it is calculated, and the
-    formulas of the selected cells before they can be typed over.
+    back. The add-in notes the formulas of the selected cells before they can be typed
+    over, and works out which cube cell a formula reads, from the formula, when it is. It
+    first kept that by the address the formula stood at when calculated; a row inserted or
+    a range sorted moved the formulas and not the notes, and a value could then have gone
+    to another formula's cell.
   - Begin transaction, Commit and Roll back in the menu: the connection then makes every
     read, write and spread within one server transaction. A transaction the server has
     rolled back for want of use is noticed at the next request; reads go on without it,
     and a write meant for it is not made, since made then it would be final.
+  - An Epiphany tab on the ribbon with a button for each command, and
+    `adapter/install.ps1` to have Excel load the add-in at every start for one user.
+    `adapter/check-excel-ribbon.ps1` presses the buttons in a visible Excel.
   - Formulas name their environment as PAfE's do (`production:Sales`); each environment is
     a server with its own session, added with Connect.
   - See "Not replicated" in the table for the PAfE features left out.
