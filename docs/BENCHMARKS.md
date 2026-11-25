@@ -537,15 +537,15 @@ cargo run --release -p epiphany-server --example bench_wide [dimensions]
 ```
 
 Ten thousand dimensions of twenty leaves and 500 cubes of five of them, each a file of its
-own: opened while its files are new, opened again, then a dashboard saved, which writes every
-file of the model out again, and opened once more (2026-11-24):
+own: opened while its files are new, opened again, then a dashboard saved, and opened once
+more (2026-11-24):
 
-| | One file at a time | Many at once |
-| --- | --- | --- |
-| Opened first | 0.58 s | 0.37 s |
-| Opened again | 0.50 s | 0.30 s |
-| A dashboard saved | 13.30 s | 9.95 s |
-| Opened after the save | 0.69 s | 0.38 s |
+| | One file at a time | Many at once | Only what changed written |
+| --- | --- | --- | --- |
+| Opened first | 0.58 s | 0.37 s | 0.41 s |
+| Opened again | 0.50 s | 0.30 s | 0.39 s |
+| A dashboard saved | 13.30 s | 9.95 s | 2.15 s |
+| Opened after the save | 0.69 s | 0.38 s | 0.47 s |
 
 Files are read and written by twice as many threads as the machine runs at once. On this
 machine a disk scanned for malware as files are first read makes the difference greatest:
@@ -554,7 +554,14 @@ to read the first time one file at a time, 7.6 s with 8 threads, 3.9 s with 32, 
 less with 64 or 128; read again, 0.87 s one at a time and 0.26 s with 8. A server starting on
 it waited 83 s before it answered, and waits 4 s now. Writing gains less: a save's files,
 written, flushed and renamed, took 13.9 s one at a time, 8.8 s with 4 threads and no less
-with more. Every save still writes every file of the model, unchanged or not.
+with more.
+
+A save now writes only what changed, here the dashboard and the model's version, and
+hard-links each other file into the new model, the model kept and the new one sharing it: the
+earlier models of a save then hold 153 bytes of their own each rather than 93 MB. Links are
+made one after another: many at once, the 10,000 dimensions' took 3.6 to 4.3 s against 2.4 s.
+A link takes about 0.3 ms however many the file already has, to the 1,023 Windows allows, past
+which the file is written again and linked from then on (2026-11-24).
 
 ## Notes
 

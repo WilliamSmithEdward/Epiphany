@@ -16,7 +16,9 @@
 //!     comments.jsonl       one line per comment added or taken away
 //!     sandboxes/<id>.json  each sandbox, under its transaction id: its name, its owner and
 //!                          the values it holds, written whole as it changes
-//!     models/<version>/    every earlier model
+//!     models/<version>/    every earlier model, its files that the model after it left
+//!                          unchanged shared with that model rather than copied
+//!     models/bytes.json    what each earlier model holds alone on disk
 //! ```
 //!
 //! A commit is appended to the log and flushed to disk before it is acknowledged. Opening the
@@ -31,14 +33,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::thread;
-use std::time::UNIX_EPOCH;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use epiphany_core::Scalar;
 use epiphany_core::database::{
     Asked, CellChange, CellDetail, CellWrite, Changes, CommentChange, Database, EarlierModel,
     History, Journal, KeptSandbox, NamedCells, NamedDetails, NamedWrites, OnDisk, TransactionId,
 };
-use epiphany_core::model::{DimensionDef, ModelDef, Shared};
+use epiphany_core::model::{CubeDef, DashboardDef, DimensionDef, ModelDef, Shared};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -53,6 +55,61 @@ const LAID_OUT_MOST: usize = 100_000;
 #[derive(Serialize, Deserialize)]
 struct ModelFile {
     version: u64,
+}
+
+/// Where, under `data/models`, what each earlier model holds alone on disk is kept.
+const KEPT_BYTES: &str = "bytes.json";
+
+/// A part of the model as it lies on disk: its file, within the model's folder, and the size
+/// and time of change the file had when last written or read, to tell that no hand has
+/// changed it since.
+#[derive(Debug, Clone)]
+struct OnFile {
+    path: PathBuf,
+    len: u64,
+    modified: Option<SystemTime>,
+}
+
+impl OnFile {
+    /// The file at `path` within `folder`, as it is now.
+    fn at(folder: &Path, path: PathBuf) -> io::Result<Self> {
+        let now = fs::metadata(folder.join(&path))?;
+        Ok(Self {
+            path,
+            len: now.len(),
+            modified: now.modified().ok(),
+        })
+    }
+
+    /// Whether the file is still as it was left in `folder`.
+    fn unchanged_in(&self, folder: &Path) -> bool {
+        fs::metadata(folder.join(&self.path))
+            .is_ok_and(|now| now.len() == self.len && now.modified().ok() == self.modified)
+    }
+}
+
+/// The parts of one kind in the model on disk, by name, each beside its file.
+type LaidParts<T> = HashMap<String, (T, OnFile)>;
+
+/// The model in the `model` folder, part by part beside its file: for the next model saved to
+/// tell the parts it has unchanged, and share their files with the model kept rather than
+/// write them again.
+#[derive(Debug, Default)]
+struct Laid {
+    dimensions: LaidParts<Shared<DimensionDef>>,
+    cubes: LaidParts<CubeDef>,
+    dashboards: LaidParts<DashboardDef>,
+}
+
+impl Laid {
+    /// The bytes of the parts' files.
+    fn bytes(&self) -> u64 {
+        let sizes =
+            |parts: &mut dyn Iterator<Item = &OnFile>| parts.map(|file| file.len).sum::<u64>();
+        sizes(&mut self.dimensions.values().map(|(_, file)| file))
+            + sizes(&mut self.cubes.values().map(|(_, file)| file))
+            + sizes(&mut self.dashboards.values().map(|(_, file)| file))
+    }
 }
 
 #[derive(Serialize)]
@@ -186,7 +243,8 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
         }
     }
     let version = read_json::<ModelFile>(&model.join("model.json"))?.map_or(1, |file| file.version);
-    let mut database = Database::restore(load_model(&model)?, version)?;
+    let (definition, laid) = read_model(&model)?;
+    let mut database = Database::restore(definition, version)?;
 
     let mut skipped = 0;
     skipped += load_snapshot(&data.join("snapshot.json"), &mut database)?.unwrap_or(0);
@@ -232,7 +290,10 @@ pub fn open(directory: &Path) -> Result<Database, Box<dyn Error>> {
         directory: directory.to_owned(),
         log: OpenOptions::new().create(true).append(true).open(&log)?,
         log_bytes: recorded.len() as u64,
-        earlier_bytes: Mutex::default(),
+        earlier_bytes: Mutex::new(
+            read_json(&data.join("models").join(KEPT_BYTES))?.unwrap_or_default(),
+        ),
+        laid,
         _lock: lock,
     };
     // A log that is new must be known to its folder before a commit is trusted to it.
@@ -494,36 +555,69 @@ impl Iterator for Backwards {
     }
 }
 
-/// Loads every `dimensions/*.json` and `cubes/*.json` under a model directory, in name order.
+/// Loads every `dimensions/*.json`, `cubes/*.json` and `dashboards/*.json` under a model
+/// directory, in name order.
 pub fn load_model(directory: &Path) -> Result<ModelDef, Box<dyn Error>> {
-    let dashboards = directory.join("dashboards");
-    Ok(ModelDef {
-        dimensions: load_all(&directory.join("dimensions"))?,
-        cubes: load_all(&directory.join("cubes"))?,
-        // A model need have no dashboards, and no folder for them.
-        dashboards: match dashboards.is_dir() {
-            true => load_all(&dashboards)?,
-            false => Vec::new(),
-        },
-    })
+    read_model(directory).map(|(definition, _)| definition)
 }
 
-fn load_all<T: DeserializeOwned + Send>(directory: &Path) -> Result<Vec<T>, Box<dyn Error>> {
-    let entries = fs::read_dir(directory).map_err(|e| at(directory, &e))?;
+/// The model in `directory`, and each of its parts beside the file it was read from.
+fn read_model(directory: &Path) -> Result<(ModelDef, Laid), Box<dyn Error>> {
+    let (dimensions, laid_dimensions) =
+        load_all(directory, "dimensions", |d: &Shared<DimensionDef>| &d.name)?;
+    let (cubes, laid_cubes) = load_all(directory, "cubes", |c: &CubeDef| &c.name)?;
+    // A model need have no dashboards, and no folder for them.
+    let (dashboards, laid_dashboards) = match directory.join("dashboards").is_dir() {
+        true => load_all(directory, "dashboards", |d: &DashboardDef| &d.name)?,
+        false => (Vec::new(), HashMap::new()),
+    };
+    let laid = Laid {
+        dimensions: laid_dimensions,
+        cubes: laid_cubes,
+        dashboards: laid_dashboards,
+    };
+    let definition = ModelDef {
+        dimensions,
+        cubes,
+        dashboards,
+    };
+    Ok((definition, laid))
+}
+
+/// The parts in `folder` of the model in `directory`, in the order of their files' names, and
+/// each by its name beside its file.
+fn load_all<T: DeserializeOwned + Clone + Send>(
+    directory: &Path,
+    folder: &str,
+    name: impl Fn(&T) -> &str,
+) -> Result<(Vec<T>, LaidParts<T>), Box<dyn Error>> {
+    let within = directory.join(folder);
+    let entries = fs::read_dir(&within).map_err(|e| at(&within, &e))?;
     let mut paths: Vec<PathBuf> = entries
         .map(|entry| entry.map(|entry| entry.path()))
         .collect::<Result<_, _>>()
-        .map_err(|e| at(directory, &e))?;
+        .map_err(|e| at(&within, &e))?;
     paths.retain(|path| {
         path.extension()
             .is_some_and(|extension| extension == "json")
     });
     paths.sort();
-    let load = |file: Result<Option<T>, String>| Ok(file?.expect("listed above"));
-    at_once(&paths, |path| read_json(path))
-        .into_iter()
-        .map(load)
-        .collect()
+    // A file's size and time are taken before it is read: changed as it is read, it is seen
+    // as changed when the model is next saved.
+    let load = |path: &PathBuf| -> Result<(T, OnFile), String> {
+        let file = path.file_name().expect("a file listed in its folder");
+        let on_file =
+            OnFile::at(directory, Path::new(folder).join(file)).map_err(|e| at(path, &e))?;
+        Ok((read_json(path)?.expect("listed above"), on_file))
+    };
+    let mut parts = Vec::with_capacity(paths.len());
+    let mut laid = HashMap::with_capacity(paths.len());
+    for loaded in at_once(&paths, load) {
+        let (part, on_file) = loaded?;
+        laid.insert(name(&part).to_owned(), (part.clone(), on_file));
+        parts.push(part);
+    }
+    Ok((parts, laid))
 }
 
 /// Does `work` on every item, many at once, and gives back what came of each, in order.
@@ -625,25 +719,55 @@ fn settle(folder: &Path) -> io::Result<()> {
     }
 }
 
-/// Writes each item to its own JSON file in a new folder, named after the item, and laid out
-/// where `laid_out` says: many at once, as a model of ten thousand dimensions has as many
-/// files, and the folder settled once they all are.
-fn write_each<T: Serialize + Sync>(
-    folder: &Path,
-    items: &[T],
+/// Writes each part to its own JSON file in `sub` of the new model's folder, named after the
+/// part and laid out where `laid_out` says, many at once and the folder settled once they all
+/// are; or, where the model being replaced has the part as it is, by `before`, and its file
+/// as it was left, shares that file instead, the model kept and the new one then holding it
+/// alike: a save that changes a dashboard writes that dashboard, not ten thousand dimensions
+/// again. A link refused, as by a file system that has none or a file linked as often as it
+/// may be (1,023 times on Windows), is a file written. Gives the parts as they now lie, and
+/// the bytes of the files shared.
+fn lay_each<T: Serialize + PartialEq + Clone + Sync>(
+    (model, next): (&Path, &Path),
+    sub: &str,
+    parts: &[T],
     name: impl Fn(&T) -> &str,
     laid_out: impl Fn(&T) -> bool + Sync,
-) -> io::Result<()> {
-    fs::create_dir_all(folder)?;
-    let files: Vec<(String, &T)> = file_names(items.iter().map(name))
-        .into_iter()
-        .zip(items)
-        .collect();
-    let write = |(file, item): &(String, &T)| write_file(&folder.join(file), item, laid_out(item));
-    at_once(&files, write)
-        .into_iter()
-        .collect::<io::Result<()>>()?;
-    settle(folder)
+    before: &LaidParts<T>,
+) -> io::Result<(LaidParts<T>, u64)> {
+    let folder = next.join(sub);
+    fs::create_dir_all(&folder)?;
+    let mut laid = HashMap::with_capacity(parts.len());
+    let mut shared = 0;
+    let mut written = Vec::new();
+    // Linked one after another: many at once, links were slower.
+    for (file, part) in file_names(parts.iter().map(&name)).into_iter().zip(parts) {
+        let path = Path::new(sub).join(file);
+        let kept = before.get(name(part));
+        if let Some((was, on_file)) = kept
+            && was == part
+            && on_file.unchanged_in(model)
+            && fs::hard_link(model.join(&on_file.path), next.join(&path)).is_ok()
+        {
+            shared += on_file.len;
+            let on_file = OnFile {
+                path,
+                ..on_file.clone()
+            };
+            laid.insert(name(part).to_owned(), (part.clone(), on_file));
+        } else {
+            written.push((path, part));
+        }
+    }
+    let write = |(path, part): &(PathBuf, &T)| {
+        write_file(&next.join(path), part, laid_out(part))?;
+        OnFile::at(next, path.clone())
+    };
+    for ((_, part), on_file) in written.iter().zip(at_once(&written, write)) {
+        laid.insert(name(part).to_owned(), ((*part).clone(), on_file?));
+    }
+    settle(&folder)?;
+    Ok((laid, shared))
 }
 
 /// A file name for each name: lower case, with anything but letters and digits as a hyphen,
@@ -674,8 +798,11 @@ struct Files {
     log_bytes: u64,
     /// What each earlier model takes on disk, by the name of its folder, counted once: a
     /// model kept is never changed again, and a hundred kept of 10,000 dimensions are a
-    /// million files to go over at every look at the server's state.
+    /// million files to go over at every look at the server's state. One kept since its files
+    /// are shared counts only those it holds alone, as it was saved, in `models/bytes.json`.
     earlier_bytes: Mutex<HashMap<String, u64>>,
+    /// The model in the `model` folder, part by part beside its file.
+    laid: Laid,
     /// Held for as long as the database is open.
     _lock: File,
 }
@@ -790,20 +917,42 @@ impl Journal for Files {
         if next.exists() {
             fs::remove_dir_all(&next)?;
         }
-        let dimensions = &definition.dimensions;
+        // Only what changed is written; the rest is shared with the model being replaced.
+        let folders = (model.as_path(), next.as_path());
+        let before = &self.laid;
         let small = |d: &Shared<DimensionDef>| d.elements.len() <= LAID_OUT_MOST;
-        write_each(&next.join("dimensions"), dimensions, |d| &d.name, small)?;
-        write_each(
-            &next.join("cubes"),
+        let (dimensions, dimensions_shared) = lay_each(
+            folders,
+            "dimensions",
+            &definition.dimensions,
+            |d| &d.name,
+            small,
+            &before.dimensions,
+        )?;
+        let (cubes, cubes_shared) = lay_each(
+            folders,
+            "cubes",
             &definition.cubes,
             |c| &c.name,
             |_| true,
+            &before.cubes,
         )?;
-        if !definition.dashboards.is_empty() {
-            let dashboards = &definition.dashboards;
-            write_each(&next.join("dashboards"), dashboards, |d| &d.name, |_| true)?;
-        }
+        let (dashboards, dashboards_shared) = match definition.dashboards.is_empty() {
+            true => (HashMap::new(), 0),
+            false => lay_each(
+                folders,
+                "dashboards",
+                &definition.dashboards,
+                |d| &d.name,
+                |_| true,
+                &before.dashboards,
+            )?,
+        };
         write_json(&next.join("model.json"), &ModelFile { version })?;
+        // What the model kept will hold alone: its files the new one does not share.
+        let version_file = fs::metadata(model.join("model.json")).map_or(0, |file| file.len());
+        let alone = (before.bytes() + version_file)
+            .saturating_sub(dimensions_shared + cubes_shared + dashboards_shared);
 
         // Keep the model being replaced as a numbered copy, then put the new one in its place.
         // If the process dies between the two renames, opening the directory finishes the job.
@@ -812,12 +961,28 @@ impl Journal for Files {
         let numbered = (2..).map(|copy| format!("{}-{copy}", version - 1));
         let mut names = std::iter::once((version - 1).to_string()).chain(numbered);
         let previous = names.find(|name| !history.join(name).exists());
-        fs::rename(
-            &model,
-            history.join(previous.expect("the numbers never run out")),
-        )?;
+        let previous = previous.expect("the numbers never run out");
+        fs::rename(&model, history.join(&previous))?;
         fs::rename(&next, &model)?;
-        settle(&history).and_then(|()| settle(&self.directory))
+        self.laid = Laid {
+            dimensions,
+            cubes,
+            dashboards,
+        };
+        settle(&history).and_then(|()| settle(&self.directory))?;
+        // Counted now, as only now is it known which files it shares; and kept, for when the
+        // directory is opened again. Kept for the server's state alone, it fails no save:
+        // lost, a model kept is counted whole.
+        let mut counted = self
+            .earlier_bytes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        counted.insert(previous, alone);
+        let kept = history.join(KEPT_BYTES);
+        if let Err(error) = write_json(&kept, &*counted) {
+            eprintln!("warning: {}: {error}", kept.display());
+        }
+        Ok(())
     }
 
     fn is_full(&self) -> bool {

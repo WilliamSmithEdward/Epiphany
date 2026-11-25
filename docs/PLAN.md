@@ -131,7 +131,11 @@ practice that means:
 - Done. The server is given one directory: `model/` holds the current model with its
   version in `model.json`; `data/` holds `snapshot.json`, `log.jsonl`, `comments.jsonl`,
   `history.jsonl`, each sandbox under `sandboxes/<transaction>.json` and every earlier model
-  under `models/<version>/`.
+  under `models/<version>/`. A save writes only the files that changed; each file it leaves
+  unchanged, and unchanged on disk since the server wrote or read it, is hard-linked into the
+  new model rather than written again, so the model kept and the new one share it, and
+  `models/bytes.json` counts what each model kept holds alone. A link refused (a file system
+  without them, or a file at Windows' 1,023) is a file written.
 - A sandbox is written whole to its own file each time it changes, beside its place and then
   renamed into it, before the change is acknowledged. It names its cells, so it is placed
   afresh in whatever the model is when the server starts. A file that cannot be read stops

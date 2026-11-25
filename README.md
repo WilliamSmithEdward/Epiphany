@@ -181,6 +181,14 @@ A value a refusing check does not hold for is refused as it is written (`invalid
 the check's message), and its whole batch with it. A value that breaks a check that only warns
 is kept, and `POST /cells/explain` lists, for each cell, the checks its value breaks.
 
+Every model saved keeps the one it replaces under `data/models/<version>`, to compare and
+restore in Administration. A save writes only the files that changed: those it leaves as they
+were are shared with the version kept, hard-linked rather than copied, so keeping every version
+costs about what changed in each. A file shared so is one file under two names, and edited in
+place it changes in the versions that share it too: to change the model by hand and leave
+them as they were, edit a copy of the file and move it into place, as `git checkout` does, or
+change it through the API.
+
 ## The API
 
 Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also served at

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use common::Home;
 use epiphany_core::Scalar;
 use epiphany_core::database::{Asked, CellRef, CellWrite, Database, Error, Line, Sandbox};
+use epiphany_core::model::DimensionDef;
 use epiphany_server::open;
 use serde_json::{Value as Json, json};
 
@@ -900,10 +901,11 @@ fn earlier_models_are_kept_and_can_be_read_back() {
     let mut third = second.clone();
     third.cubes[0].rules.clear();
     database.update_model(2, third).unwrap();
-    // What the models kept take on disk is counted: the first of them, and the second.
+    // What the models kept take on disk is counted: what each holds alone, its cube and its
+    // version, and not the dimensions it shares with the model after it.
     let after = database.journal_bytes().unwrap();
     assert!(
-        after.earlier_models > before.model,
+        after.earlier_models > 0 && after.earlier_models < before.model,
         "{before:?} then {after:?}"
     );
 
@@ -929,6 +931,70 @@ fn earlier_models_are_kept_and_can_be_read_back() {
             "{name}"
         );
     }
+}
+
+#[test]
+fn a_save_writes_only_what_changed_and_shares_the_rest_with_the_model_kept() {
+    let home = Home::new("shared-saves");
+    let changed = |path: &str| fs::metadata(home.path(path)).unwrap().modified().unwrap();
+    let rules = |database: &Database, rule: &str| {
+        let mut next = database.definition().clone();
+        next.cubes[0].rules = vec![rule.to_owned()];
+        next
+    };
+    let account = "model/dimensions/account.json";
+    let cube = "model/cubes/general-ledger.json";
+    let mut database = home.open();
+    let (account_was, cube_was) = (changed(account), changed(cube));
+    thread::sleep(Duration::from_millis(50));
+
+    // A rule changed: the cube's file is written, the dimensions' are shared with the model
+    // kept, the same files, as they were.
+    database
+        .update_model(1, rules(&database, "[Account].[Rent] = 1"))
+        .unwrap();
+    assert_eq!(changed(account), account_was);
+    assert_eq!(
+        changed("data/models/1/dimensions/account.json"),
+        account_was
+    );
+    assert!(changed(cube) > cube_was);
+    let kept = database.journal_bytes().unwrap().earlier_models;
+    assert!(kept > 0 && kept < database.journal_bytes().unwrap().model);
+
+    // Opened again, it knows its files as it read them, and shares them still; what each
+    // model kept holds alone is counted as it was.
+    drop(database);
+    let mut database = home.open();
+    assert_eq!(database.journal_bytes().unwrap().earlier_models, kept);
+    database
+        .update_model(2, rules(&database, "[Account].[Rent] = 2"))
+        .unwrap();
+    assert_eq!(changed(account), account_was);
+
+    // A file changed by hand since it was written is the model's again at the next save,
+    // written from the model as the server holds it.
+    let read = fs::read_to_string(home.path(account)).unwrap();
+    fs::write(home.path(account), format!("{read} ")).unwrap();
+    database
+        .update_model(3, rules(&database, "[Account].[Rent] = 3"))
+        .unwrap();
+    let written = fs::read_to_string(home.path(account)).unwrap();
+    let held = database
+        .definition()
+        .dimensions
+        .iter()
+        .find(|d| d.name == "Account");
+    assert!(written.ends_with("}\n"), "{written:?}");
+    assert_eq!(
+        serde_json::from_str::<DimensionDef>(&written).unwrap(),
+        **held.unwrap()
+    );
+    drop(database);
+    assert_eq!(
+        home.open().definition().cubes[0].rules,
+        ["[Account].[Rent] = 3"]
+    );
 }
 
 #[test]
