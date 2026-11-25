@@ -11,7 +11,7 @@ import { COLUMNS, firstFree, inReadingOrder, linesOf, moveOnGrid, nearest, onPag
 import { seriesNames, shape } from './chart.js';
 import { chooser, choseLately, finder, lateFirst, lately, pick } from './finder.js';
 import { member, quote } from './layout.js';
-import { chooseMember, dimension } from './picker.js';
+import { chooseMember, heldDimension } from './picker.js';
 import { csvOf, tsvOf } from './selection.js';
 import { askDrawn, AXES, CHARTS, numbersOf, present, prose } from './tiles.js';
 import { marked } from './tree.js';
@@ -202,7 +202,8 @@ class Dashboards {
         class: 'chip-main',
         title: `Show every tile at a member of ${dimensionName}`,
         onclick: async (event) => {
-          const dim = await working(event.currentTarget, () => dimension(dimensionName));
+          // A member chosen from the tree: a large dimension fetched in parts as it is opened.
+          const dim = await working(event.currentTarget, () => heldDimension(dimensionName));
           if (!dim) return;
           const member = await chooseMember(dim, { title: `Show every tile at a member of ${dimensionName}`, current: chosen[dimensionName] });
           if (member !== null) this.choose(dimensionName, member);
@@ -1400,7 +1401,7 @@ class Dashboards {
     // A member's children: the member chosen from the dimension's tree, or the choice as it was.
     const which = (select, dimensionSelect) => async () => {
       if (select.value === 'member:') {
-        const dim = await dimension(dimensionSelect.value).catch(() => null);
+        const dim = await heldDimension(dimensionSelect.value).catch(() => null);
         const picked = dim ? await chooseMember(dim, { title: `The children of a member of ${dim.name}` }) : null;
         if (picked === null) {
           select.value = select.dataset.was;

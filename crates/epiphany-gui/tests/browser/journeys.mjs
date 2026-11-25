@@ -24,6 +24,8 @@ const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const AUDIT = readFileSync(new URL('./audit.js', import.meta.url), 'utf8');
 const HEADED = process.argv.includes('--headed');
 const KEEP = process.argv.includes('--keep');
+/** Every dimension held in parts, however small, as a page holds one of a million elements. */
+const PARTS = process.argv.includes('--parts');
 /** How long anything is waited for, in milliseconds. */
 const PATIENCE = 30_000;
 
@@ -179,6 +181,7 @@ class Browser {
     // numbers are written as in the United States, wherever the run is.
     await page.call('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
     await page.call('Emulation.setLocaleOverride', { locale: 'en-US' });
+    if (PARTS) await page.call('Page.addScriptToEvaluateOnNewDocument', { source: `localStorage.setItem('epiphany.dimensions-in-parts', 'on')` });
     return page;
   }
 }
@@ -1652,7 +1655,8 @@ async function exploring() {
     await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
     const fetched = `performance.getEntriesByType('resource').filter((entry) => entry.name.includes('/api/dimensions/')).length`;
     const before = await page.evaluate(fetched);
-    expect(before === 4, `${before} dimensions were fetched for the cube's four.`);
+    // Held in parts, each is fetched a part at a time; held whole, each once.
+    expect(PARTS || before === 4, `${before} dimensions were fetched for the cube's four.`);
     // A dashboard saved moves the model on, its dimensions as they were.
     const based = (await page.api('GET', '/model')).data.version;
     const dashboard = { name: 'Unseen', tiles: [{ show: 'text', text: 'Hello' }] };
@@ -1665,6 +1669,38 @@ async function exploring() {
     expect(after === before, `Explore fetched ${after - before} dimensions again, though none had changed.`);
     const version = (await page.api('GET', '/model')).data.version;
     expect((await page.api('DELETE', `/dashboards/Unseen?based_on=${version}`)).status === 200, 'The dashboard was not taken away.');
+  });
+  await step('A dimension held in parts, as one of a million elements is, is opened in the grid and found by name as one held whole', async () => {
+    // Every dimension held in parts, as only a large one is: none of them is fetched whole.
+    // The cube's own layout is kept, to be put back.
+    const kept = await page.evaluate(`localStorage.getItem('epiphany.explore.General Ledger')`);
+    await page.evaluate(`localStorage.setItem('epiphany.dimensions-in-parts', 'on')`);
+    try {
+      await page.goto('/explore?cube=General%20Ledger');
+      await page.waitFor(`document.querySelector('td[data-r]')`, 'the grid');
+      const whole = await page.evaluate(`performance.getEntriesByType('resource').filter((entry) => /\\/api\\/dimensions\\/[^/?]+$/.test(entry.name)).length`);
+      expect(whole === 0, `${whole} dimensions were fetched whole.`);
+      // The layout the cube opens with at first: its top members.
+      await page.click('button', 'Reset');
+      await page.click('.menu [role="menuitem"]', 'Reset layout');
+      // A member opened down the side shows its children, fetched as it opens.
+      const rows = `document.querySelectorAll('.pivot tbody tr').length`;
+      const before = await page.evaluate(rows);
+      await page.click('.pivot tbody th .twisty[aria-expanded="false"]');
+      await page.waitFor(`${rows} > ${before}`, 'the children of the member opened');
+      // Found by a word of its name, which the server looks for, it is shown where it stands.
+      await page.fill('.fields input[type="search"]', 'salar');
+      await page.waitFor(`document.querySelector('.fields .match')?.textContent === 'Salaries'`, 'Salaries, found');
+      await page.click('.fields .match', 'Salaries');
+      // On an axis, opened down to; as a filter, stood at.
+      await page.waitFor(`document.querySelector('.pivot th[data-member="Salaries"]') || [...document.querySelectorAll('.chip-summary')].some((chip) => chip.textContent === 'Salaries')`, 'Salaries, shown');
+    } finally {
+      await page.evaluate(`localStorage.removeItem('epiphany.dimensions-in-parts')`);
+      await page.evaluate(kept === null
+        ? `localStorage.removeItem('epiphany.explore.General Ledger')`
+        : `localStorage.setItem('epiphany.explore.General Ledger', ${quoted(kept)})`);
+      await page.clear('.fields input[type="search"]');
+    }
   });
   await step('At a phone\'s width no page is wider than the screen, the grid shows on the first, and a name cut short shows whole', async () => {
     // A phone widens the page to what it holds and draws it smaller: the screen is the measure.

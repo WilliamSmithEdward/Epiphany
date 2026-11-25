@@ -267,6 +267,89 @@ async fn a_dimension_is_served_with_its_hierarchy() {
 }
 
 #[tokio::test]
+async fn part_of_a_dimension_is_served_as_asked() {
+    let app = example();
+    let part = |asked: Value| {
+        let app = app.clone();
+        async move {
+            let (status, body) =
+                call(&app, "POST", "/dimensions/period/elements", Some(asked)).await;
+            assert_eq!(status, StatusCode::OK);
+            body
+        }
+    };
+    let names = |body: &Value| -> Vec<String> {
+        let elements = body["elements"].as_array().unwrap().iter();
+        elements
+            .map(|element| element["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+
+    // The top, with what the dimension is and how large; a consolidation with its leaves, and
+    // its children counted, not listed, as it is not opened.
+    let top = part(json!({ "roots": true })).await;
+    assert_eq!(top["name"], "Period");
+    assert_eq!(top["size"], 9);
+    assert_eq!(top["roots"], json!(["H1"]));
+    assert_eq!(
+        top["attributes"],
+        json!({ "Code": "alias", "Days": "numeric" })
+    );
+    assert_eq!(
+        top["elements"][0],
+        json!({
+            "name": "H1",
+            "type": "consolidated",
+            "level": 2,
+            "leaves": 6,
+            "child_count": 2
+        })
+    );
+
+    // Children, after the element they are of, listed; beneath, however deep, each listing
+    // its own; named, with the way down to each listed; and found by a part of their names,
+    // whatever its case, the first so many.
+    let children = part(json!({ "children_of": ["Q1"] })).await;
+    assert_eq!(names(&children), ["Q1", "Jan", "Feb", "Mar"]);
+    assert_eq!(
+        children["elements"][0]["children"][0],
+        json!({ "name": "Jan", "weight": 1.0 })
+    );
+    let beneath = part(json!({ "descendants_of": ["H1"] })).await;
+    assert_eq!(names(&beneath).len(), 9);
+    assert_eq!(
+        beneath["elements"][0]["children"].as_array().unwrap().len(),
+        2
+    );
+    let named = part(json!({ "names": ["Q2"], "ancestors": true })).await;
+    assert_eq!(named["elements"][0]["child_count"], 3);
+    assert_eq!(
+        named["elements"][1]["children"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        names(&part(json!({ "names": ["Feb", "Nowhere"], "ancestors": true })).await),
+        ["Feb", "Q1", "H1"]
+    );
+    let found = part(json!({ "find": "MA" })).await;
+    assert_eq!(found["found"], json!(["Mar", "May"]));
+    assert_eq!(names(&found), ["Mar", "May"]);
+    let first = part(json!({ "find": "j", "most": 1, "ancestors": true })).await;
+    assert_eq!(first["found"], json!(["Jan"]));
+    assert_eq!(names(&first), ["Jan", "Q1", "H1"]);
+    // A leaf is as a whole dimension gives it, without a count of leaves.
+    assert_eq!(first["elements"][0]["leaves"], Value::Null);
+    // Nothing asked, nothing sent but what the dimension is.
+    let nothing = part(json!({})).await;
+    assert_eq!(nothing["elements"], json!([]));
+    assert_eq!(nothing["roots"], Value::Null);
+
+    let (status, body) = call(&app, "POST", "/dimensions/Colour/elements", Some(json!({}))).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "unknown_dimension");
+}
+
+#[tokio::test]
 async fn a_subset_that_reads_cells_is_listed_as_they_stand() {
     let app = example();
     let (_, model) = call(&app, "GET", "/model", None).await;

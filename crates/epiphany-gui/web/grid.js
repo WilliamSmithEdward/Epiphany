@@ -5,6 +5,7 @@ import { post } from './api.js';
 import { empty } from './app.js';
 import { checkFeeders } from './feeders.js';
 import { member, namesOf, outlined, pathsBeneath, saved } from './layout.js';
+import { childCount, fill } from './picker.js';
 import { cellText, Selection } from './selection.js';
 import { beneath } from './tree.js';
 import { copyText, counted, dialog, formatNumber, formatValue, h, icon, menu, mount, notify, printsWhole, SCALES, shownText, when } from './ui.js';
@@ -549,7 +550,7 @@ export const grid = {
     const entry = this.layout[place]?.find((candidate) => candidate.dimension === m.dimension);
     const element = this.dims.get(m.dimension)?.byName.get(m.name);
     const label = h('span', { class: 'member-label' });
-    if (entry && at && element?.children.length) {
+    if (entry && at && childCount(element)) {
       // Not a stop for Tab: the heading itself takes the keys that open and close it.
       label.append(h('button', {
         class: 'twisty',
@@ -846,16 +847,19 @@ export const grid = {
   /** Opens a heading's member where it stands, or closes it, keeping the keys on the heading. */
   openHeading(heading) {
     const { place, dimension, member, path } = heading.dataset;
-    if (!path || !this.dims.get(dimension)?.byName.get(member)?.children.length || !this.entryOf(place, dimension)) return;
+    if (!path || !childCount(this.dims.get(dimension)?.byName.get(member)) || !this.entryOf(place, dimension)) return;
     this.keepHeading(heading);
     this.toggle(place, dimension, path);
   },
 
   /** Opens, or closes, a heading's member where it stands and everything beneath it there. */
-  openBeneath(heading, open) {
+  async openBeneath(heading, open) {
     const { place, dimension, path } = heading.dataset;
     if (!path) return;
-    const within = pathsBeneath(this.dims.get(dimension), [namesOf(path)]);
+    // Held in parts, the dimension is fetched what lies beneath the member first.
+    const dim = this.dims.get(dimension);
+    if (open) await fill(dim, { beneath: [namesOf(path).at(-1)] });
+    const within = pathsBeneath(dim, [namesOf(path)]);
     this.keepHeading(heading);
     this.setOpen(place, dimension, (expanded) => (open ? [...new Set([...expanded, ...within])] : expanded.filter((each) => !within.includes(each))));
   },
@@ -882,7 +886,7 @@ export const grid = {
     const dim = this.dims.get(dimension);
     const entry = this.entryOf(place, dimension);
     const element = dim?.byName.get(name);
-    const kids = element && heading.dataset.path ? this.childrenOf(dim, name).length : 0;
+    const kids = element && heading.dataset.path ? childCount(element) : 0;
     const opened = entry?.expanded.includes(heading.dataset.path);
     const chosen = entry?.members.includes(name);
     menu([
@@ -931,7 +935,7 @@ export const grid = {
     const columnTuple = columns.tuples[c] ?? [];
     // The members of the cell's row that open, each where it stands there.
     const rowOpen = rowTuple.map((m, level) => ({ m, at: this.grid?.rowPlaces[r]?.[level] }))
-      .filter(({ m, at: place }) => place && this.dims.get(m.dimension)?.byName.get(m.name)?.children.length);
+      .filter(({ m, at: place }) => place && childCount(this.dims.get(m.dimension)?.byName.get(m.name)));
     const chosen = this.selection?.cells().length ?? 0;
     menu([
       { heading: [...rowTuple, ...columnTuple].map((m) => m.name).join(' · ') },
@@ -976,7 +980,10 @@ export const grid = {
    * Shows what lies behind a total: each consolidated member of its row and column replaced
    * on its axis by the leaves beneath it, and empty rows and columns left out. Undo goes back.
    */
-  drillToLeaves(rowTuple, columnTuple) {
+  async drillToLeaves(rowTuple, columnTuple) {
+    // Held in parts, a dimension is fetched what lies beneath each total first.
+    const totals = [...rowTuple, ...columnTuple].filter((m) => m.type === 'consolidated');
+    await Promise.all(totals.map((m) => fill(this.dims.get(m.dimension), { beneath: [m.name] })));
     this.change((layout) => {
       for (const [place, tuple] of [['rows', rowTuple], ['columns', columnTuple]]) {
         for (const m of tuple) {
@@ -984,7 +991,7 @@ export const grid = {
           const entry = layout[place].find((candidate) => candidate.dimension === m.dimension);
           if (m.type !== 'consolidated' || !entry || !dim) continue;
           const under = beneath([m.name], (name) => this.childrenOf(dim, name));
-          entry.members = dim.elements.filter((element) => under.has(element.name) && !element.children.length).map((element) => element.name);
+          entry.members = dim.elements.filter((element) => under.has(element.name) && !childCount(element)).map((element) => element.name);
           entry.expanded = [];
         }
       }
@@ -1103,13 +1110,31 @@ export const grid = {
         : this.unseen ? 'Enter shows it' : 'None found';
   },
 
-  /** A member of a dimension on an axis, not shown, whose name holds the words. */
+  /**
+   * A member of a dimension on an axis, not shown, whose name holds the words. One held in
+   * parts is asked of the server, which says so once it answers.
+   */
   hiddenMatch(words) {
-    for (const entry of [...this.layout.rows, ...this.layout.columns]) {
+    const entries = [...this.layout.rows, ...this.layout.columns];
+    for (const entry of entries) {
       const element = this.dims.get(entry.dimension).elements.find((candidate) => candidate.name.toLowerCase().includes(words));
       if (element) return { dimension: entry.dimension, name: element.name };
     }
+    this.findElsewhere(words, entries.filter((entry) => this.dims.get(entry.dimension).part));
     return null;
+  },
+
+  /** Asks the server for a member whose name holds the words, of each dimension held in parts. */
+  async findElsewhere(words, entries) {
+    for (const entry of entries) {
+      const [name] = (await fill(this.dims.get(entry.dimension), { find: words, most: 1, ancestors: true, quiet: true })) ?? [];
+      if (this.findWords !== words || this.found?.length) return;
+      if (name) {
+        this.unseen = { dimension: entry.dimension, name };
+        this.paintFound();
+        return;
+      }
+    }
   },
 
   /** Goes to the next heading found, or the one before; opens the grid to one not shown. */
@@ -1138,10 +1163,13 @@ export const grid = {
    * its weight, and its value as the grid reads it; null where they cannot be read.
    */
   async partsOf(cell) {
-    const place = cell.at.findIndex((name, index) => this.dims.get(this.cube.dimensions[index])?.byName.get(name)?.children.length);
+    const place = cell.at.findIndex((name, index) => childCount(this.dims.get(this.cube.dimensions[index])?.byName.get(name)));
     if (place < 0) return null;
     const dimension = this.cube.dimensions[place];
-    const children = this.dims.get(dimension).byName.get(cell.at[place]).children;
+    // Held in parts, the total's children are fetched first, counted until now.
+    const dim = this.dims.get(dimension);
+    await fill(dim, { childrenOf: [cell.at[place]], quiet: true });
+    const children = dim.byName.get(cell.at[place]).children;
     const cells = children.map((child) => ({ cube: cell.cube, at: cell.at.map((name, index) => (index === place ? child.name : name)) }));
     try {
       const answer = await post('/cells/read', { cells, transaction: this.tx ?? undefined });

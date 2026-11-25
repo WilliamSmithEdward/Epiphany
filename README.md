@@ -201,6 +201,7 @@ Everything is JSON over HTTP. The contract is [openapi.json](openapi.json), also
 | `GET /model`, `PUT /model` | The whole model, and replacing it against its version |
 | `GET /model/outline` | The model without its dimensions' elements: its cubes and dashboards, and each dimension's name, type and size |
 | `GET`, `PUT`, `DELETE /dimensions/{name}` | One dimension, with its hierarchy and subsets |
+| `POST /dimensions/{name}/elements` | Part of a dimension, for a page that holds a large one in parts: the elements named, with those above them; the children of some, or everything beneath them; the top elements; or those found by a part of their names, the first so many |
 | `GET`, `PUT`, `DELETE /cubes/{name}` | One cube, with its rules, feeders and views |
 | `POST /cells/read` | A batch of cells, each with its value or its own error |
 | `POST /cells/write` | A batch of leaf cells: all of them or none |

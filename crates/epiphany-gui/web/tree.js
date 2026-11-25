@@ -18,15 +18,17 @@ export const INDENT = 18;
  * them, which are `context` unless they match too; a match that is opened shows every
  * child. `position` and `siblings` place a row among the rows shown beside it.
  */
-export function treeRows({ roots, children, open, matches = null, parents = null }) {
+export function treeRows({ roots, children, open, matches = null, parents = null, count = null }) {
   const leads = parents && matches ? climbedTo(parents, matches) : leadsTo(children, matches);
   const rows = [];
   const visit = (name, parent, depth, trail, whole) => {
     if (trail.has(name)) return;
     const kids = children(name);
+    // How many children it has, where they may be counted before they are listed.
+    const many = count ? count(name) : kids.length;
     const match = Boolean(matches?.has(name));
-    const opened = kids.length > 0 && open.has(name);
-    rows.push({ name, parent, depth, kids: kids.length, open: opened, match, context: Boolean(matches) && !match && !whole });
+    const opened = many > 0 && open.has(name);
+    rows.push({ name, parent, depth, kids: many, open: opened, match, context: Boolean(matches) && !match && !whole });
     if (!opened) return;
     const next = new Set(trail).add(name);
     const beneath = whole || match;

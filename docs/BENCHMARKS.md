@@ -563,6 +563,26 @@ made one after another: many at once, the 10,000 dimensions' took 3.6 to 4.3 s a
 A link takes about 0.3 ms however many the file already has, to the 1,023 Windows allows, past
 which the file is written again and linked from then on (2026-11-24).
 
+### Explore on a dimension of a million leaves
+
+A cube of a dimension of a million leaves, in 10,000 groups of a hundred under one total, and
+a measure of two, opened in Explore, a release server on this machine, measured in the page
+(2026-11-24):
+
+| | Whole | In parts, children listed | In parts, children counted |
+| --- | --- | --- | --- |
+| The grid shown | 1,804 ms | 83 ms | 81 ms |
+| The page's memory | 299 MB | 4 MB | 3 MB |
+| Fetched | 109 MB (6 MB sent) | 341 KB | under 1 KB |
+| The total opened, its 10,000 groups shown | as quick | 907 ms, 98 MB | 438 ms, 12 MB |
+| An item found by name and opened to | as quick | 151 MB | 16 MB |
+
+Whole, the dimension came at once, to be looked through in the page. In parts it comes as it
+is shown, by `POST /dimensions/{name}/elements`: the top elements, what the layout names, a
+member's children as it is opened, and a search the server makes. Each group sent once
+listed its hundred children, a million between them, though none was opened; an element now
+lists its children only where the page is to go down from it, and counts them otherwise.
+
 ## Notes
 
 - Leaf reads were 191 ns before they stopped building per-read lists; that change is kept.

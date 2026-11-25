@@ -3042,6 +3042,75 @@
         }
       }
     },
+    "/dimensions/{name}/elements": {
+      "post": {
+        "summary": "Part of one dimension: the elements named, found by their names, above or beneath others,\nor at the top, each as a whole dimension gives it; for a page that holds a dimension of a\nmillion elements in parts, as it shows them, rather than whole.",
+        "operationId": "dimension_part",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Dimension name, ignoring case and spaces",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ElementsAsked"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The part asked for",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DimensionPart"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Not signed in, the session has ended, or the API key is not in force",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The user may not do this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown dimension",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/keys": {
       "get": {
         "summary": "The signed-in user's API keys, never the keys themselves; whether they may make more, and\nthe most a new one may be given.",
@@ -4780,6 +4849,73 @@
           }
         }
       },
+      "DimensionPart": {
+        "type": "object",
+        "description": "Part of a dimension, as a user may see it: what the dimension is, and the elements asked\nfor, each once, as a whole dimension gives them, a consolidation with its count of leaves.\nAn element's children are listed where the page is to go down from it: one whose children\nwere asked for, one beneath another asked for whole, and one on the way to an element named\nor found; any other only counts them, as most of those sent are not opened, and the 10,000\nchildren of a member opened listed a million grandchildren between them.",
+        "required": [
+          "name",
+          "type",
+          "levels",
+          "attributes",
+          "size",
+          "elements"
+        ],
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AttributeType"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "elements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ElementView"
+            }
+          },
+          "found": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Where asked to find, the names found, in their order."
+          },
+          "levels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of the levels, from the leaves up, where the model gives them."
+          },
+          "name": {
+            "type": "string"
+          },
+          "roots": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Where asked for, the top elements' names, in their order."
+          },
+          "size": {
+            "type": "integer",
+            "description": "How many elements the user may see.",
+            "minimum": 0
+          },
+          "type": {
+            "$ref": "#/components/schemas/DimensionType"
+          }
+        }
+      },
       "DimensionPut": {
         "type": "object",
         "required": [
@@ -4968,11 +5104,27 @@
               "type": "string"
             }
           },
+          "child_count": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "In part of a dimension, where its children are not listed, how many it has.",
+            "minimum": 0
+          },
           "children": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ChildDef"
             }
+          },
+          "leaves": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "In part of a dimension, for a consolidation, how many numeric leaves it counts: what\na page holding it without the elements beneath it cannot count itself.",
+            "minimum": 0
           },
           "level": {
             "type": "integer",
@@ -5003,6 +5155,57 @@
             "$ref": "#/components/schemas/ElementType"
           }
         }
+      },
+      "ElementsAsked": {
+        "type": "object",
+        "description": "What part of a dimension to send, each part asked for adding to the rest.",
+        "properties": {
+          "ancestors": {
+            "type": "boolean",
+            "description": "With every element above those named and those found, for the way down to each."
+          },
+          "children_of": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The children of these elements."
+          },
+          "descendants_of": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every element beneath these elements, however deep."
+          },
+          "find": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The first elements whose name holds this text, whatever its case."
+          },
+          "most": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "How many `find` gives at most: 50 unless said, and never more than 1,000.",
+            "minimum": 0
+          },
+          "names": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "These elements, by name: one there is not, or that the user may not see, left out."
+          },
+          "roots": {
+            "type": "boolean",
+            "description": "The top elements: those with no parent the user may see."
+          }
+        },
+        "additionalProperties": false
       },
       "Ended": {
         "type": "object",

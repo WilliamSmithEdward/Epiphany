@@ -8,8 +8,13 @@ import { counted, dialog, h, invalid, MOD, notify, parseNumber } from './ui.js';
 /** A spread typed into a total asks first when it reaches more leaf cells than this. */
 const SPREAD_ASKS = 1000;
 
-/** How many leaves lie beneath an element of a dimension; one for a leaf. Kept with the dimension. */
+/**
+ * How many leaves lie beneath an element of a dimension; one for a leaf. Kept with the
+ * dimension; of one held in parts, as the server counted them.
+ */
 function leafCount(dim, name) {
+  const counted = dim.byName.get(name)?.leaves;
+  if (counted !== undefined) return counted;
   dim.leafCounts ??= new Map();
   if (!dim.leafCounts.has(name)) {
     const leaves = new Set();

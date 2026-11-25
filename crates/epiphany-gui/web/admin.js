@@ -5,7 +5,7 @@ import { empty, failure, go, loading, model, state } from './app.js';
 import { chooser } from './finder.js';
 import { keyTable } from './keys.js';
 import { cellQuery, handOver } from './layout.js';
-import { chooseMember, dimension } from './picker.js';
+import { chooseMember, heldDimension } from './picker.js';
 import { searchBox } from './tree.js';
 import { counted, dialog, h, icon, invalid, mount, notify, olderButton, refocus, revealable, when, working } from './ui.js';
 
@@ -364,7 +364,8 @@ class AdminPage {
         h('button', { class: 'button quiet small icon', type: 'button', 'aria-label': 'Remove this element role', onclick: () => takeAway(elementRows, row, addElementRole) }, icon('close', 14)));
       choose(element);
       elementButton.addEventListener('click', async () => {
-        const dim = await working(elementButton, () => dimension(dimensionChoice.value));
+        // An element chosen from the tree: a large dimension fetched in parts as it is opened.
+        const dim = await working(elementButton, () => heldDimension(dimensionChoice.value));
         if (!dim) return;
         const member = await chooseMember(dim, { title: `An element of ${dim.name}`, current: row.dataset.element || undefined });
         if (member !== null) choose(member);

@@ -110,6 +110,31 @@ export const pathKey = (names) => names.join(JOIN);
 export const namesOf = (path) => String(path).split(JOIN);
 
 /**
+ * What a layout shows of each dimension, for a page holding one in parts to fetch before
+ * drawing it: by dimension, the members it names, chosen, opened on the way, standing as
+ * filters or calculated with, and those whose children it shows, as `fill` takes them.
+ */
+export function wanted(layout) {
+  const asks = new Map();
+  const of = (dimension) => {
+    if (!asks.has(dimension)) asks.set(dimension, { names: [], childrenOf: [] });
+    return asks.get(dimension);
+  };
+  for (const entry of [...(layout?.rows ?? []), ...(layout?.columns ?? [])]) {
+    const ask = of(entry.dimension);
+    ask.names.push(...entry.members);
+    for (const path of entry.expanded ?? []) {
+      const names = namesOf(path);
+      ask.names.push(...names);
+      ask.childrenOf.push(names.at(-1));
+    }
+  }
+  for (const filter of layout?.filters ?? []) of(filter.dimension).names.push(filter.member);
+  for (const each of layout?.calculations ?? []) of(each.dimension).names.push(...[each.a, each.b].filter((name) => name !== undefined));
+  return asks;
+}
+
+/**
  * A dimension's members, in the order a query gave them, read as an outline where they are
  * one: members chosen, each followed by the whole of its children, in order, where it is
  * open, as Descendants gives them. `{ members, expanded }`, which `shown` gives back in the

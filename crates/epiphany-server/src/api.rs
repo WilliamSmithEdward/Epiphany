@@ -26,8 +26,7 @@ use epiphany_core::database::{
 use epiphany_core::mdx::{Asker, QueryResult};
 use epiphany_core::model::{
     Attribute, AttributeType, ChildDef, CubeDef, DashboardDef, Dimension, DimensionDef,
-    DimensionId, DimensionType, Element, ElementId, ElementType, Model, ModelDef, SubsetDef,
-    ViewDef, key,
+    DimensionId, DimensionType, ElementId, ElementType, Model, ModelDef, SubsetDef, ViewDef, key,
 };
 use serde::{Deserialize, Serialize};
 
@@ -168,6 +167,7 @@ fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(get_model, put_model))
         .routes(routes!(get_outline))
         .routes(routes!(get_dimension, put_dimension, delete_dimension))
+        .routes(routes!(dimension_part))
         .routes(routes!(get_dimension_definition))
         .routes(routes!(get_cube, put_cube, delete_cube))
         .routes(routes!(read_cells))
@@ -415,6 +415,10 @@ fn needed(method: &Method, path: &str) -> Role {
     {
         return Role::Read;
     }
+    // Part of a dimension is asked for with a body, and read all the same.
+    if let ["", "dimensions", _, "elements"] = segments.as_slice() {
+        return Role::Read;
+    }
     let reads = ["/cells/read", "/cells/explain", "/cells/history", "/mdx"];
     if method == Method::GET || path == "/sessions" || reads.contains(&path) {
         Role::Read
@@ -515,6 +519,8 @@ fn reached(method: &Method, path: &str, needed: Role) -> (Part, Role) {
         | ["", "dimensions", _, "definition"]
         | ["", "cubes", _]
         | ["", "dashboards", _] => (Part::Model, reading(method == Method::GET)),
+        // Asked for with a body, part of a dimension is read all the same.
+        ["", "dimensions", _, "elements"] => (Part::Model, Role::Read),
         _ => (Part::Cells, reading(needed == Role::Read)),
     }
 }
@@ -947,6 +953,22 @@ struct ElementView<'a> {
     /// For a string element with a picklist, the values its text cells may be given.
     #[serde(skip_serializing_if = "Option::is_none")]
     picklist: Option<Vec<String>>,
+    /// In part of a dimension, for a consolidation, how many numeric leaves it counts: what
+    /// a page holding it without the elements beneath it cannot count itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    leaves: Option<usize>,
+    /// In part of a dimension, where its children are not listed, how many it has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    child_count: Option<usize>,
+}
+
+/// How an element is written: as a whole dimension writes it; or in part of one, its
+/// children listed, as where it is to be opened, or only counted.
+#[derive(Clone, Copy, PartialEq)]
+enum Written {
+    Whole,
+    Listed,
+    Counted,
 }
 
 impl<'a> DimensionView<'a> {
@@ -1004,6 +1026,37 @@ impl<'a> Seen<'a> {
         &self.dimension().elements[element as usize].name
     }
 
+    /// An element as the user sees it, written as `written` says.
+    fn view(self, id: ElementId, written: Written) -> ElementView<'a> {
+        let dimension = self.dimension();
+        let element = &dimension.elements[id as usize];
+        let listed = written != Written::Counted;
+        let seen = |&&(child, _): &&(ElementId, f64)| self.sees(child);
+        ElementView {
+            name: &element.name,
+            kind: element.kind,
+            level: element.level,
+            parents: Names {
+                seen: self,
+                ids: element.parents(),
+            },
+            children: Children {
+                seen: self,
+                children: if listed { &element.children } else { &[] },
+            },
+            attributes: Values {
+                attributes: &dimension.attributes,
+                values: &element.attributes,
+            },
+            picklist: self.offered(id),
+            leaves: (written != Written::Whole && element.level > 0)
+                .then(|| element.leaves().len()),
+            child_count: (!listed)
+                .then(|| element.children.iter().filter(seen).count())
+                .filter(|&count| count > 0),
+        }
+    }
+
     /// The values a string element's picklist offers. One that offers another dimension's
     /// elements offers those the user may see.
     fn offered(self, element: ElementId) -> Option<Vec<String>> {
@@ -1023,34 +1076,204 @@ impl<'a> Seen<'a> {
 /// The elements the user sees, in declaration order, each written out as it is reached.
 struct Elements<'a>(Seen<'a>);
 
-impl<'a> Serialize for Elements<'a> {
+impl Serialize for Elements<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let seen = self.0;
-        let dimension = seen.dimension();
-        let view = |(id, element): (usize, &'a Element)| ElementView {
-            name: &element.name,
-            kind: element.kind,
-            level: element.level,
-            parents: Names {
-                seen,
-                ids: element.parents(),
-            },
-            children: Children {
-                seen,
-                children: &element.children,
-            },
-            attributes: Values {
-                attributes: &dimension.attributes,
-                values: &element.attributes,
-            },
-            picklist: seen.offered(id as ElementId),
-        };
-        let elements = dimension.elements.iter().enumerate();
+        let ids = 0..seen.dimension().elements.len() as ElementId;
         serializer.collect_seq(
-            elements
-                .filter(|&(id, _)| seen.sees(id as ElementId))
-                .map(view),
+            ids.filter(|&id| seen.sees(id))
+                .map(|id| seen.view(id, Written::Whole)),
         )
+    }
+}
+
+/// What part of a dimension to send, each part asked for adding to the rest.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct ElementsAsked {
+    /// These elements, by name: one there is not, or that the user may not see, left out.
+    #[serde(default)]
+    names: Vec<String>,
+    /// With every element above those named and those found, for the way down to each.
+    #[serde(default)]
+    ancestors: bool,
+    /// The children of these elements.
+    #[serde(default)]
+    children_of: Vec<String>,
+    /// Every element beneath these elements, however deep.
+    #[serde(default)]
+    descendants_of: Vec<String>,
+    /// The top elements: those with no parent the user may see.
+    #[serde(default)]
+    roots: bool,
+    /// The first elements whose name holds this text, whatever its case.
+    find: Option<String>,
+    /// How many `find` gives at most: 50 unless said, and never more than 1,000.
+    most: Option<usize>,
+}
+
+/// The most elements a find gives.
+const FOUND_MOST: usize = 1_000;
+
+/// Part of a dimension, as a user may see it: what the dimension is, and the elements asked
+/// for, each once, as a whole dimension gives them, a consolidation with its count of leaves.
+/// An element's children are listed where the page is to go down from it: one whose children
+/// were asked for, one beneath another asked for whole, and one on the way to an element named
+/// or found; any other only counts them, as most of those sent are not opened, and the 10,000
+/// children of a member opened listed a million grandchildren between them.
+#[derive(Serialize, ToSchema)]
+struct DimensionPart<'a> {
+    name: &'a str,
+    #[serde(rename = "type")]
+    kind: DimensionType,
+    /// The names of the levels, from the leaves up, where the model gives them.
+    #[schema(value_type = Vec<String>)]
+    levels: &'a [String],
+    #[schema(value_type = BTreeMap<String, AttributeType>)]
+    attributes: BTreeMap<&'a str, AttributeType>,
+    /// How many elements the user may see.
+    size: usize,
+    #[schema(value_type = Vec<ElementView>)]
+    elements: Chosen<'a>,
+    /// Where asked for, the top elements' names, in their order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    roots: Option<Vec<&'a str>>,
+    /// Where asked to find, the names found, in their order.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    found: Option<Vec<&'a str>>,
+}
+
+impl<'a> DimensionPart<'a> {
+    fn of(seen: Seen<'a>, asked: &ElementsAsked) -> Self {
+        let dimension = seen.dimension();
+        let every = 0..dimension.elements.len() as ElementId;
+        let id_of = |name: &String| dimension.element_id(name).filter(|&id| seen.sees(id));
+        let mut chosen = Chosen {
+            seen,
+            ids: Vec::new(),
+            taken: HashSet::new(),
+            listed: HashSet::new(),
+        };
+        let named: Vec<ElementId> = asked.names.iter().filter_map(id_of).collect();
+        let found: Option<Vec<ElementId>> = asked.find.as_deref().map(|text| {
+            let most = asked.most.unwrap_or(50).min(FOUND_MOST);
+            let holds = |&id: &ElementId| seen.sees(id) && holds(seen.name(id), text);
+            every.clone().filter(holds).take(most).collect()
+        });
+        for &id in named.iter().chain(found.iter().flatten()) {
+            chosen.take(id);
+            if asked.ancestors {
+                chosen.above(id);
+            }
+        }
+        for id in asked.children_of.iter().filter_map(id_of) {
+            chosen.take(id);
+            chosen.listed.insert(id);
+            for &(child, _) in &dimension.elements[id as usize].children {
+                if seen.sees(child) {
+                    chosen.take(child);
+                }
+            }
+        }
+        for id in asked.descendants_of.iter().filter_map(id_of) {
+            chosen.beneath(id);
+        }
+        let roots = asked.roots.then(|| {
+            let top = |&id: &ElementId| {
+                let parents = dimension.elements[id as usize].parents();
+                seen.sees(id) && !parents.iter().any(|&parent| seen.sees(parent))
+            };
+            let roots: Vec<ElementId> = every.clone().filter(top).collect();
+            for &id in &roots {
+                chosen.take(id);
+            }
+            roots.into_iter().map(|id| seen.name(id)).collect()
+        });
+        Self {
+            name: &dimension.name,
+            kind: dimension.kind,
+            levels: &dimension.levels,
+            attributes: dimension
+                .attributes
+                .iter()
+                .map(|attribute| (attribute.name.as_str(), attribute.kind))
+                .collect(),
+            size: every.filter(|&id| seen.sees(id)).count(),
+            elements: chosen,
+            roots,
+            found: found.map(|ids| ids.into_iter().map(|id| seen.name(id)).collect()),
+        }
+    }
+}
+
+/// Whether `name` holds `text`, whatever the case of either: compared in place where both
+/// are ASCII, as a find goes through a million names.
+fn holds(name: &str, text: &str) -> bool {
+    match name.is_ascii() && text.is_ascii() {
+        true => {
+            let text = text.as_bytes();
+            text.is_empty()
+                || name
+                    .as_bytes()
+                    .windows(text.len())
+                    .any(|window| window.eq_ignore_ascii_case(text))
+        }
+        false => name.to_lowercase().contains(&text.to_lowercase()),
+    }
+}
+
+/// Elements chosen for part of a dimension, each once, in the order they were chosen, and
+/// those of them whose children are listed.
+struct Chosen<'a> {
+    seen: Seen<'a>,
+    ids: Vec<ElementId>,
+    taken: HashSet<ElementId>,
+    listed: HashSet<ElementId>,
+}
+
+impl Chosen<'_> {
+    /// Takes an element, unless it was taken already.
+    fn take(&mut self, id: ElementId) {
+        if self.taken.insert(id) {
+            self.ids.push(id);
+        }
+    }
+
+    /// Takes, its children listed, every element above one that the user may see.
+    fn above(&mut self, id: ElementId) {
+        let parents = self.seen.dimension().elements[id as usize].parents();
+        for &parent in parents {
+            if self.seen.sees(parent) && self.listed.insert(parent) {
+                self.take(parent);
+                self.above(parent);
+            }
+        }
+    }
+
+    /// Takes, their children listed, one element and every element beneath it that the user
+    /// may see.
+    fn beneath(&mut self, id: ElementId) {
+        self.take(id);
+        self.listed.insert(id);
+        let mut waiting = vec![id];
+        while let Some(at) = waiting.pop() {
+            for &(child, _) in &self.seen.dimension().elements[at as usize].children {
+                if self.seen.sees(child) && self.listed.insert(child) {
+                    self.take(child);
+                    waiting.push(child);
+                }
+            }
+        }
+    }
+}
+
+impl Serialize for Chosen<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let written = |id: &ElementId| match self.listed.contains(id) {
+            true => Written::Listed,
+            false => Written::Counted,
+        };
+        serializer.collect_seq(self.ids.iter().map(|id| self.seen.view(*id, written(id))))
     }
 }
 
@@ -1460,6 +1683,47 @@ async fn get_dimension(
     };
     // Written out from the model while it is held, rather than copied out of it first.
     let body = serde_json::to_vec(&DimensionView::of(seen, &read)).map_err(|error| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            error.to_string(),
+        )
+    })?;
+    Ok(([(CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+/// Part of one dimension: the elements named, found by their names, above or beneath others,
+/// or at the top, each as a whole dimension gives it; for a page that holds a dimension of a
+/// million elements in parts, as it shows them, rather than whole.
+#[utoipa::path(
+    post,
+    path = "/dimensions/{name}/elements",
+    params(("name" = String, Path, description = "Dimension name, ignoring case and spaces")),
+    request_body = ElementsAsked,
+    responses(
+        (status = OK, body = DimensionPart, description = "The part asked for"),
+        (status = NOT_FOUND, body = ApiError, description = "Unknown dimension")
+    )
+)]
+async fn dimension_part(
+    State(database): State<Shared>,
+    Extension(grants): Held,
+    Path(name): Path<String>,
+    Json(asked): Json<ElementsAsked>,
+) -> Result<Response, ApiError> {
+    let database = database.read().unwrap();
+    let id = database
+        .model()
+        .dimension_id(&name)
+        .ok_or_else(|| unknown("dimension", &name))?;
+    let access = access(&grants, &database);
+    let seen = Seen {
+        model: database.model(),
+        dimension: id,
+        access: access.as_deref(),
+    };
+    // Written out from the model while it is held, as a whole dimension is.
+    let body = serde_json::to_vec(&DimensionPart::of(seen, &asked)).map_err(|error| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
@@ -3409,6 +3673,7 @@ mod tests {
             "POST /cells/spread cells write",
             "POST /cells/write cells write",
             "POST /cubes/{cube}/comments cells write",
+            "POST /dimensions/{name}/elements model read",
             "POST /keys no key",
             "POST /mdx cells read",
             "POST /sandboxes cells write",

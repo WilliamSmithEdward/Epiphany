@@ -158,6 +158,11 @@ async fn a_user_may_do_only_what_the_role_allows() {
         for (method, uri, body) in [
             ("GET", "/model", None),
             ("GET", "/dimensions/Period", None),
+            (
+                "POST",
+                "/dimensions/Period/elements",
+                Some(json!({ "roots": true })),
+            ),
             ("POST", "/cells/read", Some(read.clone())),
             ("POST", "/cells/explain", Some(read.clone())),
             (
@@ -1615,6 +1620,20 @@ async fn a_users_roles_on_elements_hide_them_and_keep_them_from_being_changed() 
     assert_eq!(
         names(&named(&model["model"]["dimensions"], "Entity")),
         ["Total Entity", "US"]
+    );
+    // Nor in part of the dimension, however it is asked for.
+    let asked = json!({
+        "names": ["UK", "US"], "ancestors": true, "children_of": ["Total Entity"],
+        "descendants_of": ["Total Entity"], "roots": true, "find": "u"
+    });
+    let path = "/dimensions/Entity/elements";
+    let (_, _, part) = send(&app, "POST", path, Some(&lin), Some(asked)).await;
+    assert_eq!(names(&part), ["US", "Total Entity"]);
+    assert_eq!(part["size"], 2);
+    assert_eq!(part["found"], json!(["US"]));
+    assert_eq!(
+        part["elements"][1]["children"],
+        json!([{ "name": "US", "weight": 1.0 }])
     );
     // No role on an element binds the administrator.
     let (_, _, entity) = send(&app, "GET", "/dimensions/Entity", Some(&admin), None).await;

@@ -6,6 +6,7 @@
 
 import { del, get, part, post } from './api.js';
 import { loading, state } from './app.js';
+import { childCount } from './picker.js';
 import { choices, counted, dialog, formatValue, h, icon, MOD, mount, notify, olderButton, parseNumber, when, working } from './ui.js';
 
 /** How many of a cell's changes are fetched at a time. */
@@ -315,7 +316,7 @@ export const comments = {
     post('/cells/history', asked, { quiet: true }).then((answer) => {
       const all = [...answer.changes];
       // A total is written to only through the leaves beneath it, where its changes are kept.
-      const total = cell.at.some((name, index) => this.dims.get(this.cube.dimensions[index])?.byName.get(name)?.children.length);
+      const total = cell.at.some((name, index) => childCount(this.dims.get(this.cube.dimensions[index])?.byName.get(name)));
       mount(list, all.length ? all.map(item) : h('li', { class: 'muted comment-none' }, total
         ? 'A total keeps no history of its own: its changes are saved to the leaves beneath it, each with theirs.'
         : 'No change has been saved to this cell.'));

@@ -5,8 +5,8 @@ import { ApiError, del, get, modelVersion, part, post, put } from './api.js';
 import { empty, failure, go, loading, model, readdress, state } from './app.js';
 import { chart, seriesNames, shape } from './chart.js';
 import { chooser, choseLately, lateFirst, lately, pick } from './finder.js';
-import { CALCULATIONS, cubeOf, defaultLayout, emptiness, folded, handOver, linkedView, linkOf, mdx, namesOf, pathKey, pathsBeneath, quote, saved, shown, takeOver } from './layout.js';
-import { chooseMember, dimension } from './picker.js';
+import { CALCULATIONS, cubeOf, defaultLayout, emptiness, folded, handOver, linkedView, linkOf, mdx, namesOf, pathKey, pathsBeneath, quote, saved, shown, takeOver, wanted } from './layout.js';
+import { childCount, chooseMember, dimension, fill, heldDimension } from './picker.js';
 import { csvOf } from './selection.js';
 import { askDrawn, AXES, CHARTS } from './tiles.js';
 import { editSet } from './sets.js';
@@ -59,9 +59,17 @@ export async function render(target, { params, titled }) {
   // The user's sandboxes come with the dimensions, so that the first query runs in the one
   // last worked in.
   const [dims, kept] = await Promise.all([
-    Promise.all(cube.dimensions.map(async (dim) => [dim, await dimension(dim)])).then((pairs) => new Map(pairs)),
+    Promise.all(cube.dimensions.map(async (dim) => [dim, await heldDimension(dim)])).then((pairs) => new Map(pairs)),
     get('/sandboxes', { quiet: true }).catch(() => []),
   ]);
+  // Of a dimension held in parts, what the last layout and the cells held show is fetched,
+  // for both to be checked against it as against one held whole.
+  try {
+    const holds = JSON.parse(localStorage.getItem(`epiphany.holds.${cube.name}`) ?? '[]').map((key) => JSON.parse(key));
+    await fillShown(dims, JSON.parse(localStorage.getItem(saved(cube.name))), holds, cube);
+  } catch {
+    // A layout or holds that cannot be read are let go as they are drawn.
+  }
   // A query left for this cube, from another cube's page or another page, is run here; or the
   // view a link carries, or one saved with the cube.
   const handed = takeOver(cube.name);
@@ -78,6 +86,23 @@ export async function render(target, { params, titled }) {
 
 /** The most views the Views menu lists: past them, they are found by typing. */
 const MENU_MOST = 12;
+
+/**
+ * Fetches, of each dimension held in parts, what `layout` shows of it and the members of the
+ * cells `holds` keeps, each its names in the order of `cube`'s dimensions: what a page checks
+ * a layout against and draws it from, as from dimensions held whole.
+ */
+function fillShown(dims, layout, holds = [], cube = null, quiet = false) {
+  const asks = wanted(layout);
+  for (const at of holds) {
+    at.forEach((name, index) => {
+      const dimension = cube.dimensions[index];
+      if (!asks.has(dimension)) asks.set(dimension, { names: [], childrenOf: [] });
+      asks.get(dimension).names.push(name);
+    });
+  }
+  return Promise.all([...asks].map(([name, ask]) => fill(dims.get(name), { ...ask, quiet })));
+}
 
 /** A saved view's query, and how it is shown, put into a layout: its chart where it has one. */
 function opened(layout, view) {
@@ -543,13 +568,30 @@ class Explorer {
   drawFields() {
     const search = h('input', { class: 'input', type: 'search', placeholder: 'Find a dimension or element', 'aria-label': 'Find a dimension or element' });
     const list = h('div', { class: 'field-list', role: 'list', 'aria-label': 'Dimensions' });
+    // What the server found of each dimension held in parts, and the words it was found for.
+    const elsewhere = new Map();
+    let asking;
+    const ask = () => {
+      clearTimeout(asking);
+      const words = search.value.trim().toLowerCase();
+      const parted = this.cube.dimensions.filter((name) => this.dims.get(name).part);
+      if (!words || !parted.length) return;
+      asking = setTimeout(() => parted.forEach(async (name) => {
+        const names = await fill(this.dims.get(name), { find: words, most: 8, ancestors: true, quiet: true });
+        elsewhere.set(name, { words, names });
+        if (search.value.trim().toLowerCase() === words) draw();
+      }), 200);
+    };
     const draw = () => {
       const words = search.value.trim().toLowerCase();
       mount(list, this.cube.dimensions.map((name) => {
         const dim = this.dims.get(name);
-        // The first eight found: the rest of a large dimension is not looked through.
+        // The first eight found: the rest of a large dimension is not looked through, and one
+        // held in parts is looked through by the server.
         const matches = [];
-        for (const element of words ? dim.elements : []) {
+        const found = elsewhere.get(name);
+        if (dim.part && words && found?.words === words) matches.push(...found.names.map((each) => dim.byName.get(each)).filter(Boolean));
+        for (const element of words && !dim.part ? dim.elements : []) {
           if (element.name.toLowerCase().includes(words) && matches.push(element) === 8) break;
         }
         if (words && !name.toLowerCase().includes(words) && !matches.length) return null;
@@ -582,7 +624,10 @@ class Explorer {
             }, icon(element.type === 'consolidated' ? 'sigma' : 'member', 14), element.name)))) : null);
       }));
     };
-    search.addEventListener('input', draw);
+    search.addEventListener('input', () => {
+      draw();
+      ask();
+    });
     // A chip dropped back on the field list leaves the query.
     this.fields.ondragover = (event) => {
       if (!event.dataTransfer.types.includes('text/x-epiphany-dimension')) return;
@@ -644,16 +689,25 @@ class Explorer {
     const entry = this.entryOf(place, dimension);
     // Each member is opened where it stands: one under two members it opens under both.
     const chosen = entry.members.map((name) => [name]);
-    const within = pathsBeneath(dim, chosen);
-    const closed = shown(entry, dim).filter((row) => !row.opened && this.childrenOf(dim, row.name).length).map((row) => row.path);
-    const levels = [...new Set(within.map((path) => dim.byName.get(namesOf(path).at(-1)).level))].sort((a, b) => b - a);
+    // Held in parts, a dimension's members beneath those chosen are fetched only once asked
+    // to be opened, and its levels are those beneath the highest chosen.
+    const within = dim.part ? null : pathsBeneath(dim, chosen);
+    const closed = shown(entry, dim).filter((row) => !row.opened && childCount(dim.byName.get(row.name))).map((row) => row.path);
+    const top = Math.max(0, ...entry.members.map((name) => dim.byName.get(name)?.level ?? 0));
+    const levels = dim.part
+      ? Array.from({ length: top }, (_, below) => top - below)
+      : [...new Set(within.map((path) => dim.byName.get(namesOf(path).at(-1)).level))].sort((a, b) => b - a);
+    const openTo = async (keep) => {
+      await fill(dim, { beneath: entry.members });
+      this.setOpen(place, dimension, () => pathsBeneath(dim, chosen, keep));
+    };
     return [
       { label: 'Open one level more', icon: 'plus', disabled: !closed.length, action: () => this.setOpen(place, dimension, (expanded) => [...expanded, ...closed]) },
-      { label: 'Open every level', icon: 'expand', disabled: within.every((path) => entry.expanded.includes(path)), action: () => this.setOpen(place, dimension, () => within) },
+      { label: 'Open every level', icon: 'expand', disabled: Boolean(within?.every((path) => entry.expanded.includes(path))), action: () => openTo(() => true) },
       ...levels.slice(1).map((level) => ({
         label: `Open down to ${dim.levels?.[level] || `level ${level}`}`,
         icon: 'level',
-        action: () => this.setOpen(place, dimension, () => pathsBeneath(dim, chosen, (element) => element.level > level)),
+        action: () => openTo((element) => element.level > level),
       })),
       { label: 'Close every level', icon: 'collapse', disabled: !entry.expanded.length, action: () => this.setOpen(place, dimension, () => []) },
       {
@@ -813,9 +867,11 @@ class Explorer {
     const dim = this.dims.get(name);
     const place = this.placeOf(name);
     if (place !== 'filters') {
-      // A dimension on an axis gets the set editor, and keeps the order built there.
+      // A dimension on an axis gets the set editor, and keeps the order built there: one held
+      // in parts is fetched whole for it, its levels, attributes and subsets all to hand.
       const entry = this.layout[place].find((candidate) => candidate.dimension === name);
-      const set = await editSet({ ...dim, name }, entry.members, (subset) => this.subsetNow(name, subset));
+      const whole = dim.part ? await dimension(name) : dim;
+      const set = await editSet({ ...whole, name }, entry.members, (subset) => this.subsetNow(name, subset));
       if (!set) return;
       this.change((layout) => {
         const target = layout[place].find((candidate) => candidate.dimension === name);
@@ -850,6 +906,18 @@ class Explorer {
     this.stopping = stopping;
     this.stale = false;
     this.output.classList.remove('stale');
+    // Of a dimension held in parts, what the layout shows is fetched before it is asked.
+    try {
+      await fillShown(this.dims, this.layout, [], null, true);
+    } catch (problem) {
+      if (ticket !== this.ticket) return;
+      this.result = null;
+      this.error = problem;
+      this.drawToolbar();
+      this.draw();
+      return;
+    }
+    if (ticket !== this.ticket) return;
     const text = mdx(this.layout, this.dims);
     if (this.layout.mdx && this.elsewhere(text)) return;
     this.text = text;
@@ -873,6 +941,9 @@ class Explorer {
         this.sandbox ? post('/mdx', { mdx: text }, asking) : null,
         this.sandbox ? get('/sandboxes', asking) : null,
       ]);
+      // Of a dimension held in parts, the members the answer names are fetched, as a query
+      // written by hand may name any.
+      await this.fillAnswered(result);
       if (ticket !== this.ticket) return;
       this.result = result;
       this.error = null;
@@ -905,6 +976,33 @@ class Explorer {
       this.markAllComments();
       if (this.commentCell) this.drawComments();
     }
+  }
+
+  /**
+   * Fetches, of each dimension held in parts, the members an answer names; and, for a query
+   * written by hand, the children of each member it shows followed by one of them, as
+   * Descendants shows it, for the answer to be read back as an outline.
+   */
+  async fillAnswered(result) {
+    const by = (asks, m) => {
+      if (!asks.has(m.dimension)) asks.set(m.dimension, []);
+      return asks.get(m.dimension);
+    };
+    const named = new Map();
+    const add = (m) => m.type !== 'calculated' && by(named, m).push(m.name);
+    for (const axis of result.axes) for (const tuple of axis.tuples) tuple.forEach(add);
+    (result.slicer ?? []).forEach(add);
+    await Promise.all([...named].map(([name, names]) => fill(this.dims.get(name), { names, quiet: true })));
+    if (!this.layout.mdx) return;
+    const opened = new Map();
+    for (const axis of result.axes) {
+      axis.tuples.forEach((tuple, index) => tuple.forEach((m, position) => {
+        const above = axis.tuples[index - 1]?.[position];
+        const dim = this.dims.get(m.dimension);
+        if (above && dim?.part && dim.byName.get(m.name)?.parents.includes(above.name)) by(opened, above).push(above.name);
+      }));
+    }
+    await Promise.all([...opened].map(([name, names]) => fill(this.dims.get(name), { childrenOf: names, quiet: true })));
   }
 
   /**
@@ -1022,7 +1120,9 @@ class Explorer {
   }
 
   childrenOf(dim, name) {
-    return (dim.byName.get(name)?.children ?? []).map((child) => child.name).filter((child) => dim.byName.has(child));
+    const names = (dim.byName.get(name)?.children ?? []).map((child) => child.name);
+    // Held in parts, a dimension holds only what has been shown: its children are as the server gives them.
+    return dim.part ? names : names.filter((child) => dim.byName.has(child));
   }
 
   /** Changes the members open of a dimension on an axis. */
@@ -1155,9 +1255,11 @@ class Explorer {
         otherField,
         h('div', { class: 'field' }, h('label', { for: 'calc-name' }, 'Called'), named),
         h('p', { class: 'hint' }, `It stands after the members of ${dimension}, worked out by the query for every cell; it is kept with the layout and any view saved from it.`)),
-      onsubmit: () => {
+      onsubmit: async () => {
         const label = named.value.trim();
         if (!label) throw invalid(named, 'Give the calculation a name.');
+        // Held in parts, the dimension is asked whether it has a member of the name.
+        await fill(dim, { names: [label] });
         if (dim.byName.has(label) || this.calculated(dimension, label)) throw invalid(named, `${dimension} has a member called ${label} already.`);
         return { dimension, name: label, kind: kind.value, a: name, ...(kind.value === 'share' ? {} : { b: other.value }) };
       },
