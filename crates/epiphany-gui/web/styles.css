@@ -1035,6 +1035,12 @@ mark { background: color-mix(in oklab, var(--warn) 34%, transparent); color: inh
 .text-tile { background: transparent; border-color: transparent; box-shadow: none; }
 .text-tile .tile-body { padding: var(--s3) var(--s4); overflow: auto; }
 .board.editing .text-tile { border: 1px dashed var(--line-strong); }
+/* Laid out freely and shown, a tile of text lets what lies beneath it be pointed at and
+   clicked wherever it has no words: a note set over a chart leaves the chart's marks in
+   reach. Its words, each block as wide as they are, and its buttons are still its own. */
+.board.free:not(.editing) .text-tile:not(.focused) { pointer-events: none; }
+.board.free:not(.editing) .text-tile:not(.focused) :is(.prose > *, .tile-head .button, .tile-corner) { pointer-events: auto; }
+.board.free:not(.editing) .text-tile .prose { align-items: flex-start; }
 .prose { display: flex; flex-direction: column; gap: var(--s2); color: var(--text-2); }
 .prose h3 { font-size: var(--text-xl); color: var(--text); }
 .prose ul { margin: 0; padding-left: var(--s5); }
