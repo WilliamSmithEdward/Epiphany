@@ -63,6 +63,65 @@ fn committed_cells_survive_reopening() {
     assert_eq!(get(&database, EXPENSES), 40.0);
 }
 
+/// JSON read without care rounds about one number in six to a neighbour, so that a cell held
+/// another number after a restart than before it. Every leaf of the cube is given a number
+/// that is hard to read back: one that was, or one of any size.
+#[test]
+fn numbers_come_back_from_the_disk_to_the_last_bit() {
+    let home = Home::new("exact");
+    let mut leaves: Vec<[&str; 4]> = Vec::new();
+    for account in ["Product Revenue", "Service Revenue", "Salaries", "Rent"] {
+        for entity in ["US", "UK"] {
+            for month in ["Jan", "Feb", "Mar", "Apr", "May", "Jun"] {
+                for version in ["Actual", "Budget"] {
+                    leaves.push([account, entity, month, version]);
+                }
+            }
+        }
+    }
+    let mut numbers = vec![
+        1892571.4285714286,
+        -13745285.714285715,
+        0.1 + 0.2,
+        1.0715660391465826e-75,
+        -1.603964615428183e143,
+        5e-324,
+        f64::MAX,
+        -f64::MIN_POSITIVE,
+    ];
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    while numbers.len() < leaves.len() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        let number = match numbers.len() % 2 {
+            0 => f64::from_bits(seed),
+            _ => ((seed % 200_001) as f64 - 100_000.0) / 7.0 * 1e3,
+        };
+        if number.is_finite() && number != 0.0 {
+            numbers.push(number);
+        }
+    }
+    let writes: Vec<CellWrite> = leaves
+        .iter()
+        .zip(&numbers)
+        .map(|(&at, &n)| set(at, n))
+        .collect();
+    home.open().write(None, &writes).unwrap();
+    // First from the log, which opening makes a snapshot of; then from the snapshot.
+    for from in ["the log", "the snapshot"] {
+        let database = home.open();
+        for (&at, number) in leaves.iter().zip(&numbers) {
+            let read = get(&database, at);
+            assert_eq!(
+                read.to_bits(),
+                number.to_bits(),
+                "{at:?} from {from}: {read:e} for {number:e}"
+            );
+        }
+    }
+}
+
 #[test]
 fn a_directory_serves_one_database_at_a_time() {
     let home = Home::new("lock");

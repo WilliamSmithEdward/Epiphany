@@ -13,7 +13,7 @@ blake2 = { version = "0.11.0", default-features = false }
 epiphany-core = { path = "../epiphany-core", features = ["openapi"] }
 getrandom = "0.4.3"
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
+serde_json = { version = "1.0.154", features = ["float_roundtrip"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "net"] }
 utoipa = "6.0.0"
 utoipa-axum = "0.3.0"

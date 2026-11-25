@@ -530,6 +530,18 @@ brought down from 446 MB to 182 MB for a million and a half cells, and a quarter
 time is not worth giving that back. A buffer of a megabyte in place of eight kilobytes
 opens them in 0.32 s. Neither change is made.
 
+serde_json read about one number in six that it had written back as its neighbour, so that
+a cell could hold another number after a restart than before it; built with
+`float_roundtrip`, it reads each back as the number it was written from. Whole numbers, as
+the cells held above, were read exactly either way, so the cells now hold a seventh of
+their place: seventeen digits, as worked-out amounts have, the longest to read exactly.
+The same benchmark built both ways, run one after the other (2026-11-24):
+
+| Cells | Snapshot | Opened, read as before | Opened, read exactly |
+| --- | --- | --- | --- |
+| 1,000,000 | 68 MB | 0.35 s | 0.36 s |
+| 5,000,000 | 339 MB | 2.72 to 3.01 s | 2.78 to 2.85 s |
+
 ### A wide model
 
 ```

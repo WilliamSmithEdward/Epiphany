@@ -161,6 +161,12 @@ practice that means:
 - Cells are recorded by cube and element name, so a snapshot or log loads into whatever
   model is current, dropping cells that no longer fit. That makes hand-edited model files
   and interrupted model updates safe.
+- **Decision (numbers in JSON):** every crate reads JSON with serde_json's `float_roundtrip`,
+  so that a number is read back as the one its digits were written from. Without it about
+  one number in six that serde_json wrote came back a bit off (`1892571.4285714286` as
+  `1892571.4285714289`): a cell could hold another number after a restart than before it,
+  read from the snapshot or the log, and a number in a request could be stored as its
+  neighbour.
 - A snapshot replaces the log at every start, after every model update, and once the log
   passes 64 MiB. The last is taken by the server after the request whose commit filled
   the log, in a task of its own holding the database for reading only: readers carry on

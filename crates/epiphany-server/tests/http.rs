@@ -71,6 +71,51 @@ async fn written_cells_are_read_back_with_consolidations() {
     assert_eq!(body, json!({ "cells": expected }));
 }
 
+/// A number sent in JSON is stored as the number its digits name, to the last bit, and sent
+/// back so: each of these was once read as its neighbour.
+#[tokio::test]
+async fn numbers_are_stored_as_their_digits_name_them() {
+    let app = example();
+    let numbers = [
+        1892571.4285714286,
+        -13745285.714285715,
+        1.0715660391465826e-75,
+        -1.81996730402717e-179,
+        -1.603964615428183e143,
+        -9.643915712060552e-234,
+    ];
+    let leaves = [
+        ["Product Revenue", "US", "Jan", "Actual"],
+        ["Service Revenue", "UK", "Feb", "Actual"],
+        ["Salaries", "US", "Mar", "Budget"],
+        ["Rent", "UK", "Apr", "Actual"],
+        ["Rent", "US", "May", "Budget"],
+        ["Salaries", "UK", "Jun", "Actual"],
+    ];
+    let writes: Vec<Value> = leaves
+        .iter()
+        .zip(numbers)
+        .map(|(&at, n)| write(at, json!(n)))
+        .collect();
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/cells/write",
+        Some(json!({ "cells": writes })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let reads: Vec<Value> = leaves.iter().map(|&at| cell(at)).collect();
+    let (_, body) = call(&app, "POST", "/cells/read", Some(json!({ "cells": reads }))).await;
+    let read: Vec<u64> = body["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|cell| cell["value"].as_f64().unwrap().to_bits())
+        .collect();
+    assert_eq!(read, numbers.map(f64::to_bits));
+}
+
 #[tokio::test]
 async fn a_bad_cell_in_a_read_reports_its_own_error() {
     let app = example();

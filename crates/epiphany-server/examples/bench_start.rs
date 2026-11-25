@@ -41,7 +41,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cube = json!({ "name": "C", "dimensions": names });
     fs::write(model.join("cubes/c.json"), cube.to_string())?;
 
-    // The cells at the first coordinates in order, each its own number.
+    // The cells at the first coordinates in order, each its own number: a seventh of its
+    // place, written with seventeen digits as worked-out amounts are, which take the longest
+    // to read back exactly.
     let mut database = open(&directory)?;
     let started = Instant::now();
     for first in (0..cells).step_by(BATCH) {
@@ -51,7 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 at: (0..DIMENSIONS)
                     .map(|d| format!("e{}", cell / LEAVES.pow(d as u32) % LEAVES))
                     .collect(),
-                value: Scalar::Number(cell as f64),
+                value: Scalar::Number(cell as f64 / 7.0),
             })
             .collect();
         database.write(None, &writes)?;
