@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using ExcelDna.Integration;
@@ -53,7 +52,7 @@ namespace Epiphany.Excel
                     value = range.Value2;
                 // A number is a name too, a year say; anything else is an error or nothing.
                 var text = value is double number
-                    ? number.ToString("R", CultureInfo.InvariantCulture)
+                    ? Numbers.Text(number)
                     : value as string;
                 if (text == null)
                     return null;
@@ -187,7 +186,7 @@ namespace Epiphany.Excel
             if (comesTo.HasValue)
                 other = comesTo.Value;
             else if (value is double number)
-                other = number.ToString("R", CultureInfo.InvariantCulture);
+                other = Numbers.Text(number);
             return other == null
                 ? answer
                 : await source.Connection.Write(source.Cube, source.At, other).ConfigureAwait(false);

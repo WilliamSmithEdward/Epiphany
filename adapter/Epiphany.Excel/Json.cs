@@ -1,19 +1,90 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
-using System.Web.Script.Serialization;
 
 namespace Epiphany.Excel
 {
-    /// <summary>JSON written by the serializer that ships with the .NET Framework, and read by
-    /// <see cref="JsonReader"/>, so that the add-in carries no libraries of its own.</summary>
+    /// <summary>JSON written and read by the add-in itself, so that it carries no libraries of
+    /// its own and every number goes as it is: the framework's serializer wrote some numbers as
+    /// a neighbour, as its "R" format does.</summary>
     internal static class Json
     {
+        /// <summary>Objects from dictionaries, arrays from whatever else can be gone through,
+        /// text, numbers, true, false and null.</summary>
         public static string Write(object value)
         {
-            return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.Serialize(value);
+            var json = new StringBuilder();
+            Write(json, value);
+            return json.ToString();
+        }
+
+        private static void Write(StringBuilder json, object value)
+        {
+            switch (value)
+            {
+                case null:
+                    json.Append("null");
+                    break;
+                case string text:
+                    WriteText(json, text);
+                    break;
+                case bool flag:
+                    json.Append(flag ? "true" : "false");
+                    break;
+                case double number:
+                    json.Append(Numbers.Text(number));
+                    break;
+                case IDictionary fields:
+                    json.Append('{');
+                    var first = true;
+                    foreach (DictionaryEntry field in fields)
+                    {
+                        if (!first)
+                            json.Append(',');
+                        first = false;
+                        WriteText(json, Convert.ToString(field.Key, CultureInfo.InvariantCulture));
+                        json.Append(':');
+                        Write(json, field.Value);
+                    }
+                    json.Append('}');
+                    break;
+                case IEnumerable items:
+                    json.Append('[');
+                    var none = true;
+                    foreach (var item in items)
+                    {
+                        if (!none)
+                            json.Append(',');
+                        none = false;
+                        Write(json, item);
+                    }
+                    json.Append(']');
+                    break;
+                // Whole numbers.
+                case IFormattable whole:
+                    json.Append(whole.ToString(null, CultureInfo.InvariantCulture));
+                    break;
+                default:
+                    throw new ArgumentException($"{value.GetType()} is not written as JSON");
+            }
+        }
+
+        private static void WriteText(StringBuilder json, string text)
+        {
+            json.Append('"');
+            foreach (var c in text)
+            {
+                if (c == '"' || c == '\\')
+                    json.Append('\\').Append(c);
+                else if (c < ' ')
+                    json.Append('\\').Append('u').Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                else
+                    json.Append(c);
+            }
+            json.Append('"');
         }
 
         /// <summary>The value the text holds, or null where there is no text. Objects come back
@@ -186,7 +257,7 @@ namespace Epiphany.Excel
 
         private static double Parsed(string number)
         {
-            if (!double.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
+            if (!Numbers.TryRead(number, out var parsed))
                 throw Malformed();
             return parsed;
         }

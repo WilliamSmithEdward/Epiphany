@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Globalization;
 using System.IO;
 using System.Linq;
 
@@ -331,7 +330,7 @@ namespace Epiphany.Excel
         public object AttributeText(string element, string attribute)
         {
             var value = Attribute(element, attribute);
-            return value is double number ? number.ToString("R", CultureInfo.InvariantCulture) : value;
+            return value is double number ? Numbers.Text(number) : value;
         }
 
         /// <summary>ATTRN.</summary>

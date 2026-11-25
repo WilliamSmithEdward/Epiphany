@@ -247,7 +247,7 @@ namespace Epiphany.Excel
             switch (argument)
             {
                 case string text: return text;
-                case double number: return number.ToString("R", CultureInfo.InvariantCulture);
+                case double number: return Numbers.Text(number);
                 case bool flag: return flag ? "TRUE" : "FALSE";
                 default: return "";
             }

@@ -114,4 +114,5 @@ them uses and takes both away again.
 | `Epiphany.Excel/Picker.cs` | Choosing the element of a `SUBNM` formula. |
 | `Epiphany.Excel/Formula.cs` | Reading a formula as a function call and its arguments. |
 | `Epiphany.Excel/Json.cs` | JSON reading and writing. |
+| `Epiphany.Excel/Numbers.cs` | Numbers read from text and written as text exactly, which the .NET Framework's own parsing and `"R"` format are not. |
 | `Epiphany.Excel.Tests/` | The tests. |

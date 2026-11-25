@@ -63,7 +63,7 @@ namespace Epiphany.Excel
             if (value is Range range)
                 value = range.Value2;
             return value is double number
-                ? number.ToString("R", CultureInfo.InvariantCulture)
+                ? Numbers.Text(number)
                 : value as string ?? "";
         }
     }
